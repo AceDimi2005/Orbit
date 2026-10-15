@@ -152,33 +152,47 @@ struct FPSSetupView: View {
 
     var body: some View {
         List {
+            Section("MSI Afterburner + RTSS") {
+                Text("Orbit Agent 3.2.0 reads FPS from RivaTuner Statistics Server automatically and supported sensors from MSI Afterburner. No CSV or pairing code is needed between these apps.")
+                Text("Update the complete Windows agent folder first. The iPhone still connects to Orbit Agent with your existing PC address and pairing token.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("1. Install and open both apps") {
+                Link("Get MSI Afterburner from MSI", destination: URL(string: "https://www.msi.com/Landing/afterburner/graphics-cards")!)
+                Text("Include RivaTuner Statistics Server (RTSS) during installation. Keep both apps running on the PC, in the same Windows user session as Orbit Agent.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Section("2. Enable monitoring") {
+                Text("In Afterburner → Settings → Monitoring, tick the sensors you want under Active hardware monitoring graphs, including CPU/GPU temperature and Framerate when available. Click Apply.")
+                Text("Show in On-Screen Display is optional if you want to check the readings on the PC. Orbit cannot read sensors that Afterburner does not expose; CPU power, VRAM capacity and fan readings depend on your hardware.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("3. Open a game") {
+                Text("Open RTSS from the system tray. Set Application detection level to Low for the game and keep RTSS running. Show own statistics can be enabled temporarily to check that RTSS detects the game.")
+                Text("Run the game, reconnect Orbit, and enable Game frame rate in Customize dashboard. Check Monitoring sources for the selected provider or the reason a reading is missing.")
+                Text("Some games or anti-cheat systems block RTSS. FPS describes the application's frame rate and does not guarantee displayed or generated frames. PresentMon remains available below as a fallback.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
-                Text("The variable is ORBIT_PRESENTMON_CSV. Orbit reads a live PresentMon capture to show measured game FPS.")
-                Text("Use the real game executable name from Windows Task Manager → Details. The current example is \(processName).")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("1. Get PresentMon Console") {
-                Link("Open official PresentMon releases", destination: URL(string: "https://github.com/GameTechDev/PresentMon/releases")!)
-                Text("Download the Console executable for your PC and rename it PresentMon.exe. Keep it in a folder you can open in PowerShell.")
+                DisclosureGroup("Advanced: PresentMon CSV fallback") {
+                    Text("Use this if RTSS cannot provide a recent reading. RTSS has priority when both sources are available.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Link("Open official PresentMon releases", destination: URL(string: "https://github.com/GameTechDev/PresentMon/releases")!)
+                    Text("Download the Console executable and rename it PresentMon.exe. Open PowerShell in its folder. Use the real game executable from Windows Task Manager → Details; this example uses \(processName). Start the capture and leave it open.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    command(captureCommand, id: "capture")
+                    Text("Stop Orbit Agent. In another PowerShell window in Orbit-Windows-Agent, set ORBIT_PRESENTMON_CSV and start the agent from that window.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    command(agentCommand, id: "agent")
+                    Text("Keep the game, capture and agent running. The CSV must contain recent frames for the game. Legacy, default and native v2 PresentMon CSV formats are supported.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } footer: {
+                Link("MSI monitoring guide", destination: URL(string: "https://www.msi.com/blog/msi-afterburner-on-screen-display/")!)
                     .font(.subheadline).foregroundStyle(.secondary)
-            }
-            Section("2. Start a capture on Windows") {
-                Text("Open PowerShell in the PresentMon folder. Replace game.exe with the game's real process name, then run this command and leave it open.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                command(captureCommand, id: "capture")
-            }
-            Section("3. Start Orbit Agent") {
-                Text("Stop the agent if it is already running. Open another PowerShell window in the Orbit-Windows-Agent folder, set these variables, and start the agent from that window.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                command(agentCommand, id: "agent")
-            }
-            Section("4. Return to Orbit") {
-                Text("Run the game, reconnect Orbit, and add the Game frame rate card in Customize dashboard. Keep both Windows windows open during the session.")
-                Text("If the capture stops or the game cannot be detected, FPS becomes unavailable. The reading is application FPS, not a guarantee of displayed or generated frames.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("Set up game FPS")
+        .navigationTitle("Set up FPS")
         .navigationBarTitleDisplayMode(.inline)
     }
     private func command(_ text: String, id: String) -> some View {
@@ -208,8 +222,8 @@ struct MonitoringSourcesView: View {
             Section("Windows agent") {
                 LabeledContent("Connection", value: vm.isDemoMode ? "Simulated preview" : (vm.metrics.isOnline ? "Connected" : "Unavailable"))
                 LabeledContent("Reported version", value: vm.metrics.agentVersion ?? "Older agent or not connected")
-                if vm.metrics.agentVersion == nil && !vm.isDemoMode {
-                    Text("Copy the complete updated Orbit-Windows-Agent folder to your PC, stop the previous agent, then run start_agent.bat again. Updating the iPhone app does not update Windows automatically.")
+                if needsAgentUpdate && !vm.isDemoMode {
+                    Text("MSI Afterburner and RTSS support needs Orbit Agent 3.2.0 or later. Stop the previous agent, copy the complete updated Orbit-Windows-Agent folder to your PC, then run start_agent.bat again. Updating the iPhone app does not update Windows automatically.")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if vm.metrics.telemetryAvailable == false {
@@ -224,10 +238,13 @@ struct MonitoringSourcesView: View {
                 LabeledContent("CPU temperature", value: vm.metrics.cpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
                 LabeledContent("GPU temperature", value: vm.metrics.gpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
                 if let status = vm.metrics.sensorStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
-                Text("Recent LibreHardwareMonitor versions use a local web server. On the PC, open LibreHardwareMonitor and choose Options → Remote Web Server → Run. The default port is 8085. Run it as administrator if your hardware sensors need that access.")
+                Text("Keep MSI Afterburner running and enable the desired sensors in Settings → Monitoring. Supported readings are detected automatically; NVIDIA driver readings take priority for GPU.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Orbit reads the local sensor data; it cannot create a temperature reading when the monitor or sensor is unavailable.")
-                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Optional: LibreHardwareMonitor sensors") {
+                    Text("Use LibreHardwareMonitor if Afterburner does not expose a needed sensor. For recent versions, choose Options → Remote Web Server → Run on port 8085 and keep it open. Run as administrator if the sensors require it. Orbit reads available measurements and cannot create a missing sensor.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up Afterburner and RTSS", systemImage: "slider.horizontal.3") }
             }
             Section("Network traffic") {
                 LabeledContent("Adapters", value: vm.metrics.networkInterface ?? "Waiting for interface counters")
@@ -243,16 +260,20 @@ struct MonitoringSourcesView: View {
                 LabeledContent("FPS", value: vm.metrics.fps.map { String(format: "%.1f", $0) } ?? "Unavailable")
                 if let source = vm.metrics.fpsSource { LabeledContent("Source", value: source) }
                 if vm.metrics.fps == nil {
-                    Text(vm.metrics.fpsUnavailableReason ?? "Start PresentMon and configure its live CSV capture on the PC.")
+                    Text(vm.metrics.fpsUnavailableReason ?? "Keep RTSS running and open a game. Use Set up FPS to check the Windows setup.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up game FPS", systemImage: "speedometer") }
-                Text("PresentMon must be recording while the game is running. Set ORBIT_PRESENTMON_CSV to the same file as PresentMon’s output. Orbit supports legacy, default and native v2 CSV formats.")
+                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up FPS", systemImage: "speedometer") }
+                Text("RTSS is read automatically on the PC. PresentMon CSV is an optional fallback. Neither method requires a connection from the phone directly to Afterburner or RTSS.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Monitoring sources")
         .navigationBarTitleDisplayMode(.inline)
+    }
+    private var needsAgentUpdate: Bool {
+        guard let version = vm.metrics.agentVersion else { return true }
+        return version.compare("3.2.0", options: .numeric) == .orderedAscending
     }
     private func traffic(_ value: Double?) -> String {
         guard let value, value.isFinite, value >= 0 else { return "Unavailable" }

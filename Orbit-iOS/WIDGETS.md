@@ -25,7 +25,7 @@ Personal Team are limite de instalare și semnare; aplicația trebuie de regulă
 
 Poți adăuga mai multe instanțe, fiecare cu altă metrică sau alt PC. Există în continuare widgeturi cu scurtături către aplicație și controale. **Wake PC** deschide controalele și nu trimite automat o comandă.
 
-Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lipsă apar cu „—”. FPS apare doar când agentul primește o captură PresentMon recentă și compatibilă; captura trebuie pornită separat pe PC. Sursa poate fi **application FPS** (`MsBetweenPresents`) sau **CPU frame FPS** (`FrameTime` v2); nu este FPS-ul garantat al ecranului sau al streamingului.
+Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lipsă apar cu „—”. FPS apare când RTSS raportează cadre recente pentru joc. Agentul detectează automat RTSS pe PC, fără CSV. PresentMon rămâne alternativă; sursa sa poate fi **application FPS** (`MsBetweenPresents`) sau **CPU frame FPS** (`FrameTime` v2). Citirile nu garantează FPS-ul ecranului, al cadrelor generate sau al streamingului.
 
 ## Asocierea widgeturilor de monitorizare
 
@@ -49,11 +49,13 @@ iOS poate suspenda aplicația în fundal. După **15 secunde** fără actualizar
 
 ## Dacă lipsesc temperaturile sau FPS
 
-Verifică întâi datele în aplicația principală, la **Settings → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **3.1.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni o captură pe PC.
+Verifică întâi datele în aplicația principală, la **Settings → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **3.2.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
 
-Pentru LibreHardwareMonitor **0.9.5+**, activează pe PC **Options → Remote Web Server → Run**, port **8085**, și păstrează programul deschis; rulează-l ca administrator dacă senzorii cer asta. Aceste versiuni [au eliminat WMI](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143), iar agentul citește acum `http://127.0.0.1:8085/data.json`. Pentru alt port local, configurează `ORBIT_LHM_URL` înainte de pornirea agentului. Versiunile vechi pot folosi WMI. GPU AMD/Intel poate avea date prin LibreHardwareMonitor chiar dacă `nvidia-smi` lipsește.
+Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
 
-Pentru FPS, pornește PresentMon separat și setează `ORBIT_PRESENTMON_CSV` la CSV-ul activ. Sunt acceptate v1, formatul implicit actual și v2 `CPUStartTime`/`FrameTime`. `ORBIT_PRESENTATION_CSV` este tolerată ca alias, dar folosește denumirea recomandată. Vezi [pașii de configurare și diagnosticare pe Windows](../Orbit-Windows-Agent/README.md#fps-real-cu-presentmon-opțional).
+LibreHardwareMonitor rămâne o alternativă pentru senzori. Pentru **0.9.5+**, activează pe PC **Options → Remote Web Server → Run**, port **8085**, și păstrează programul deschis; rulează-l ca administrator dacă senzorii cer asta. Aceste versiuni [au eliminat WMI](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143), iar agentul citește acum `http://127.0.0.1:8085/data.json`. Pentru alt port local, configurează `ORBIT_LHM_URL` înainte de pornirea agentului. Versiunile vechi pot folosi WMI. GPU AMD/Intel poate avea date prin LibreHardwareMonitor chiar dacă `nvidia-smi` lipsește.
+
+Dacă RTSS nu oferă FPS, poți folosi PresentMon separat și seta `ORBIT_PRESENTMON_CSV` la CSV-ul activ. Sunt acceptate v1, formatul implicit actual și v2 `CPUStartTime`/`FrameTime`. `ORBIT_PRESENTATION_CSV` este tolerată ca alias, dar folosește denumirea recomandată. Vezi [pașii de configurare și diagnosticare pe Windows](../Orbit-Windows-Agent/README.md#fps-real-cu-presentmon-opțional).
 
 Actualizează **întregul folder `Orbit-Windows-Agent`** de pe PC, păstrând tokenurile locale și fără a copia `.venv` de pe alt calculator, apoi repornește `start_agent.bat`. Actualizează și aplicația iOS; proiectul nu actualizează automat agentul care rulează pe PC. `check_monitoring.bat` din folderul agentului verifică sursele fără comenzi de control. După remedierea sursei, widgetul așteaptă în continuare actualizarea programată de iOS; Live Activity depinde de actualizările aplicației.
 

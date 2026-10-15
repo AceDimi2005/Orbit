@@ -41,27 +41,26 @@ Deschide **Task Manager**, caută aplicația sau sortează lista după CPU/RAM, 
 
 ### Senzori și FPS
 
-Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` oferă încărcare, temperatură, VRAM, consum și ventilator când sunt suportate. LibreHardwareMonitor poate oferi și senzori GPU AMD/Intel/NVIDIA când `nvidia-smi` nu este disponibil; citirile mai multor plăci nu se amestecă. Temperatura CPU preferă package/Tctl/Tdie, apoi cel mai cald nucleu măsurat când lipsește un senzor package. Modelul coolerului sau al sursei poate necesita completare manuală.
+Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` rămâne sursa prioritară pentru încărcare, temperatură, VRAM, consum și ventilator GPU, când sunt suportate. Pentru ceilalți senzori, agentul detectează **MSI Afterburner**, apoi LibreHardwareMonitor ca alternativă. Citirile mai multor plăci nu se amestecă, iar un senzor lipsă rămâne indisponibil. Modelul coolerului sau al sursei poate necesita completare manuală.
 
-**Temperaturi:** LibreHardwareMonitor 0.9.5+ a eliminat WMI. Orbit citește acum API-ul HTTP local; activează **Options → Remote Web Server → Run**, pe portul **8085**, și lasă programul deschis. Pornește-l ca administrator dacă senzorii PC-ului cer asta. Adresa implicită este `http://127.0.0.1:8085/data.json`; `ORBIT_LHM_URL` permite alt port local. Versiunile vechi LibreHardwareMonitor/OpenHardwareMonitor pot folosi în continuare WMI. Schimbarea interfeței este [confirmată de dezvoltatorii LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143).
+**Configurarea recomandată, fără CSV:**
 
-**FPS:** pornește separat o captură PresentMon și configurează **`ORBIT_PRESENTMON_CSV`**. Agentul acceptă CSV v1, formatul implicit actual și v2 cu `CPUStartTime`/`FrameTime`. Pentru intervale `MsBetweenPresents`, sursa este **application FPS**; pentru `FrameTime`, sursa este **CPU frame FPS**. Acestea descriu ritmul aplicației, fără să garanteze rata afișată după generarea cadrelor sau streaming. `ORBIT_PRESENTATION_CSV` este acceptată ca alias de compatibilitate; folosește denumirea recomandată `ORBIT_PRESENTMON_CSV`.
+1. Instalează [MSI Afterburner de pe site-ul MSI](https://www.msi.com/Landing/afterburner/graphics-cards), inclusiv **RivaTuner Statistics Server (RTSS)**, și lasă ambele programe pornite pe PC.
+2. În **Afterburner → Settings → Monitoring**, bifează senzorii doriți din **Active hardware monitoring graphs**, inclusiv CPU/GPU temperature și Framerate, când există. Apasă **Apply**. **Show in On-Screen Display** este opțional pentru verificarea pe ecran; [ghidul MSI](https://www.msi.com/blog/msi-afterburner-on-screen-display/) arată opțiunile.
+3. În RTSS, alege **Application detection level → Low** pentru joc. Poți activa temporar **Show own statistics** ca să verifici detectarea.
+4. Pornește jocul și agentul **3.2.0**, apoi deschide Orbit. Datele sunt citite automat, prin memoria partajată locală; nu trebuie să conectezi telefonul direct la Afterburner sau să introduci o cheie suplimentară. În **Settings → Set up FPS** ai aceiași pași.
 
-După pornirea PresentMon, din PowerShell în folderul agentului:
+**FPS:** RTSS are prioritate și nu cere `ORBIT_PRESENTMON_CSV`. Jocurile care blochează RTSS sau unele sisteme anti-cheat pot rămâne incompatibile. Valoarea descrie cadrele aplicației, fără garanția FPS-ului afișat după generarea cadrelor sau streaming. Pentru un joc nerecunoscut, se poate configura executabilul prin `ORBIT_GAME_PROCESSES`.
 
-```powershell
-$env:ORBIT_PRESENTMON_CSV = 'C:\Orbit\presentmon.csv'
-$env:ORBIT_GAME_PROCESSES = 'example.exe'
-.\start_agent.bat
-```
+**Senzori:** Orbit poate citi doar graficele și unitățile pe care Afterburner le expune; consumul CPU/GPU în wați, capacitatea VRAM și ventilatoarele nu sunt garantate pe orice PC. Dacă lipsește un senzor, LibreHardwareMonitor rămâne opțional: în versiunile **0.9.5+**, activează **Options → Remote Web Server → Run**, port **8085**. Orbit citește `http://127.0.0.1:8085/data.json`; `ORBIT_LHM_URL` permite alt port local. Versiunile vechi pot folosi WMI. Schimbarea interfeței este [confirmată de dezvoltatorii LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143).
 
-Înlocuiește `example.exe` cu executabilul jocului. Variabilele se aplică agentului pornit din acea fereastră; nu pornesc captura și nu instalează PresentMon. Consultă [pașii compleți și formatele FPS](Orbit-Windows-Agent/README.md#fps-real-cu-presentmon-opțional).
+**Alternativă avansată FPS:** captura PresentMon CSV rămâne acceptată, dacă RTSS nu oferă date recente. Configurează `ORBIT_PRESENTMON_CSV` și pornește captura separat; formatele v1, implicit actual și v2 sunt suportate. `ORBIT_PRESENTATION_CSV` rămâne alias de compatibilitate. Consultă [pașii RTSS și alternativa PresentMon](Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat).
 
 ### Actualizare și diagnosticare
 
-Agentul din această versiune raportează **3.1.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token` și `.orbit-widget-token`; nu copia mediul `.venv` de pe alt calculator. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
+Agentul din această versiune raportează **3.2.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token` și `.orbit-widget-token`; nu copia mediul `.venv` de pe alt calculator. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
 
-În **Settings → Monitoring sources**, verifică versiunea raportată și sursele datelor. Pe PC, `check_monitoring.bat` sau `.venv\Scripts\python.exe check_monitoring.py` verifică sursele disponibile și configurarea FPS fără să trimită comenzi de control. Păstrează LibreHardwareMonitor și captura PresentMon pornite pentru această verificare. Senzorii, cadrele jocului și comenzile Windows trebuie validate pe PC-ul tău; verificările automate folosesc și surse simulate.
+În **Settings → Monitoring sources**, verifică versiunea raportată și sursele datelor. Pe PC, `check_monitoring.bat` sau `.venv\Scripts\python.exe check_monitoring.py` verifică sursele disponibile și configurarea FPS fără să trimită comenzi de control. Păstrează Afterburner și RTSS pornite și deschide jocul pentru verificarea FPS; dacă folosești o sursă alternativă, las-o pornită și pe aceea. Senzorii, cadrele jocului și comenzile Windows trebuie validate pe PC-ul tău; verificările automate folosesc și surse simulate.
 
 ### Widgeturi și Dynamic Island
 
@@ -119,7 +118,7 @@ Regresiile agentului, din rădăcina proiectului, cu dependențele din `Orbit-Wi
 python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
-Comanda include testele pentru senzori HTTP/WMI, formatele FPS și contoarele de trafic. Configurarea Windows este descrisă în ghidul agentului. Acțiunile fizice Windows, senzorii reali, Wake-on-LAN și semnarea pe iPhone necesită validare pe dispozitivele respective.
+Comanda include testele pentru memoria partajată Afterburner/RTSS, senzori HTTP/WMI, formatele CSV FPS și contoarele de trafic. Configurarea Windows este descrisă în ghidul agentului. Acțiunile fizice Windows, senzorii reali, Wake-on-LAN și semnarea pe iPhone necesită validare pe dispozitivele respective.
 
 ---
 
@@ -160,27 +159,26 @@ Open **Task Manager**, search for an app or sort by CPU/RAM, then check the proc
 
 ### Sensors and FPS
 
-Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` provides load, temperature, VRAM, power, and fan readings where supported. LibreHardwareMonitor can also provide AMD/Intel/NVIDIA GPU sensors when `nvidia-smi` is unavailable; readings from different adapters are kept separate. CPU temperature prefers package/Tctl/Tdie, falling back to the hottest measured core when no package sensor is exposed. Cooler and power supply names may require manual entry.
+Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains the preferred GPU source for load, temperature, VRAM, power and fan readings where supported. For other sensors, the agent detects **MSI Afterburner**, with LibreHardwareMonitor as a fallback. Readings from different adapters are kept separate and missing sensors stay unavailable. Cooler and power supply names may require manual entry.
 
-**Temperatures:** LibreHardwareMonitor 0.9.5+ removed WMI. Orbit now reads its local HTTP API. Enable **Options → Remote Web Server → Run** on port **8085** and keep LibreHardwareMonitor open. Run it as administrator if your hardware sensors require that access. The default address is `http://127.0.0.1:8085/data.json`; `ORBIT_LHM_URL` supports another local port. Older LibreHardwareMonitor/OpenHardwareMonitor installations can still use WMI. The interface change is [confirmed by the LibreHardwareMonitor maintainers](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143).
+**Recommended setup, without CSV:**
 
-**FPS:** start a separate PresentMon capture and configure **`ORBIT_PRESENTMON_CSV`**. The agent accepts v1, current default CSV output, and v2 with `CPUStartTime`/`FrameTime`. `MsBetweenPresents` readings are labeled **application FPS**; `FrameTime` readings are labeled **CPU frame FPS**. Both describe application timing and do not guarantee displayed FPS after frame generation or streaming. `ORBIT_PRESENTATION_CSV` is tolerated as a compatibility alias; use the recommended name `ORBIT_PRESENTMON_CSV`.
+1. Install [MSI Afterburner from MSI](https://www.msi.com/Landing/afterburner/graphics-cards), including **RivaTuner Statistics Server (RTSS)**, and keep both running on the PC.
+2. In **Afterburner → Settings → Monitoring**, tick the desired **Active hardware monitoring graphs**, including CPU/GPU temperature and Framerate when present. Click **Apply**. **Show in On-Screen Display** is optional for checking readings on the PC; see the [MSI monitoring guide](https://www.msi.com/support/technical_details/VGA_MSI_Utility_AfterBurner).
+3. In RTSS, set **Application detection level → Low** for the game. Enable **Show own statistics** temporarily if you want to check detection.
+4. Start the game and agent **3.2.0**, then open Orbit. Readings are detected through local shared memory; there is no direct phone connection to Afterburner or extra pairing key. **Settings → Set up FPS** includes the same steps.
 
-With PresentMon already capturing, run this in PowerShell from the agent folder:
+**FPS:** RTSS has priority and does not need `ORBIT_PRESENTMON_CSV`. Games that block RTSS and some anti-cheat systems may be incompatible. The reading describes application frames and does not guarantee displayed FPS after frame generation or streaming. Set `ORBIT_GAME_PROCESSES` to the executable if a game is not recognized.
 
-```powershell
-$env:ORBIT_PRESENTMON_CSV = 'C:\Orbit\presentmon.csv'
-$env:ORBIT_GAME_PROCESSES = 'example.exe'
-.\start_agent.bat
-```
+**Sensors:** Orbit can read only the graphs and units exposed by Afterburner. CPU/GPU watts, VRAM capacity and fan readings are not guaranteed on every PC. LibreHardwareMonitor remains optional for missing sensors: on **0.9.5+**, enable **Options → Remote Web Server → Run**, port **8085**. Orbit reads `http://127.0.0.1:8085/data.json`; `ORBIT_LHM_URL` supports another local port. Older versions can still use WMI. The interface change is [confirmed by the LibreHardwareMonitor maintainers](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143).
 
-Replace `example.exe` with the game's executable. These variables apply to the agent started from that window; they do not start a capture or install PresentMon. See the [complete FPS setup and supported formats (Romanian)](Orbit-Windows-Agent/README.md#fps-real-cu-presentmon-opțional).
+**Advanced FPS fallback:** PresentMon CSV captures remain supported when RTSS has no recent reading. Configure `ORBIT_PRESENTMON_CSV` and start the capture separately; v1, current default and v2 formats are supported. `ORBIT_PRESENTATION_CSV` remains a compatibility alias. See the [RTSS setup and PresentMon fallback (Romanian)](Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat).
 
 ### Updating and troubleshooting
 
-The agent in this version reports **3.1.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token` and `.orbit-widget-token` files; do not copy another computer's `.venv`. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
+The agent in this version reports **3.2.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token` and `.orbit-widget-token` files; do not copy another computer's `.venv`. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
 
-Open **Settings → Monitoring sources** to check the reported version and providers. On the PC, `check_monitoring.bat` or `.venv\Scripts\python.exe check_monitoring.py` checks available sources and FPS configuration without sending control commands. Keep LibreHardwareMonitor and the PresentMon capture running during the check. Actual sensors, game frames, and Windows controls still need validation on your PC; automated checks also use mocked sources.
+Open **Settings → Monitoring sources** to check the reported version and providers. On the PC, `check_monitoring.bat` or `.venv\Scripts\python.exe check_monitoring.py` checks available sources and FPS configuration without sending control commands. Keep Afterburner and RTSS running and open a game to check FPS; keep any fallback source you use running as well. Actual sensors, game frames, and Windows controls still need validation on your PC; automated checks also use mocked sources.
 
 ### Widgets and Dynamic Island
 
@@ -238,4 +236,4 @@ Run agent regressions from the project root, with `Orbit-Windows-Agent/requireme
 python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
-This includes HTTP/WMI sensors, FPS formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.
+This includes Afterburner/RTSS shared memory, HTTP/WMI sensors, FPS CSV formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.

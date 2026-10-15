@@ -90,19 +90,17 @@ class MonitoringDiagnosticTests(unittest.TestCase):
         first_game = {"pid": 1, "process": "first.exe"}
         second_game = {"pid": 2, "process": "second.exe"}
         fresh_frames = {"fps": 120, "fpsSource": "PresentMon · application FPS"}
-        def frames(path, game):
-            events.append(("frames", path, game))
+        def frames(game):
+            events.append(("frames", game))
             return {"fps": None} if len(events) == 1 else fresh_frames
         with patch.object(monitoring, "sensor_metrics", return_value={}), \
              patch.object(monitoring, "io_metrics", return_value={}), \
              patch.object(monitoring, "nvidia_metrics", return_value=[]), \
              patch.object(monitoring, "detect_game", side_effect=[first_game, second_game]), \
-             patch.object(monitoring, "read_presentmon", side_effect=frames), \
-             patch.object(monitoring.time, "sleep", side_effect=lambda seconds: events.append(("wait", seconds))), \
-             patch.dict(monitoring.os.environ, {"ORBIT_PRESENTMON_CSV": "C:/live.csv"}):
+             patch.object(monitoring, "read_fps", side_effect=frames), \
+             patch.object(monitoring.time, "sleep", side_effect=lambda seconds: events.append(("wait", seconds))):
             result = monitoring.monitoring_report()
-        self.assertEqual(events, [("frames", "C:/live.csv", first_game), ("wait", 1.1),
-                                  ("frames", "C:/live.csv", second_game)])
+        self.assertEqual(events, [("frames", first_game), ("wait", 1.1), ("frames", second_game)])
         self.assertEqual(result["frames"], fresh_frames)
 
 

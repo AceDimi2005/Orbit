@@ -26,7 +26,7 @@ from orbit_processes import collect_processes, terminate_process
 
 from orbit_hardware import (GPU_SENSOR_FIELDS, IOCounterRates, RATE_FIELDS, SENSOR_FIELDS, basic_specs,
                             collect_specs, detect_game, io_metrics, nvidia_metrics,
-                            read_presentmon, sensor_metrics, timestamp)
+                            read_fps, sensor_metrics, timestamp)
 
 try:
     import mss
@@ -42,7 +42,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "3.1.0"
+AGENT_VERSION = "3.2.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -180,13 +180,13 @@ def sensor_worker():
                 SENSOR_GPU_CACHE.clear()
                 SENSOR_GPU_CACHE.update({key: sensors.get(key) for key in GPU_SENSOR_FIELDS})
                 SENSOR_GPU_CACHE["gpuName"] = sensors.get("gpuSensorName")
-                SENSOR_GPU_CACHE["gpuSource"] = sensors.get("sensorSource")
+                SENSOR_GPU_CACHE["gpuSource"] = sensors.get("gpuSensorSource") or sensors.get("sensorSource")
                 LAST_SENSOR = time.monotonic()
         except Exception:
             with STATE_LOCK:
                 STATE.update(dict.fromkeys(SENSOR_FIELDS))
                 STATE["sensorSource"] = None
-                STATE["sensorStatus"] = "Hardware sensors unavailable. Start LibreHardwareMonitor and enable its local web server on port 8085."
+                STATE["sensorStatus"] = "Hardware sensors unavailable. Start MSI Afterburner and enable Monitoring, or use LibreHardwareMonitor with its local web server on port 8085."
                 SENSOR_GPU_CACHE.clear()
         STOP_EVENT.wait(5)
 
@@ -230,7 +230,7 @@ def telemetry_worker():
             game = detect_game()
             update.update(activeGame=game["name"] if game else None,
                           activeGameProcess=game["process"] if game else None)
-            update.update(read_presentmon(os.getenv("ORBIT_PRESENTMON_CSV"), game))
+            update.update(read_fps(game))
             update.update(audio_metrics())
             update.update(telemetryAvailable=True, lastUpdated=timestamp())
             with STATE_LOCK:

@@ -1023,7 +1023,7 @@ struct SettingsView: View {
                         Label("Task Manager", systemImage: "list.bullet.rectangle")
                     }
                     NavigationLink { FPSSetupView(vm: vm) } label: {
-                        Label("Set up game FPS", systemImage: "speedometer")
+                        Label("Set up FPS", systemImage: "speedometer")
                     }
                     NavigationLink { MonitoringSourcesView(vm: vm) } label: {
                         Label("Monitoring sources", systemImage: "waveform.path.ecg")

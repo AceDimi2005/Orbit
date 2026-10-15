@@ -346,7 +346,7 @@ def query_librehardware_http():
     return librehardware_http_sensors(json.loads(payload.decode("utf-8-sig")))
 
 
-def sensor_metrics():
+def _platform_sensor_metrics():
     """Use exposed sensors only; clock fallback is explicitly marked nominal."""
     result = dict.fromkeys(SENSOR_FIELDS + GPU_SENSOR_FIELDS + ("gpuSensorName", "sensorSource", "sensorStatus"))
     if os.name == "nt":
@@ -409,6 +409,66 @@ def sensor_metrics():
         except (AttributeError, OSError, RuntimeError, NotImplementedError):
             pass
     return result
+
+
+def sensor_metrics():
+    """Prefer Afterburner, retaining optional system/LHM sensor coverage.
+
+    CPU fields can fill gaps from explicitly identified monitor sensors. GPU
+    fields always come from a single adapter/source, even when incomplete.
+    """
+    from orbit_afterburner import afterburner_metrics
+    primary = afterburner_metrics() if os.name == "nt" else {}
+    fallback = _platform_sensor_metrics()
+    if not primary.get("sensorSource"):
+        fallback["gpuSensorSource"] = fallback.get("sensorSource")
+        if os.name == "nt" and not fallback.get("sensorSource"):
+            fallback["sensorStatus"] = (
+                "Start MSI Afterburner and enable the desired Active hardware monitoring graphs in Settings → Monitoring. "
+                "Alternatively, open LibreHardwareMonitor and enable Options → Remote Web Server → Run (port 8085)."
+            )
+        return fallback
+
+    result = {key: primary.get(key) for key in SENSOR_FIELDS + GPU_SENSOR_FIELDS + ("gpuSensorName",)}
+    providers = []
+    if any(primary.get(key) is not None for key in SENSOR_FIELDS if key != "cpuClockSource"):
+        providers.append(primary["sensorSource"])
+    for key in SENSOR_FIELDS:
+        if key == "cpuClockSource" or result[key] is not None or fallback.get(key) is None:
+            continue
+        result[key] = fallback[key]
+        if key == "cpuClockMHz":
+            result["cpuClockSource"] = fallback.get("cpuClockSource")
+        if fallback.get("sensorSource") and fallback["sensorSource"] not in providers:
+            providers.append(fallback["sensorSource"])
+    if any(primary.get(key) is not None for key in GPU_SENSOR_FIELDS):
+        result["gpuSensorSource"] = primary.get("gpuSensorSource") or primary["sensorSource"]
+    else:
+        result.update({key: fallback.get(key) for key in GPU_SENSOR_FIELDS + ("gpuSensorName",)})
+        result["gpuSensorSource"] = fallback.get("sensorSource")
+    result["sensorSource"] = " + ".join(providers) or primary["sensorSource"]
+    result["sensorStatus"] = (
+        "Temperature sensors connected."
+        if result["cpuTemp"] is not None else
+        "Hardware monitor connected, but no CPU temperature sensor was exposed. Enable CPU temperature in Afterburner Monitoring, or use LibreHardwareMonitor for unsupported sensors."
+    )
+    return result
+
+
+def read_fps(game=None):
+    """Use RTSS automatically; a configured PresentMon capture is a fallback."""
+    from orbit_rtss import read_rtss
+    rtss = read_rtss(game)
+    if rtss.get("fps") is not None:
+        return rtss
+    path = os.getenv("ORBIT_PRESENTMON_CSV") or os.getenv("ORBIT_PRESENTATION_CSV")
+    if not path:
+        return rtss
+    captured = read_presentmon(path, game)
+    if captured.get("fps") is not None:
+        return captured
+    return {"fps": None, "fpsSource": None,
+            "fpsUnavailableReason": f"{rtss.get('fpsUnavailableReason', 'RTSS unavailable')} · PresentMon: {captured.get('fpsUnavailableReason', 'Capture unavailable')}"}
 
 
 def temperature_metrics():
