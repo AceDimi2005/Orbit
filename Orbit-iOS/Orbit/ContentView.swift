@@ -2,497 +2,427 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var vm = OrbitViewModel()
+    @State private var selectedTab = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ZStack(alignment: .top) {
-            TabView {
-                DashboardView(vm: vm)
-                    .tabItem {
-                        Label("Dashboard", systemImage: "cpu.fill")
-                    }
-
-                GameLibraryView(vm: vm)
-                    .tabItem {
-                        Label("Sunshine", systemImage: "gamecontroller.fill")
-                    }
-
-                QuickRemoteView(vm: vm)
-                    .tabItem {
-                        Label("Remote", systemImage: "hand.point.up.braille.fill")
-                    }
-
-                WidgetsAndIslandPreviewView(vm: vm)
-                    .tabItem {
-                        Label("Widgets", systemImage: "rectangle.3.group.fill")
-                    }
-
-                SettingsView(vm: vm)
-                    .tabItem {
-                        Label("Settings", systemImage: "slider.horizontal.3")
-                    }
-            }
-            .tint(.cyan)
-            .preferredColorScheme(.dark)
-
-            if vm.isDynamicIslandActive {
-                DynamicIslandLiveBar(vm: vm)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 4)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(5)
-            }
-
+        TabView(selection: $selectedTab) {
+            DashboardView(vm: vm)
+                .tabItem { Label("Overview", systemImage: "square.grid.2x2.fill") }
+                .tag(0)
+            GameLibraryView(vm: vm)
+                .tabItem { Label("Library", systemImage: "gamecontroller.fill") }
+                .tag(1)
+            QuickRemoteView(vm: vm)
+                .tabItem { Label("Remote", systemImage: "computermouse.fill") }
+                .tag(2)
+            SettingsView(vm: vm)
+                .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+                .tag(3)
+        }
+        .tint(.cyan)
+        .preferredColorScheme(.dark)
+        .overlay {
             if vm.smartLaunchStep != .idle {
                 SmartLaunchOverlay(vm: vm)
-                    .transition(.opacity.combined(with: .scale))
-                    .zIndex(10)
             }
         }
         .fullScreenCover(isPresented: $vm.isShowingStreamView) {
             MoonlightStreamView(vm: vm)
         }
+        .sheet(isPresented: $vm.showOnboarding) {
+            OnboardingView(vm: vm)
+                .interactiveDismissDisabled(!vm.hasCompletedOnboarding)
+        }
         .sheet(isPresented: $vm.isShowingIPConfigSheet) {
-            SettingsView(vm: vm)
+            SettingsView(vm: vm, isPresentedAsSheet: true)
+        }
+        .onAppear {
+            vm.setAppActive(scenePhase == .active)
+            if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
+        }
+        .onChange(of: scenePhase) { _, phase in vm.setAppActive(phase == .active) }
+        .onOpenURL { url in
+            guard url.scheme?.lowercased() == "orbit" else { return }
+            switch url.host?.lowercased() {
+            case "remote": selectedTab = 2
+            case "library": selectedTab = 1
+            case "settings": selectedTab = 3
+            default: selectedTab = 0
+            }
         }
     }
 }
 
-// MARK: - 1. DASHBOARD VIEW
+// MARK: - Overview
 
 struct DashboardView: View {
     @ObservedObject var vm: OrbitViewModel
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var pendingAction: PowerConfirmation?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private var gridColumns: [GridItem] {
-        let count = sizeClass == .regular ? 3 : 2
-        return Array(repeating: GridItem(.flexible(), spacing: 16), count: count)
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 12), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 22) {
-                        headerCard
-
+                    VStack(spacing: 20) {
+                        if vm.isDemoMode { previewNotice }
+                        computerHeader
                         if vm.metrics.isOnline {
-                            onlineDashboardContent
+                            if let game = vm.metrics.activeGame { activeGameCard(game) }
+                            if vm.metrics.telemetryAvailable == false {
+                                OrbitNotice(title: "Reading your PC", message: "The agent is connected and collecting its first hardware readings.", icon: "waveform.path.ecg")
+                            } else {
+                                metricsGrid
+                            }
+                            specsLink
+                            volumeCard
+                            powerCard
                         } else {
-                            wakeOnLanHeroButton
+                            offlineCard
+                            specsLink
                         }
+                        Text(vm.statusLog)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
                     }
-                    .padding(.horizontal, sizeClass == .regular ? 32 : 18)
-                    .padding(.top, vm.isDynamicIslandActive ? 54 : 16)
-                    .padding(.bottom, 24)
+                    .frame(maxWidth: 720)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
                 }
-                .refreshable {
-                    await vm.refreshMetrics()
+                .refreshable { await vm.refreshMetrics() }
+            }
+            .navigationTitle("Your PC")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { vm.isShowingIPConfigSheet = true } label: {
+                        Image(systemName: "network")
+                    }
+                    .accessibilityLabel("Connection settings")
                 }
             }
-            .navigationTitle("Orbit Control")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        vm.toggleDynamicIsland()
-                    } label: {
-                        Label(vm.isDynamicIslandActive ? "Island ON" : "Pin to Island", systemImage: "capsule.portrait.tophalf.filled")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(vm.isDynamicIslandActive ? .cyan : .white)
+            .confirmationDialog(pendingAction?.title ?? "Confirm action", isPresented: Binding(
+                get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }
+            ), titleVisibility: .visible) {
+                if let action = pendingAction {
+                    Button(action.button, role: .destructive) {
+                        pendingAction = nil
+                        Task { await vm.sendPowerAction(action.rawValue) }
                     }
                 }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(vm.metrics.isOnline ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                        Text(vm.isDemoMode ? "DEMO" : "LAN • \(vm.pingMs)ms")
-                            .font(.caption.monospacedDigit().weight(.bold))
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .liquidGlass(cornerRadius: 14)
-                }
+                Button("Cancel", role: .cancel) { pendingAction = nil }
+            } message: {
+                Text(pendingAction?.message ?? "")
             }
         }
     }
 
-    private var headerCard: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(vm.metrics.isOnline ? Color.cyan.opacity(0.2) : Color.gray.opacity(0.15))
-                    .frame(width: 64, height: 64)
+    private var previewNotice: some View {
+        OrbitNotice(title: "Preview mode", message: "Sample data. Connect your PC in Settings to see real readings.", icon: "sparkles", tint: .orange)
+    }
 
-                Image(systemName: vm.metrics.isOnline ? "desktopcomputer" : "power.circle.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(vm.metrics.isOnline ? .cyan : .secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(vm.metrics.hostname)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.white)
-
-                    Text(vm.metrics.isOnline ? "ONLINE" : "OFFLINE")
-                        .font(.caption2.weight(.heavy))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            (vm.metrics.isOnline ? Color.green : Color.red).opacity(0.22),
-                            in: Capsule()
-                        )
-                        .foregroundStyle(vm.metrics.isOnline ? .green : .red)
+    private var computerHeader: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(vm.metrics.isOnline ? .cyan : .secondary)
+                .frame(width: 58, height: 58)
+                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 18))
+            VStack(alignment: .leading, spacing: 7) {
+                Text(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Meet your PC companion")
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(vm.metrics.isOnline ? Color.mint : .orange)
+                        .frame(width: 6, height: 6)
+                    Text(vm.isDemoMode ? "Sample PC" : (vm.metrics.isOnline ? "Connected · \(vm.pingMs) ms" : "Not connected"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-
-                Text(vm.statusLog)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
-
-                if let activeGame = vm.metrics.activeGame, vm.metrics.isOnline {
-                    Label("Playing: \(activeGame)", systemImage: "gamecontroller.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                if vm.metrics.isOnline && vm.metrics.telemetryAvailable != false {
+                    Text("Uptime \(vm.metrics.formattedUptime)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if let date = vm.lastUpdated {
+                    Text("Last seen \(date.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .liquidGlass(tint: .cyan)
+    }
 
-            Spacer()
+    private var metricsGrid: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            HardwareMetricCard(
+                title: "Processor", subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
+                valueText: percent(vm.metrics.cpuUsage), progress: vm.metrics.cpuUsage / 100,
+                icon: "cpu", accent: .cyan,
+                detail: vm.metrics.cpuTemp.map { "\(Int($0))°C · CPU load" } ?? "CPU load · temperature unavailable"
+            )
+            HardwareMetricCard(
+                title: "Graphics", subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
+                valueText: vm.metrics.gpuUsage.map(percent) ?? "—", progress: vm.metrics.gpuUsage.map { $0 / 100 },
+                icon: "square.stack.3d.up", accent: .mint, detail: gpuDetail
+            )
+            HardwareMetricCard(
+                title: "Memory", subtitle: vm.componentName("memory", detected: "\(decimal(vm.metrics.ramTotalGB)) GB installed"),
+                valueText: "\(decimal(vm.metrics.ramUsedGB)) GB", progress: vm.metrics.ramTotalGB > 0 ? vm.metrics.ramUsedGB / vm.metrics.ramTotalGB : nil,
+                icon: "memorychip", accent: Color(red: 0.68, green: 0.65, blue: 0.98),
+                detail: "\(decimal(vm.metrics.ramTotalGB)) GB total · in use"
+            )
+            HardwareMetricCard(
+                title: "Storage", subtitle: vm.componentName("storage", detected: vm.specs?.disks.first?.name ?? "Local storage"),
+                valueText: vm.metrics.ssdTotalTB > 0 ? "\(decimal(vm.metrics.ssdUsedTB, digits: 2)) TB" : "—",
+                progress: vm.metrics.ssdTotalTB > 0 ? vm.metrics.ssdUsedTB / vm.metrics.ssdTotalTB : nil,
+                icon: "internaldrive", accent: Color(red: 0.97, green: 0.73, blue: 0.44),
+                detail: vm.metrics.ssdTotalTB > 0 ? "\(decimal(vm.metrics.ssdTotalTB, digits: 2)) TB total · used" : "Storage unavailable"
+            )
+        }
+    }
 
-            if vm.metrics.isOnline {
-                Button {
-                    if let desktop = vm.games.last {
-                        Task { await vm.smartLaunch(game: desktop) }
+    private var gpuDetail: String {
+        var parts: [String] = []
+        if let temperature = vm.metrics.gpuTemp { parts.append("\(Int(temperature))°C") }
+        if let watts = vm.metrics.gpuPowerWatts { parts.append("\(Int(watts)) W") }
+        if parts.isEmpty { return vm.metrics.gpuUsage == nil ? "GPU sensors unavailable" : "GPU load · temperature unavailable" }
+        return parts.joined(separator: " · ")
+    }
+
+    private func activeGameCard(_ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "gamecontroller.fill").foregroundStyle(.mint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NOW PLAYING").font(.caption2.weight(.semibold)).tracking(1.4).foregroundStyle(.secondary)
+                    Text(title).font(.headline).lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                if let fps = vm.metrics.fps {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(Int(fps.rounded()))").font(.system(.title, design: .rounded).weight(.semibold)).monospacedDigit()
+                        Text("FPS").font(.caption2).foregroundStyle(.secondary)
                     }
-                } label: {
-                    Label("Stream", systemImage: "play.tv.fill")
-                        .font(.subheadline.weight(.bold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Color.cyan, in: Capsule())
-                        .foregroundStyle(.black)
                 }
+            }
+            if vm.metrics.fps == nil {
+                Text(vm.metrics.fpsUnavailableReason ?? "FPS requires an active frame-rate source on your PC.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let source = vm.metrics.fpsSource {
+                Text("Frame rate from \(source)").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(20)
-        .liquidGlass(cornerRadius: 26, tint: vm.metrics.isOnline ? .cyan : .gray)
+        .liquidGlass(tint: .mint)
     }
 
-    private var onlineDashboardContent: some View {
-        VStack(spacing: 22) {
-            LazyVGrid(columns: gridColumns, spacing: 16) {
-                HardwareMetricCard(
-                    title: vm.metrics.cpuName,
-                    subtitle: "Load: \(Int(vm.metrics.cpuUsage))% • CCD0 V-Cache",
-                    valueText: "\(Int(vm.metrics.cpuTemp))°C",
-                    progress: vm.metrics.cpuTemp / 100.0,
-                    icon: "cpu.fill",
-                    accent: vm.metrics.cpuTemp > 78 ? .orange : .cyan
-                )
-
-                HardwareMetricCard(
-                    title: vm.metrics.gpuName,
-                    subtitle: "Load: \(Int(vm.metrics.gpuUsage))% • \(Int(vm.metrics.gpuPowerWatts))W",
-                    valueText: "\(Int(vm.metrics.gpuTemp))°C",
-                    progress: vm.metrics.gpuTemp / 100.0,
-                    icon: "fanblades.fill",
-                    accent: .mint
-                )
-
-                HardwareMetricCard(
-                    title: "64GB DDR5 RAM",
-                    subtitle: "VRAM: \(String(format: "%.1f", vm.metrics.vramUsedGB))/\(Int(vm.metrics.vramTotalGB)) GB",
-                    valueText: String(format: "%.1f GB", vm.metrics.ramUsedGB),
-                    progress: vm.metrics.ramUsedGB / max(1, vm.metrics.ramTotalGB),
-                    icon: "memorychip.fill",
-                    accent: .purple
-                )
-
-                HardwareMetricCard(
-                    title: vm.metrics.coolerName,
-                    subtitle: "Lian Li TL LCD • Coolant",
-                    valueText: String(format: "%.1f°C", vm.metrics.liquidTemp),
-                    progress: vm.metrics.liquidTemp / 60.0,
-                    icon: "drop.fill",
-                    accent: .blue
-                )
-
-                HardwareMetricCard(
-                    title: "Samsung 9100 Pro",
-                    subtitle: "PCIe 5.0 NVMe • \(String(format: "%.1f", vm.metrics.ssdTotalTB)) TB",
-                    valueText: String(format: "%.2f TB", vm.metrics.ssdUsedTB),
-                    progress: vm.metrics.ssdUsedTB / max(0.1, vm.metrics.ssdTotalTB),
-                    icon: "internaldrive.fill",
-                    accent: .indigo
-                )
-
-                HardwareMetricCard(
-                    title: "System Uptime",
-                    subtitle: vm.metrics.hdrEnabled ? "Windows HDR: ON" : "Windows HDR: OFF",
-                    valueText: vm.metrics.formattedUptime,
-                    progress: vm.metrics.gpuUsage / 100.0,
-                    icon: "clock.fill",
-                    accent: .teal
-                )
-            }
-
-            // Master Volume Slider (Live Synced with Windows)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Label("Windows Master Volume", systemImage: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.3.fill")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("\(Int(vm.metrics.volume))%")
-                        .font(.subheadline.monospacedDigit().weight(.bold))
-                        .foregroundStyle(.cyan)
+    private var specsLink: some View {
+        NavigationLink { FullSpecsView(vm: vm) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "list.bullet.rectangle").foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Full PC specifications").font(.subheadline.weight(.semibold))
+                    Text("Hardware, storage and component names").font(.caption).foregroundStyle(.secondary)
                 }
-
-                HStack(spacing: 14) {
-                    Button {
-                        let newVal = max(0, vm.metrics.volume - 10)
-                        vm.metrics.volume = newVal
-                        Task { await vm.updateVolume(newVal) }
-                    } label: {
-                        Image(systemName: "speaker.minus.fill")
-                            .padding(10)
-                            .background(.white.opacity(0.1), in: Circle())
-                    }
-
-                    Slider(value: $vm.metrics.volume, in: 0...100, step: 1) { editing in
-                        vm.isDraggingVolume = editing
-                        Task { await vm.updateVolume(vm.metrics.volume) }
-                    }
-                    .tint(.cyan)
-
-                    Button {
-                        let newVal = min(100, vm.metrics.volume + 10)
-                        vm.metrics.volume = newVal
-                        Task { await vm.updateVolume(newVal) }
-                    } label: {
-                        Image(systemName: "speaker.plus.fill")
-                            .padding(10)
-                            .background(.white.opacity(0.1), in: Circle())
-                    }
-
-                    Button {
-                        vm.metrics.isMuted.toggle()
-                        Task { await vm.sendPowerAction("mute") }
-                    } label: {
-                        Image(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .padding(10)
-                            .background((vm.metrics.isMuted ? Color.red : Color.white).opacity(0.18), in: Circle())
-                            .foregroundStyle(vm.metrics.isMuted ? .red : .white)
-                    }
-                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
-            .padding(20)
-            .liquidGlass(cornerRadius: 24)
-
-            // Quick Power & Display Controls
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Quick Power & Display Controls")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
-
-                HStack(spacing: 10) {
-                    quickActionButton(title: "Lock", icon: "lock.fill", tint: .blue) {
-                        await vm.sendPowerAction("lock")
-                    }
-                    quickActionButton(title: "Fix Display", icon: "display.trianglebadge.exclamationmark", tint: .cyan) {
-                        await vm.sendPowerAction("restore_display")
-                    }
-                    quickActionButton(title: "HDR", icon: "sun.max.fill", tint: vm.metrics.hdrEnabled ? .yellow : .gray) {
-                        await vm.sendPowerAction("toggle_hdr")
-                    }
-                    quickActionButton(title: "Sleep", icon: "moon.zzz.fill", tint: .indigo) {
-                        await vm.sendPowerAction("sleep")
-                    }
-                    quickActionButton(title: "Restart", icon: "arrow.triangle.2.circlepath", tint: .orange) {
-                        await vm.sendPowerAction("restart")
-                    }
-                    quickActionButton(title: "Shutdown", icon: "power", tint: .red) {
-                        await vm.sendPowerAction("shutdown")
-                    }
-                }
-            }
-            .padding(20)
-            .liquidGlass(cornerRadius: 24)
+            .padding(18)
+            .liquidGlass(cornerRadius: 20)
         }
+        .buttonStyle(.plain)
     }
 
-    private var wakeOnLanHeroButton: some View {
-        VStack(spacing: 24) {
-            Spacer(minLength: 20)
+    private var volumeCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Label("PC volume", systemImage: vm.metrics.isMuted ? "speaker.slash" : "speaker.wave.2")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(vm.metrics.volumeAvailable == false ? "Unavailable" : (vm.metrics.isMuted ? "Muted" : "\(Int(vm.metrics.volume))%"))
+                    .font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 14) {
+                Button {
+                    Task { await vm.sendPowerAction("mute") }
+                } label: {
+                    Image(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .frame(width: 36, height: 36)
+                }
+                .accessibilityLabel(vm.metrics.isMuted ? "Unmute PC" : "Mute PC")
+                Slider(value: Binding(get: { vm.metrics.volume }, set: { vm.setVolume($0) }), in: 0...100, step: 1) { editing in
+                    vm.isDraggingVolume = editing
+                }
+                .accessibilityLabel("PC volume")
+            }
+            if vm.metrics.volumeAvailable == false {
+                Text("The PC’s audio service is not reporting volume controls.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .liquidGlass(cornerRadius: 22)
+        .disabled(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false)
+    }
 
+    private var powerCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Quick controls").font(.subheadline.weight(.semibold))
+                Spacer()
+                Menu {
+                    Button("Sleep", systemImage: "moon") { pendingAction = .sleep }
+                    Button("Restart", systemImage: "arrow.clockwise") { pendingAction = .restart }
+                    Button("Shut down", systemImage: "power", role: .destructive) { pendingAction = .shutdown }
+                } label: {
+                    Label("Power", systemImage: "power").font(.subheadline)
+                }
+            }
+            HStack(spacing: 10) {
+                controlButton("Lock", icon: "lock") { Task { await vm.sendPowerAction("lock") } }
+                controlButton("Wake display", icon: "display") { Task { await vm.sendPowerAction("restore_display") } }
+                controlButton("Preview", icon: "rectangle.on.rectangle") { vm.openDesktopPreview() }
+            }
+        }
+        .padding(20)
+        .liquidGlass(cornerRadius: 22)
+        .disabled(!vm.metrics.isOnline)
+    }
+
+    private func controlButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 9) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, minHeight: 72)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var offlineCard: some View {
+        VStack(spacing: 20) {
             Button {
                 Task { await vm.wakePC() }
             } label: {
                 ZStack {
-                    Circle()
-                        .fill(Color.cyan.opacity(vm.isWakingUp ? 0.35 : 0.15))
-                        .frame(width: 210, height: 210)
-                        .blur(radius: 25)
-                        .scaleEffect(vm.isWakingUp ? 1.15 : 0.95)
-                        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: vm.isWakingUp)
-
-                    VStack(spacing: 14) {
-                        if vm.isWakingUp {
-                            ProgressView()
-                                .controlSize(.large)
-                                .tint(.cyan)
-                        } else {
-                            Image(systemName: "power")
-                                .font(.system(size: 52, weight: .bold))
-                                .foregroundStyle(.cyan)
-                        }
-
-                        Text(vm.isWakingUp ? "WAKING RIG..." : "WAKE PC")
-                            .font(.headline.weight(.heavy))
-                            .tracking(1.5)
-                            .foregroundStyle(.white)
+                    Circle().fill(.cyan.opacity(0.08)).frame(width: 118, height: 118)
+                    Circle().strokeBorder(.cyan.opacity(0.2), lineWidth: 1).frame(width: 118, height: 118)
+                    if vm.isWakingUp {
+                        ProgressView().controlSize(.large).tint(.cyan)
+                    } else {
+                        Image(systemName: "power").font(.system(size: 38, weight: .light)).foregroundStyle(.cyan)
                     }
-                    .frame(width: 180, height: 180)
-                    .liquidGlass(cornerRadius: 90, tint: .cyan)
                 }
             }
-            .buttonStyle(.plain)
-            .disabled(vm.isWakingUp)
-
+            .disabled(vm.isWakingUp || !vm.isConfigured || vm.pcMAC.isEmpty)
+            .accessibilityLabel("Wake PC")
             VStack(spacing: 8) {
-                Text("PC Offline or Agent Unreachable")
-                    .font(.title3.weight(.bold))
-                Text("Tap WAKE PC to broadcast a Magic Packet to \(vm.pcMAC) (\(vm.pcIP)), or verify that orbit_agent.py is running on Windows.")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.65))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    Task { await vm.refreshMetrics() }
-                } label: {
-                    Label("Retry Connection", systemImage: "arrow.clockwise")
-                        .font(.subheadline.weight(.bold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .background(.white.opacity(0.14), in: Capsule())
-                }
-
-                Button {
-                    vm.isShowingIPConfigSheet = true
-                } label: {
-                    Label("Configure IPs & MAC", systemImage: "network")
-                        .font(.subheadline.weight(.bold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .background(Color.cyan.opacity(0.22), in: Capsule())
-                        .foregroundStyle(.cyan)
-                }
-            }
-
-            Spacer(minLength: 20)
-        }
-        .padding(30)
-        .frame(maxWidth: .infinity)
-        .liquidGlass(cornerRadius: 30, tint: .indigo)
-    }
-
-    private func quickActionButton(title: String, icon: String, tint: Color, action: @escaping () async -> Void) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            VStack(spacing: 10) {
-                Image(systemName: icon)
+                Text(vm.isWakingUp ? "Waking your PC…" : "Wake your PC")
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(tint)
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
+                Text(vm.isConfigured ? "Your PC is asleep or the Orbit agent is unreachable. Wake-on-LAN needs a configured MAC address and a compatible network." : "Connect your Windows PC to see live hardware readings and use remote controls.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(tint.opacity(0.35), lineWidth: 1)
-            )
+            HStack(spacing: 12) {
+                Button("Connect PC", systemImage: "network") { vm.showOnboarding = true }
+                    .buttonStyle(.borderedProminent).tint(.cyan).foregroundStyle(.black)
+                if vm.isConfigured {
+                    Button("Retry", systemImage: "arrow.clockwise") { Task { await vm.connect() } }
+                        .buttonStyle(.bordered)
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .padding(24)
+        .frame(maxWidth: .infinity)
+        .liquidGlass(tint: .cyan)
     }
 }
 
-// MARK: - 2. SUNSHINE GAME LIBRARY VIEW
+private enum PowerConfirmation: String {
+    case sleep, restart, shutdown
+    var title: String {
+        switch self {
+        case .sleep: return "Put your PC to sleep?"
+        case .restart: return "Restart your PC?"
+        case .shutdown: return "Shut down your PC?"
+        }
+    }
+    var button: String {
+        switch self {
+        case .sleep: return "Sleep PC"
+        case .restart: return "Restart PC"
+        case .shutdown: return "Shut down PC"
+        }
+    }
+    var message: String {
+        self == .sleep ? "Your remote connection will close. Wake-on-LAN must be configured to wake the PC again." : "Save your work first. Open apps and your remote connection will close."
+    }
+}
+
+// MARK: - Library
 
 struct GameLibraryView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var searchText = ""
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var filteredGames: [SunshineGame] {
-        if searchText.isEmpty { return vm.games }
-        return vm.games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    private var columns: [GridItem] {
-        let count = sizeClass == .regular ? 3 : 2
-        return Array(repeating: GridItem(.flexible(), spacing: 18), count: count)
+        searchText.isEmpty ? vm.games : vm.games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 22) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Active Streaming Profile")
-                                    .font(.caption)
-                                    .foregroundStyle(.white.opacity(0.6))
-                                Picker("Profile", selection: $vm.selectedProfile) {
-                                    ForEach(StreamingProfile.allCases) { profile in
-                                        Text(profile.rawValue).tag(profile)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .tint(.cyan)
-                            }
-                            Spacer()
-                            Button {
-                                Task { await vm.fetchSunshineApps() }
-                            } label: {
-                                Label("Sync Sunshine", systemImage: "arrow.clockwise")
-                                    .font(.caption.weight(.bold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(.cyan.opacity(0.2), in: Capsule())
-                                    .foregroundStyle(.cyan)
-                            }
+                    VStack(alignment: .leading, spacing: 20) {
+                        OrbitNotice(title: "Your Sunshine library", message: "Launch an app on your PC, then open Moonlight for game streaming. Orbit also offers a lightweight desktop preview.", icon: "gamecontroller")
+                        if vm.isDemoMode {
+                            OrbitNotice(title: "Sample library", message: "These games are examples. Connect your PC to load your own apps.", icon: "sparkles", tint: .orange)
                         }
-                        .padding(16)
-                        .liquidGlass(cornerRadius: 20, tint: .cyan)
-
-                        LazyVGrid(columns: columns, spacing: 18) {
-                            ForEach(filteredGames) { game in
-                                GameCoverCard(game: game) {
-                                    Task { await vm.smartLaunch(game: game) }
+                        if !vm.metrics.isOnline {
+                            OrbitNotice(title: "PC not connected", message: "Connect or wake your PC from Overview to load and launch apps.", icon: "wifi.slash", tint: .orange)
+                        }
+                        if filteredGames.isEmpty {
+                            ContentUnavailableView(searchText.isEmpty ? "Your library starts here" : "No matching apps", systemImage: "square.grid.2x2", description: Text(searchText.isEmpty ? "Add apps to Sunshine on your PC, then refresh your library." : "Try another search."))
+                                .padding(.vertical, 32)
+                        } else {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 14) {
+                                ForEach(filteredGames) { game in
+                                    GameCoverCard(game: game) { Task { await vm.smartLaunch(game: game) } }
+                                        .disabled(!vm.metrics.isOnline)
                                 }
                             }
                         }
                     }
-                    .padding(.horizontal, sizeClass == .regular ? 32 : 18)
-                    .padding(.top, vm.isDynamicIslandActive ? 54 : 16)
-                    .padding(.bottom, 24)
+                    .frame(maxWidth: 720)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+                }
+                .refreshable { await vm.fetchSunshineApps() }
+            }
+            .navigationTitle("Library")
+            .searchable(text: $searchText, prompt: "Search your apps")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await vm.fetchSunshineApps() } } label: { Image(systemName: "arrow.clockwise") }
+                        .disabled(!vm.metrics.isOnline)
+                        .accessibilityLabel("Refresh library")
                 }
             }
-            .navigationTitle("Sunshine Library")
-            .searchable(text: $searchText, prompt: "Search Sunshine games...")
         }
     }
 }
@@ -502,739 +432,839 @@ struct GameCoverCard: View {
     let onLaunch: () -> Void
 
     var body: some View {
-        let accent = Color(hex: game.accentHex)
-
-        VStack(alignment: .leading, spacing: 14) {
-            ZStack(alignment: .topTrailing) {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [accent.opacity(0.55), accent.opacity(0.15)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(height: 125)
-                    .overlay(
-                        Image(systemName: game.iconSymbol)
-                            .font(.system(size: 46, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.9))
-                    )
-
-                if game.isFavorite {
-                    Image(systemName: "star.fill")
-                        .foregroundStyle(.yellow)
-                        .padding(10)
+        Button(action: onLaunch) {
+            VStack(alignment: .leading, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(LinearGradient(colors: [Color(hex: game.accentHex).opacity(0.25), Color(hex: game.accentHex).opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: game.iconSymbol)
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(Color(hex: game.accentHex))
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(game.title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-
-                Text(game.genre)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
-            }
-
-            Button(action: onLaunch) {
+                .frame(height: 108)
+                Text(game.title).font(.headline).lineLimit(2).frame(minHeight: 42, alignment: .topLeading)
                 HStack {
-                    Image(systemName: "bolt.fill")
-                    Text("Smart Launch")
-                        .fontWeight(.bold)
+                    Text("Launch on PC").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.cyan)
                 }
-                .font(.caption)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(.white.opacity(0.14), in: Capsule())
-                .foregroundStyle(.white)
             }
+            .padding(14)
+            .liquidGlass(cornerRadius: 22)
         }
-        .padding(14)
-        .liquidGlass(cornerRadius: 24, tint: accent)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Launch \(game.title) on PC")
     }
 }
 
-// MARK: - 3. QUICK REMOTE VIEW (Throttled 60fps Trackpad, Clicks, Keyboard & Macros)
+// MARK: - Remote
 
 struct QuickRemoteView: View {
     @ObservedObject var vm: OrbitViewModel
-    @State private var keyboardInput: String = ""
-    @State private var lastDragLocation: CGPoint? = nil
+    @State private var keyboardInput = ""
+    @State private var lastDragLocation: CGPoint?
     @State private var lastSentTime: Date = .distantPast
-    @State private var accumulatedDX: Double = 0
-    @State private var accumulatedDY: Double = 0
+    @State private var accumulatedDX = 0.0
+    @State private var accumulatedDY = 0.0
+    @State private var confirmCloseApp = false
 
     var body: some View {
         NavigationStack {
             ZStack {
                 OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 20) {
-                        // Touchpad Card
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Label("Precision Windows Trackpad", systemImage: "hand.draw.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer()
-                                Text("Drag to move • Tap to Left Click")
-                                    .font(.caption2)
-                                    .foregroundStyle(.white.opacity(0.5))
-                            }
-
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .fill(.white.opacity(0.06))
-                                    .frame(height: 230)
-                                    .overlay(
-                                        VStack(spacing: 8) {
-                                            Image(systemName: "cursorarrow.motionlines")
-                                                .font(.system(size: 40))
-                                                .foregroundStyle(.cyan.opacity(0.4))
-                                            Text(vm.statusLog)
-                                                .font(.caption2)
-                                                .foregroundStyle(.white.opacity(0.4))
-                                        }
-                                    )
-                                    .gesture(
-                                        DragGesture(minimumDistance: 1)
-                                            .onChanged { value in
-                                                if let last = lastDragLocation {
-                                                    accumulatedDX += (value.location.x - last.x) * 2.2
-                                                    accumulatedDY += (value.location.y - last.y) * 2.2
-                                                    let now = Date()
-                                                    if now.timeIntervalSince(lastSentTime) >= 0.028 {
-                                                        let sendX = Int(accumulatedDX)
-                                                        let sendY = Int(accumulatedDY)
-                                                        if sendX != 0 || sendY != 0 {
-                                                            accumulatedDX = 0
-                                                            accumulatedDY = 0
-                                                            lastSentTime = now
-                                                            Task { await vm.sendMouseInput(dx: sendX, dy: sendY) }
-                                                        }
-                                                    }
-                                                }
-                                                lastDragLocation = value.location
-                                            }
-                                            .onEnded { _ in
-                                                let restX = Int(accumulatedDX)
-                                                let restY = Int(accumulatedDY)
-                                                if restX != 0 || restY != 0 {
-                                                    Task { await vm.sendMouseInput(dx: restX, dy: restY) }
-                                                }
-                                                accumulatedDX = 0
-                                                accumulatedDY = 0
-                                                lastDragLocation = nil
-                                            }
-                                    )
-                                    .simultaneousGesture(
-                                        TapGesture()
-                                            .onEnded {
-                                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                                Task { await vm.sendMouseInput(click: "left") }
-                                            }
-                                    )
-                            }
-
-                            HStack(spacing: 10) {
-                                Button {
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    Task { await vm.sendMouseInput(click: "left") }
-                                } label: {
-                                    Label("Left Click", systemImage: "computermouse.fill")
-                                        .font(.caption.weight(.bold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .background(.cyan.opacity(0.18), in: RoundedRectangle(cornerRadius: 14))
-                                }
-
-                                Button {
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    Task { await vm.sendMouseInput(click: "double") }
-                                } label: {
-                                    Text("2x Click")
-                                        .font(.caption.weight(.bold))
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 14)
-                                        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-                                }
-
-                                Button {
-                                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                                    Task { await vm.sendMouseInput(click: "right") }
-                                } label: {
-                                    Label("Right Click", systemImage: "ContextualMenu")
-                                        .font(.caption.weight(.bold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .background(.purple.opacity(0.22), in: RoundedRectangle(cornerRadius: 14))
-                                }
-                            }
-
-                            HStack(spacing: 10) {
-                                Button {
-                                    Task { await vm.sendMouseInput(scroll: 3) }
-                                } label: {
-                                    Label("Scroll Up", systemImage: "arrow.up")
-                                        .font(.caption2.weight(.bold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                                }
-
-                                Button {
-                                    Task { await vm.sendMouseInput(scroll: -3) }
-                                } label: {
-                                    Label("Scroll Down", systemImage: "arrow.down")
-                                        .font(.caption2.weight(.bold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                                }
-                            }
+                        if !vm.metrics.isOnline {
+                            OrbitNotice(title: "Connect your PC first", message: "Remote controls become available when the Orbit agent is connected.", icon: "wifi.slash", tint: .orange)
+                        } else if vm.isDemoMode {
+                            OrbitNotice(title: "Preview controls", message: "These controls are simulated while preview mode is enabled.", icon: "sparkles", tint: .orange)
                         }
-                        .padding(18)
-                        .liquidGlass(cornerRadius: 26, tint: .cyan)
-
-                        // Remote Keyboard & Special Windows Keys
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 12) {
-                                TextField("Type text to send to Windows...", text: $keyboardInput)
-                                    .textFieldStyle(.plain)
-                                    .padding(12)
-                                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-                                    .onSubmit {
-                                        sendCurrentText()
-                                    }
-
-                                Button {
-                                    sendCurrentText()
-                                } label: {
-                                    Image(systemName: "paperplane.fill")
-                                        .padding(12)
-                                        .background(Color.cyan, in: RoundedRectangle(cornerRadius: 14))
-                                        .foregroundStyle(.black)
-                                }
-                            }
-
-                            HStack(spacing: 8) {
-                                ForEach(["ENTER", "BACKSPACE", "SPACE", "ESC", "WIN", "TAB"], id: \.self) { keyName in
-                                    Button {
-                                        Task { await vm.sendKeyboardInput(key: keyName) }
-                                    } label: {
-                                        Text(keyName)
-                                            .font(.caption2.weight(.bold))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 9)
-                                            .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
-                                    }
-                                }
-                            }
+                        VStack(spacing: 20) {
+                            trackpad
+                            keyboard
+                            mediaControls
                         }
-                        .padding(16)
-                        .liquidGlass(cornerRadius: 22)
-
-                        // Media & Gaming Macros
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Media & Gaming Macros")
-                                .font(.subheadline.weight(.semibold))
-
-                            HStack(spacing: 12) {
-                                macroButton("Prev", icon: "backward.fill", color: .cyan) {
-                                    await vm.sendPowerAction("media_prev")
-                                }
-                                macroButton("Play/Pause", icon: "playpause.fill", color: .mint) {
-                                    await vm.sendPowerAction("media_play_pause")
-                                }
-                                macroButton("Next", icon: "forward.fill", color: .cyan) {
-                                    await vm.sendPowerAction("media_next")
-                                }
-                                macroButton("Alt+F4", icon: "xmark.octagon.fill", color: .red) {
-                                    await vm.sendPowerAction("kill_game")
-                                }
-                            }
-                        }
-                        .padding(18)
-                        .liquidGlass(cornerRadius: 24)
+                        .disabled(!vm.metrics.isOnline)
+                        .opacity(vm.metrics.isOnline ? 1 : 0.5)
+                        Text(vm.statusLog).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
-                    .padding(18)
-                    .padding(.top, vm.isDynamicIslandActive ? 40 : 0)
+                    .frame(maxWidth: 720)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
                 }
             }
-            .navigationTitle("Quick Remote")
+            .navigationTitle("Remote")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { vm.openDesktopPreview() } label: { Label("Desktop preview", systemImage: "display") }
+                        .disabled(!vm.metrics.isOnline)
+                }
+            }
+            .confirmationDialog("Close the active game?", isPresented: $confirmCloseApp, titleVisibility: .visible) {
+                Button("Close game", role: .destructive) { Task { await vm.sendPowerAction("kill_game") } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Orbit asks the detected foreground game to close. Save your progress first; the game may ask you to confirm on the PC.")
+            }
         }
     }
 
+    private var trackpad: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Trackpad", systemImage: "hand.draw").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Drag to move · tap to click").font(.caption2).foregroundStyle(.secondary)
+            }
+            RoundedRectangle(cornerRadius: 20)
+                .fill(.white.opacity(0.035))
+                .overlay {
+                    VStack(spacing: 12) {
+                        Image(systemName: "cursorarrow.motionlines").font(.system(size: 32, weight: .light))
+                        Text("Your PC, at your fingertips").font(.caption)
+                    }
+                    .foregroundStyle(.white.opacity(0.28))
+                    .allowsHitTesting(false)
+                }
+                .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.05), lineWidth: 1) }
+                .frame(height: 220)
+                .contentShape(RoundedRectangle(cornerRadius: 20))
+                .gesture(DragGesture(minimumDistance: 1).onChanged(handleDrag).onEnded { _ in finishDrag() })
+                .simultaneousGesture(TapGesture().onEnded {
+                    guard vm.metrics.isOnline else { return }
+                    Task { await vm.sendMouseInput(click: "left") }
+                })
+                .allowsHitTesting(vm.metrics.isOnline)
+                .accessibilityLabel("PC trackpad. Drag to move the pointer, tap to click.")
+            HStack(spacing: 10) {
+                remoteButton("Left click", icon: "computermouse") { await vm.sendMouseInput(click: "left") }
+                remoteButton("Double", icon: "cursorarrow.click.2") { await vm.sendMouseInput(click: "double") }
+                remoteButton("Right click", icon: "line.3.horizontal") { await vm.sendMouseInput(click: "right") }
+            }
+            HStack(spacing: 10) {
+                remoteButton("Scroll up", icon: "arrow.up") { await vm.sendMouseInput(scroll: 3) }
+                remoteButton("Scroll down", icon: "arrow.down") { await vm.sendMouseInput(scroll: -3) }
+            }
+        }
+        .padding(18)
+        .liquidGlass(tint: .cyan)
+    }
+
+    private var keyboard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Keyboard", systemImage: "keyboard").font(.subheadline.weight(.semibold))
+            HStack(spacing: 10) {
+                TextField("Send text to your PC", text: $keyboardInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(12)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                    .onSubmit(sendCurrentText)
+                Button(action: sendCurrentText) {
+                    Image(systemName: "arrow.up").fontWeight(.semibold).frame(width: 44, height: 44)
+                        .background(.cyan.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(keyboardInput.isEmpty)
+                .accessibilityLabel("Send text")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                ForEach(["ENTER", "BACKSPACE", "SPACE", "ESC", "WIN", "TAB"], id: \.self) { key in
+                    Button { Task { await vm.sendKeyboardInput(key: key) } } label: {
+                        Text(key == "WIN" ? "Windows" : key.capitalized)
+                            .font(.caption).frame(maxWidth: .infinity, minHeight: 40)
+                            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(18)
+        .liquidGlass(cornerRadius: 22)
+    }
+
+    private var mediaControls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Media & apps").font(.subheadline.weight(.semibold))
+            HStack(spacing: 10) {
+                remoteButton("Previous", icon: "backward.end.fill") { await vm.sendPowerAction("media_prev") }
+                remoteButton("Play / pause", icon: "playpause.fill") { await vm.sendPowerAction("media_play_pause") }
+                remoteButton("Next", icon: "forward.end.fill") { await vm.sendPowerAction("media_next") }
+            }
+            Button { confirmCloseApp = true } label: {
+                HStack {
+                    Label("Close active game", systemImage: "xmark.square")
+                    Spacer()
+                    Image(systemName: "gamecontroller").foregroundStyle(.secondary)
+                }
+                .font(.caption).padding(.vertical, 10)
+            }
+            .tint(.orange)
+        }
+        .padding(18)
+        .liquidGlass(cornerRadius: 22)
+    }
+
+    private func remoteButton(_ title: String, icon: String, action: @escaping () async -> Void) -> some View {
+        Button { Task { await action() } } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon).font(.subheadline)
+                Text(title).font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func handleDrag(_ value: DragGesture.Value) {
+        guard vm.metrics.isOnline else { return }
+        if let last = lastDragLocation {
+            accumulatedDX += (value.location.x - last.x) * 2.2
+            accumulatedDY += (value.location.y - last.y) * 2.2
+            if Date().timeIntervalSince(lastSentTime) >= 0.028 { flushMovement() }
+        }
+        lastDragLocation = value.location
+    }
+
+    private func flushMovement() {
+        let dx = Int(accumulatedDX)
+        let dy = Int(accumulatedDY)
+        guard dx != 0 || dy != 0 else { return }
+        accumulatedDX -= Double(dx)
+        accumulatedDY -= Double(dy)
+        lastSentTime = Date()
+        Task { await vm.sendMouseInput(dx: dx, dy: dy) }
+    }
+
+    private func finishDrag() {
+        if vm.metrics.isOnline { flushMovement() }
+        accumulatedDX = 0
+        accumulatedDY = 0
+        lastDragLocation = nil
+    }
+
     private func sendCurrentText() {
-        guard !keyboardInput.isEmpty else { return }
+        guard vm.metrics.isOnline, !keyboardInput.isEmpty else { return }
         let text = keyboardInput
         keyboardInput = ""
         Task { await vm.sendKeyboardInput(text: text) }
     }
-
-    private func macroButton(_ title: String, icon: String, color: Color, action: @escaping () async -> Void) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title3)
-                    .foregroundStyle(color)
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
-        }
-        .buttonStyle(.plain)
-    }
 }
 
-// MARK: - 4. WIDGETS & DYNAMIC ISLAND VIEW
-
-struct WidgetsAndIslandPreviewView: View {
-    @ObservedObject var vm: OrbitViewModel
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 24) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Label("Dynamic Island Live Activity", systemImage: "capsule.portrait.tophalf.filled")
-                                    .font(.headline)
-                                Spacer()
-                                Toggle("", isOn: Binding(
-                                    get: { vm.isDynamicIslandActive },
-                                    set: { _ in vm.toggleDynamicIsland() }
-                                ))
-                                .labelsHidden()
-                                .tint(.cyan)
-                            }
-                            Text("Pins a real-time telemetry capsule to the top of the screen showing live CPU/GPU temperatures, wattage, and network ping.")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.7))
-                        }
-                        .padding(20)
-                        .liquidGlass(cornerRadius: 24, tint: .cyan)
-
-                        Text("iOS Home Screen Widgets (Synced Live)")
-                            .font(.headline)
-
-                        HStack(spacing: 16) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Circle()
-                                        .fill(vm.metrics.isOnline ? Color.green : Color.red)
-                                        .frame(width: 8, height: 8)
-                                    Text("ORBIT")
-                                        .font(.caption2.weight(.heavy))
-                                    Spacer()
-                                    Image(systemName: "cpu.fill")
-                                        .foregroundStyle(.cyan)
-                                }
-                                Spacer()
-                                Text("\(Int(vm.metrics.cpuTemp))°C")
-                                    .font(.system(.title, design: .rounded).weight(.bold))
-                                Text("GPU: \(Int(vm.metrics.gpuTemp))°C • \(Int(vm.metrics.gpuPowerWatts))W")
-                                    .font(.caption2)
-                                    .foregroundStyle(.white.opacity(0.7))
-                            }
-                            .padding(16)
-                            .frame(width: 160, height: 160)
-                            .liquidGlass(cornerRadius: 26, tint: .cyan)
-
-                            VStack(spacing: 14) {
-                                Text("Lock Screen Gauges")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.7))
-                                HStack(spacing: 16) {
-                                    Gauge(value: vm.metrics.cpuTemp, in: 0...100) {
-                                        Text("CPU")
-                                    } currentValueLabel: {
-                                        Text("\(Int(vm.metrics.cpuTemp))°")
-                                    }
-                                    .gaugeStyle(.accessoryCircular)
-                                    .tint(.cyan)
-
-                                    Gauge(value: vm.metrics.gpuTemp, in: 0...100) {
-                                        Text("GPU")
-                                    } currentValueLabel: {
-                                        Text("\(Int(vm.metrics.gpuTemp))°")
-                                    }
-                                    .gaugeStyle(.accessoryCircular)
-                                    .tint(.mint)
-                                }
-                            }
-                            .padding(16)
-                            .frame(maxWidth: .infinity, minHeight: 160)
-                            .liquidGlass(cornerRadius: 26, tint: .mint)
-                        }
-                    }
-                    .padding(18)
-                    .padding(.top, vm.isDynamicIslandActive ? 40 : 0)
-                }
-            }
-            .navigationTitle("Widgets & Island")
-        }
-    }
-}
-
-// MARK: - 5. SMART LAUNCH OVERLAY & STREAM VIEW
+// MARK: - Desktop preview
 
 struct SmartLaunchOverlay: View {
     @ObservedObject var vm: OrbitViewModel
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.78)
-                .ignoresSafeArea()
-
-            VStack(spacing: 22) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.cyan)
-
-                Text("Smart Launch: \(vm.activeStreamingGame?.title ?? "PC")")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.white)
-
-                Text(vm.smartLaunchStep.rawValue)
-                    .font(.subheadline)
-                    .foregroundStyle(.cyan)
-                    .multilineTextAlignment(.center)
+            Color.black.opacity(0.65).ignoresSafeArea()
+            VStack(spacing: 20) {
+                ProgressView().controlSize(.large).tint(.cyan)
+                Text(vm.activeStreamingGame?.title ?? "Connecting to your PC").font(.headline)
+                Text(vm.smartLaunchStep.rawValue).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
-            .padding(32)
-            .frame(maxWidth: 350)
-            .liquidGlass(cornerRadius: 28, tint: .cyan)
+            .padding(30)
+            .frame(maxWidth: 320)
+            .liquidGlass(tint: .cyan)
         }
     }
 }
 
+/// The agent sends JPEG screenshots. Game streaming is handled by the separate Moonlight app.
 struct MoonlightStreamView: View {
     @ObservedObject var vm: OrbitViewModel
-    @State private var showHUD = true
-    @State private var showVirtualPad = true
 
     var body: some View {
-        ZStack {
-            if let liveImage = vm.liveFrameImage {
-                Image(uiImage: liveImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black)
-                    .ignoresSafeArea()
-                    .onTapGesture(count: 2) {
-                        withAnimation { showHUD.toggle() }
-                    }
-            } else {
-                LinearGradient(
-                    colors: [Color(red: 0.04, green: 0.07, blue: 0.14), .black],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-                .onTapGesture(count: 2) {
-                    withAnimation { showHUD.toggle() }
-                }
-
-                VStack(spacing: 14) {
-                    Image(systemName: vm.activeStreamingGame?.iconSymbol ?? "play.tv.fill")
-                        .font(.system(size: 64))
-                        .foregroundStyle(.cyan)
-
-                    Text("Streaming: \(vm.activeStreamingGame?.title ?? "Desktop")")
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(.white)
-
-                    Text("\(vm.selectedProfile.rawValue) • \(vm.selectedProfile.bitrateMbps) Mbps")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.75))
-
-                    Button {
-                        vm.openNativeMoonlight()
-                    } label: {
-                        Label("Open in Moonlight App (120Hz HDR)", systemImage: "arrow.up.forward.app.fill")
-                            .font(.subheadline.weight(.bold))
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .background(Color.cyan, in: Capsule())
-                            .foregroundStyle(.black)
-                    }
-                    .padding(.top, 8)
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let frame = vm.liveFrameImage {
+                    Image(uiImage: frame)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel("Current PC desktop screenshot")
+                } else {
+                    ContentUnavailableView(vm.streamError == nil ? "Waiting for the desktop" : "Desktop preview unavailable", systemImage: "display", description: Text(vm.streamError ?? (vm.isDemoMode ? "Desktop images are available when your PC is connected." : "Keep the Orbit agent running on your PC. A desktop capture will appear here.")))
                 }
             }
-
-            if showHUD {
-                VStack {
-                    HStack(spacing: 14) {
-                        Label("120 FPS", systemImage: "speedometer")
-                        Label("\(vm.pingMs) ms", systemImage: "wifi")
-                        Label("\(Int(vm.metrics.gpuTemp))°C", systemImage: "flame.fill")
-
-                        Spacer()
-
-                        Button {
-                            showVirtualPad.toggle()
-                        } label: {
-                            Image(systemName: "gamecontroller.fill")
-                                .foregroundStyle(showVirtualPad ? .cyan : .white)
-                        }
-
-                        Menu {
-                            Button("Disconnect Stream", role: .cancel) {
-                                vm.stopStreaming(putPCToSleep: false)
-                            }
-                            Button("Quit Game & Put PC to Sleep", role: .destructive) {
-                                vm.stopStreaming(putPCToSleep: true)
-                            }
-                        } label: {
-                            Label("Exit", systemImage: "xmark.circle.fill")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .liquidGlass(cornerRadius: 20, tint: .cyan)
-                    .padding()
-
-                    Spacer()
-
-                    if showVirtualPad {
-                        HStack {
-                            HStack(spacing: 10) {
-                                ForEach(["LEFT", "UP", "DOWN", "RIGHT"], id: \.self) { dir in
-                                    Button {
-                                        Task { await vm.sendGamepadButton(dir) }
-                                    } label: {
-                                        Text(dir.prefix(1))
-                                            .font(.headline.bold())
-                                            .frame(width: 44, height: 44)
-                                            .background(.ultraThinMaterial, in: Circle())
-                                    }
-                                }
-                            }
-
-                            Spacer()
-
-                            HStack(spacing: 14) {
-                                ForEach(["A", "B", "X", "Y"], id: \.self) { btn in
-                                    Button {
-                                        Task { await vm.sendGamepadButton(btn) }
-                                    } label: {
-                                        Text(btn)
-                                            .font(.headline.bold())
-                                            .frame(width: 48, height: 48)
-                                            .background(.ultraThinMaterial, in: Circle())
-                                    }
-                                }
-                            }
-                        }
-                        .padding(28)
-                    }
+            .navigationTitle("Desktop preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close", systemImage: "xmark") { vm.stopStreaming(putPCToSleep: false) }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Moonlight", systemImage: "arrow.up.forward.app") { vm.openNativeMoonlight() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 5) {
+                    if let error = vm.streamError {
+                        Text(error).font(.caption).foregroundStyle(.orange).multilineTextAlignment(.center)
+                        Button("Try again", systemImage: "arrow.clockwise") { vm.startLiveScreenFeed() }
+                            .font(.caption).padding(.bottom, 5).disabled(vm.isDemoMode || !vm.metrics.isOnline)
+                    }
+                    Text("JPEG desktop preview").font(.caption.weight(.medium))
+                    Text("Use Moonlight for smooth game streaming and audio. Configure quality inside Moonlight.")
+                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(16)
+                .background(.ultraThinMaterial)
             }
         }
+        .tint(.cyan)
+        .preferredColorScheme(.dark)
     }
 }
 
-// MARK: - 6. SETTINGS VIEW (Full In-App IP, Subnet, Broadcast & MAC Editor)
+// MARK: - Settings
 
 struct SettingsView: View {
     @ObservedObject var vm: OrbitViewModel
+    var isPresentedAsSheet = false
     @Environment(\.dismiss) private var dismiss
+    @State private var isConnecting = false
     @FocusState private var focusedField: Bool
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Button {
-                        focusedField = false
-                        Task { await vm.scanLANForPC() }
-                    } label: {
-                        HStack {
-                            if vm.isScanningLAN {
-                                ProgressView().tint(.cyan)
-                                    .padding(.trailing, 6)
-                                Text("Scanning Local Network (1-254)...")
-                                    .fontWeight(.bold)
-                            } else {
-                                Label("Scan LAN & Auto-Fill PC IPs", systemImage: "antenna.radiowaves.left.and.right")
-                                    .fontWeight(.bold)
-                                    .foregroundStyle(.cyan)
-                            }
+                    HStack(spacing: 14) {
+                        OrbitMark(size: 50)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Orbit").font(.title3.weight(.semibold))
+                            Text("A little closer to your PC.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    .disabled(vm.isScanningLAN)
-
-                    Button {
-                        focusedField = false
-                        Task { await vm.fetchNetworkConfigFromPC() }
-                    } label: {
-                        Label("Pull Exact MAC & Broadcast from PC", systemImage: "arrow.down.doc.fill")
-                            .foregroundStyle(.mint)
+                    .padding(.vertical, 5)
+                    NavigationLink { FullSpecsView(vm: vm) } label: {
+                        Label("PC specifications", systemImage: "cpu")
                     }
-                } header: {
-                    Text("1-Tap Automatic Configuration")
-                } footer: {
-                    Text("Automatically finds your PC on Wi-Fi/LAN and fills in the IPv4, MAC address, Subnet Mask, and Broadcast IP.")
+                    Button("Connection walkthrough", systemImage: "sparkles") {
+                        if isPresentedAsSheet { dismiss() }
+                        vm.showOnboarding = true
+                    }
                 }
-
+                connectionSection
+                wakeSection
                 Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("PC IPv4 Address (Windows Rig)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("192.168.1.196", text: $vm.pcIP)
-                            .font(.body.monospaced())
-                            .keyboardType(.numbersAndPunctuation)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .focused($focusedField)
-                            .onChange(of: vm.pcIP) { _, _ in
-                                vm.recalculateBroadcastIfNeeded()
-                            }
-                    }
-
-                    Toggle("Auto-Calculate Broadcast IP", isOn: $vm.autoCalcBroadcast)
-                        .onChange(of: vm.autoCalcBroadcast) { _, _ in
-                            vm.recalculateBroadcastIfNeeded()
-                        }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Target Broadcast IP (for Wake-on-LAN)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("192.168.1.255", text: $vm.wolTargetIP)
-                            .font(.body.monospaced())
-                            .keyboardType(.numbersAndPunctuation)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .focused($focusedField)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Subnet Mask")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("255.255.255.0", text: $vm.subnetMask)
-                            .font(.body.monospaced())
-                            .keyboardType(.numbersAndPunctuation)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .focused($focusedField)
-                            .onChange(of: vm.subnetMask) { _, _ in
-                                vm.recalculateBroadcastIfNeeded()
-                            }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("PC Ethernet/Wi-Fi MAC Address")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("AA:BB:CC:11:22:33", text: $vm.pcMAC)
-                            .font(.body.monospaced())
-                            .keyboardType(.asciiCapable)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.characters)
-                            .focused($focusedField)
-                    }
-                } header: {
-                    Text("Manual IP & Wake-on-LAN Configuration")
+                    Toggle("Preview mode", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
+                    Toggle("Open Moonlight after launch", isOn: $vm.autoOpenMoonlight)
+                } header: { Text("Experience") } footer: {
+                    Text("Preview mode uses sample data. For game streaming, install Moonlight and pair it with Sunshine on your PC.")
                 }
-
-                Section("Ports & Security") {
-                    LabeledContent("Wake-on-LAN UDP Port") {
-                        TextField("9", value: $vm.wolPort, format: .number)
-                            .font(.body.monospaced())
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .focused($focusedField)
-                    }
-                    LabeledContent("Orbit Agent Port (TCP)") {
-                        TextField("8765", value: $vm.agentPort, format: .number)
-                            .font(.body.monospaced())
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .focused($focusedField)
-                    }
-                    LabeledContent("Sunshine Port (HTTPS)") {
-                        TextField("47989", value: $vm.sunshinePort, format: .number)
-                            .font(.body.monospaced())
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .focused($focusedField)
-                    }
-                    LabeledContent("API Token") {
-                        TextField("endspec-secret-token", text: $vm.apiToken)
-                            .font(.body.monospaced())
-                            .multilineTextAlignment(.trailing)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .focused($focusedField)
-                    }
+                Section {
+                    Toggle("Live Activity", isOn: Binding(get: { vm.isDynamicIslandActive }, set: { enabled in
+                        if enabled != vm.isDynamicIslandActive { vm.toggleDynamicIsland() }
+                    }))
+                    .disabled(!vm.metrics.isOnline && !vm.isDynamicIslandActive)
+                    NavigationLink {
+                        WidgetHelpView()
+                    } label: { Label("Home Screen widgets", systemImage: "square.grid.2x2") }
+                } header: { Text("At a glance") } footer: {
+                    Text("Live Activities appear on the Lock Screen and on supported Dynamic Islands. Readings update while Orbit is open and become stale in the background; continuous background monitoring is not enabled.")
                 }
-
-                Section("Test & Diagnostics") {
-                    Button {
-                        focusedField = false
-                        vm.isDemoMode = false
-                        Task { await vm.refreshMetrics() }
-                    } label: {
-                        Label("Save & Test Connection to PC", systemImage: "checkmark.circle.fill")
-                            .fontWeight(.bold)
-                            .foregroundStyle(.cyan)
+                Section("Connection status") {
+                    Label(vm.isDemoMode ? "Preview data" : (vm.metrics.isOnline ? "PC connected" : "PC not connected"), systemImage: vm.metrics.isOnline ? "checkmark.circle" : "wifi.slash")
+                        .foregroundStyle(vm.metrics.isOnline ? .mint : .orange)
+                    Text(vm.statusLog).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    if let lastUpdated = vm.lastUpdated {
+                        LabeledContent("Last update", value: lastUpdated.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
                     }
-
-                    Button {
-                        focusedField = false
-                        Task { await vm.wakePC() }
-                    } label: {
-                        Label("Send Wake-on-LAN Magic Packet Now", systemImage: "power.circle.fill")
-                            .fontWeight(.bold)
-                            .foregroundStyle(.green)
-                    }
-
-                    Button {
-                        focusedField = false
-                        Task { await vm.sendPowerAction("restore_display") }
-                    } label: {
-                        Label("Force Wake / Restore PC Monitor", systemImage: "display")
-                            .foregroundStyle(.orange)
-                    }
-
-                    Toggle("Demo Mode (Simulated Data)", isOn: $vm.isDemoMode)
-                    Toggle("Auto-Handoff to Moonlight App", isOn: $vm.autoOpenMoonlight)
-
-                    Text(vm.statusLog)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Network & IPs")
+            .navigationTitle("Settings")
+            .alert("Live Activity unavailable", isPresented: Binding(get: { vm.liveActivityError != nil }, set: { if !$0 { vm.liveActivityError = nil } })) {
+                Button("OK") { vm.liveActivityError = nil }
+            } message: {
+                Text(vm.liveActivityError ?? "Live Activities could not be started.")
+            }
             .toolbar {
+                if isPresentedAsSheet {
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") {
-                        focusedField = false
-                    }
-                    .fontWeight(.bold)
+                    Button("Done") { focusedField = false }
                 }
             }
         }
+        .tint(.cyan)
+        .preferredColorScheme(.dark)
     }
+
+    private var connectionSection: some View {
+        Section {
+            labeledField("PC address", placeholder: "e.g. 192.168.1.100", text: $vm.pcIP)
+                .onChange(of: vm.pcIP) { _, _ in vm.recalculateBroadcastIfNeeded() }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Agent access token").font(.caption).foregroundStyle(.secondary)
+                SecureField("Token shown by your PC agent", text: $vm.apiToken)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().focused($focusedField)
+            }
+            Button {
+                focusedField = false
+                isConnecting = true
+                Task { await vm.connect(); isConnecting = false }
+            } label: {
+                HStack {
+                    Label(isConnecting ? "Connecting…" : "Save & test connection", systemImage: "network")
+                    Spacer()
+                    if isConnecting { ProgressView() }
+                }
+            }
+            .disabled(isConnecting || !vm.isConfigured)
+            DisclosureGroup("Advanced network settings") {
+                Button {
+                    focusedField = false
+                    Task { await vm.scanLANForPC() }
+                } label: {
+                    HStack {
+                        Label(vm.isScanningLAN ? "Scanning network…" : "Find PC on local network", systemImage: "antenna.radiowaves.left.and.right")
+                        if vm.isScanningLAN { Spacer(); ProgressView() }
+                    }
+                }
+                .disabled(vm.isScanningLAN)
+                portField("Agent port", value: $vm.agentPort)
+                labeledField("Subnet mask", placeholder: "255.255.255.0", text: $vm.subnetMask)
+                    .onChange(of: vm.subnetMask) { _, _ in vm.recalculateBroadcastIfNeeded() }
+                Toggle("Calculate broadcast automatically", isOn: $vm.autoCalcBroadcast)
+                    .onChange(of: vm.autoCalcBroadcast) { _, _ in vm.recalculateBroadcastIfNeeded() }
+                labeledField("Broadcast address", placeholder: "e.g. 192.168.1.255", text: $vm.wolTargetIP)
+                    .disabled(vm.autoCalcBroadcast)
+                portField("Wake-on-LAN port", value: $vm.wolPort)
+            }
+        } header: { Text("Your Windows PC") } footer: {
+            Text("Run the Orbit agent on your PC and connect both devices to the same trusted network. Enter the address and token shown by the agent.")
+        }
+    }
+
+    private var wakeSection: some View {
+        Section {
+            labeledField("PC MAC address", placeholder: "AA:BB:CC:DD:EE:FF", text: $vm.pcMAC)
+            Button("Detect network details from PC", systemImage: "arrow.down.circle") {
+                Task { await vm.fetchNetworkConfigFromPC() }
+            }
+            .disabled(!vm.metrics.isOnline || vm.isDemoMode)
+            Button("Wake PC", systemImage: "power") { Task { await vm.wakePC() } }
+                .disabled(!vm.isConfigured || vm.pcMAC.isEmpty || vm.isWakingUp)
+        } header: { Text("Wake-on-LAN") } footer: {
+            Text("Enable Wake-on-LAN in your PC’s firmware and network adapter settings. Keep the PC connected to power; wired Ethernet is usually the most reliable option.")
+        }
+    }
+
+    private func labeledField(_ title: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .font(.body.monospaced())
+                .keyboardType(.asciiCapable)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().focused($focusedField)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func portField(_ title: String, value: Binding<Int>) -> some View {
+        LabeledContent(title) {
+            TextField("Port", value: value, format: .number.grouping(.never))
+                .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($focusedField)
+        }
+    }
+}
+
+struct WidgetHelpView: View {
+    var body: some View {
+        List {
+            Section {
+                Label("Open Orbit from your Home Screen", systemImage: "square.grid.2x2")
+                Text("Orbit’s launcher widgets provide shortcuts to your PC overview and remote controls. They open the app to establish a fresh connection.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("Add a widget") {
+                Text("1. Touch and hold your Home Screen.")
+                Text("2. Choose Edit, then Add Widget.")
+                Text("3. Search for Orbit and choose a size.")
+            }
+            Section {
+                Text("Widgets do not claim to show live PC telemetry while the app is closed. To see a recent reading on the Lock Screen, enable a Live Activity while connected.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Widgets")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - First-run setup
+
+struct OnboardingView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @State private var isTesting = false
+    @State private var connectionPassed = false
+    @State private var didTest = false
+    @FocusState private var focusedField: Bool
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                OrbitAmbientBackground(isOnline: true)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 26) {
+                        welcome
+                        connectionForm
+                        VStack(spacing: 12) {
+                            Button {
+                                focusedField = false
+                                vm.hasCompletedOnboarding = true
+                                vm.showOnboarding = false
+                            } label: {
+                                HStack { Text("Continue to my PC"); Spacer(); Image(systemName: "arrow.right") }
+                                    .font(.headline).padding(18).frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.cyan).foregroundStyle(.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .disabled(!connectionPassed || !vm.metrics.isOnline)
+                            Button("Explore with sample data") {
+                                focusedField = false
+                                vm.setDemoMode(true)
+                                vm.hasCompletedOnboarding = true
+                                vm.showOnboarding = false
+                            }
+                            .font(.subheadline).padding(10)
+                            Text("Your PC stays in your control. Orbit connects over your local network.")
+                                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }
+                    }
+                    .frame(maxWidth: 520)
+                    .padding(24)
+                    .frame(maxWidth: .infinity)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if vm.hasCompletedOnboarding {
+                    ToolbarItem(placement: .topBarTrailing) { Button("Close") { vm.showOnboarding = false } }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = false }
+                }
+            }
+        }
+        .tint(.cyan).preferredColorScheme(.dark)
+    }
+
+    private var welcome: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            OrbitMark(size: 84)
+                .padding(.top, 12)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your PC.\nWithin reach.")
+                    .font(.system(size: 36, weight: .semibold, design: .rounded))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Meet Orbit, your everyday Windows companion.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 0) {
+                feature("Live insights", icon: "waveform.path.ecg")
+                feature("Wake on LAN", icon: "power")
+                feature("Remote control", icon: "computermouse")
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func feature(_ title: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon).font(.title3).foregroundStyle(.cyan)
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var connectionForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Connect your PC").font(.headline)
+                Text("Start the Orbit agent on Windows, then enter the address and access token it shows. Both devices should use the same Wi-Fi or local network.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("PC address").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                TextField("e.g. 192.168.1.100", text: $vm.pcIP)
+                    .keyboardType(.asciiCapable)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().focused($focusedField)
+                    .padding(13).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                    .onChange(of: vm.pcIP) { _, _ in connectionPassed = false; didTest = false; vm.recalculateBroadcastIfNeeded() }
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Agent access token").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                SecureField("Paste your PC’s token", text: $vm.apiToken)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().focused($focusedField)
+                    .padding(13).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                    .onChange(of: vm.apiToken) { _, _ in connectionPassed = false; didTest = false }
+            }
+            DisclosureGroup("Custom agent port") {
+                TextField("8765", value: $vm.agentPort, format: .number.grouping(.never))
+                    .keyboardType(.numberPad).focused($focusedField)
+                    .onChange(of: vm.agentPort) { _, _ in connectionPassed = false; didTest = false }
+                    .padding(.top, 10)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Button {
+                focusedField = false
+                isTesting = true
+                Task {
+                    await vm.connect()
+                    connectionPassed = vm.metrics.isOnline && !vm.isDemoMode
+                    didTest = true
+                    isTesting = false
+                }
+            } label: {
+                HStack {
+                    if isTesting { ProgressView().tint(.cyan) }
+                    Label(isTesting ? "Connecting…" : "Test connection", systemImage: "network")
+                    Spacer()
+                    if connectionPassed { Image(systemName: "checkmark.circle.fill").foregroundStyle(.mint) }
+                }
+                .font(.subheadline.weight(.semibold)).padding(.vertical, 4)
+            }
+            .disabled(isTesting || !vm.isConfigured)
+            if didTest {
+                Label(connectionPassed ? "Connected. Your hardware is detected automatically." : vm.statusLog, systemImage: connectionPassed ? "checkmark.circle" : "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(connectionPassed ? .mint : .orange)
+            }
+        }
+        .padding(20)
+        .liquidGlass(tint: .cyan)
+    }
+}
+
+// MARK: - Hardware inventory
+
+struct FullSpecsView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @State private var showNames = false
+
+    var body: some View {
+        List {
+            Section {
+                if vm.isDemoMode {
+                    Label("Sample hardware · preview mode", systemImage: "sparkles").foregroundStyle(.orange)
+                } else {
+                    Label(vm.metrics.isOnline ? "Detected by your PC" : "Last known hardware", systemImage: vm.metrics.isOnline ? "checkmark.seal" : "clock")
+                        .foregroundStyle(vm.metrics.isOnline ? .mint : .secondary)
+                }
+                Text("Hardware is discovered automatically. Add a display name for a custom build or a component Windows cannot identify.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Customize component names", systemImage: "pencil") { showNames = true }
+            }
+            if let specs = vm.specs {
+                inventory(specs)
+            } else if vm.isLoadingSpecs {
+                Section { HStack { ProgressView(); Text("Reading PC specifications…").padding(.leading, 8) } }
+            } else {
+                Section {
+                    ContentUnavailableView("No specifications yet", systemImage: "cpu", description: Text(vm.specsError ?? "Connect your PC to detect its hardware. You can still enter your own component names."))
+                }
+            }
+            if let error = vm.specsError, vm.specs != nil {
+                Section { Text(error).font(.caption).foregroundStyle(.orange) }
+            }
+        }
+        .navigationTitle("PC specifications")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await vm.fetchSpecs() } } label: {
+                    if vm.isLoadingSpecs { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+                }
+                .disabled(vm.isLoadingSpecs || !vm.metrics.isOnline)
+                .accessibilityLabel("Refresh PC specifications")
+            }
+        }
+        .sheet(isPresented: $showNames) { ComponentNamesView(vm: vm) }
+        .task { if vm.specs == nil && vm.metrics.isOnline { await vm.fetchSpecs() } }
+        .refreshable { if vm.metrics.isOnline { await vm.fetchSpecs() } }
+    }
+
+    @ViewBuilder
+    private func inventory(_ specs: PCSpecs) -> some View {
+        Section("System") {
+            specRow("Computer", specs.hostname)
+            specRow("Operating system", specs.osName)
+            specRow("Version", specs.osVersion)
+            specRow("Architecture", specs.architecture)
+            specRow("Detected", specs.detectedAt)
+        }
+        Section("Processor") {
+            displayName("cpu")
+            specRow("Model", specs.cpu.name)
+            specRow("Manufacturer", specs.cpu.manufacturer)
+            specRow("Physical cores", specs.cpu.physicalCores.map(String.init))
+            specRow("Threads", specs.cpu.logicalCores.map(String.init))
+            specRow("Maximum clock", specs.cpu.maxClockMHz.map { "\(decimal($0 / 1000, digits: 2)) GHz" })
+            specRow("Temperature", vm.metrics.cpuTemp.map { "\(decimal($0))°C" })
+        }
+        Section("Graphics") {
+            displayName("gpu")
+            if specs.gpus.isEmpty { specRow("GPU", nil) }
+            ForEach(Array(specs.gpus.enumerated()), id: \.offset) { index, gpu in
+                if index > 0 { Divider() }
+                specRow("Model", gpu.name)
+                specRow("Video memory", gpu.vramGB.map { "\(decimal($0)) GB" })
+                specRow("Driver", gpu.driverVersion)
+            }
+            if let used = vm.metrics.vramUsedGB, let total = vm.metrics.vramTotalGB {
+                specRow("VRAM in use", "\(decimal(used)) / \(decimal(total)) GB")
+            }
+            specRow("Temperature", vm.metrics.gpuTemp.map { "\(decimal($0))°C" })
+            specRow("Power", vm.metrics.gpuPowerWatts.map { "\(decimal($0, digits: 0)) W" })
+        }
+        Section("Memory") {
+            displayName("memory")
+            specRow("Installed", specs.memory.totalGB.map { "\(decimal($0)) GB" })
+            ForEach(Array(specs.memory.modules.enumerated()), id: \.offset) { index, module in
+                DisclosureGroup(module.slot ?? "Module \(index + 1)") {
+                    specRow("Manufacturer", module.manufacturer)
+                    specRow("Part number", module.partNumber)
+                    specRow("Capacity", module.capacityGB.map { "\(decimal($0)) GB" })
+                    specRow("Reported speed", module.speedMHz.map { "\(decimal($0, digits: 0)) MHz" })
+                }
+            }
+        }
+        Section("Motherboard & cooling") {
+            displayName("motherboard")
+            specRow("Manufacturer", specs.motherboard.manufacturer)
+            specRow("Motherboard", specs.motherboard.model)
+            specRow("BIOS", specs.motherboard.biosVersion)
+            displayName("cooler")
+            specRow("Detected cooler", specs.coolerName)
+            specRow("Coolant temperature", vm.metrics.liquidTemp.map { "\(decimal($0))°C" })
+        }
+        Section("Storage devices") {
+            displayName("storage")
+            if specs.disks.isEmpty { specRow("Disks", nil) }
+            ForEach(Array(specs.disks.enumerated()), id: \.offset) { index, disk in
+                DisclosureGroup(disk.name ?? "Disk \(index + 1)") {
+                    specRow("Capacity", disk.sizeGB.map { "\(decimal($0)) GB" })
+                    specRow("Interface", disk.interfaceType)
+                    specRow("Media", disk.mediaType)
+                }
+            }
+        }
+        Section("Volumes") {
+            ForEach(Array(specs.volumes.enumerated()), id: \.offset) { index, volume in
+                DisclosureGroup(volume.mountpoint ?? "Volume \(index + 1)") {
+                    specRow("File system", volume.fileSystem)
+                    specRow("Capacity", volume.totalGB.map { "\(decimal($0)) GB" })
+                    specRow("Used", volume.usedGB.map { "\(decimal($0)) GB" })
+                }
+            }
+        }
+        Section("Network adapters") {
+            ForEach(Array(specs.networkAdapters.enumerated()), id: \.offset) { index, adapter in
+                DisclosureGroup(adapter.name ?? "Adapter \(index + 1)") {
+                    specRow("MAC address", adapter.macAddress)
+                    specRow("IPv4", adapter.ipv4Addresses.isEmpty ? nil : adapter.ipv4Addresses.joined(separator: "\n"))
+                }
+            }
+        }
+        Section {
+            Text("“Not reported” means the PC could not provide this information. Hardware sensor support varies; Orbit never substitutes an estimate for a missing temperature or frame rate.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func displayName(_ key: String) -> some View {
+        if let name = vm.componentOverrides[key], !name.isEmpty {
+            specRow("Your \(key) name", name)
+        }
+    }
+
+    private func specRow(_ label: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value.flatMap { $0.isEmpty ? nil : $0 } ?? "Not reported")
+                .font(.subheadline)
+                .foregroundStyle(value == nil || value?.isEmpty == true ? .secondary : .primary)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct ComponentNamesView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var names: [String: String] = [:]
+    private let components = [("cpu", "Processor"), ("gpu", "Graphics card"), ("memory", "Memory"), ("motherboard", "Motherboard"), ("cooler", "Cooler"), ("storage", "Storage")]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Personalize the labels shown for this PC. Leave a field empty to use its detected name. Measurements and detected specifications remain unchanged.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Section("Component names") {
+                    ForEach(components, id: \.0) { key, title in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(title).font(.caption).foregroundStyle(.secondary)
+                            TextField(detectedName(key), text: Binding(get: { names[key] ?? "" }, set: { names[key] = $0 }))
+                                .autocorrectionDisabled()
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+                Section {
+                    Button("Use detected names", role: .destructive) { names = [:] }
+                } footer: { Text("Names are saved separately for this PC.") }
+            }
+            .navigationTitle("Component names")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        for (key, _) in components { vm.setComponentOverride(key, value: names[key] ?? "") }
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .tint(.cyan).preferredColorScheme(.dark)
+        .onAppear { names = vm.componentOverrides }
+    }
+
+    private func detectedName(_ key: String) -> String {
+        switch key {
+        case "cpu": return vm.specs?.cpu.name ?? "Detected processor"
+        case "gpu": return vm.specs?.gpus.first?.name ?? "Detected graphics card"
+        case "memory": return vm.specs?.memory.totalGB.map { "\(decimal($0)) GB installed" } ?? "Detected memory"
+        case "motherboard": return vm.specs?.motherboard.model ?? "Detected motherboard"
+        case "cooler": return vm.specs?.coolerName ?? "e.g. your cooler’s model"
+        case "storage": return vm.specs?.disks.first?.name ?? "Detected storage"
+        default: return "Use detected name"
+        }
+    }
+}
+
+private func decimal(_ value: Double, digits: Int = 1) -> String {
+    guard value.isFinite else { return "—" }
+    return value.formatted(.number.precision(.fractionLength(digits)))
+}
+
+private func percent(_ value: Double) -> String {
+    guard value.isFinite else { return "—" }
+    return "\(Int(value.rounded()))%"
 }

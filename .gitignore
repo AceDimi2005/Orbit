@@ -1,0 +1,10 @@
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+__pycache__/
+*.pyc
+.venv/
+.orbit-token
+/output/
