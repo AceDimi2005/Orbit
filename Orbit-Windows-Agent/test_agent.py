@@ -16,7 +16,9 @@ import orbit_agent as agent
 import orbit_hardware as hardware
 
 TOKEN = "test-only-token-with-more-than-24-characters"
+WIDGET_TOKEN = "widget-only-token-with-more-than-24-characters"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
+WIDGET_AUTH = {"Authorization": f"Bearer {WIDGET_TOKEN}"}
 GAME = {"name": "Example", "process": "example.exe", "pid": 42}
 HEADER = "Application,ProcessID,SwapChainAddress,TimeInSeconds,MsBetweenPresents\n"
 
@@ -46,12 +48,95 @@ class APITests(unittest.TestCase):
     def test_stale_status_clears_sensitive_measurements(self):
         state = copy.deepcopy(agent.STATE)
         state.update(cpuTemp=74, fps=120, telemetryAvailable=True)
+        state.update({key: 42 for key in hardware.RATE_FIELDS + ("cpuPowerWatts", "cpuClockMHz", "cpuFanRPM", "gpuFanPercent")})
         with patch.object(agent, "STATE", state), patch.object(agent, "LAST_TELEMETRY", 0):
             result = self.client.get("/api/status", headers=AUTH).json()
             self.assertFalse(result["telemetryAvailable"])
             self.assertIsNone(result["cpuTemp"])
             self.assertIsNone(result["fps"])
+            for key in hardware.RATE_FIELDS + ("cpuPowerWatts", "cpuClockMHz", "cpuFanRPM", "gpuFanPercent"):
+                self.assertIsNone(result[key])
             self.assertEqual(state["fps"], 120)  # Endpoint works on a snapshot.
+
+    def test_expired_sensors_clear_while_base_telemetry_is_fresh(self):
+        state = copy.deepcopy(agent.STATE)
+        state.update(cpuTemp=74, cpuPowerWatts=80, cpuClockMHz=5000, cpuFanRPM=900,
+                     cpuClockSource="LibreHardwareMonitor · core average", telemetryAvailable=True, cpuUsage=20)
+        with patch.object(agent, "STATE", state), patch.object(agent, "LAST_TELEMETRY", time.monotonic()), \
+             patch.object(agent, "LAST_SENSOR", time.monotonic() - 20):
+            result = self.client.get("/api/status", headers=AUTH).json()
+        self.assertTrue(result["telemetryAvailable"])
+        self.assertEqual(result["cpuUsage"], 20)
+        self.assertTrue(all(result[field] is None for field in hardware.SENSOR_FIELDS))
+
+    def test_widget_token_is_read_only_and_pairing_requires_control_token(self):
+        with patch.object(agent, "WIDGET_TOKEN", WIDGET_TOKEN):
+            self.assertEqual(self.client.post("/api/widget/pairing").status_code, 401)
+            self.assertEqual(self.client.post("/api/widget/pairing", headers=WIDGET_AUTH).status_code, 401)
+            self.assertEqual(self.client.post("/api/widget/pairing", headers=AUTH).json(), {"token": WIDGET_TOKEN})
+            self.assertEqual(self.client.get("/api/widget/status", headers=AUTH).status_code, 401)
+            self.assertEqual(self.client.get("/api/widget/status").status_code, 401)
+            self.assertEqual(self.client.get(f"/api/widget/status?token={WIDGET_TOKEN}").status_code, 401)
+            self.assertEqual(self.client.get("/api/widget/status", headers=WIDGET_AUTH).status_code, 200)
+            for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps"):
+                self.assertEqual(self.client.get(path, headers=WIDGET_AUTH).status_code, 401)
+            for path in ("/api/volume?level=50", "/api/action/shutdown", "/api/input/mouse", "/api/sunshine/launch?app=Example"):
+                self.assertEqual(self.client.post(path, headers=WIDGET_AUTH).status_code, 401)
+
+    def test_widget_snapshot_uses_original_sample_time_and_minimal_schema(self):
+        state = copy.deepcopy(agent.STATE)
+        state.update(lastUpdated="2025-01-01T00:00:00+00:00", telemetryAvailable=True,
+                     cpuUsage=40, ramUsedGB=16, ramTotalGB=32, cpuPowerWatts=75, activeGame="Example")
+        with patch.object(agent, "WIDGET_TOKEN", WIDGET_TOKEN), patch.object(agent, "STATE", state), \
+             patch.object(agent, "LAST_TELEMETRY", time.monotonic()), patch.object(agent, "LAST_SENSOR", time.monotonic()):
+            result = self.client.get("/api/widget/status", headers=WIDGET_AUTH).json()
+        self.assertEqual(result["timestamp"], 1735689600)
+        self.assertEqual(result["ram_usage"], 50)
+        self.assertEqual(result["cpu_power"], 75)
+        self.assertEqual(result["game_name"], "Example")
+        self.assertEqual(set(result), {"pc_name", "timestamp", "telemetry_available", "cpu_usage", "gpu_usage", "ram_usage",
+                                       "cpu_temp", "gpu_temp", "vram_used", "vram_total", "cpu_power", "gpu_power", "fps", "game_name",
+                                       "cpu_clock", "cpu_fan", "gpu_fan", "coolant_temp", "disk_read", "disk_write", "network_download", "network_upload"})
+
+    def test_widget_snapshot_never_relabels_stale_samples_as_live(self):
+        state = copy.deepcopy(agent.STATE)
+        state.update(lastUpdated="2025-01-01T00:00:00+00:00", telemetryAvailable=True,
+                     cpuUsage=40, ramUsedGB=16, ramTotalGB=32, activeGame="Example")
+        with patch.object(agent, "WIDGET_TOKEN", WIDGET_TOKEN), patch.object(agent, "STATE", state), \
+             patch.object(agent, "LAST_TELEMETRY", 0):
+            result = self.client.get("/api/widget/status", headers=WIDGET_AUTH).json()
+        self.assertFalse(result["telemetry_available"])
+        self.assertEqual(result["timestamp"], 1735689600)
+        self.assertTrue(all(value is None for key, value in result.items() if key not in {"pc_name", "timestamp", "telemetry_available"}))
+
+    def test_process_endpoints_require_control_token(self):
+        with patch.object(agent, "collect_processes") as collect, patch.object(agent, "terminate_process") as end:
+            for headers in ({}, WIDGET_AUTH):
+                self.assertEqual(self.client.get("/api/processes", headers=headers).status_code, 401)
+                self.assertEqual(self.client.post("/api/processes/42/terminate?expectedCreateTime=100", headers=headers).status_code, 401)
+            collect.assert_not_called()
+            end.assert_not_called()
+
+    def test_process_snapshot_and_identity_checked_end(self):
+        payload = {"processes": [], "capturedAt": 100, "totalCount": 0}
+        with patch.object(agent, "require_windows"), patch.object(agent, "collect_processes", return_value=payload), \
+             patch.object(agent, "terminate_process", return_value={"pid": 42, "name": "Example", "status": "terminating", "forced": False}) as end:
+            self.assertEqual(self.client.get("/api/processes", headers=AUTH).json(), payload)
+            response = self.client.post("/api/processes/42/terminate?expectedCreateTime=123.5", headers=AUTH)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "terminating")
+            end.assert_called_once_with(42, 123.5, False)
+
+    def test_process_protection_identity_and_validation_errors(self):
+        with patch.object(agent, "require_windows"), patch.object(agent, "terminate_process") as end:
+            for error, code in ((PermissionError("protected"), 403), (ProcessLookupError("changed"), 409), (ValueError("invalid"), 422)):
+                end.side_effect = error
+                response = self.client.post("/api/processes/42/terminate?expectedCreateTime=123.5", headers=AUTH)
+                self.assertEqual(response.status_code, code)
+            end.reset_mock()
+            self.assertEqual(self.client.post("/api/processes/42/terminate", headers=AUTH).status_code, 422)
+            self.assertEqual(self.client.post("/api/processes/42/terminate?expectedCreateTime=nan", headers=AUTH).status_code, 422)
+            end.assert_not_called()
 
     def test_empty_specs_are_serializable(self):
         with patch.object(agent, "SPECS", hardware.basic_specs()):
@@ -118,6 +203,7 @@ class APITests(unittest.TestCase):
 
     def test_lifespan_loads_token_and_joins_workers(self):
         with patch.object(agent, "load_api_token", return_value=TOKEN), \
+             patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
              patch.object(agent, "inventory_worker") as inventory, \
              patch.object(agent, "telemetry_worker") as telemetry, \
              patch.object(agent, "sensor_worker") as sensors:
@@ -130,6 +216,19 @@ class APITests(unittest.TestCase):
 
 
 class TokenTests(unittest.TestCase):
+    def test_widget_token_is_persistent_separate_and_private(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(agent, "API_TOKEN", TOKEN):
+            path = Path(directory) / "widget"
+            first = agent.load_widget_token(path)
+            self.assertGreaterEqual(len(first), 24)
+            self.assertNotEqual(first, TOKEN)
+            self.assertEqual(agent.load_widget_token(path), first)
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            path.write_text(TOKEN)
+            with self.assertRaises(RuntimeError):
+                agent.load_widget_token(path)
+
     def test_generated_token_is_persistent_and_env_overrides(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             path = Path(directory) / "token"
@@ -146,6 +245,55 @@ class TokenTests(unittest.TestCase):
 
 
 class HardwareTests(unittest.TestCase):
+    def test_cpu_package_power_never_sums_cores_or_other_packages(self):
+        def sensor(name, kind, value, identifier):
+            return {"Name": name, "SensorType": kind, "Value": value, "Identifier": identifier}
+        sensors = [sensor("CPU Package", "Power", 200, "/intelcpu/1/power/0"),
+                   sensor("CPU Cores", "Power", 50, "/intelcpu/0/power/1"),
+                   sensor("CPU Package", "Power", 75, "/intelcpu/0/power/0"),
+                   sensor("CPU Platform", "Power", 120, "/intelcpu/0/power/4"),
+                   sensor("CPU Package", "Power", 999, "/gpu-nvidia/0/power/0"),
+                   sensor("CPU Package", "Temperature", 70, "/intelcpu/0/temperature/0"),
+                   sensor("CPU Core #1", "Clock", 4000, "/intelcpu/0/clock/1"),
+                   sensor("CPU Core #2", "Clock", 5000, "/intelcpu/0/clock/2"),
+                   sensor("Bus Speed", "Clock", 100, "/intelcpu/0/clock/0"),
+                   sensor("Fan #1", "Fan", 2000, "/lpc/0/fan/0"),
+                   sensor("CPU Fan", "Control", 75, "/lpc/0/control/0"),
+                   sensor("CPU Fan", "Fan", 900, "/lpc/0/fan/1")]
+        result = hardware.librehardware_metrics(sensors)
+        self.assertEqual(result["cpuPowerWatts"], 75)
+        self.assertEqual(result["cpuTemp"], 70)
+        self.assertEqual(result["cpuClockMHz"], 4500)
+        self.assertEqual(result["cpuFanRPM"], 900)
+        self.assertIn("core average", result["cpuClockSource"])
+        self.assertEqual(hardware.librehardware_metrics(list(reversed(sensors))), result)
+
+    def test_missing_wrong_type_and_nonfinite_sensors_remain_unknown(self):
+        sensors = [{"Name": "CPU Cores", "SensorType": "Power", "Value": 45, "Identifier": "/amdcpu/0/power/1"},
+                   {"Name": "CPU Package", "SensorType": "Power", "Value": "nan", "Identifier": "/amdcpu/0/power/0"},
+                   {"Name": "CPU Package", "SensorType": "Power", "Value": -1, "Identifier": "/amdcpu/0/power/0"},
+                   {"Name": "Fan #1", "SensorType": "Fan", "Value": 900, "Identifier": "/lpc/0/fan/0"}, None]
+        self.assertTrue(all(value is None for value in hardware.librehardware_metrics(sensors).values()))
+
+    def test_clock_fallback_does_not_claim_nominal_windows_clock_is_live(self):
+        with patch.object(hardware.os, "name", "nt"), patch.object(hardware, "powershell_json", side_effect=OSError), \
+             patch.object(hardware.psutil, "cpu_freq", return_value=SimpleNamespace(current=3200)), \
+             patch.object(hardware.platform, "system", return_value="Windows"):
+            result = hardware.sensor_metrics()
+        self.assertIsNone(result["cpuPowerWatts"])
+        self.assertEqual(result["cpuClockMHz"], 3200)
+        self.assertEqual(result["cpuClockSource"], "System · nominal clock")
+
+    def test_sensor_worker_failure_clears_prior_power_and_clock(self):
+        state = copy.deepcopy(agent.STATE)
+        state.update({key: 99 for key in hardware.SENSOR_FIELDS})
+        stop = MagicMock()
+        stop.is_set.side_effect = [False, True]
+        with patch.object(agent, "STATE", state), patch.object(agent, "STOP_EVENT", stop), \
+             patch.object(agent, "sensor_metrics", side_effect=RuntimeError("sensor disappeared")):
+            agent.sensor_worker()
+        self.assertTrue(all(state[key] is None for key in hardware.SENSOR_FIELDS))
+
     def test_cim_single_object_and_array(self):
         raw = {"cpu": {"Name": " Generic CPU ", "NumberOfCores": 8, "NumberOfLogicalProcessors": 16},
                "gpu": [{"Name": "Generic GPU", "AdapterRAM": 4293918720}],
@@ -158,7 +306,7 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(specs["disks"], [])
 
     def test_invalid_and_multi_gpu_readings_do_not_invent_values(self):
-        output = "GPU One, N/A, 15, [Not Supported], 1024, 8192, 555\nGPU Two, 50, 30, nan, 2048, 16384, 556\n"
+        output = "GPU One, N/A, 15, [Not Supported], 1024, 8192, 555, N/A\nGPU Two, 50, 30, nan, 2048, 16384, 556, 35\n"
         with patch.object(hardware.subprocess, "check_output", return_value=output):
             gpus = hardware.nvidia_metrics()
         self.assertEqual(len(gpus), 2)
@@ -166,6 +314,8 @@ class HardwareTests(unittest.TestCase):
         self.assertIsNone(gpus[0]["gpuPowerWatts"])
         self.assertIsNone(gpus[1]["gpuPowerWatts"])
         self.assertEqual(gpus[1]["vramTotalGB"], 16)
+        self.assertIsNone(gpus[0]["gpuFanPercent"])
+        self.assertEqual(gpus[1]["gpuFanPercent"], 35)
         with patch.object(hardware.subprocess, "check_output", side_effect=FileNotFoundError):
             self.assertEqual(hardware.nvidia_metrics(), [])
 
@@ -193,6 +343,63 @@ class HardwareTests(unittest.TestCase):
                     raise RuntimeError("setter failed")
         com.CoInitialize.assert_called_once()
         com.CoUninitialize.assert_called_once()
+
+
+class IORateTests(unittest.TestCase):
+    def disk(self, read, write):
+        return {"disk0": SimpleNamespace(read_bytes=read, write_bytes=write)}
+
+    def network(self, sent, received):
+        return {"Ethernet": SimpleNamespace(bytes_sent=sent, bytes_recv=received)}
+
+    def test_first_sample_unknown_then_uses_actual_elapsed_time(self):
+        rates = hardware.IOCounterRates()
+        first = rates.sample(self.disk(1_000_000, 2_000_000), self.network(3_000_000, 4_000_000), now=10)
+        self.assertTrue(all(value is None for value in first.values()))
+        result = rates.sample(self.disk(6_000_000, 12_000_000), self.network(8_000_000, 14_000_000), now=12.5)
+        self.assertEqual(result, {"diskReadMBps": 2, "diskWriteMBps": 4, "networkUploadMBps": 2, "networkDownloadMBps": 4})
+
+    def test_counter_resets_do_not_create_negative_rates_and_recover(self):
+        rates = hardware.IOCounterRates()
+        rates.sample(self.disk(50_000_000, 20_000_000), self.network(10_000_000, 10_000_000), now=1)
+        result = rates.sample(self.disk(1_000_000, 21_000_000), self.network(0, 11_000_000), now=2)
+        self.assertIsNone(result["diskReadMBps"])
+        self.assertIsNone(result["networkUploadMBps"])
+        self.assertEqual(result["diskWriteMBps"], 1)
+        self.assertEqual(result["networkDownloadMBps"], 1)
+        recovered = rates.sample(self.disk(3_000_000, 23_000_000), self.network(2_000_000, 13_000_000), now=4)
+        self.assertTrue(all(value == 1 for value in recovered.values()))
+
+    def test_missing_and_device_changes_reprime_without_spikes(self):
+        rates = hardware.IOCounterRates()
+        rates.sample(self.disk(0, 0), self.network(0, 0), now=1)
+        result = rates.sample(None, self.network(2_000_000, 4_000_000), now=2)
+        self.assertIsNone(result["diskReadMBps"])
+        self.assertEqual(result["networkDownloadMBps"], 4)
+        changed = {**self.network(4_000_000, 8_000_000), "New adapter": SimpleNamespace(bytes_sent=10**12, bytes_recv=10**12)}
+        result = rates.sample(self.disk(10**12, 10**12), changed, now=3)
+        self.assertIsNone(result["diskReadMBps"])
+        self.assertIsNone(result["diskWriteMBps"])
+        self.assertEqual(result["networkUploadMBps"], 2)
+        self.assertEqual(result["networkDownloadMBps"], 4)
+        result = rates.sample(self.disk(10**12, 10**12), changed, now=3)
+        self.assertTrue(all(value is None for value in result.values()))
+        result = rates.sample(self.disk(10**12, 10**12), changed, now=4)
+        self.assertTrue(all(value == 0 for value in result.values()))
+
+    def test_io_read_failure_preserves_other_group_and_disables_wrap_cache(self):
+        rates = hardware.IOCounterRates()
+        with patch.object(hardware.psutil, "disk_io_counters", side_effect=OSError) as disks, \
+             patch.object(hardware.psutil, "net_io_counters", return_value=self.network(0, 0)) as networks, \
+             patch.object(hardware.time, "monotonic", side_effect=[1, 2]):
+            hardware.io_metrics(rates)
+            networks.return_value = self.network(1_000_000, 2_000_000)
+            result = hardware.io_metrics(rates)
+        self.assertIsNone(result["diskWriteMBps"])
+        self.assertEqual(result["networkUploadMBps"], 1)
+        self.assertEqual(result["networkDownloadMBps"], 2)
+        disks.assert_called_with(perdisk=True, nowrap=False)
+        networks.assert_called_with(pernic=True, nowrap=False)
 
 
 class PresentMonTests(unittest.TestCase):

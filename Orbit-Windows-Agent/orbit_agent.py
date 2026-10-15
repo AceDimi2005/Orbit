@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import secrets
 import socket
@@ -14,14 +15,18 @@ import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from orbit_hardware import (basic_specs, collect_specs, detect_game, nvidia_metrics,
-                            read_presentmon, temperature_metrics, timestamp)
+from orbit_processes import collect_processes, terminate_process
+
+from orbit_hardware import (GPU_SENSOR_FIELDS, IOCounterRates, RATE_FIELDS, SENSOR_FIELDS, basic_specs,
+                            collect_specs, detect_game, io_metrics, nvidia_metrics,
+                            read_presentmon, sensor_metrics, timestamp)
 
 try:
     import mss
@@ -37,10 +42,13 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
+AGENT_VERSION = "3.1.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
+WIDGET_TOKEN = ""
 AGENT_PORT = int(os.getenv("ORBIT_PORT", "8765"))
 TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(Path(__file__).with_name(".orbit-token"))))
+WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(Path(__file__).with_name(".orbit-widget-token"))))
 SUNSHINE_APPS_PATHS = [
     Path(os.getenv("PROGRAMDATA", "C:/ProgramData")) / "LizardByte/Sunshine/config/apps.json",
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/config/apps.json",
@@ -52,7 +60,10 @@ if os.getenv("ORBIT_SUNSHINE_APPS"):
 STATE_LOCK = threading.Lock()
 STOP_EVENT = threading.Event()
 SPECS = {}
+SENSOR_GPU_CACHE = {}
 STATE = {
+    "agentVersion": AGENT_VERSION, "sensorSource": None, "sensorStatus": None, "gpuSource": None,
+    "networkInterface": None,
     "hostname": socket.gethostname(), "cpuName": "Unavailable", "motherboard": "Unavailable",
     "coolerName": "Unavailable", "gpuName": "Unavailable", "isOnline": True,
     "cpuTemp": None, "cpuUsage": 0.0, "liquidTemp": None, "gpuTemp": None,
@@ -62,27 +73,44 @@ STATE = {
     "volume": 0.0, "isMuted": False, "volumeAvailable": False, "hdrEnabled": None,
     "fps": None, "fpsSource": None, "fpsUnavailableReason": "Waiting for telemetry",
     "telemetryAvailable": False, "lastUpdated": None,
+    "cpuPowerWatts": None, "cpuClockMHz": None, "cpuClockSource": None,
+    "cpuFanRPM": None, "gpuFanPercent": None,
+    "diskReadMBps": None, "diskWriteMBps": None,
+    "networkUploadMBps": None, "networkDownloadMBps": None,
 }
 LAST_TELEMETRY = 0.0
+LAST_SENSOR = 0.0
+LIVE_OPTIONAL_FIELDS = SENSOR_FIELDS + RATE_FIELDS + (
+    "gpuTemp", "gpuUsage", "gpuPowerWatts", "gpuFanPercent", "vramUsedGB", "vramTotalGB", "gpuSource", "networkInterface", "fps", "fpsSource",
+)
+
+
+def load_token_file(path):
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    token = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Exclusive creation and private permissions on platforms that support them.
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(token + "\n")
+    except FileExistsError:
+        token = path.read_text(encoding="utf-8").strip()
+    return token
 
 
 def load_api_token(path=TOKEN_PATH):
-    token = os.getenv("ORBIT_API_TOKEN", "").strip()
-    if not token:
-        if path.exists():
-            token = path.read_text(encoding="utf-8").strip()
-        else:
-            token = secrets.token_urlsafe(32)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # Exclusive creation and private permissions on platforms that support them.
-            try:
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                    output.write(token + "\n")
-            except FileExistsError:
-                token = path.read_text(encoding="utf-8").strip()
+    token = os.getenv("ORBIT_API_TOKEN", "").strip() or load_token_file(path)
     if len(token) < 24 or token == "endspec-secret-token":
         raise RuntimeError("Orbit token must contain at least 24 characters. Remove .orbit-token to generate a new token.")
+    return token
+
+
+def load_widget_token(path=WIDGET_TOKEN_PATH):
+    token = load_token_file(path)
+    if len(token) < 24 or token == API_TOKEN:
+        raise RuntimeError("Orbit widget token must be a separate secret of at least 24 characters. Remove .orbit-widget-token to regenerate it.")
     return token
 
 
@@ -142,20 +170,44 @@ def inventory_worker():
 
 
 def sensor_worker():
+    global LAST_SENSOR
     while not STOP_EVENT.is_set():
         try:
-            sensors = temperature_metrics()
+            sensors = sensor_metrics()
             with STATE_LOCK:
-                STATE.update(sensors)
+                # Sensor polling never overwrites newer NVIDIA readings.
+                STATE.update({key: sensors.get(key) for key in SENSOR_FIELDS + ("sensorSource", "sensorStatus")})
+                SENSOR_GPU_CACHE.clear()
+                SENSOR_GPU_CACHE.update({key: sensors.get(key) for key in GPU_SENSOR_FIELDS})
+                SENSOR_GPU_CACHE["gpuName"] = sensors.get("gpuSensorName")
+                SENSOR_GPU_CACHE["gpuSource"] = sensors.get("sensorSource")
+                LAST_SENSOR = time.monotonic()
         except Exception:
             with STATE_LOCK:
-                STATE.update(cpuTemp=None, liquidTemp=None)
+                STATE.update(dict.fromkeys(SENSOR_FIELDS))
+                STATE["sensorSource"] = None
+                STATE["sensorStatus"] = "Hardware sensors unavailable. Start LibreHardwareMonitor and enable its local web server on port 8085."
+                SENSOR_GPU_CACHE.clear()
         STOP_EVENT.wait(5)
+
+
+def select_gpu_metrics(nvidia, sensor_cache, sensor_age):
+    """Keep one adapter/source per sample, preferring the driver's NVIDIA data."""
+    result = dict.fromkeys(GPU_SENSOR_FIELDS + ("gpuSource",))
+    if nvidia:
+        result.update({key: value for key, value in nvidia[0].items() if key != "driverVersion"})
+        result["gpuSource"] = "NVIDIA SMI"
+    elif sensor_age <= 15 and any(sensor_cache.get(key) is not None for key in GPU_SENSOR_FIELDS):
+        result.update({key: sensor_cache.get(key) for key in GPU_SENSOR_FIELDS})
+        result["gpuName"] = sensor_cache.get("gpuName") or "GPU · hardware monitor"
+        result["gpuSource"] = sensor_cache.get("gpuSource") or "Hardware monitor"
+    return result
 
 
 def telemetry_worker():
     global LAST_TELEMETRY
     psutil.cpu_percent(interval=None)
+    rates = IOCounterRates()
     while not STOP_EVENT.wait(1):
         try:
             memory = psutil.virtual_memory()
@@ -167,11 +219,14 @@ def telemetry_worker():
                 "ssdUsedTB": round(disk.used / 1024 ** 4, 3), "ssdTotalTB": round(disk.total / 1024 ** 4, 3),
                 "uptimeSeconds": max(0, int(time.time() - psutil.boot_time())),
                 "gpuTemp": None, "gpuUsage": None, "gpuPowerWatts": None,
-                "vramUsedGB": None, "vramTotalGB": None,
+                "vramUsedGB": None, "vramTotalGB": None, "gpuFanPercent": None,
             }
+            update.update(io_metrics(rates))
             gpus = nvidia_metrics()
-            if gpus:
-                update.update({k: v for k, v in gpus[0].items() if k != "driverVersion"})
+            with STATE_LOCK:
+                sensor_cache = copy.deepcopy(SENSOR_GPU_CACHE)
+                sensor_age = time.monotonic() - LAST_SENSOR
+            update.update(select_gpu_metrics(gpus, sensor_cache, sensor_age))
             game = detect_game()
             update.update(activeGame=game["name"] if game else None,
                           activeGameProcess=game["process"] if game else None)
@@ -185,14 +240,15 @@ def telemetry_worker():
             LOGGER.exception("Telemetry sample failed")
             with STATE_LOCK:
                 STATE["telemetryAvailable"] = False
-                for key in ("cpuTemp", "liquidTemp", "gpuTemp", "gpuUsage", "gpuPowerWatts", "vramUsedGB", "vramTotalGB", "fps"):
+                for key in LIVE_OPTIONAL_FIELDS:
                     STATE[key] = None
 
 
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, SPECS
+    global API_TOKEN, WIDGET_TOKEN, SPECS
     API_TOKEN = load_api_token()
+    WIDGET_TOKEN = load_widget_token()
     SPECS = basic_specs()
     STOP_EVENT.clear()
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
@@ -204,7 +260,7 @@ async def lifespan(application):
         await asyncio.to_thread(thread.join, 5)
 
 
-app = FastAPI(title="Orbit PC Companion Agent", version="3.0", lifespan=lifespan,
+app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -258,16 +314,89 @@ def get_specs(authorization: str = Header(None)):
         return copy.deepcopy(SPECS)
 
 
-@app.get("/api/status")
-def get_status(authorization: str = Header(None)):
-    verify_token(authorization)
+def status_snapshot():
     with STATE_LOCK:
         result = copy.deepcopy(STATE)
         if time.monotonic() - LAST_TELEMETRY > 10:
             result["telemetryAvailable"] = False
-            for key in ("cpuTemp", "liquidTemp", "gpuTemp", "gpuUsage", "gpuPowerWatts", "vramUsedGB", "vramTotalGB", "fps"):
+            for key in LIVE_OPTIONAL_FIELDS:
                 result[key] = None
+        if time.monotonic() - LAST_SENSOR > 15:
+            for key in SENSOR_FIELDS:
+                result[key] = None
+            result["sensorSource"] = None
+            result["sensorStatus"] = "Hardware sensor readings expired; waiting for a fresh sample from the PC sensor monitor."
+            # Main telemetry may still be fresh while its hardware-monitor cache
+            # ages out. NVIDIA readings have an independent, current source.
+            if result.get("gpuSource") != "NVIDIA SMI":
+                for key in GPU_SENSOR_FIELDS + ("gpuSource",):
+                    result[key] = None
         return result
+
+
+@app.get("/api/status")
+def get_status(authorization: str = Header(None)):
+    verify_token(authorization)
+    return status_snapshot()
+
+
+@app.post("/api/widget/pairing")
+def widget_pairing(authorization: str = Header(None)):
+    verify_token(authorization)
+    return {"token": WIDGET_TOKEN}
+
+
+@app.get("/api/widget/status")
+def widget_status(authorization: str = Header(None)):
+    if not WIDGET_TOKEN or not isinstance(authorization, str) or not hmac.compare_digest(authorization, f"Bearer {WIDGET_TOKEN}"):
+        raise HTTPException(status_code=401, detail="Invalid Orbit widget token", headers={"WWW-Authenticate": "Bearer"})
+    status = status_snapshot()
+    available = bool(status.get("telemetryAvailable"))
+    sample_time = None
+    try:
+        parsed = datetime.fromisoformat(status.get("lastUpdated") or "")
+        if parsed.tzinfo is not None:
+            sample_time = parsed.timestamp()
+    except (ValueError, TypeError):
+        pass
+    result = {"pc_name": status.get("hostname") or "PC", "timestamp": sample_time,
+              "telemetry_available": available}
+    mapping = {"cpu_usage": "cpuUsage", "gpu_usage": "gpuUsage", "cpu_temp": "cpuTemp", "gpu_temp": "gpuTemp",
+               "vram_used": "vramUsedGB", "vram_total": "vramTotalGB", "cpu_power": "cpuPowerWatts",
+               "gpu_power": "gpuPowerWatts", "cpu_clock": "cpuClockMHz", "cpu_fan": "cpuFanRPM",
+               "gpu_fan": "gpuFanPercent", "coolant_temp": "liquidTemp", "disk_read": "diskReadMBps",
+               "disk_write": "diskWriteMBps", "network_download": "networkDownloadMBps",
+               "network_upload": "networkUploadMBps", "fps": "fps", "game_name": "activeGame"}
+    result.update({key: status.get(source) if available else None for key, source in mapping.items()})
+    total = status.get("ramTotalGB") or 0
+    result["ram_usage"] = round(status["ramUsedGB"] / total * 100, 1) if available and total > 0 else None
+    return result
+
+
+@app.get("/api/processes")
+def list_processes(authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    return collect_processes()
+
+
+@app.post("/api/processes/{pid}/terminate")
+def end_process(pid: int, expectedCreateTime: float = Query(..., gt=0), force: bool = False,
+                authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    if not math.isfinite(expectedCreateTime):
+        raise HTTPException(status_code=422, detail="A valid process creation time is required")
+    try:
+        return terminate_process(pid, expectedCreateTime, force)
+    except ProcessLookupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except psutil.Error as error:
+        raise HTTPException(status_code=503, detail="Windows could not complete the process request") from error
 
 
 @app.post("/api/volume")
@@ -481,7 +610,7 @@ async def websocket_video_stream(websocket: WebSocket):
 if __name__ == "__main__":
     API_TOKEN = load_api_token()
     network = get_local_network_details()
-    print(f"Orbit PC Companion · port {AGENT_PORT}")
+    print(f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}")
     print(f"PC IP: {network['ipAddress'] or 'No active LAN adapter'}")
     print(f"Pairing token (enter in the iPhone app): {API_TOKEN}")
     print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")

@@ -21,17 +21,17 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
 
     deinit { stateTask?.cancel() }
 
-    func start(pcName: String, cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?) async {
+    func start(pcName: String, cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true) async {
         lastError = nil
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             lastError = "Live Activities are unavailable or disabled. Enable them for Orbit in iPhone Settings."
             return
         }
         if isActive {
-            await update(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true)
+            await update(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
             return
         }
-        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true)
+        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
         do {
             let created = try Activity.request(
                 attributes: OrbitActivityAttributes(pcName: String(pcName.prefix(80))),
@@ -48,12 +48,13 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
     /// Called after successful polling, or once with isConnected=false on failure.
     /// iOS may suspend polling when Orbit is in the background. The stale date
     /// makes that limitation visible instead of presenting old numbers as live.
-    func update(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool) async {
+    func update(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true) async {
         guard let activity, isActive else { return }
         let connectionChanged = activity.content.state.isConnected != isConnected
-        guard connectionChanged || Date().timeIntervalSince(lastPublishedAt) >= 5 else { return }
+        let availabilityChanged = activity.content.state.telemetryAvailable != telemetryAvailable
+        guard connectionChanged || availabilityChanged || Date().timeIntervalSince(lastPublishedAt) >= 5 else { return }
         lastPublishedAt = Date()
-        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: isConnected)
+        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: isConnected, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
         await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(15)))
     }
 
@@ -86,16 +87,23 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
         }
     }
 
-    private func snapshot(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool) -> OrbitActivityAttributes.ContentState {
+    private func snapshot(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double?, vramTotalGB: Double?, cpuPowerWatts: Double?, gpuPowerWatts: Double?, focus: String, telemetryAvailable: Bool) -> OrbitActivityAttributes.ContentState {
         func percentage(_ value: Double?) -> Double? {
-            guard let value, value.isFinite else { return nil }
+            guard telemetryAvailable, let value, value.isFinite else { return nil }
             return min(100, max(0, value))
+        }
+        func nonnegative(_ value: Double?) -> Double? {
+            telemetryAvailable ? value.flatMap { $0.isFinite && $0 >= 0 && $0 <= 1_000_000 ? $0 : nil } : nil
         }
         return OrbitActivityAttributes.ContentState(
             cpuUsage: percentage(cpuUsage), gpuUsage: percentage(gpuUsage), ramUsage: percentage(ramUsage),
-            fps: fps.flatMap { $0.isFinite && $0 >= 0 && $0 <= 100_000 ? $0 : nil },
-            gameName: gameName.map { String($0.prefix(80)) },
-            isConnected: isConnected, lastUpdated: Date()
+            fps: telemetryAvailable ? fps.flatMap { $0.isFinite && $0 >= 0 && $0 <= 100_000 ? $0 : nil } : nil,
+            gameName: telemetryAvailable ? gameName.map { String($0.prefix(80)) } : nil,
+            isConnected: isConnected, lastUpdated: Date(),
+            vramUsedGB: nonnegative(vramUsedGB), vramTotalGB: nonnegative(vramTotalGB),
+            cpuPowerWatts: nonnegative(cpuPowerWatts), gpuPowerWatts: nonnegative(gpuPowerWatts),
+            focus: ["overview", "gaming", "power"].contains(focus) ? focus : "overview",
+            telemetryAvailable: telemetryAvailable
         )
     }
 }

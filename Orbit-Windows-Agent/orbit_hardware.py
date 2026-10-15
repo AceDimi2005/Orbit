@@ -9,9 +9,12 @@ import json
 import math
 import os
 import platform
+import re
 import socket
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +23,9 @@ import psutil
 
 GIB = 1024 ** 3
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+SENSOR_FIELDS = ("cpuTemp", "liquidTemp", "cpuPowerWatts", "cpuFanRPM", "cpuClockMHz", "cpuClockSource")
+GPU_SENSOR_FIELDS = ("gpuTemp", "gpuUsage", "gpuPowerWatts", "gpuFanPercent", "vramUsedGB", "vramTotalGB")
+RATE_FIELDS = ("diskReadMBps", "diskWriteMBps", "networkUploadMBps", "networkDownloadMBps")
 
 
 def timestamp():
@@ -149,7 +155,7 @@ def inventory_from_cim(raw, specs):
 def nvidia_metrics():
     try:
         output = subprocess.check_output([
-            "nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,power.draw,memory.used,memory.total,driver_version",
+            "nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,power.draw,memory.used,memory.total,driver_version,fan.speed",
             "--format=csv,noheader,nounits"], encoding="utf-8", timeout=2,
             creationflags=CREATE_NO_WINDOW, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
@@ -163,7 +169,7 @@ def nvidia_metrics():
         result.append({"gpuName": values[0], "gpuTemp": number(values[1]), "gpuUsage": number(values[2]),
                        "gpuPowerWatts": number(values[3]), "vramUsedGB": round(used / 1024, 2) if used is not None else None,
                        "vramTotalGB": round(total / 1024, 2) if total is not None else None,
-                       "driverVersion": values[6]})
+                       "driverVersion": values[6], "gpuFanPercent": number(values[7]) if len(values) > 7 else None})
     return result
 
 
@@ -184,36 +190,336 @@ def collect_specs():
     return specs
 
 
-def temperature_metrics():
-    """Use real sensors only; ACPI thermal zones are not CPU-package temperatures."""
-    result = {"cpuTemp": None, "liquidTemp": None}
-    if os.name == "nt":
-        try:
-            sensors = powershell_json(r"""
-            $ErrorActionPreference = 'Stop'
-            @(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor |
-              Where-Object SensorType -eq 'Temperature' |
-              Select-Object Name,Identifier,Value) | ConvertTo-Json -Compress
-            """, timeout=4)
-            for sensor in as_list(sensors):
-                label = str(sensor.get("Name", "")).lower()
-                identifier = str(sensor.get("Identifier", "")).lower()
-                value = number(sensor.get("Value"))
-                if value is None:
-                    continue
-                if "cpu" in identifier and ("package" in label or "tctl" in label or "tdie" in label):
-                    result["cpuTemp"] = value
-                if "liquid" in label or "coolant" in label:
-                    result["liquidTemp"] = value
-        except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-            pass
+def librehardware_metrics(sensors):
+    """Read actual CPU/GPU sensors from one package and one adapter at a time."""
+    result = dict.fromkeys(SENSOR_FIELDS + GPU_SENSOR_FIELDS + ("gpuSensorName",))
+    readings = []
+    gpu_names = {}
+    for sensor in as_list(sensors):
+        if not isinstance(sensor, dict):
+            continue
+        value = number(sensor.get("Value"))
+        if value is None or value < 0:
+            continue
+        label = " ".join(str(sensor.get("Name", "")).lower().split())
+        identifier = str(sensor.get("Identifier") or "").lower()
+        parent = str(sensor.get("Parent") or "").lower()
+        cpu = re.match(r"^/(?:intelcpu|amdcpu|cpu)/(\d+)(?:/|$)", parent)
+        if not cpu:
+            cpu = re.match(r"^/(?:intelcpu|amdcpu|cpu)/(\d+)(?:/|$)", identifier)
+        gpu = re.match(r"^/(gpu-(?:nvidia|amd|ati|intel))/([^/]+)(?:/|$)", parent)
+        if not gpu:
+            gpu = re.match(r"^/(gpu-(?:nvidia|amd|ati|intel))/([^/]+)(?:/|$)", identifier)
+        if gpu and sensor.get("HardwareName"):
+            gpu_names[(gpu[1], gpu[2])] = str(sensor["HardwareName"]).strip() or None
+        readings.append((str(sensor.get("SensorType") or "").lower(), label, identifier,
+                         int(cpu[1]) if cpu else None, value,
+                         (gpu[1], gpu[2]) if gpu else None))
+    # Prefer CPU 0 (or the first available package) consistently across types.
+    cpu_index = min((r[3] for r in readings if r[3] is not None), default=None)
+    selected = [r for r in readings if r[3] is not None and r[3] == cpu_index]
+    temperatures = sorted((r for r in selected if r[0] == "temperature" and
+                           any(part in r[1] for part in ("package", "tctl", "tdie"))),
+                          key=lambda r: ("package" not in r[1], "tdie" not in r[1], r[2]))
+    if temperatures:
+        result["cpuTemp"] = temperatures[0][4]
     else:
-        for name, entries in getattr(psutil, "sensors_temperatures", lambda: {})().items():
-            if name.lower() not in {"coretemp", "k10temp", "cpu_thermal"}:
+        # Some CPUs expose only cores/CCD sensors, without a package reading.
+        cores = [r[4] for r in selected if r[0] == "temperature" and
+                 re.match(r"^(?:cpu )?(?:core(?:s|\s|#|$)|ccd(?:\s|#|\d|$))", r[1]) and
+                 "distance" not in r[1] and "tjmax" not in r[1]]
+        if cores:
+            result["cpuTemp"] = max(cores)
+    packages = sorted((r for r in selected if r[0] == "power" and r[1] in {"cpu package", "package"}),
+                      key=lambda r: r[2])
+    if packages:
+        result["cpuPowerWatts"] = packages[0][4]
+    clocks = [r[4] for r in selected if r[0] == "clock" and
+              re.match(r"^(?:cpu )?core(?:\s|#|$)", r[1]) and r[4] > 0]
+    if clocks:
+        result["cpuClockMHz"] = round(sum(clocks) / len(clocks), 1)
+        result["cpuClockSource"] = "LibreHardwareMonitor · core average"
+    # A generic Fan #1 or pump cannot reliably be identified as the CPU fan.
+    fans = sorted((r for r in readings if r[0] == "fan" and
+                   re.match(r"^cpu(?:\s|_)?fan(?:\s|#|$)", r[1])), key=lambda r: r[2])
+    if fans:
+        result["cpuFanRPM"] = fans[0][4]
+    liquids = sorted((r for r in readings if r[0] == "temperature" and
+                      ("liquid" in r[1] or "coolant" in r[1])), key=lambda r: r[2])
+    if liquids:
+        result["liquidTemp"] = liquids[0][4]
+
+    adapters = {r[5] for r in readings if r[5] is not None}
+    if adapters:
+        # Align the fallback with nvidia-smi when present. Never mix two GPUs.
+        rank = {"gpu-nvidia": 0, "gpu-amd": 1, "gpu-ati": 1, "gpu-intel": 2}
+        adapter = min(adapters, key=lambda item: (rank[item[0]], item[1]))
+        result["gpuSensorName"] = gpu_names.get(adapter)
+        gpu_readings = sorted((r for r in readings if r[5] == adapter), key=lambda r: r[2])
+        for field, kind, names in (
+            ("gpuTemp", "temperature", ("gpu core", "gpu temperature")),
+            ("gpuUsage", "load", ("gpu core", "gpu d3d 3d", "d3d 3d")),
+            ("gpuPowerWatts", "power", ("gpu package", "gpu power", "gpu total", "gpu board power")),
+            ("gpuFanPercent", "control", ("gpu fan",)),
+            ("vramUsedGB", "gib", ("gpu memory used", "d3d dedicated memory used")),
+            ("vramTotalGB", "gib", ("gpu memory total", "d3d dedicated memory total")),
+        ):
+            for name in names:
+                value = next((r[4] for r in gpu_readings if r[0] == kind and r[1] == name), None)
+                if value is not None:
+                    result[field] = round(value, 2) if kind == "gib" else value
+                    break
+        for field in ("gpuUsage", "gpuFanPercent"):
+            if result[field] is not None and result[field] > 100:
+                result[field] = None
+    return result
+
+
+def _http_sensor_value(node):
+    """Normalize the HTTP server's units; RawValue temperatures are always Celsius."""
+    kind = str(node.get("Type") or "").lower()
+    raw = number(node.get("RawValue"))
+    if "RawValue" in node and raw is None:
+        return None, kind
+    text = str(node.get("Value") or "").strip().replace("\u2212", "-")
+    match = re.fullmatch(r"(-?\d+(?:[.,]\d+)?)\s*(.*)", text)
+    value = number(match[1].replace(",", ".")) if match else None
+    unit = match[2].strip().lower() if match else ""
+    if kind in {"data", "smalldata"}:
+        # LHM changed Data from GiB/MiB to bytes. The formatted unit is explicit
+        # in every version, so do not guess raw memory units from magnitude.
+        scales = {"b": 1 / GIB, "kb": 1 / 1024 ** 2, "kib": 1 / 1024 ** 2,
+                  "mb": 1 / 1024, "mib": 1 / 1024, "gb": 1, "gib": 1,
+                  "tb": 1024, "tib": 1024}
+        return (value * scales[unit], "gib") if value is not None and unit in scales else (None, "gib")
+    if raw is not None:
+        return raw, kind
+    if value is None:
+        return None, kind
+    if kind == "temperature":
+        if unit in {"°f", "f"}:
+            return (value - 32) * 5 / 9, kind
+        return (value, kind) if unit in {"°c", "c"} else (None, kind)
+    if kind == "clock":
+        return (value * {"mhz": 1, "ghz": 1000, "khz": .001}[unit], kind) if unit in {"mhz", "ghz", "khz"} else (None, kind)
+    expected = {"power": "w", "fan": "rpm", "load": "%", "control": "%"}
+    return (value, kind) if expected.get(kind) == unit else (None, kind)
+
+
+def librehardware_http_sensors(document):
+    """Flatten official data.json (including old versions without HardwareId)."""
+    sensors = []
+    pending = [(node, "", None) for node in as_list(document)]
+    while pending:
+        node, parent, hardware_name = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        if node.get("HardwareId"):
+            parent = str(node["HardwareId"])
+            hardware_name = node.get("Text")
+        identifier = node.get("SensorId")
+        if identifier:
+            value, kind = _http_sensor_value(node)
+            sensors.append({"Name": node.get("Text"), "SensorType": kind, "Value": value,
+                            "Identifier": identifier, "Parent": parent, "HardwareName": hardware_name})
+        pending.extend((child, parent, hardware_name) for child in as_list(node.get("Children")))
+    return sensors
+
+
+def query_librehardware_http():
+    """Read LHM on this PC only; bypass proxy settings for the loopback endpoint."""
+    url = os.getenv("ORBIT_LHM_URL", "http://127.0.0.1:8085/data.json").strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.username or parsed.password:
+        raise ValueError("ORBIT_LHM_URL must be a local HTTP URL, e.g. http://127.0.0.1:8085/data.json")
+    if parsed.path in {"", "/"}:
+        url = url.rstrip("/") + "/data.json"
+    # A local sensor source must not redirect to a remote host.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=2) as response:
+        payload = response.read(2_000_001)
+    if len(payload) > 2_000_000:
+        raise ValueError("LibreHardwareMonitor JSON is too large")
+    return librehardware_http_sensors(json.loads(payload.decode("utf-8-sig")))
+
+
+def sensor_metrics():
+    """Use exposed sensors only; clock fallback is explicitly marked nominal."""
+    result = dict.fromkeys(SENSOR_FIELDS + GPU_SENSOR_FIELDS + ("gpuSensorName", "sensorSource", "sensorStatus"))
+    if os.name == "nt":
+        # New LHM versions removed WMI. Prefer their HTTP API, then retain WMI
+        # compatibility for older LHM/OpenHardwareMonitor installations.
+        try:
+            sensors = query_librehardware_http()
+            result.update(librehardware_metrics(sensors))
+            if sensors:
+                result["sensorSource"] = "LibreHardwareMonitor · HTTP"
+        except (OSError, ValueError, TypeError):
+            pass
+        if result["sensorSource"] is None:
+            try:
+                sensors = powershell_json(r"""
+                $ErrorActionPreference = 'Stop'
+                $sensors = @()
+                foreach ($namespace in @('root/LibreHardwareMonitor', 'root/OpenHardwareMonitor')) {
+                  try {
+                    $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -ErrorAction Stop |
+                      Where-Object { $_.SensorType -in @('Temperature','Power','Fan','Clock','Load','Control') } |
+                      Select-Object Name,Identifier,Parent,SensorType,Value)
+                    if ($sensors.Count -gt 0) { break }
+                  } catch { }
+                }
+                ConvertTo-Json -InputObject @($sensors) -Compress
+                """, timeout=4)
+                wmi = librehardware_metrics(sensors)
+                result.update({key: value for key, value in wmi.items() if value is not None})
+                if sensors:
+                    result["sensorSource"] = "Hardware monitor · WMI"
+            except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+                pass
+    else:
+        try:
+            for name, entries in getattr(psutil, "sensors_temperatures", lambda: {})().items():
+                if name.lower() not in {"coretemp", "k10temp", "cpu_thermal"}:
+                    continue
+                valid = [number(e.current) for e in entries if number(e.current) is not None and e.current >= 0]
+                if valid:
+                    result["cpuTemp"] = max(valid)
+                    result["sensorSource"] = "System sensors"
+        except (AttributeError, OSError, RuntimeError, NotImplementedError):
+            pass
+    if result["cpuTemp"] is not None:
+        result["sensorStatus"] = "Temperature sensors connected."
+    elif result["sensorSource"] is not None:
+        result["sensorStatus"] = "Hardware monitor connected, but no CPU temperature sensor was exposed. Check sensor access and CPU support."
+    elif os.name == "nt":
+        result["sensorStatus"] = "Open LibreHardwareMonitor as administrator and enable Options → Remote Web Server → Run (port 8085)."
+    else:
+        result["sensorStatus"] = "No supported temperature sensors are exposed by this system."
+    if result["cpuClockMHz"] is None:
+        try:
+            frequency = psutil.cpu_freq()
+            current = number(frequency.current) if frequency is not None else None
+            if current is not None and current > 0:
+                result["cpuClockMHz"] = round(current, 1)
+                result["cpuClockSource"] = "System · current clock" if platform.system() == "Linux" else "System · nominal clock"
+        except (AttributeError, OSError, RuntimeError, NotImplementedError):
+            pass
+    return result
+
+
+def temperature_metrics():
+    """Compatibility wrapper for clients that need only the historic temperatures."""
+    readings = sensor_metrics()
+    return {key: readings[key] for key in ("cpuTemp", "liquidTemp")}
+
+
+class IOCounterRates:
+    """Per-device monotonic deltas in decimal MB/s; no invented first/reset rate.
+
+    A hotplugged or reset device primes itself without dropping healthy devices.
+    Missing counters invalidate only that device/direction until its next sample.
+    """
+    def __init__(self):
+        self.previous = {}
+
+    def sample(self, disks, networks, now=None):
+        now = number(time.monotonic() if now is None else now)
+        result = dict.fromkeys(RATE_FIELDS)
+        if now is None:
+            return result
+
+        def byte_count(value):
+            # Preserve integers: casting large lifetime counters to float first
+            # erases small deltas (and low traffic) once a counter exceeds 2**53.
+            value = value if isinstance(value, int) else number(value)
+            return value if value is not None and value >= 0 else None
+
+        for group, counters, pairs in (
+            ("disk", disks, (("read_bytes", "diskReadMBps"), ("write_bytes", "diskWriteMBps"))),
+            ("network", networks, (("bytes_sent", "networkUploadMBps"), ("bytes_recv", "networkDownloadMBps"))),
+        ):
+            previous = self.previous.get(group)
+            if previous and now <= previous[0]:
+                # A duplicate/backward clock must not replace the last valid
+                # baseline and turn the next interval into a fabricated spike.
                 continue
-            valid = [e.current for e in entries if number(e.current) is not None]
-            if valid:
-                result["cpuTemp"] = max(valid)
+            snapshot = {name: {attribute: byte_count(getattr(counter, attribute, None)) for attribute, _ in pairs}
+                        for name, counter in (counters or {}).items()}
+            self.previous[group] = (now, snapshot) if snapshot else None
+            if not previous or not snapshot:
+                continue
+            elapsed = now - previous[0]
+            for attribute, field in pairs:
+                deltas = []
+                for name, values in snapshot.items():
+                    old, new = previous[1].get(name, {}).get(attribute), values[attribute]
+                    if old is None or new is None or new < old:
+                        continue
+                    deltas.append(new - old)
+                if deltas:
+                    # Leave formatting to clients; 3 decimal places hides all
+                    # activity below 500 bytes/s and makes idle links look stuck.
+                    result[field] = sum(deltas) / elapsed / 1_000_000
+        return result
+
+
+def network_counters_for_monitoring(counters):
+    """Select active interfaces, excluding local/tunnel duplication when known.
+
+    psutil exposes no portable physical-adapter flag. Only exclude confidently
+    identified loopback/virtual adapters; an exact ORBIT_NETWORK_INTERFACE lets
+    custom networks and VPNs select their intended accounting boundary.
+    """
+    if counters is None:
+        return None
+    configured = os.getenv("ORBIT_NETWORK_INTERFACE", "").strip().casefold()
+    if configured:
+        return {name: values for name, values in counters.items() if name.casefold() == configured}
+    try:
+        stats = psutil.net_if_stats()
+    except (OSError, RuntimeError, NotImplementedError):
+        stats = {}
+    try:
+        addresses = psutil.net_if_addrs()
+    except (OSError, RuntimeError, NotImplementedError):
+        addresses = {}
+    selected = {}
+    for name, values in counters.items():
+        label = name.strip().casefold()
+        if ("loopback" in label or re.match(r"^lo\d*$", label) or
+                re.match(r"^(?:utun|tun|tap|veth|vmnet|vboxnet)\d*(?:\W|$)", label) or
+                label.startswith(("vethernet", "vmware network adapter", "virtualbox", "docker", "isatap", "teredo",
+                                  "tailscale", "wireguard", "zerotier", "hamachi"))):
+            continue
+        status = stats.get(name)
+        flags = str(getattr(status, "flags", "")).casefold().split(",")
+        if status is not None and (not status.isup or "loopback" in flags):
+            continue
+        ips = [address.address.split("%", 1)[0] for address in addresses.get(name, [])
+               if address.family in (socket.AF_INET, socket.AF_INET6)]
+        if ips and all(ip.startswith("127.") or ip == "::1" for ip in ips):
+            continue
+        selected[name] = values
+    return selected
+
+
+def io_metrics(rates):
+    # Disable psutil's wrap cache so a reset can be recognized and re-primed.
+    try:
+        disks = psutil.disk_io_counters(perdisk=True, nowrap=False)
+    except (OSError, RuntimeError, NotImplementedError):
+        disks = None
+    try:
+        networks = psutil.net_io_counters(pernic=True, nowrap=False)
+    except (OSError, RuntimeError, NotImplementedError):
+        networks = None
+    networks = network_counters_for_monitoring(networks)
+    result = rates.sample(disks, networks)
+    result["networkInterface"] = ", ".join(sorted(networks)) if networks else None
     return result
 
 
@@ -224,25 +530,38 @@ def foreground_pid():
     user32 = ctypes.windll.user32
     user32.GetForegroundWindow.restype = ctypes.c_void_p
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
-    return pid.value
+    window = user32.GetForegroundWindow()
+    if not window:
+        return None
+    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+    return pid.value or None
+
+
+def _exe_name(value):
+    # Windows paths must also normalize correctly in tests on macOS/Linux.
+    return str(value or "").replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+
+
+def _game_process_names():
+    return {_exe_name(n): _exe_name(n).removesuffix(".exe")
+            for n in os.getenv("ORBIT_GAME_PROCESSES", "").split(";") if n.strip()}
 
 
 def detect_game(configured=None):
     """Recognize user-selected exe names or games in standard launcher libraries."""
-    configured = configured or {n.strip().lower(): Path(n.strip()).stem
-                                for n in os.getenv("ORBIT_GAME_PROCESSES", "").split(";") if n.strip()}
+    configured = _game_process_names() if configured is None else {
+        _exe_name(name): title for name, title in configured.items()}
     foreground = foreground_pid()
     candidates = []
     for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
         try:
             info = process.info
-            name = (info.get("name") or "").lower()
+            name = _exe_name(info.get("name"))
             path = (info.get("exe") or "").replace("\\", "/").lower()
             library = any(part in path for part in ("/steamapps/common/", "/epic games/", "/gog games/"))
             helper = any(part in name for part in ("crash", "launcher", "unins", "helper", "webhelper", "setup", "anticheat"))
             if name in configured or (library and not helper and name.endswith(".exe")):
-                candidates.append({"name": configured.get(name) or Path(info["name"]).stem,
+                candidates.append({"name": configured.get(name) or name.removesuffix(".exe"),
                                    "process": info["name"], "pid": info["pid"],
                                    "foreground": info["pid"] == foreground, "created": info.get("create_time") or 0})
         except (psutil.Error, OSError):
@@ -250,59 +569,150 @@ def detect_game(configured=None):
     return max(candidates, key=lambda g: (g["foreground"], g["created"]), default=None)
 
 
-def read_presentmon(path, game, now=None):
-    """Read a bounded tail, isolate the game/PID/swap chain, reject stale frames.
+# Remember actual frame progress: Windows can defer LastWriteTime updates until
+# the capture closes its write handle. Merely touching an old CSV is not progress.
+_PRESENTMON_PROGRESS = {}
+_PRESENTMON_DESKTOP_PROCESSES = {
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
+    "chromium.exe", "browser.exe", "msedgewebview2.exe", "discord.exe",
+    "dwm.exe", "explorer.exe", "applicationframehost.exe", "taskmgr.exe",
+    "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe", "obs64.exe",
+    "cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe",
+    "python.exe", "pythonw.exe", "code.exe", "devenv.exe", "orbit.exe",
+    "shellexperiencehost.exe", "searchhost.exe", "startmenuexperiencehost.exe",
+}
 
-    FPS is application present rate, not displayed/generated-frame FPS. Supported
-    CSVs have Application, ProcessID, SwapChainAddress, TimeInSeconds/TimeInMs,
-    and MsBetweenPresents (case-insensitive).
+
+def _presentmon_game(rows):
+    """A live foreground capture can identify games installed outside libraries.
+
+    Do not guess a game from the busiest background process: browsers, desktop
+    composition, overlays and media applications also submit frames.
+    """
+    foreground = foreground_pid()
+    if not foreground:
+        return None
+    names = {row["process"] for row in rows if row["pid"] == foreground}
+    if not names:
+        return None
+    configured = _game_process_names()
+    try:
+        process = psutil.Process(foreground)
+        name = _exe_name(process.name())
+        if not process.is_running() or name not in names:
+            return None
+        helper = any(part in name for part in ("launcher", "helper", "crash", "anticheat", "unins", "setup"))
+        if name not in configured and (name in _PRESENTMON_DESKTOP_PROCESSES or helper or not name.endswith(".exe")):
+            return None
+        return {"name": configured.get(name) or name.removesuffix(".exe"),
+                "process": name, "pid": foreground, "foreground": True}
+    except (psutil.Error, OSError):
+        return None
+
+
+def _presentmon_fresh(file, stat, game, chain, marker, now):
+    key = (str(file.resolve()), game["pid"], chain)
+    previous = _PRESENTMON_PROGRESS.get(key)
+    identity = (stat.st_dev, stat.st_ino)
+    if previous is None or previous["identity"] != identity or now < previous["seen"]:
+        advanced = min(now, stat.st_mtime)
+    elif marker != previous["marker"]:
+        advanced = now
+    else:
+        advanced = previous["advanced"]
+    _PRESENTMON_PROGRESS[key] = {"identity": identity, "marker": marker,
+                                 "advanced": advanced, "seen": now}
+    # A long-running agent must not accumulate every historical capture/PID.
+    while len(_PRESENTMON_PROGRESS) > 64:
+        del _PRESENTMON_PROGRESS[next(iter(_PRESENTMON_PROGRESS))]
+    return now - advanced <= 5
+
+
+def read_presentmon(path, game, now=None):
+    """Read bounded live CSV data, keeping process and swap-chain FPS separate.
+
+    Support legacy v1, current default metrics, and native v2 CPU frame timing.
+    FPS is measured from frame intervals, never inferred from GPU utilization.
+    Native v2's FrameTime is a CPU frame-start interval rather than displayed FPS.
     """
     def missing(reason):
         return {"fps": None, "fpsSource": None, "fpsUnavailableReason": reason}
-    if not game:
-        return missing("No supported game process detected")
-    if not path:
-        return missing("Configure ORBIT_PRESENTMON_CSV to enable FPS")
+
+    path = path or os.getenv("ORBIT_PRESENTMON_CSV") or os.getenv("ORBIT_PRESENTATION_CSV")
+    if not path or not str(path).strip():
+        return missing("Configure ORBIT_PRESENTMON_CSV and start a live PresentMon capture")
     now = time.time() if now is None else now
     try:
-        file = Path(path)
-        if now - file.stat().st_mtime > 5:
-            return missing("PresentMon capture is stale or stopped")
+        file = Path(os.path.expandvars(str(path).strip().strip('"'))).expanduser()
         with file.open("rb") as stream:
-            header = stream.readline().decode("utf-8-sig").strip()
+            header = stream.readline(32768).decode("utf-8-sig", errors="replace").strip()
             header_end = stream.tell()
             stream.seek(0, 2)
-            start = max(header_end, stream.tell() - 262144)
+            start = max(header_end, stream.tell() - 524288)
             stream.seek(start)
             if start > header_end:
-                stream.readline()  # Skip the first potentially partial record.
-            data = stream.read().decode("utf-8", errors="replace")
-        # The writer may currently be halfway through the final CSV record.
+                stream.readline(32768)  # Skip a potentially partial record.
+            data = stream.read(524288).decode("utf-8", errors="replace")
+            stat = os.fstat(stream.fileno())
+        if not header:
+            return missing("PresentMon CSV is empty; start recording frames")
+        # A writer can be halfway through its final CSV record.
         if data and not data.endswith("\n"):
             data = data.rsplit("\n", 1)[0] if "\n" in data else ""
         fields = [h.strip().lower() for h in next(csv.reader([header]))]
-        time_column = "timeinseconds" if "timeinseconds" in fields else "timeinms"
-        required = {"application", "processid", "swapchainaddress", "msbetweenpresents", time_column}
-        if not required.issubset(fields):
-            return missing("Unsupported PresentMon CSV; use --v1_metrics")
+        time_units = (("timeinseconds", 1), ("timeinms", .001),
+                      ("cpustarttimeinseconds", 1), ("cpustarttimeinms", .001),
+                      ("cpustartqpctimeinms", .001), ("cpustartqpctime", .001),
+                      ("cpustarttime", .001))
+        timing = next(((field, unit) for field, unit in time_units if field in fields), None)
+        interval = "msbetweenpresents" if "msbetweenpresents" in fields else "frametime"
+        required = {"application", "processid", "swapchainaddress", interval}
+        if not timing or not required.issubset(fields):
+            return missing("Unsupported PresentMon CSV; use --v1_metrics without --qpc_time or --date_time")
+        time_column, scale = timing
         latest = 0.0
-        groups = defaultdict(list)
-        for row in csv.DictReader(io.StringIO(data), fieldnames=fields):
-            t = number(row.get(time_column))
-            if t is None:
+        rows = []
+        for values in csv.reader(io.StringIO(data)):
+            if len(values) != len(fields):
                 continue
-            t = t / 1000 if time_column == "timeinms" else t
+            row = dict(zip(fields, (value.strip() for value in values)))
+            t, duration = number(row.get(time_column)), number(row.get(interval))
+            if t is None or t < 0:
+                continue
+            t *= scale
             latest = max(latest, t)
-            if (row.get("application") or "").lower() != game["process"].lower() or row.get("processid") != str(game["pid"]):
+            pid = row.get("processid", "")
+            chain = row.get("swapchainaddress")
+            if not pid.isdecimal() or not chain or duration is None or not 0 < duration <= 60000:
                 continue
-            duration = number(row.get("msbetweenpresents"))
-            if duration is not None and 0 < duration <= 1000:
-                groups[row.get("swapchainaddress")].append((t, duration))
-        samples = [[d for t, d in rows if latest - t <= 2] for rows in groups.values()]
-        frames = max(samples, key=len, default=[])
+            # Generated/repeated frames are not extra application CPU frames.
+            if row.get("frametype", "application").lower().replace(" ", "") not in {
+                "application", "notset", "unspecified", "0", "1", "2"
+            }:
+                continue
+            rows.append({"process": _exe_name(row.get("application")), "pid": int(pid),
+                         "chain": chain.lower(), "time": t, "duration": duration})
+        selected = game
+        if not game or game.get("foreground") is False:
+            selected = _presentmon_game(rows) or game
+        if not selected:
+            return missing("No game detected; focus the game or set ORBIT_GAME_PROCESSES to its executable name")
+        groups = defaultdict(list)
+        for row in rows:
+            if row["process"] == _exe_name(selected["process"]) and row["pid"] == selected["pid"] and latest - row["time"] <= 2:
+                groups[row["chain"]].append((row["time"], row["duration"]))
+        chain, frames = max(groups.items(), key=lambda item: len(item[1]), default=(None, []))
         if len(frames) < 2:
-            return missing("Waiting for fresh frames from the active game")
-        return {"fps": round(1000 * len(frames) / sum(frames), 1),
-                "fpsSource": "PresentMon · application FPS", "fpsUnavailableReason": None}
+            return missing("Waiting for fresh frames from the active game; check PresentMon's --process_name and the CSV path")
+        if not _presentmon_fresh(file, stat, selected, chain, max(t for t, _ in frames), now):
+            return missing("PresentMon capture is stale or stopped; keep recording to the configured CSV")
+        result = {"fps": round(1000 * len(frames) / sum(d for _, d in frames), 1),
+                  "fpsSource": "PresentMon · application FPS" if interval == "msbetweenpresents" else "PresentMon · CPU frame FPS",
+                  "fpsUnavailableReason": None}
+        if selected is not game:
+            result.update(activeGame=selected["name"], activeGameProcess=selected["process"])
+        return result
+    except FileNotFoundError:
+        return missing("PresentMon CSV does not exist; start PresentMon with --output_file matching ORBIT_PRESENTMON_CSV")
     except (OSError, ValueError, csv.Error):
-        return missing("PresentMon CSV is missing or unreadable")
+        return missing("PresentMon CSV is unreadable; check the configured path and file permissions")

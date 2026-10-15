@@ -8,6 +8,11 @@ import Security
 // Missing sensors stay optional. An unavailable temperature is never estimated from load.
 struct PCMetrics: Codable {
     var hostname: String = "Your PC"
+    var agentVersion: String? = nil
+    var sensorSource: String? = nil
+    var sensorStatus: String? = nil
+    var gpuSource: String? = nil
+    var networkInterface: String? = nil
     var cpuName: String = "Processor"
     var motherboard: String = "Unavailable"
     var coolerName: String = "Unavailable"
@@ -19,6 +24,15 @@ struct PCMetrics: Codable {
     var gpuTemp: Double? = nil
     var gpuUsage: Double? = nil
     var gpuPowerWatts: Double? = nil
+    var cpuPowerWatts: Double? = nil
+    var cpuClockMHz: Double? = nil
+    var cpuClockSource: String? = nil
+    var cpuFanRPM: Double? = nil
+    var gpuFanPercent: Double? = nil
+    var diskReadMBps: Double? = nil
+    var diskWriteMBps: Double? = nil
+    var networkUploadMBps: Double? = nil
+    var networkDownloadMBps: Double? = nil
     var vramUsedGB: Double? = nil
     var vramTotalGB: Double? = nil
     var ramUsedGB: Double = 0
@@ -45,7 +59,13 @@ struct PCMetrics: Codable {
         m.cpuName = "Example 8-core processor"
         m.gpuName = "Example graphics card"
         m.isOnline = true
+        m.agentVersion = "3.1.0 · preview"; m.sensorSource = "Simulated preview"
+        m.sensorStatus = "Simulated temperature readings"; m.gpuSource = "Simulated preview"; m.networkInterface = "Example Ethernet"
         m.cpuTemp = 48; m.cpuUsage = 24; m.gpuTemp = 56; m.gpuUsage = 36
+        m.cpuPowerWatts = 58; m.cpuClockMHz = 4250; m.cpuClockSource = "Simulated preview"
+        m.cpuFanRPM = 980; m.gpuFanPercent = 42
+        m.diskReadMBps = 42.6; m.diskWriteMBps = 12.8
+        m.networkUploadMBps = 0.84; m.networkDownloadMBps = 8.6
         m.gpuPowerWatts = 110; m.ramUsedGB = 12.4; m.ramTotalGB = 32
         m.vramUsedGB = 4; m.vramTotalGB = 12; m.ssdUsedTB = 0.68; m.ssdTotalTB = 1.82
         m.uptimeSeconds = 10200; m.volume = 40
@@ -68,6 +88,27 @@ struct PCSpecs: Codable {
     var cpu: CPU; var motherboard: Motherboard; var memory: Memory
     var gpus: [GPU]; var disks: [Disk]; var volumes: [Volume]; var networkAdapters: [NetworkAdapter]
     var coolerName: String?; var detectedAt: String?; var source: String?
+}
+
+struct PCProcess: Codable, Identifiable {
+    var pid: Int
+    var name: String
+    var createTime: Double
+    var memoryMB: Double?
+    var cpuPercent: Double?
+    var status: String
+    var canTerminate: Bool
+    // Local origin is never sent by the agent or reused after switching PCs.
+    var originGeneration: Int? = nil
+    var id: String { "\(originGeneration ?? -1):\(pid):\(createTime)" }
+    private enum CodingKeys: String, CodingKey {
+        case pid, name, createTime, memoryMB, cpuPercent, status, canTerminate
+    }
+}
+struct PCProcessList: Decodable {
+    var processes: [PCProcess]
+    var capturedAt: Double
+    var totalCount: Int
 }
 
 struct PCNetworkConfigResponse: Codable {
@@ -183,6 +224,19 @@ final class OrbitViewModel: ObservableObject {
     @Published var specsError: String?
     @Published var isLoadingSpecs = false
     @Published var componentOverrides: [String: String] = [:]
+    @Published var dashboardConfiguration = DashboardConfiguration.balanced {
+        didSet { saveDashboardConfiguration() }
+    }
+    @Published var widgetToken: String?
+    @Published var isLoadingWidgetToken = false
+    @Published var widgetSetupError: String?
+    @Published var processes: [PCProcess] = []
+    @Published var isLoadingProcesses = false
+    @Published var processesError: String?
+    @Published var processActionStatus: String?
+    @Published var endingProcessID: Int?
+    @Published var lastProcessesUpdated: Date?
+    var connectionID: Int { generation }
     @Published var isWakingUp = false
     @Published var isScanningLAN = false
     @Published var smartLaunchStep: SmartLaunchStep = .idle
@@ -224,6 +278,7 @@ final class OrbitViewModel: ObservableObject {
     init() {
         showOnboarding = !hasCompletedOnboarding
         loadOverrides()
+        loadDashboardConfiguration()
         activitySubscription = activity.$isActive.sink { [weak self] value in self?.isDynamicIslandActive = value }
         if isDemoMode { metrics = .demo; games = Self.demoGames }
         startMonitoringLoop()
@@ -236,9 +291,11 @@ final class OrbitViewModel: ObservableObject {
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
         metrics = PCMetrics(); specs = nil; games = []; lastUpdated = nil; pingMs = 0
+        widgetToken = nil; widgetSetupError = nil
+        processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
         statusLog = "Connection settings changed — ready to connect"
-        stopScreenFeed(); isShowingStreamView = false; activeStreamingGame = nil; loadOverrides()
+        stopScreenFeed(); isShowingStreamView = false; activeStreamingGame = nil; loadOverrides(); loadDashboardConfiguration()
         Task { await activity.stop() }
     }
     func cleanHost() -> String {
@@ -278,7 +335,7 @@ final class OrbitViewModel: ObservableObject {
         }
     }
     func setDemoMode(_ enabled: Bool) {
-        resetConnection(); isDemoMode = enabled; loadOverrides()
+        resetConnection(); isDemoMode = enabled; loadOverrides(); loadDashboardConfiguration()
         if enabled { metrics = .demo; games = Self.demoGames; statusLog = "Preview • simulated data"; lastUpdated = Date() }
         else { Task { await refreshMetrics() } }
     }
@@ -339,6 +396,7 @@ final class OrbitViewModel: ObservableObject {
             currentIdentity = info.macAddress.isEmpty ? info.hostname : info.macAddress
             let hasSavedNames = UserDefaults.standard.object(forKey: overrideKey) != nil
             loadOverrides()
+            loadDashboardConfiguration()
             if !hasSavedNames, !previouslyEnteredNames.isEmpty {
                 componentOverrides = previouslyEnteredNames
                 UserDefaults.standard.set(previouslyEnteredNames, forKey: overrideKey)
@@ -364,6 +422,94 @@ final class OrbitViewModel: ObservableObject {
         UserDefaults.standard.set(componentOverrides, forKey: overrideKey)
     }
     func componentName(_ key: String, detected: String) -> String { componentOverrides[key] ?? detected }
+
+    private var dashboardHostKey: String {
+        "dashboardLayout.v1.\(isDemoMode ? "preview" : "\(cleanHost()):\(agentPort)")"
+    }
+    private var dashboardKey: String {
+        currentIdentity.isEmpty || isDemoMode ? dashboardHostKey : "dashboardLayout.v1.\(currentIdentity)"
+    }
+    private func saveDashboardConfiguration() {
+        var normalized = dashboardConfiguration
+        normalized.normalize()
+        guard let data = try? JSONEncoder().encode(normalized) else { return }
+        UserDefaults.standard.set(data, forKey: dashboardKey)
+        // Keep an address alias so the layout is available before the first poll.
+        if dashboardKey != dashboardHostKey { UserDefaults.standard.set(data, forKey: dashboardHostKey) }
+    }
+    private func loadDashboardConfiguration() {
+        let data = UserDefaults.standard.data(forKey: dashboardKey) ?? UserDefaults.standard.data(forKey: dashboardHostKey)
+        dashboardConfiguration = data.flatMap { try? JSONDecoder().decode(DashboardConfiguration.self, from: $0) } ?? .balanced
+    }
+    func prepareWidgetAccess() async {
+        guard !isLoadingWidgetToken else { return }
+        guard metrics.isOnline, !isDemoMode else {
+            widgetSetupError = "Connect to your PC to prepare read-only widget access."
+            return
+        }
+        isLoadingWidgetToken = true; widgetSetupError = nil
+        defer { isLoadingWidgetToken = false }
+        let version = generation
+        struct Pairing: Decodable { let token: String }
+        do {
+            let pairing = try JSONDecoder().decode(Pairing.self, from: await request("/api/widget/pairing", method: "POST"))
+            guard version == generation else { return }
+            guard !pairing.token.isEmpty else { throw OrbitError(message: "The agent did not return a widget access token.") }
+            widgetToken = pairing.token
+        } catch {
+            if version == generation { widgetSetupError = "Widget access unavailable. Update Orbit Agent and try again. \(error.localizedDescription)" }
+        }
+    }
+
+    func fetchProcesses() async {
+        guard !isLoadingProcesses, appActive else { return }
+        guard metrics.isOnline else { processesError = "Connect to your PC to view running processes."; return }
+        if isDemoMode {
+            processes = [
+                PCProcess(pid: 4100, name: "Example game.exe", createTime: 1, memoryMB: 2840, cpuPercent: 14.2, status: "running", canTerminate: false),
+                PCProcess(pid: 4200, name: "Example browser.exe", createTime: 2, memoryMB: 620, cpuPercent: 2.8, status: "running", canTerminate: false)
+            ]
+            processesError = nil; lastProcessesUpdated = Date()
+            return
+        }
+        isLoadingProcesses = true
+        defer { isLoadingProcesses = false }
+        let version = generation
+        do {
+            let list = try JSONDecoder().decode(PCProcessList.self, from: await request("/api/processes"))
+            guard version == generation, !Task.isCancelled else { return }
+            processes = list.processes.map { item in
+                var process = item; process.originGeneration = version; return process
+            }
+            lastProcessesUpdated = Date(timeIntervalSince1970: list.capturedAt)
+            processesError = nil
+        } catch {
+            if version == generation, !Task.isCancelled { processesError = "Could not refresh processes. \(error.localizedDescription)" }
+        }
+    }
+    func endProcess(_ process: PCProcess) async {
+        guard endingProcessID == nil, metrics.isOnline, !isDemoMode else { return }
+        guard process.originGeneration == generation,
+              process.canTerminate, processes.contains(where: { $0.id == process.id && $0.canTerminate }) else {
+            processesError = "The process list changed. Refresh it and select the application again."
+            return
+        }
+        let version = generation
+        endingProcessID = process.pid; processActionStatus = nil; processesError = nil
+        defer { endingProcessID = nil }
+        do {
+            let data = try await request("/api/processes/\(process.pid)/terminate", method: "POST",
+                                         query: [URLQueryItem(name: "expectedCreateTime", value: String(process.createTime))])
+            guard version == generation else { return }
+            struct Result: Decodable { var status: String }
+            let result = try JSONDecoder().decode(Result.self, from: data)
+            processActionStatus = result.status != "terminated" ? "End task requested for \(process.name). Refresh to check its state." : "Ended \(process.name)."
+            await fetchProcesses()
+        } catch {
+            if version == generation { processesError = "Could not end \(process.name). \(error.localizedDescription)" }
+        }
+    }
+
     func fetchSunshineApps() async {
         guard !isDemoMode else { return }
         let version = generation
@@ -520,13 +666,22 @@ final class OrbitViewModel: ObservableObject {
             if activity.isActive { await activity.stop() }
             else {
                 guard metrics.isOnline else { liveActivityError = "Connect to your PC before starting a Live Activity."; return }
-                await activity.start(pcName: metrics.hostname, cpuUsage: metrics.telemetryAvailable == false ? nil : metrics.cpuUsage, gpuUsage: metrics.gpuUsage, ramUsage: metrics.ramTotalGB > 0 ? metrics.ramUsedGB / metrics.ramTotalGB * 100 : nil, fps: metrics.fps, gameName: metrics.activeGame)
+                guard metrics.telemetryAvailable != false else { liveActivityError = "Wait for the agent to collect hardware readings, then try again."; return }
+                await activity.start(pcName: metrics.hostname, cpuUsage: metrics.telemetryAvailable == false ? nil : metrics.cpuUsage, gpuUsage: metrics.gpuUsage, ramUsage: metrics.ramTotalGB > 0 ? metrics.ramUsedGB / metrics.ramTotalGB * 100 : nil, fps: metrics.fps, gameName: metrics.activeGame,
+                                     vramUsedGB: metrics.vramUsedGB, vramTotalGB: metrics.vramTotalGB,
+                                     cpuPowerWatts: metrics.cpuPowerWatts, gpuPowerWatts: metrics.gpuPowerWatts,
+                                     focus: dashboardConfiguration.activityFocus.rawValue,
+                                     telemetryAvailable: metrics.telemetryAvailable != false)
                 liveActivityError = activity.lastError
             }
         }
     }
     private func updateLiveActivity() async {
         guard activity.isActive else { return }
-        await activity.update(cpuUsage: metrics.telemetryAvailable == false ? nil : metrics.cpuUsage, gpuUsage: metrics.gpuUsage, ramUsage: metrics.ramTotalGB > 0 ? metrics.ramUsedGB / metrics.ramTotalGB * 100 : nil, fps: metrics.fps, gameName: metrics.activeGame, isConnected: metrics.isOnline)
+        await activity.update(cpuUsage: metrics.telemetryAvailable == false ? nil : metrics.cpuUsage, gpuUsage: metrics.gpuUsage, ramUsage: metrics.ramTotalGB > 0 ? metrics.ramUsedGB / metrics.ramTotalGB * 100 : nil, fps: metrics.fps, gameName: metrics.activeGame, isConnected: metrics.isOnline,
+                              vramUsedGB: metrics.vramUsedGB, vramTotalGB: metrics.vramTotalGB,
+                              cpuPowerWatts: metrics.cpuPowerWatts, gpuPowerWatts: metrics.gpuPowerWatts,
+                              focus: dashboardConfiguration.activityFocus.rawValue,
+                                     telemetryAvailable: metrics.telemetryAvailable != false)
     }
 }

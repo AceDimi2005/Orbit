@@ -12,6 +12,12 @@ struct OrbitActivityAttributes: ActivityAttributes {
         var gameName: String?
         var isConnected: Bool
         var lastUpdated: Date
+        var vramUsedGB: Double? = nil
+        var vramTotalGB: Double? = nil
+        var cpuPowerWatts: Double? = nil
+        var gpuPowerWatts: Double? = nil
+        var focus: String? = nil
+        var telemetryAvailable: Bool? = nil
     }
 
     var pcName: String

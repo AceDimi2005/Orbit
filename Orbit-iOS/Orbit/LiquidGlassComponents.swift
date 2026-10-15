@@ -62,6 +62,8 @@ struct HardwareMetricCard: View {
                 Text(title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 Spacer(minLength: 0)
             }
 
@@ -85,15 +87,15 @@ struct HardwareMetricCard: View {
             }
 
             GeometryReader { geometry in
-                Capsule()
-                    .fill(.white.opacity(0.08))
-                    .overlay(alignment: .leading) {
-                        if let progress, progress.isFinite {
+                if let progress, progress.isFinite {
+                    Capsule()
+                        .fill(.white.opacity(0.08))
+                        .overlay(alignment: .leading) {
                             Capsule()
                                 .fill(accent.opacity(0.85))
                                 .frame(width: geometry.size.width * min(1, max(0, progress)))
                         }
-                    }
+                }
             }
             .frame(height: 4)
             .accessibilityHidden(true)

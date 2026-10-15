@@ -18,6 +18,9 @@
 		A20000000000000000000004 /* OrbitWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* OrbitWidgets.swift */; };
 		A20000000000000000000005 /* OrbitWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OrbitWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A20000000000000000000006 /* VolumeCommandQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* VolumeCommandQueue.swift */; };
+		A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* OrbitTelemetryWidgets.swift */; };
+		A20000000000000000000008 /* DashboardConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardConfiguration.swift */; };
+		A20000000000000000000009 /* TaskManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* TaskManagerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,6 +45,9 @@
 		B20000000000000000000004 /* OrbitWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OrbitWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000006 /* VolumeCommandQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeCommandQueue.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* OrbitTelemetryWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTelemetryWidgets.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* DashboardConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardConfiguration.swift; sourceTree = "<group>"; };
+		B20000000000000000000009 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +77,8 @@
 			children = (
 				B10000000000000000000002 /* OrbitApp.swift */,
 				B20000000000000000000006 /* VolumeCommandQueue.swift */,
+				B20000000000000000000008 /* DashboardConfiguration.swift */,
+				B20000000000000000000009 /* TaskManagerView.swift */,
 				B20000000000000000000001 /* OrbitLiveActivityCoordinator.swift */,
 				B10000000000000000000004 /* ModelsAndServices.swift */,
 				B10000000000000000000005 /* LiquidGlassComponents.swift */,
@@ -90,7 +98,7 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		C20000000000000000000001 /* OrbitWidgets */ = {isa = PBXGroup; children = (B20000000000000000000003 /* OrbitWidgets.swift */, B20000000000000000000005 /* Info.plist */, ); path = OrbitWidgets; sourceTree = "<group>"; };
+		C20000000000000000000001 /* OrbitWidgets */ = {isa = PBXGroup; children = (B20000000000000000000003 /* OrbitWidgets.swift */, B20000000000000000000007 /* OrbitTelemetryWidgets.swift */, B20000000000000000000005 /* Info.plist */, ); path = OrbitWidgets; sourceTree = "<group>"; };
 		C20000000000000000000002 /* Shared */ = {isa = PBXGroup; children = (B20000000000000000000002 /* OrbitActivityAttributes.swift */, ); path = Shared; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -173,6 +181,8 @@
 			files = (
 				A10000000000000000000001 /* OrbitApp.swift in Sources */,
 				A20000000000000000000006 /* VolumeCommandQueue.swift in Sources */,
+				A20000000000000000000008 /* DashboardConfiguration.swift in Sources */,
+				A20000000000000000000009 /* TaskManagerView.swift in Sources */,
 				A20000000000000000000001 /* OrbitLiveActivityCoordinator.swift in Sources */,
 				A20000000000000000000002 /* OrbitActivityAttributes.swift in Sources */,
 				A10000000000000000000003 /* ModelsAndServices.swift in Sources */,
@@ -181,7 +191,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D20000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000003 /* OrbitActivityAttributes.swift in Sources */, A20000000000000000000004 /* OrbitWidgets.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		D20000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000003 /* OrbitActivityAttributes.swift in Sources */, A20000000000000000000004 /* OrbitWidgets.swift in Sources */, A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */

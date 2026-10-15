@@ -59,10 +59,11 @@ struct ContentView: View {
 struct DashboardView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var pendingAction: PowerConfirmation?
+    @State private var isShowingCustomization = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 12), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+        Array(repeating: GridItem(.flexible(), spacing: 12), count: dynamicTypeSize.isAccessibilitySize ? 1 : vm.dashboardConfiguration.columnCount)
     }
 
     var body: some View {
@@ -74,24 +75,26 @@ struct DashboardView: View {
                         if vm.isDemoMode { previewNotice }
                         computerHeader
                         if vm.metrics.isOnline {
-                            if let game = vm.metrics.activeGame { activeGameCard(game) }
+                            if vm.dashboardConfiguration.showsGame, let game = vm.metrics.activeGame { activeGameCard(game) }
                             if vm.metrics.telemetryAvailable == false {
                                 OrbitNotice(title: "Reading your PC", message: "The agent is connected and collecting its first hardware readings.", icon: "waveform.path.ecg")
                             } else {
                                 metricsGrid
                             }
-                            specsLink
-                            volumeCard
-                            powerCard
+                            if vm.dashboardConfiguration.showsSpecifications { specsLink }
+                            if vm.dashboardConfiguration.showsVolume { volumeCard }
+                            if vm.dashboardConfiguration.showsQuickControls { powerCard }
                         } else {
                             offlineCard
-                            specsLink
+                            if vm.dashboardConfiguration.showsSpecifications { specsLink }
                         }
-                        Text(vm.statusLog)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
+                        if vm.dashboardConfiguration.showsConnectionStatus {
+                            Text(vm.statusLog)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
                     .frame(maxWidth: 720)
                     .padding(20)
@@ -101,12 +104,19 @@ struct DashboardView: View {
             }
             .navigationTitle("Your PC")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { isShowingCustomization = true } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("Customize dashboard")
                     Button { vm.isShowingIPConfigSheet = true } label: {
                         Image(systemName: "network")
                     }
                     .accessibilityLabel("Connection settings")
                 }
+            }
+            .sheet(isPresented: $isShowingCustomization) {
+                DashboardCustomizationView(vm: vm)
             }
             .confirmationDialog(pendingAction?.title ?? "Confirm action", isPresented: Binding(
                 get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }
@@ -164,33 +174,133 @@ struct DashboardView: View {
         .liquidGlass(tint: .cyan)
     }
 
+    @ViewBuilder
     private var metricsGrid: some View {
-        LazyVGrid(columns: columns, spacing: 12) {
+        if vm.dashboardConfiguration.orderedVisibleMetrics.isEmpty {
+            Button { isShowingCustomization = true } label: {
+                OrbitNotice(title: "Make room for what matters", message: "Choose the readings you want on your dashboard.", icon: "slider.horizontal.3")
+            }
+            .buttonStyle(.plain)
+        } else {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(vm.dashboardConfiguration.orderedVisibleMetrics) { metric in
+                    metricCard(metric)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func metricCard(_ metric: DashboardMetric) -> some View {
+        switch metric {
+        case .cpuLoad:
             HardwareMetricCard(
-                title: "Processor", subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
+                title: metric.title, subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
                 valueText: percent(vm.metrics.cpuUsage), progress: vm.metrics.cpuUsage / 100,
-                icon: "cpu", accent: .cyan,
+                icon: metric.symbol, accent: metric.accent,
                 detail: vm.metrics.cpuTemp.map { "\(Int($0))°C · CPU load" } ?? "CPU load · temperature unavailable"
             )
+        case .gpuLoad:
             HardwareMetricCard(
-                title: "Graphics", subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
+                title: metric.title, subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
                 valueText: vm.metrics.gpuUsage.map(percent) ?? "—", progress: vm.metrics.gpuUsage.map { $0 / 100 },
-                icon: "square.stack.3d.up", accent: .mint, detail: gpuDetail
+                icon: metric.symbol, accent: metric.accent, detail: gpuDetail
             )
+        case .memory:
             HardwareMetricCard(
-                title: "Memory", subtitle: vm.componentName("memory", detected: "\(decimal(vm.metrics.ramTotalGB)) GB installed"),
-                valueText: "\(decimal(vm.metrics.ramUsedGB)) GB", progress: vm.metrics.ramTotalGB > 0 ? vm.metrics.ramUsedGB / vm.metrics.ramTotalGB : nil,
-                icon: "memorychip", accent: Color(red: 0.68, green: 0.65, blue: 0.98),
-                detail: "\(decimal(vm.metrics.ramTotalGB)) GB total · in use"
+                title: metric.title, subtitle: vm.componentName("memory", detected: "System memory"),
+                valueText: vm.metrics.ramTotalGB > 0 ? "\(decimal(vm.metrics.ramUsedGB)) GB" : "—",
+                progress: vm.metrics.ramTotalGB > 0 ? vm.metrics.ramUsedGB / vm.metrics.ramTotalGB : nil,
+                icon: metric.symbol, accent: metric.accent,
+                detail: vm.metrics.ramTotalGB > 0 ? "\(decimal(vm.metrics.ramTotalGB)) GB total · in use" : "Memory unavailable"
             )
+        case .storage:
             HardwareMetricCard(
-                title: "Storage", subtitle: vm.componentName("storage", detected: vm.specs?.disks.first?.name ?? "Local storage"),
+                title: metric.title, subtitle: vm.componentName("storage", detected: vm.specs?.disks.first?.name ?? "Local storage"),
                 valueText: vm.metrics.ssdTotalTB > 0 ? "\(decimal(vm.metrics.ssdUsedTB, digits: 2)) TB" : "—",
                 progress: vm.metrics.ssdTotalTB > 0 ? vm.metrics.ssdUsedTB / vm.metrics.ssdTotalTB : nil,
-                icon: "internaldrive", accent: Color(red: 0.97, green: 0.73, blue: 0.44),
+                icon: metric.symbol, accent: metric.accent,
                 detail: vm.metrics.ssdTotalTB > 0 ? "\(decimal(vm.metrics.ssdTotalTB, digits: 2)) TB total · used" : "Storage unavailable"
             )
+        case .vram:
+            HardwareMetricCard(
+                title: metric.title, subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
+                valueText: vm.metrics.vramUsedGB.map { "\(decimal($0)) GB" } ?? "—",
+                progress: vramProgress, icon: metric.symbol, accent: metric.accent,
+                detail: vramDetail
+            )
+        case .cpuPower:
+            sensorCard(metric, value: vm.metrics.cpuPowerWatts, unit: "W",
+                       subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
+                       detail: "CPU package power sensor")
+        case .gpuPower:
+            sensorCard(metric, value: vm.metrics.gpuPowerWatts, unit: "W",
+                       subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
+                       detail: "Reported graphics power draw")
+        case .cpuTemperature:
+            sensorCard(metric, value: vm.metrics.cpuTemp, unit: "°C",
+                       subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName), detail: "Processor temperature")
+        case .gpuTemperature:
+            sensorCard(metric, value: vm.metrics.gpuTemp, unit: "°C",
+                       subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName), detail: "Graphics temperature")
+        case .coolantTemperature:
+            sensorCard(metric, value: vm.metrics.liquidTemp, unit: "°C",
+                       subtitle: vm.componentName("cooler", detected: vm.metrics.coolerName), detail: "Liquid cooler sensor")
+        case .cpuClock:
+            HardwareMetricCard(title: metric.title, subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
+                               valueText: vm.metrics.cpuClockMHz.map { "\(decimal($0 / 1000, digits: 2)) GHz" } ?? "—", progress: nil,
+                               icon: metric.symbol, accent: metric.accent,
+                               detail: vm.metrics.cpuClockMHz == nil ? "Clock sensor unavailable" : (vm.metrics.cpuClockSource ?? "Reported clock"))
+        case .network:
+            HardwareMetricCard(title: metric.title, subtitle: vm.metrics.networkInterface ?? "Selected network adapters",
+                               valueText: transferRate(vm.metrics.networkDownloadMBps), progress: nil,
+                               icon: metric.symbol, accent: metric.accent,
+                               detail: vm.metrics.networkDownloadMBps == nil && vm.metrics.networkUploadMBps == nil ? "Traffic counters unavailable" : "↓ Download · ↑ \(transferRate(vm.metrics.networkUploadMBps)) upload")
+        case .diskActivity:
+            HardwareMetricCard(title: metric.title, subtitle: "All physical drives",
+                               valueText: transferRate(vm.metrics.diskReadMBps), progress: nil,
+                               icon: metric.symbol, accent: metric.accent,
+                               detail: vm.metrics.diskReadMBps == nil && vm.metrics.diskWriteMBps == nil ? "Drive counters unavailable" : "Read · \(transferRate(vm.metrics.diskWriteMBps)) write")
+        case .uptime:
+            HardwareMetricCard(title: metric.title, subtitle: "Since the last Windows boot",
+                               valueText: vm.metrics.formattedUptime, progress: nil,
+                               icon: metric.symbol, accent: metric.accent, detail: "Fast Startup may preserve uptime")
+        case .fps:
+            HardwareMetricCard(title: metric.title, subtitle: vm.metrics.activeGame ?? "No game detected",
+                               valueText: vm.metrics.fps.map { "\(Int($0.rounded())) FPS" } ?? "—", progress: nil,
+                               icon: metric.symbol, accent: metric.accent,
+                               detail: vm.metrics.fps == nil ? (vm.metrics.fpsUnavailableReason ?? "An active frame-rate source is required") : "From \(vm.metrics.fpsSource ?? "your PC")")
+        case .cpuFan:
+            sensorCard(metric, value: vm.metrics.cpuFanRPM, unit: "RPM", subtitle: "Processor cooling", detail: "Reported CPU fan speed")
+        case .gpuFan:
+            sensorCard(metric, value: vm.metrics.gpuFanPercent, unit: "%", subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName), detail: "Reported GPU fan speed")
         }
+    }
+
+    private func sensorCard(_ metric: DashboardMetric, value: Double?, unit: String, subtitle: String, detail: String) -> some View {
+        HardwareMetricCard(title: metric.title, subtitle: subtitle,
+                           valueText: value.map { "\(Int($0.rounded()))\(unit == "°C" || unit == "%" ? "" : " ")\(unit)" } ?? "—", progress: nil,
+                           icon: metric.symbol, accent: metric.accent,
+                           detail: value == nil ? (vm.metrics.sensorStatus ?? "Sensor unavailable · check PC sensor setup") : detail)
+    }
+
+    private var vramProgress: Double? {
+        guard let used = vm.metrics.vramUsedGB, let total = vm.metrics.vramTotalGB, total > 0 else { return nil }
+        return used / total
+    }
+
+    private var vramDetail: String {
+        guard vm.metrics.vramUsedGB != nil else { return "VRAM usage sensor unavailable" }
+        if let total = vm.metrics.vramTotalGB, total > 0 { return "\(decimal(total)) GB total · dedicated memory" }
+        return "Dedicated memory · capacity unavailable"
+    }
+
+    private func transferRate(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        guard value.isFinite, value >= 0 else { return "—" }
+        if value >= 1 { return "\(decimal(value)) MB/s" }
+        if value >= 0.001 { return "\(decimal(value * 1000, digits: 1)) KB/s" }
+        return "\(decimal(value * 1_000_000, digits: 0)) B/s"
     }
 
     private var gpuDetail: String {
@@ -351,6 +461,167 @@ struct DashboardView: View {
     }
 }
 
+// MARK: - Dashboard customization
+
+struct DashboardCustomizationView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: DashboardConfiguration
+
+    init(vm: OrbitViewModel) {
+        self.vm = vm
+        _draft = State(initialValue: vm.dashboardConfiguration)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your readings. Your layout.")
+                            .font(.title3.weight(.semibold))
+                        Text("Keep the essentials close, or build a dashboard for your next gaming session.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            presetButton("Balanced", icon: "square.grid.2x2", configuration: .balanced)
+                            presetButton("Gaming", icon: "gamecontroller", configuration: .gaming)
+                            presetButton("Work", icon: "hammer", configuration: .workstation)
+                            presetButton("Cooling", icon: "fanblades", configuration: .cooling)
+                            presetButton("Everything", icon: "rectangle.grid.3x2", configuration: .allMetrics)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                Section {
+                    Picker("Columns", selection: $draft.columnCount) {
+                        Text("One column").tag(1)
+                        Text("Two columns").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                } header: { Text("Layout") } footer: {
+                    Text("Larger accessibility text automatically uses one column.")
+                }
+                Section {
+                    ForEach(draft.metricOrder) { metric in
+                        HStack(spacing: 12) {
+                            Image(systemName: metric.symbol)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(metric.accent)
+                                .frame(width: 32, height: 36)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(metric.title).font(.subheadline.weight(.medium))
+                                Text(metric.explanation).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 4)
+                            Button {
+                                draft.setVisible(metric, !draft.visibleMetrics.contains(metric))
+                            } label: {
+                                Image(systemName: draft.visibleMetrics.contains(metric) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(draft.visibleMetrics.contains(metric) ? Color.cyan : .secondary)
+                                    .frame(width: 32, height: 44)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("\(metric.title), \(draft.visibleMetrics.contains(metric) ? "shown" : "hidden")")
+                            .accessibilityHint("Double tap to \(draft.visibleMetrics.contains(metric) ? "hide" : "show") this reading")
+                        }
+                    }
+                    .onMove { source, destination in draft.metricOrder.move(fromOffsets: source, toOffset: destination) }
+                } header: {
+                    HStack {
+                        Text("Readings")
+                        Spacer()
+                        Text("\(draft.orderedVisibleMetrics.count) selected")
+                    }
+                } footer: {
+                    Text("Tap a circle to show or hide a reading. Drag the handles to reorder. Sensor support depends on your hardware and the PC agent; unavailable readings display a dash.")
+                }
+                Section {
+                    Toggle("Now playing", isOn: $draft.showsGame)
+                    Toggle("PC volume", isOn: $draft.showsVolume)
+                    Toggle("Quick controls", isOn: $draft.showsQuickControls)
+                    Toggle("PC specifications", isOn: $draft.showsSpecifications)
+                    Toggle("Connection status", isOn: $draft.showsConnectionStatus)
+                } header: { Text("Additional sections") } footer: {
+                    Text("CPU and GPU wattage describe those components only. They do not measure your PC’s total wall power.")
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Customize dashboard")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        vm.dashboardConfiguration = draft
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .tint(.cyan)
+        .preferredColorScheme(.dark)
+    }
+
+    private func presetButton(_ title: String, icon: String, configuration: DashboardConfiguration) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { draft = configuration }
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption.weight(.medium))
+            }
+            .frame(maxWidth: .infinity, minHeight: 78)
+            .foregroundStyle(draft == configuration ? Color.cyan : .primary)
+            .background(draft == configuration ? Color.cyan.opacity(0.10) : Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(draft == configuration ? Color.cyan.opacity(0.35) : Color.clear, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Apply \(title.lowercased()) preset")
+    }
+}
+
+private extension DashboardMetric {
+    var accent: Color {
+        switch self {
+        case .cpuLoad, .cpuTemperature, .cpuClock, .cpuFan: return .cyan
+        case .gpuLoad, .gpuTemperature, .gpuFan, .fps: return .mint
+        case .memory, .vram: return Color(red: 0.68, green: 0.65, blue: 0.98)
+        case .storage, .diskActivity, .cpuPower, .gpuPower: return Color(red: 0.97, green: 0.73, blue: 0.44)
+        case .coolantTemperature, .network, .uptime: return Color(red: 0.48, green: 0.72, blue: 1)
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .cpuLoad: return "Processor utilization"
+        case .gpuLoad: return "Graphics utilization"
+        case .memory: return "System memory in use"
+        case .storage: return "Used and total storage"
+        case .vram: return "Dedicated graphics memory"
+        case .cpuPower: return "Processor package wattage"
+        case .gpuPower: return "Graphics power in watts"
+        case .cpuTemperature: return "Processor temperature"
+        case .gpuTemperature: return "Graphics temperature"
+        case .coolantTemperature: return "Liquid cooling temperature"
+        case .cpuClock: return "Reported clock frequency"
+        case .network: return "Download and upload rates"
+        case .diskActivity: return "Drive read and write rates"
+        case .uptime: return "Time since Windows started"
+        case .fps: return "Active game frame rate"
+        case .cpuFan: return "Processor fan speed in RPM"
+        case .gpuFan: return "Graphics fan speed in percent"
+        }
+    }
+}
+
 private enum PowerConfirmation: String {
     case sleep, restart, shutdown
     var title: String {
@@ -495,6 +766,9 @@ struct QuickRemoteView: View {
             }
             .navigationTitle("Remote")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink { TaskManagerView(vm: vm) } label: { Label("Task Manager", systemImage: "list.bullet.rectangle") }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { vm.openDesktopPreview() } label: { Label("Desktop preview", systemImage: "display") }
                         .disabled(!vm.metrics.isOnline)
@@ -727,6 +1001,7 @@ struct SettingsView: View {
     var isPresentedAsSheet = false
     @Environment(\.dismiss) private var dismiss
     @State private var isConnecting = false
+    @State private var isShowingDashboardCustomization = false
     @FocusState private var focusedField: Bool
 
     var body: some View {
@@ -744,6 +1019,15 @@ struct SettingsView: View {
                     NavigationLink { FullSpecsView(vm: vm) } label: {
                         Label("PC specifications", systemImage: "cpu")
                     }
+                    NavigationLink { TaskManagerView(vm: vm) } label: {
+                        Label("Task Manager", systemImage: "list.bullet.rectangle")
+                    }
+                    NavigationLink { FPSSetupView(vm: vm) } label: {
+                        Label("Set up game FPS", systemImage: "speedometer")
+                    }
+                    NavigationLink { MonitoringSourcesView(vm: vm) } label: {
+                        Label("Monitoring sources", systemImage: "waveform.path.ecg")
+                    }
                     Button("Connection walkthrough", systemImage: "sparkles") {
                         if isPresentedAsSheet { dismiss() }
                         vm.showOnboarding = true
@@ -754,6 +1038,9 @@ struct SettingsView: View {
                 Section {
                     Toggle("Preview mode", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
                     Toggle("Open Moonlight after launch", isOn: $vm.autoOpenMoonlight)
+                    Button { isShowingDashboardCustomization = true } label: {
+                        Label("Customize dashboard", systemImage: "slider.horizontal.3")
+                    }
                 } header: { Text("Experience") } footer: {
                     Text("Preview mode uses sample data. For game streaming, install Moonlight and pair it with Sunshine on your PC.")
                 }
@@ -762,8 +1049,13 @@ struct SettingsView: View {
                         if enabled != vm.isDynamicIslandActive { vm.toggleDynamicIsland() }
                     }))
                     .disabled(!vm.metrics.isOnline && !vm.isDynamicIslandActive)
+                    Picker("Live Activity focus", selection: $vm.dashboardConfiguration.activityFocus) {
+                        ForEach(LiveActivityFocus.allCases) { focus in
+                            Text(focus.title).tag(focus)
+                        }
+                    }
                     NavigationLink {
-                        WidgetHelpView()
+                        WidgetHelpView(vm: vm)
                     } label: { Label("Home Screen widgets", systemImage: "square.grid.2x2") }
                 } header: { Text("At a glance") } footer: {
                     Text("Live Activities appear on the Lock Screen and on supported Dynamic Islands. Readings update while Orbit is open and become stale in the background; continuous background monitoring is not enabled.")
@@ -779,6 +1071,9 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .sheet(isPresented: $isShowingDashboardCustomization) {
+                DashboardCustomizationView(vm: vm)
+            }
             .alert("Live Activity unavailable", isPresented: Binding(get: { vm.liveActivityError != nil }, set: { if !$0 { vm.liveActivityError = nil } })) {
                 Button("OK") { vm.liveActivityError = nil }
             } message: {
@@ -878,25 +1173,75 @@ struct SettingsView: View {
 }
 
 struct WidgetHelpView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @State private var tokenCopied = false
+
     var body: some View {
         List {
             Section {
-                Label("Open Orbit from your Home Screen", systemImage: "square.grid.2x2")
-                Text("Orbit’s launcher widgets provide shortcuts to your PC overview and remote controls. They open the app to establish a fresh connection.")
-                    .foregroundStyle(.secondary)
-            }
-            Section("Add a widget") {
-                Text("1. Touch and hold your Home Screen.")
-                Text("2. Choose Edit, then Add Widget.")
-                Text("3. Search for Orbit and choose a size.")
+                Label("A view for every moment", systemImage: "square.grid.2x2")
+                    .font(.headline)
+                Text("Choose Overview, Gaming, Power, Thermals or a single reading. Launcher widgets keep your overview, library and remote controls one tap away.")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
             Section {
-                Text("Widgets do not claim to show live PC telemetry while the app is closed. To see a recent reading on the Lock Screen, enable a Live Activity while connected.")
-                    .foregroundStyle(.secondary)
+                Button {
+                    tokenCopied = false
+                    Task { await vm.prepareWidgetAccess() }
+                } label: {
+                    HStack {
+                        Label(vm.isLoadingWidgetToken ? "Preparing…" : "Prepare widget access", systemImage: "key")
+                        Spacer()
+                        if vm.isLoadingWidgetToken { ProgressView() }
+                    }
+                }
+                .disabled(!vm.metrics.isOnline || vm.isDemoMode || vm.isLoadingWidgetToken)
+                if vm.isConfigured {
+                    LabeledContent("PC address", value: vm.cleanHost())
+                        .font(.subheadline).textSelection(.enabled)
+                    LabeledContent("Agent port", value: "\(vm.agentPort)")
+                        .font(.subheadline)
+                }
+                if let token = vm.widgetToken {
+                    Button {
+                        UIPasteboard.general.string = token
+                        tokenCopied = true
+                    } label: {
+                        Label(tokenCopied ? "Widget token copied" : "Copy read-only widget token", systemImage: tokenCopied ? "checkmark.circle" : "doc.on.doc")
+                    }
+                }
+                if let error = vm.widgetSetupError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+            } header: { Text("Pair your monitoring widgets") } footer: {
+                Text("Connect your PC first. Monitoring widgets use a separate read-only token. Enter this widget token when editing a widget; it cannot control your PC.")
             }
+            Section("Add a widget") {
+                instruction(1, "Touch and hold your Home Screen, then choose Edit and Add Widget.")
+                instruction(2, "Search for Orbit and choose a widget and size.")
+                instruction(3, "Touch and hold the widget, then choose Edit Widget. Enter the PC address, agent port and read-only widget token.")
+            }
+            Section {
+                Text("iOS schedules widget refreshes. Readings are snapshots, not a continuous stream, and are marked stale after 15 minutes. The PC must be reachable on your network to update.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Text("For a recent reading on your Lock Screen or Dynamic Island, start a Live Activity while connected to your PC.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } header: { Text("Refresh behavior") }
         }
         .navigationTitle("Widgets")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func instruction(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.cyan)
+                .frame(width: 24, height: 24)
+                .background(.cyan.opacity(0.08), in: Circle())
+            Text(text).font(.subheadline)
+        }
+        .padding(.vertical, 4)
     }
 }
 

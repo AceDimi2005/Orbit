@@ -6,6 +6,14 @@ import WidgetKit
 struct OrbitWidgets: WidgetBundle {
     var body: some Widget {
         OrbitShortcutsWidget()
+        OrbitOverviewWidget()
+        OrbitGamingWidget()
+        OrbitPowerWidget()
+        OrbitThermalWidget()
+        OrbitCoolingWidget()
+        OrbitStorageWidget()
+        OrbitNetworkWidget()
+        OrbitMetricWidget()
         OrbitMonitorActivity()
     }
 }
@@ -170,15 +178,17 @@ struct OrbitMonitorActivity: Widget {
                 Image(systemName: "desktopcomputer")
                     .foregroundStyle(OrbitWidgetStyle.accent)
             } compactTrailing: {
-                if !context.state.isConnected || context.isStale {
+                if !context.state.isConnected || context.state.telemetryAvailable == false || context.isStale {
                     Image(systemName: "pause.fill").foregroundStyle(.secondary)
+                } else if context.state.focus == "power", let watts = context.state.gpuPowerWatts {
+                    Text("\(Int(watts.rounded()))W").monospacedDigit().foregroundStyle(OrbitWidgetStyle.accent)
                 } else if let fps = context.state.fps {
                     Text("\(Int(fps.rounded()))").monospacedDigit().foregroundStyle(OrbitWidgetStyle.accent)
                 } else {
                     Text(percent(context.state.cpuUsage)).monospacedDigit().foregroundStyle(OrbitWidgetStyle.accent)
                 }
             } minimal: {
-                Image(systemName: context.isStale || !context.state.isConnected ? "pause.circle" : "desktopcomputer")
+                Image(systemName: context.isStale || !context.state.isConnected || context.state.telemetryAvailable == false ? "pause.circle" : "desktopcomputer")
                     .foregroundStyle(OrbitWidgetStyle.accent)
             }
             .widgetURL(OrbitWidgetStyle.dashboardURL)
@@ -187,20 +197,30 @@ struct OrbitMonitorActivity: Widget {
     }
 
     private func freshness(_ context: ActivityViewContext<OrbitActivityAttributes>) -> some View {
-        let text = !context.state.isConnected ? "Offline" : (context.isStale ? "Open to refresh" : "Updated")
-        return Label(text, systemImage: context.isStale || !context.state.isConnected ? "pause.circle" : "checkmark.circle.fill")
+        let text = !context.state.isConnected ? "Offline" : (context.state.telemetryAvailable == false ? "Waiting for readings" : (context.isStale ? "Open to refresh" : "Updated"))
+        return Label(text, systemImage: context.isStale || !context.state.isConnected || context.state.telemetryAvailable == false ? "pause.circle" : "checkmark.circle.fill")
             .font(.caption2)
-            .foregroundStyle(context.isStale || !context.state.isConnected ? .gray : OrbitWidgetStyle.accent)
+            .foregroundStyle(context.isStale || !context.state.isConnected || context.state.telemetryAvailable == false ? .gray : OrbitWidgetStyle.accent)
     }
 
     private func readings(_ context: ActivityViewContext<OrbitActivityAttributes>) -> some View {
-        let fresh = context.state.isConnected && !context.isStale
+        let fresh = context.state.isConnected && context.state.telemetryAvailable != false && !context.isStale
         return HStack(spacing: 12) {
-            reading("CPU", value: fresh ? percent(context.state.cpuUsage) : "—")
-            reading("GPU", value: fresh ? percent(context.state.gpuUsage) : "—")
-            reading("RAM", value: fresh ? percent(context.state.ramUsage) : "—")
-            if let fps = context.state.fps {
-                reading("FPS", value: fresh ? String(Int(fps.rounded())) : "—")
+            if context.state.focus == "power" {
+                reading("CPU POWER", value: fresh ? watts(context.state.cpuPowerWatts) : "—")
+                reading("GPU POWER", value: fresh ? watts(context.state.gpuPowerWatts) : "—")
+                reading("GPU", value: fresh ? percent(context.state.gpuUsage) : "—")
+            } else if context.state.focus == "gaming" {
+                reading("FPS", value: fresh ? context.state.fps.map { String(Int($0.rounded())) } ?? "—" : "—")
+                reading("VRAM", value: fresh ? gigabytes(context.state.vramUsedGB) : "—")
+                reading("GPU", value: fresh ? percent(context.state.gpuUsage) : "—")
+            } else {
+                reading("CPU", value: fresh ? percent(context.state.cpuUsage) : "—")
+                reading("GPU", value: fresh ? percent(context.state.gpuUsage) : "—")
+                reading("RAM", value: fresh ? percent(context.state.ramUsage) : "—")
+                if let fps = context.state.fps {
+                    reading("FPS", value: fresh ? String(Int(fps.rounded())) : "—")
+                }
             }
         }
     }
@@ -215,5 +235,13 @@ struct OrbitMonitorActivity: Widget {
 
     private func percent(_ value: Double?) -> String {
         value.map { "\(Int($0.rounded()))%" } ?? "—"
+    }
+
+    private func watts(_ value: Double?) -> String {
+        value.map { "\(Int($0.rounded())) W" } ?? "—"
+    }
+
+    private func gigabytes(_ value: Double?) -> String {
+        value.map { String(format: "%.1f GB", $0) } ?? "—"
     }
 }

@@ -28,7 +28,16 @@ with tempfile.TemporaryDirectory(prefix="orbit-protocol-") as directory:
     legacy = copy.deepcopy(status)
     for key in ("fps", "fpsSource", "fpsUnavailableReason", "activeGameProcess", "lastUpdated", "volumeAvailable", "telemetryAvailable"):
         legacy.pop(key)
+    for key in ("cpuPowerWatts", "cpuClockMHz", "cpuClockSource", "cpuFanRPM", "gpuFanPercent", "diskReadMBps", "diskWriteMBps", "networkUploadMBps", "networkDownloadMBps"):
+        legacy.pop(key, None)
     payloads["legacy"] = legacy
+    extended = copy.deepcopy(status)
+    extended.update(cpuPowerWatts=62.5, gpuPowerWatts=210, cpuClockMHz=4200, cpuClockSource="System · nominal clock",
+                    cpuFanRPM=900, gpuFanPercent=40, diskReadMBps=25.4, diskWriteMBps=5.2, networkDownloadMBps=8.1, networkUploadMBps=1.3)
+    payloads["extended"] = extended
+    payloads["processes"] = {"processes": [{"pid": 42, "name": "Example.exe", "createTime": 1234567.125,
+                                          "memoryMB": 250, "cpuPercent": None, "status": "running", "canTerminate": True}],
+                             "capturedAt": 1234568, "totalCount": 1}
     for name, payload in payloads.items():
         (temporary / f"{name}.json").write_text(json.dumps(payload, allow_nan=False))
     (temporary / "Models.swift").write_text(models)
@@ -42,13 +51,18 @@ let status = try decode(PCMetrics.self, "status")
 precondition(status.cpuTemp == nil && status.fps == nil && status.hdrEnabled == nil)
 precondition(status.volumeAvailable == false && status.telemetryAvailable == false)
 let legacy = try decode(PCMetrics.self, "legacy")
-precondition(legacy.fps == nil && legacy.volumeAvailable == nil)
+precondition(legacy.fps == nil && legacy.volumeAvailable == nil && legacy.cpuPowerWatts == nil && legacy.networkDownloadMBps == nil)
+let extended = try decode(PCMetrics.self, "extended")
+precondition(extended.cpuPowerWatts == 62.5 && extended.cpuClockMHz == 4200 && extended.diskReadMBps == 25.4)
+precondition(extended.cpuClockSource == "System · nominal clock" && extended.networkUploadMBps == 1.3)
+let processes = try decode(PCProcessList.self, "processes")
+precondition(processes.processes.first?.createTime == 1234567.125 && processes.processes.first?.originGeneration == nil)
 let specs = try decode(PCSpecs.self, "specs")
 precondition(specs.gpus.first?.vramGB == 32)
 precondition(specs.motherboard.model == nil && specs.coolerName == nil)
 let games = try decode([SunshineGame].self, "games")
 precondition(games.count == 1 && games[0].cmd == nil)
-print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, full specs, Sunshine library")
+print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library")
 ''')
     binary = temporary / "protocol-check"
     subprocess.run(["swiftc", str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
