@@ -1,6 +1,6 @@
 # Widgeturi și Dynamic Island
 
-Orbit include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Nu folosește App Groups, notificări push sau entitlements care cer un abonament Apple Developer plătit.
+Orbit **4.0.0** include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Nu folosește App Groups, notificări push sau entitlements care cer un abonament Apple Developer plătit. Setările sunt acum în **Tools → Settings**; sursele de monitorizare sunt și în **Tools → Monitoring sources**.
 
 ## Testare gratuită
 
@@ -30,14 +30,18 @@ Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lip
 ## Asocierea widgeturilor de monitorizare
 
 1. Instalează și pornește agentul Windows actualizat. Conectează PC-ul în Orbit și acordă accesul la rețeaua locală pe iPhone.
-2. În aplicație, deschide **Settings → Widgets → Prepare widget access**. Apasă **Copy read-only widget token**.
+2. În aplicație, deschide **Tools → Settings → Widgets → Prepare widget access**. Apasă **Copy read-only widget token**.
 3. Adaugă unul dintre widgeturile de monitorizare pe Home Screen. Ține apăsat widgetul și alege **Edit Widget**.
 4. Completează **PC address** cu IP-ul sau hostname-ul PC-ului, fără port; **Agent port** este implicit `8765`. Lipește tokenul în **Read-only widget token**. Pentru **Choose a PC metric**, selectează și **Metric**.
 5. Păstrează PC-ul pornit și accesibil în aceeași rețea sau prin conexiunea ta VPN privată. Prima citire depinde de programarea iOS. Dacă apare o eroare de token, verifică dacă ai copiat tokenul pentru widgeturi, apoi repetă asocierea.
 
 Widgetul comunică direct cu agentul. Nu citește Keychain-ul aplicației și nu are nevoie de App Groups. Configurarea este separată pentru fiecare instanță, inclusiv pe Lock Screen; dacă se schimbă IP-ul PC-ului, actualizează **Edit Widget**. Configurația dashboardului din aplicație nu schimbă automat layoutul widgeturilor.
 
+**Conexiunea widgetului este separată de profilurile My PCs.** Aplicația 4.0.0 poate folosi certificatul PC-ului pentru HTTPS pe **8766**, dar aceste widgeturi continuă să citească HTTP pe portul compatibil **8765**, cu tokenul lor numai pentru citire. Nu completa portul 8766 în widgetul actual: acesta nu are configurare de certificat. Păstrează accesul pe 8765 în rețeaua privată dacă folosești widgeturile; acest transport nu este criptat. Selectarea altui PC în aplicație nu schimbă automat PC-ul fiecărui widget.
+
 Nu introduce tokenul principal de control al PC-ului într-un widget. Agentul păstrează un secret separat în `.orbit-widget-token`: acesta autorizează numai `GET /api/widget/status`, un rezumat de monitorizare. Obținerea lui prin `POST /api/widget/pairing` cere tokenul principal al aplicației. Tokenul de widget nu poate trimite comenzi, închide procese sau accesa inventarul complet. Pentru revocare, oprește agentul, șterge `.orbit-widget-token`, repornește și asociază din nou widgeturile.
+
+Noile funcții **Files**, **Clipboard**, **Audio mixer** și **Sessions & graphs** cer conexiunea criptată din **Tools → My PCs**, cu tokenul principal și amprenta SHA-256 copiată din fereastra PC-ului. Nu sunt accesibile din tokenul de widget. Istoricul sesiunilor este salvat de agent pe PC și continuă independent de actualizările widgeturilor sau de suspendarea aplicației iOS.
 
 ## Actualizare și expirare
 
@@ -49,15 +53,15 @@ iOS poate suspenda aplicația în fundal. După **15 secunde** fără actualizar
 
 ## Dacă lipsesc temperaturile sau FPS
 
-Verifică întâi datele în aplicația principală, la **Settings → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **3.2.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
+Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.0.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
 
-Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
+Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Tools → Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
 
 LibreHardwareMonitor rămâne o alternativă pentru senzori. Pentru **0.9.5+**, activează pe PC **Options → Remote Web Server → Run**, port **8085**, și păstrează programul deschis; rulează-l ca administrator dacă senzorii cer asta. Aceste versiuni [au eliminat WMI](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143), iar agentul citește acum `http://127.0.0.1:8085/data.json`. Pentru alt port local, configurează `ORBIT_LHM_URL` înainte de pornirea agentului. Versiunile vechi pot folosi WMI. GPU AMD/Intel poate avea date prin LibreHardwareMonitor chiar dacă `nvidia-smi` lipsește.
 
 Dacă RTSS nu oferă FPS, poți folosi PresentMon separat și seta `ORBIT_PRESENTMON_CSV` la CSV-ul activ. Sunt acceptate v1, formatul implicit actual și v2 `CPUStartTime`/`FrameTime`. `ORBIT_PRESENTATION_CSV` este tolerată ca alias, dar folosește denumirea recomandată. Vezi [pașii de configurare și diagnosticare pe Windows](../Orbit-Windows-Agent/README.md#fps-real-cu-presentmon-opțional).
 
-Actualizează **întregul folder `Orbit-Windows-Agent`** de pe PC, păstrând tokenurile locale și fără a copia `.venv` de pe alt calculator, apoi repornește `start_agent.bat`. Actualizează și aplicația iOS; proiectul nu actualizează automat agentul care rulează pe PC. `check_monitoring.bat` din folderul agentului verifică sursele fără comenzi de control. După remedierea sursei, widgetul așteaptă în continuare actualizarea programată de iOS; Live Activity depinde de actualizările aplicației.
+Actualizează **întregul folder `Orbit-Windows-Agent`** de pe PC, păstrând tokenurile locale și `%LOCALAPPDATA%\Orbit` cu certificatul și istoricul, fără a copia `.venv` de pe alt calculator, apoi repornește `start_agent.bat`. Actualizează și aplicația iOS; proiectul nu actualizează automat agentul care rulează pe PC. `check_monitoring.bat` din folderul agentului verifică sursele fără comenzi de control. După remedierea sursei, widgetul așteaptă în continuare actualizarea programată de iOS; Live Activity depinde de actualizările aplicației.
 
 ## Limitare separată: Wake-on-LAN pe iPhone
 

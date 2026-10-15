@@ -13,11 +13,14 @@ struct ContentView: View {
             GameLibraryView(vm: vm)
                 .tabItem { Label("Library", systemImage: "gamecontroller.fill") }
                 .tag(1)
+            NavigationStack { PCFilesView(vm: vm) }
+                .tabItem { Label("Files", systemImage: "folder.fill") }
+                .tag(4)
             QuickRemoteView(vm: vm)
                 .tabItem { Label("Remote", systemImage: "computermouse.fill") }
                 .tag(2)
-            SettingsView(vm: vm)
-                .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+            CompanionToolsView(vm: vm)
+                .tabItem { Label("Tools", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
         }
         .tint(.cyan)
@@ -48,6 +51,7 @@ struct ContentView: View {
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3
+            case "files": selectedTab = 4
             default: selectedTab = 0
             }
         }
@@ -60,6 +64,7 @@ struct DashboardView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var pendingAction: PowerConfirmation?
     @State private var isShowingCustomization = false
+    @State private var isShowingPCs = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var columns: [GridItem] {
@@ -105,6 +110,8 @@ struct DashboardView: View {
             .navigationTitle("Your PC")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { isShowingPCs = true } label: { Image(systemName: "desktopcomputer.and.arrow.down") }
+                        .accessibilityLabel("Switch PC")
                     Button { isShowingCustomization = true } label: {
                         Image(systemName: "slider.horizontal.3")
                     }
@@ -118,6 +125,7 @@ struct DashboardView: View {
             .sheet(isPresented: $isShowingCustomization) {
                 DashboardCustomizationView(vm: vm)
             }
+            .sheet(isPresented: $isShowingPCs) { NavigationStack { PCProfilesView(vm: vm) } }
             .confirmationDialog(pendingAction?.title ?? "Confirm action", isPresented: Binding(
                 get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }
             ), titleVisibility: .visible) {
@@ -1019,6 +1027,9 @@ struct SettingsView: View {
                     NavigationLink { FullSpecsView(vm: vm) } label: {
                         Label("PC specifications", systemImage: "cpu")
                     }
+                    NavigationLink { PCProfilesView(vm: vm) } label: {
+                        Label("My PCs & encrypted connection", systemImage: "desktopcomputer.and.arrow.down")
+                    }
                     NavigationLink { TaskManagerView(vm: vm) } label: {
                         Label("Task Manager", systemImage: "list.bullet.rectangle")
                     }
@@ -1105,6 +1116,7 @@ struct SettingsView: View {
             Button {
                 focusedField = false
                 isConnecting = true
+                vm.saveCurrentConnection()
                 Task { await vm.connect(); isConnecting = false }
             } label: {
                 HStack {
@@ -1338,7 +1350,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Connect your PC").font(.headline)
-                Text("Start the Orbit agent on Windows, then enter the address and access token it shows. Both devices should use the same Wi-Fi or local network.")
+                Text("Start Orbit Agent 4.0.0 on Windows, then copy its address, access token and certificate fingerprint. Both devices should use the same Wi-Fi or local network.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 7) {
@@ -1356,7 +1368,19 @@ struct OnboardingView: View {
                     .padding(13).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                     .onChange(of: vm.apiToken) { _, _ in connectionPassed = false; didTest = false }
             }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("PC certificate fingerprint").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                TextField("Paste Certificate SHA-256 from the PC", text: $vm.certificateFingerprint, axis: .vertical)
+                    .font(.caption.monospaced()).textInputAutocapitalization(.never).autocorrectionDisabled().focused($focusedField)
+                    .lineLimit(2...4).padding(13).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                    .onChange(of: vm.certificateFingerprint) { _, _ in connectionPassed = false; didTest = false }
+                Text("This verifies your PC before sending the token. It also enables encrypted Files, clipboard, audio mixer and history.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             DisclosureGroup("Custom agent port") {
+                TextField("Secure port 8766", value: $vm.securePort, format: .number.grouping(.never))
+                    .keyboardType(.numberPad).focused($focusedField)
+                    .onChange(of: vm.securePort) { _, _ in connectionPassed = false; didTest = false }
                 TextField("8765", value: $vm.agentPort, format: .number.grouping(.never))
                     .keyboardType(.numberPad).focused($focusedField)
                     .onChange(of: vm.agentPort) { _, _ in connectionPassed = false; didTest = false }
@@ -1381,7 +1405,7 @@ struct OnboardingView: View {
                 }
                 .font(.subheadline.weight(.semibold)).padding(.vertical, 4)
             }
-            .disabled(isTesting || !vm.isConfigured)
+            .disabled(isTesting || !vm.isConfigured || !vm.hasSecureConnection)
             if didTest {
                 Label(connectionPassed ? "Connected. Your hardware is detected automatically." : vm.statusLog, systemImage: connectionPassed ? "checkmark.circle" : "exclamationmark.circle")
                     .font(.caption).foregroundStyle(connectionPassed ? .mint : .orange)

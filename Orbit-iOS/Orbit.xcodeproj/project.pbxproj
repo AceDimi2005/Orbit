@@ -21,6 +21,12 @@
 		A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* OrbitTelemetryWidgets.swift */; };
 		A20000000000000000000008 /* DashboardConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardConfiguration.swift */; };
 		A20000000000000000000009 /* TaskManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* TaskManagerView.swift */; };
+		A2000000000000000000000A /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
+		A2000000000000000000000B /* PCProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* PCProfilesView.swift */; };
+		A2000000000000000000000C /* PCFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* PCFilesView.swift */; };
+		A2000000000000000000000D /* DesktopToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* DesktopToolsView.swift */; };
+		A2000000000000000000000E /* SessionHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* SessionHistoryView.swift */; };
+		A2000000000000000000000F /* CompanionToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* CompanionToolsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,6 +54,12 @@
 		B20000000000000000000007 /* OrbitTelemetryWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTelemetryWidgets.swift; sourceTree = "<group>"; };
 		B20000000000000000000008 /* DashboardConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardConfiguration.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* TaskManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* OrbitAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitAPIClient.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* PCProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCProfilesView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* PCFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCFilesView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000D /* DesktopToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopToolsView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000E /* SessionHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000F /* CompanionToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionToolsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +91,12 @@
 				B20000000000000000000006 /* VolumeCommandQueue.swift */,
 				B20000000000000000000008 /* DashboardConfiguration.swift */,
 				B20000000000000000000009 /* TaskManagerView.swift */,
+				B2000000000000000000000F /* CompanionToolsView.swift */,
+				B2000000000000000000000E /* SessionHistoryView.swift */,
+				B2000000000000000000000D /* DesktopToolsView.swift */,
+				B2000000000000000000000C /* PCFilesView.swift */,
+				B2000000000000000000000B /* PCProfilesView.swift */,
+				B2000000000000000000000A /* OrbitAPIClient.swift */,
 				B20000000000000000000001 /* OrbitLiveActivityCoordinator.swift */,
 				B10000000000000000000004 /* ModelsAndServices.swift */,
 				B10000000000000000000005 /* LiquidGlassComponents.swift */,
@@ -183,6 +201,12 @@
 				A20000000000000000000006 /* VolumeCommandQueue.swift in Sources */,
 				A20000000000000000000008 /* DashboardConfiguration.swift in Sources */,
 				A20000000000000000000009 /* TaskManagerView.swift in Sources */,
+				A2000000000000000000000F /* CompanionToolsView.swift in Sources */,
+				A2000000000000000000000E /* SessionHistoryView.swift in Sources */,
+				A2000000000000000000000D /* DesktopToolsView.swift in Sources */,
+				A2000000000000000000000C /* PCFilesView.swift in Sources */,
+				A2000000000000000000000B /* PCProfilesView.swift in Sources */,
+				A2000000000000000000000A /* OrbitAPIClient.swift in Sources */,
 				A20000000000000000000001 /* OrbitLiveActivityCoordinator.swift in Sources */,
 				A20000000000000000000002 /* OrbitActivityAttributes.swift in Sources */,
 				A10000000000000000000003 /* ModelsAndServices.swift in Sources */,

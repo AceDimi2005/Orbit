@@ -5,3 +5,4 @@ mss>=9,<11
 pillow>=10.4,<13
 pycaw>=20251023; sys_platform == 'win32'
 comtypes>=1.4,<2; sys_platform == 'win32'
+cryptography>=43,<50

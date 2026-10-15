@@ -14,7 +14,7 @@
         </dict>
     </array>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Orbit uses your local network to wake your PC, monitor real-time hardware telemetry, and control Windows.</string>
+    <string>Orbit connects to your PC to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.</string>
     <key>NSSupportsLiveActivities</key>
     <true/>
     <key>NSAppTransportSecurity</key>

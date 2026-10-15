@@ -59,7 +59,7 @@ struct PCMetrics: Codable {
         m.cpuName = "Example 8-core processor"
         m.gpuName = "Example graphics card"
         m.isOnline = true
-        m.agentVersion = "3.1.0 · preview"; m.sensorSource = "Simulated preview"
+        m.agentVersion = "4.0.0 · preview"; m.sensorSource = "Simulated preview"
         m.sensorStatus = "Simulated temperature readings"; m.gpuSource = "Simulated preview"; m.networkInterface = "Example Ethernet"
         m.cpuTemp = 48; m.cpuUsage = 24; m.gpuTemp = 56; m.gpuUsage = 36
         m.cpuPowerWatts = 58; m.cpuClockMHz = 4250; m.cpuClockSource = "Simulated preview"
@@ -207,6 +207,14 @@ private enum TokenStore {
 
 @MainActor
 final class OrbitViewModel: ObservableObject {
+    @Published var savedPCs = PCProfileStore.load()
+    @Published var selectedPCID = UserDefaults.standard.string(forKey: "selectedPCID") ?? ""
+    @Published var securePort = (UserDefaults.standard.object(forKey: "securePort") as? Int) ?? 8766 {
+        didSet { UserDefaults.standard.set(securePort, forKey: "securePort"); if oldValue != securePort { resetConnection() } }
+    }
+    @Published var certificateFingerprint = UserDefaults.standard.string(forKey: "certificateFingerprint") ?? "" {
+        didSet { UserDefaults.standard.set(certificateFingerprint, forKey: "certificateFingerprint"); if oldValue != certificateFingerprint { resetConnection() } }
+    }
     @Published var pcIP = UserDefaults.standard.string(forKey: "pcIP") ?? "" { didSet { UserDefaults.standard.set(pcIP, forKey: "pcIP"); if oldValue != pcIP { pcMAC = ""; wolTargetIP = "" }; resetConnection() } }
     @Published var agentPort = (UserDefaults.standard.object(forKey: "agentPort") as? Int) ?? 8765 { didSet { UserDefaults.standard.set(agentPort, forKey: "agentPort"); resetConnection() } }
     @Published var apiToken = TokenStore.read() { didSet { TokenStore.save(apiToken); resetConnection() } }
@@ -257,6 +265,7 @@ final class OrbitViewModel: ObservableObject {
     private var monitoringTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
     private var streamWebSocket: URLSessionWebSocketTask?
+    private var secureStreamClient: OrbitAPIClient?
     private lazy var volumeCommands = VolumeCommandQueue { [weak self] value in
         guard let self else { return }
         await self.sendInput("/api/volume", values: ["level": String(Int(value))])
@@ -277,6 +286,13 @@ final class OrbitViewModel: ObservableObject {
     var isConfigured: Bool { !cleanHost().isEmpty && !apiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (1...65535).contains(agentPort) }
     init() {
         showOnboarding = !hasCompletedOnboarding
+        if savedPCs.isEmpty && isConfigured {
+            let profile = SavedPC(name: "My PC", address: cleanHost(), agentPort: agentPort, securePort: securePort,
+                                  certificateFingerprint: certificateFingerprint, macAddress: pcMAC,
+                                  subnetMask: subnetMask, broadcastAddress: wolTargetIP, wolPort: wolPort, autoCalcBroadcast: autoCalcBroadcast)
+            selectedPCID = profile.id; UserDefaults.standard.set(profile.id, forKey: "selectedPCID")
+            savedPCs = [profile]; PCProfileStore.save(savedPCs); PCProfileStore.saveToken(apiToken, for: profile.id)
+        }
         loadOverrides()
         loadDashboardConfiguration()
         activitySubscription = activity.$isActive.sink { [weak self] value in self?.isDynamicIslandActive = value }
@@ -286,7 +302,7 @@ final class OrbitViewModel: ObservableObject {
     private static var demoGames: [SunshineGame] {
         [SunshineGame(id: "demo", title: "Example game", genre: "Simulated preview", iconSymbol: "gamecontroller.fill", accentHex: "5EDBD5")]
     }
-    private func resetConnection() {
+    func resetConnection() {
         generation += 1
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
@@ -307,6 +323,7 @@ final class OrbitViewModel: ObservableObject {
         guard let u = c.url else { throw OrbitError(message: "The PC address is invalid.") }; return u
     }
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
+        if hasSecureConnection { return try await companionClient().data(path, method: method, query: query) }
         var r = URLRequest(url: try url(path, query: query)); r.httpMethod = method
         r.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: r)
@@ -353,6 +370,7 @@ final class OrbitViewModel: ObservableObject {
     func refreshMetrics() async {
         guard !isRefreshing, appActive else { return }
         if isDemoMode { statusLog = "Preview • simulated data"; return }
+        guard hasCompletedOnboarding || hasSecureConnection else { statusLog = "Copy the PC certificate fingerprint to establish your encrypted connection."; return }
         guard isConfigured else { metrics.isOnline = false; statusLog = "Add your PC address and pairing token in Settings"; return }
         isRefreshing = true; defer { isRefreshing = false }
         let version = generation
@@ -363,6 +381,7 @@ final class OrbitViewModel: ObservableObject {
             guard generation == version, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
             metrics = decoded
+            if savedPCs.isEmpty || selectedPCID.isEmpty { saveCurrentConnection() }
             if isDraggingVolume || volumeCommands.isSending || start <= lastVolumeChangeTime || Date().timeIntervalSince(lastVolumeChangeTime) < 2 { metrics.volume = sliderVolume }
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
             statusLog = "Connected • \(cleanHost())"
@@ -392,6 +411,7 @@ final class OrbitViewModel: ObservableObject {
             if !info.macAddress.isEmpty { pcMAC = info.macAddress }
             if !info.subnetMask.isEmpty { subnetMask = info.subnetMask }
             if autoCalcBroadcast && !info.broadcastAddress.isEmpty { wolTargetIP = info.broadcastAddress }
+            persistSelectedPC()
             let previouslyEnteredNames = componentOverrides
             currentIdentity = info.macAddress.isEmpty ? info.hostname : info.macAddress
             let hasSavedNames = UserDefaults.standard.object(forKey: overrideKey) != nil
@@ -520,41 +540,73 @@ final class OrbitViewModel: ObservableObject {
     }
     func scanLANForPC() async {
         guard !isScanningLAN else { return }
-        guard !apiToken.isEmpty, (1...65535).contains(agentPort) else { statusLog = "Enter the agent’s pairing token and port first."; return }
+        guard (1...65535).contains(agentPort) else { statusLog = "Enter a valid agent discovery port first."; return }
         let parts = cleanHost().split(separator: ".")
         guard parts.count == 4, parts.allSatisfy({ UInt8($0) != nil }) else { statusLog = "Enter an IPv4 address on your PC’s network first (for example 192.168.1.10)."; return }
+        let pinned = hasSecureConnection
+        guard !pinned || !apiToken.isEmpty else { statusLog = "Enter this PC’s pairing token before finding its verified connection."; return }
         isScanningLAN = true; defer { isScanningLAN = false }
         let prefix = parts.prefix(3).joined(separator: "."), token = apiToken, port = agentPort, version = generation
+        let fingerprint = certificateFingerprint, encryptedPort = securePort
+        let originalProfileID = savedPCs.first(where: { $0.id == selectedPCID && $0.address == cleanHost() && $0.agentPort == agentPort })?.id
         statusLog = "Searching \(prefix).x…"
-        let found: PCNetworkConfigResponse? = await withTaskGroup(of: PCNetworkConfigResponse?.self) { group in
+        struct Candidate { let address: String; let info: PCNetworkConfigResponse? }
+        let candidates: [Candidate] = await withTaskGroup(of: Candidate?.self) { group in
             let c = URLSessionConfiguration.ephemeral; c.timeoutIntervalForRequest = 0.6; c.timeoutIntervalForResource = 0.8
+            c.httpCookieStorage = nil; c.urlCredentialStorage = nil
             let scanSession = URLSession(configuration: c); defer { scanSession.invalidateAndCancel() }
             func enqueue(_ i: Int) {
                 group.addTask {
-                    guard !Task.isCancelled, let u = URL(string: "http://\(prefix).\(i):\(port)/api/network-info") else { return nil }
-                    let discoveryURL = u.deletingLastPathComponent().appendingPathComponent("discover")
-                    guard let (discoveryData, discoveryResponse) = try? await scanSession.data(from: discoveryURL),
+                    let address = "\(prefix).\(i)"
+                    guard !Task.isCancelled, let discoveryURL = URL(string: "http://\(address):\(port)/api/discover"),
+                          let (discoveryData, discoveryResponse) = try? await scanSession.data(from: discoveryURL),
                           (discoveryResponse as? HTTPURLResponse)?.statusCode == 200,
+                          discoveryData.count <= 4096,
                           let discovery = try? JSONSerialization.jsonObject(with: discoveryData) as? [String: Any],
                           discovery["service"] as? String == "orbit-agent", !Task.isCancelled else { return nil }
-                    var r = URLRequest(url: u); r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    guard let (data, response) = try? await scanSession.data(for: r), (response as? HTTPURLResponse)?.statusCode == 200, var info = try? JSONDecoder().decode(PCNetworkConfigResponse.self, from: data) else { return nil }
-                    info.ipAddress = "\(prefix).\(i)"; return info
+                    // Public discovery is only a hint. Never disclose a pairing
+                    // token to a host merely because it claims to be Orbit.
+                    guard pinned else { return Candidate(address: address, info: nil) }
+                    guard let client = try? OrbitAPIClient(host: address, port: encryptedPort, token: token, fingerprint: fingerprint),
+                          var info: PCNetworkConfigResponse = try? await client.get("/api/network-info"),
+                          !Task.isCancelled else { return nil }
+                    info.ipAddress = address
+                    return Candidate(address: address, info: info)
                 }
             }
             for i in 1...16 { enqueue(i) }
             var next = 17
+            var results: [Candidate] = []
             while let result = await group.next() {
-                if let result { group.cancelAll(); return result }
+                if let result {
+                    if pinned { group.cancelAll(); return [result] }
+                    results.append(result)
+                }
                 if next <= 254 { enqueue(next); next += 1 }
             }
-            return nil
+            return results
         }
-        guard version == generation else { return }
-        if let found {
-            pcIP = found.ipAddress; pcMAC = found.macAddress; subnetMask = found.subnetMask
-            recalculateBroadcastIfNeeded(); await connect()
-        } else { statusLog = "No matching agent on \(prefix).x. Check token, firewall and PC address." }
+        guard version == generation, !Task.isCancelled else { return }
+        if let found = candidates.first?.info {
+            if let originalProfileID {
+                persistSelectedPC()
+                guard var profile = savedPCs.first(where: { $0.id == originalProfileID }) else { return }
+                profile.address = found.ipAddress; profile.macAddress = found.macAddress
+                profile.subnetMask = found.subnetMask
+                if autoCalcBroadcast { profile.broadcastAddress = found.broadcastAddress }
+                savePC(profile, token: token)
+            } else {
+                pcIP = found.ipAddress; pcMAC = found.macAddress; subnetMask = found.subnetMask
+                recalculateBroadcastIfNeeded(); await connect()
+            }
+        } else if !candidates.isEmpty {
+            let addresses = candidates.map(\.address).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            let displayed = addresses.prefix(8).joined(separator: ", ")
+            let remaining = addresses.count > 8 ? " and \(addresses.count - 8) more" : ""
+            statusLog = "Found \(addresses.count) unverified Orbit agent(s): \(displayed)\(remaining). Add the PC in My PCs and copy its certificate fingerprint to connect securely."
+        } else {
+            statusLog = pinned ? "No agent matched this PC’s certificate on \(prefix).x. Check the PC, secure port and firewall." : "No Orbit agents found on \(prefix).x. Check the PC, discovery port and firewall."
+        }
     }
     func wakePC() async {
         guard !isWakingUp else { return }
@@ -640,9 +692,16 @@ final class OrbitViewModel: ObservableObject {
         stopScreenFeed(); streamError = nil
         guard !isDemoMode else { streamError = "Desktop preview is unavailable in demo mode."; return }
         do {
-            let u = try url("/ws/stream", scheme: "ws")
-            var r = URLRequest(url: u); r.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
-            let ws = session.webSocketTask(with: r); streamWebSocket = ws; ws.resume()
+            let ws: URLSessionWebSocketTask
+            if hasSecureConnection {
+                let client = try companionClient(); secureStreamClient = client
+                ws = try client.webSocket()
+            } else {
+                let u = try url("/ws/stream", scheme: "ws")
+                var r = URLRequest(url: u); r.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+                ws = session.webSocketTask(with: r)
+            }
+            streamWebSocket = ws; ws.resume()
             streamTask = Task { [weak self] in
                 do {
                     while !Task.isCancelled {
@@ -655,7 +714,7 @@ final class OrbitViewModel: ObservableObject {
         } catch { streamError = error.localizedDescription }
     }
     private func stopScreenFeed() {
-        streamTask?.cancel(); streamTask = nil; streamWebSocket?.cancel(with: .goingAway, reason: nil); streamWebSocket = nil; liveFrameImage = nil
+        streamTask?.cancel(); streamTask = nil; streamWebSocket?.cancel(with: .goingAway, reason: nil); streamWebSocket = nil; secureStreamClient = nil; liveFrameImage = nil
     }
     func stopStreaming(putPCToSleep: Bool = false) {
         stopScreenFeed(); isShowingStreamView = false

@@ -23,6 +23,9 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from orbit_processes import collect_processes, terminate_process
+from orbit_files import create_files_router
+from orbit_desktop import create_desktop_router
+from orbit_history import SessionRecorder, create_history_router
 
 from orbit_hardware import (GPU_SENSOR_FIELDS, IOCounterRates, RATE_FIELDS, SENSOR_FIELDS, basic_specs,
                             collect_specs, detect_game, io_metrics, nvidia_metrics,
@@ -42,7 +45,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "3.2.0"
+AGENT_VERSION = "4.0.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -80,6 +83,7 @@ STATE = {
 }
 LAST_TELEMETRY = 0.0
 LAST_SENSOR = 0.0
+HISTORY_RECORDER = None
 LIVE_OPTIONAL_FIELDS = SENSOR_FIELDS + RATE_FIELDS + (
     "gpuTemp", "gpuUsage", "gpuPowerWatts", "gpuFanPercent", "vramUsedGB", "vramTotalGB", "gpuSource", "networkInterface", "fps", "fpsSource",
 )
@@ -236,20 +240,32 @@ def telemetry_worker():
             with STATE_LOCK:
                 STATE.update(update)
                 LAST_TELEMETRY = time.monotonic()
+            record_history(status_snapshot())
         except Exception:
             LOGGER.exception("Telemetry sample failed")
             with STATE_LOCK:
                 STATE["telemetryAvailable"] = False
                 for key in LIVE_OPTIONAL_FIELDS:
                     STATE[key] = None
+            record_history({"telemetryAvailable": False})
+
+
+def record_history(metrics):
+    recorder = HISTORY_RECORDER
+    if recorder is not None:
+        try:
+            recorder.record_sample(metrics)
+        except Exception:
+            LOGGER.exception("Could not save this session sample")
 
 
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, WIDGET_TOKEN, SPECS
+    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER
     API_TOKEN = load_api_token()
     WIDGET_TOKEN = load_widget_token()
     SPECS = basic_specs()
+    HISTORY_RECORDER = SessionRecorder()
     STOP_EVENT.clear()
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
     for thread in threads:
@@ -258,10 +274,16 @@ async def lifespan(application):
     STOP_EVENT.set()
     for thread in threads:
         await asyncio.to_thread(thread.join, 5)
+    recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
+    if recorder is not None:
+        recorder.close()
 
 
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(create_files_router(verify_token))
+app.include_router(create_desktop_router(verify_token))
+app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
 
 
 @app.get("/api/discover")
@@ -608,10 +630,18 @@ async def websocket_video_stream(websocket: WebSocket):
 
 
 if __name__ == "__main__":
+    from orbit_tls import ensure_tls_identity, serve_both
     API_TOKEN = load_api_token()
+    certificate, private_key, fingerprint = ensure_tls_identity()
+    secure_port = int(os.getenv("ORBIT_TLS_PORT", "8766"))
     network = get_local_network_details()
     print(f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}")
     print(f"PC IP: {network['ipAddress'] or 'No active LAN adapter'}")
     print(f"Pairing token (enter in the iPhone app): {API_TOKEN}")
+    print(f"Encrypted connection port: {secure_port}")
+    print(f"Certificate SHA-256 (copy into My PCs): {fingerprint}")
     print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
-    uvicorn.run(app, host=os.getenv("ORBIT_HOST", "0.0.0.0"), port=AGENT_PORT, log_level="warning", access_log=False)
+    try:
+        asyncio.run(serve_both(app, os.getenv("ORBIT_HOST", "0.0.0.0"), AGENT_PORT, secure_port, certificate, private_key))
+    except KeyboardInterrupt:
+        pass

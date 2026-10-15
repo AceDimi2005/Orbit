@@ -206,6 +206,7 @@ class APITests(unittest.TestCase):
              patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
              patch.object(agent, "inventory_worker") as inventory, \
              patch.object(agent, "telemetry_worker") as telemetry, \
+             patch.object(agent, "SessionRecorder"), \
              patch.object(agent, "sensor_worker") as sensors:
             with TestClient(agent.app) as client:
                 self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)
