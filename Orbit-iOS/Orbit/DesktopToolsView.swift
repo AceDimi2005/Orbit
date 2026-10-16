@@ -145,7 +145,19 @@ private struct AudioMixerSession: Codable, Identifiable {
     let name: String
     var volume: Double
     var isMuted: Bool
+    var processCreateTime: Double?
+    var outputDeviceID: String?
+    var outputDeviceName: String?
 }
+
+private struct AudioOutputDevice: Decodable, Identifiable { let id: String; let name: String }
+private struct AudioOutputsReply: Decodable {
+    let devices: [AudioOutputDevice]
+    let routingAvailable: Bool
+    let routingUnavailableReason: String?
+}
+private struct AudioRouteChange: Encodable { let id: String; let expectedCreateTime: Double; let deviceID: String }
+private struct AudioRouteReply: Decodable { let status: String; let pid: Int; let deviceID: String }
 
 private struct AudioSessionsReply: Decodable {
     let sessions: [AudioMixerSession]
@@ -173,6 +185,12 @@ private final class AudioMixerModel: ObservableObject {
     @Published private(set) var sendingIDs: Set<String> = []
     @Published private(set) var error: String?
     @Published private(set) var updated: Date?
+    @Published private(set) var outputs: [AudioOutputDevice] = []
+    @Published private(set) var routingAvailable = false
+    @Published private(set) var routingReason: String?
+    @Published private(set) var routingSessionID: String?
+    @Published private(set) var routingStatus: String?
+    private var routingTask: Task<Void, Never>?
     private struct Command {
         var body: AudioSessionChange
         let generation: Int
@@ -217,6 +235,17 @@ private final class AudioMixerModel: ObservableObject {
             }
             updated = Date()
             if sendingIDs.isEmpty { error = nil }
+            do {
+                let available: AudioOutputsReply = try await client.get("/api/audio/outputs")
+                guard !Task.isCancelled, generation == vm.connectionID, lifetime == currentLifetime else { return }
+                outputs = available.devices
+                routingAvailable = available.routingAvailable
+                routingReason = available.routingUnavailableReason
+            } catch {
+                guard !Task.isCancelled, generation == vm.connectionID, lifetime == currentLifetime else { return }
+                routingAvailable = false
+                routingReason = "Per-app output selection is unavailable. Update Orbit Agent, or use Windows Settings → System → Sound → Volume mixer."
+            }
         } catch {
             guard !Task.isCancelled, generation == vm.connectionID, lifetime == currentLifetime else { return }
             self.error = error.localizedDescription
@@ -239,6 +268,30 @@ private final class AudioMixerModel: ObservableObject {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].isMuted.toggle()
         enqueue(vm, id: id, muted: sessions[index].isMuted)
+    }
+
+    func route(_ vm: OrbitViewModel, session: AudioMixerSession, outputID: String) {
+        guard routingAvailable, routingSessionID == nil, !vm.isDemoMode, vm.metrics.isOnline,
+              session.pid > 0, let created = session.processCreateTime, created.isFinite, created > 0 else { return }
+        let generation = vm.connectionID, currentLifetime = lifetime
+        let client: OrbitAPIClient
+        do { client = try vm.companionClient() }
+        catch { self.error = error.localizedDescription; return }
+        routingSessionID = session.id; routingStatus = nil; error = nil
+        let body = AudioRouteChange(id: session.id, expectedCreateTime: created, deviceID: outputID)
+        routingTask = Task { [weak self, weak vm] in
+            guard let self, let vm else { return }
+            defer { if self.lifetime == currentLifetime { self.routingSessionID = nil; self.routingTask = nil } }
+            do {
+                let _: AudioRouteReply = try await client.send("/api/audio/route", body: body)
+                guard !Task.isCancelled, generation == vm.connectionID, self.lifetime == currentLifetime else { return }
+                self.routingStatus = "Windows saved this app's output preference. Some apps need playback or the app restarted before audio moves."
+                await self.refresh(vm)
+            } catch {
+                guard !Task.isCancelled, generation == vm.connectionID, self.lifetime == currentLifetime else { return }
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     private func enqueue(_ vm: OrbitViewModel, id: String, volume: Double? = nil, muted: Bool? = nil) {
@@ -296,7 +349,9 @@ private final class AudioMixerModel: ObservableObject {
     func reset() {
         lifetime += 1
         worker?.cancel(); worker = nil
+        routingTask?.cancel(); routingTask = nil
         sessions = []; error = nil; updated = nil; isLoading = false
+        outputs = []; routingAvailable = false; routingReason = nil; routingSessionID = nil; routingStatus = nil
         pending = [:]; order = []; revisions = [:]; changed = [:]; dragging = []; sendingIDs = []
     }
 }
@@ -311,8 +366,11 @@ struct AudioMixerView: View {
             Section {
                 Label("Volume for each application", systemImage: "slider.horizontal.3")
                     .font(.headline)
-                Text("Open an app and play audio to create its Windows audio session. These controls adjust that session on the default playback device. An app can have more than one session.")
+                Text("Open an app and play audio to create its Windows audio session. Orbit lists sessions across active output devices. An app can have more than one session.")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("Output selection changes the app's Windows preference for all audio roles. Apps with their own device selection may ignore it. The PC's default output stays unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let reason = mixer.routingReason { Text(reason).font(.caption).foregroundStyle(.secondary) }
                 if vm.isDemoMode {
                     Label("Connect a PC to use the audio mixer", systemImage: "sparkles")
                         .font(.caption).foregroundStyle(.orange)
@@ -324,6 +382,9 @@ struct AudioMixerView: View {
             }
             if let error = mixer.error {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
+            }
+            if let status = mixer.routingStatus {
+                Section { Label(status, systemImage: "speaker.wave.2").font(.caption).foregroundStyle(.mint) }
             }
             Section("Applications") {
                 if mixer.isLoading && mixer.sessions.isEmpty {
@@ -386,6 +447,23 @@ struct AudioMixerView: View {
                     .accessibilityLabel("Volume for \(session.name)")
                 Text("\(Int(session.volume))%")
                     .font(.caption.monospacedDigit()).frame(width: 42, alignment: .trailing)
+            }
+            HStack {
+                Label(session.outputDeviceName ?? "Current output", systemImage: "hifispeaker")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer()
+                if mixer.routingSessionID == session.id {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Menu {
+                        Button("System default") { mixer.route(vm, session: session, outputID: "") }
+                        ForEach(mixer.outputs) { output in
+                            Button(output.name) { mixer.route(vm, session: session, outputID: output.id) }
+                        }
+                    } label: { Label("Output", systemImage: "arrow.triangle.branch").font(.caption) }
+                    .disabled(!mixer.routingAvailable || mixer.routingSessionID != nil || session.pid == 0 || session.processCreateTime == nil)
+                    .accessibilityLabel("Choose output for \(session.name)")
+                }
             }
         }
         .padding(.vertical, 8)

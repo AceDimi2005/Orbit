@@ -23,7 +23,7 @@ struct ContentView: View {
                 .tabItem { Label("Tools", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
         }
-        .tint(.cyan)
+        .orbitAppearance()
         .preferredColorScheme(.dark)
         .overlay {
             if vm.smartLaunchStep != .idle {
@@ -440,7 +440,7 @@ struct DashboardView: View {
                     Circle().fill(.cyan.opacity(0.08)).frame(width: 118, height: 118)
                     Circle().strokeBorder(.cyan.opacity(0.2), lineWidth: 1).frame(width: 118, height: 118)
                     if vm.isWakingUp {
-                        ProgressView().controlSize(.large).tint(.cyan)
+                        ProgressView().controlSize(.large).orbitAppearance()
                     } else {
                         Image(systemName: "power").font(.system(size: 38, weight: .light)).foregroundStyle(.cyan)
                     }
@@ -456,7 +456,7 @@ struct DashboardView: View {
             }
             HStack(spacing: 12) {
                 Button("Connect PC", systemImage: "network") { vm.showOnboarding = true }
-                    .buttonStyle(.borderedProminent).tint(.cyan).foregroundStyle(.black)
+                    .buttonStyle(.borderedProminent).orbitAppearance().foregroundStyle(.black)
                 if vm.isConfigured {
                     Button("Retry", systemImage: "arrow.clockwise") { Task { await vm.connect() } }
                         .buttonStyle(.bordered)
@@ -571,7 +571,7 @@ struct DashboardCustomizationView: View {
                 }
             }
         }
-        .tint(.cyan)
+        .orbitAppearance()
         .preferredColorScheme(.dark)
     }
 
@@ -942,7 +942,7 @@ struct SmartLaunchOverlay: View {
         ZStack {
             Color.black.opacity(0.65).ignoresSafeArea()
             VStack(spacing: 20) {
-                ProgressView().controlSize(.large).tint(.cyan)
+                ProgressView().controlSize(.large).orbitAppearance()
                 Text(vm.activeStreamingGame?.title ?? "Connecting to your PC").font(.headline)
                 Text(vm.smartLaunchStep.rawValue).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
@@ -997,7 +997,7 @@ struct MoonlightStreamView: View {
                 .background(.ultraThinMaterial)
             }
         }
-        .tint(.cyan)
+        .orbitAppearance()
         .preferredColorScheme(.dark)
     }
 }
@@ -1049,6 +1049,9 @@ struct SettingsView: View {
                 Section {
                     Toggle("Preview mode", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
                     Toggle("Open Moonlight after launch", isOn: $vm.autoOpenMoonlight)
+                    NavigationLink { AppearanceSettingsView() } label: {
+                        Label("Appearance", systemImage: "paintpalette")
+                    }
                     Button { isShowingDashboardCustomization = true } label: {
                         Label("Customize dashboard", systemImage: "slider.horizontal.3")
                     }
@@ -1056,13 +1059,11 @@ struct SettingsView: View {
                     Text("Preview mode uses sample data. For game streaming, install Moonlight and pair it with Sunshine on your PC.")
                 }
                 Section {
-                    Toggle("Live Activity", isOn: Binding(get: { vm.isDynamicIslandActive }, set: { enabled in
-                        if enabled != vm.isDynamicIslandActive { vm.toggleDynamicIsland() }
-                    }))
-                    .disabled(!vm.metrics.isOnline && !vm.isDynamicIslandActive)
-                    Picker("Live Activity focus", selection: $vm.dashboardConfiguration.activityFocus) {
-                        ForEach(LiveActivityFocus.allCases) { focus in
-                            Text(focus.title).tag(focus)
+                    NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
+                        HStack {
+                            Label("Live Activity & Dynamic Island", systemImage: "capsule.portrait.tophalf.filled")
+                            Spacer()
+                            Text(vm.isDynamicIslandActive ? "On" : "Off").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     NavigationLink {
@@ -1100,7 +1101,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .tint(.cyan)
+        .orbitAppearance()
         .preferredColorScheme(.dark)
     }
 
@@ -1186,74 +1187,57 @@ struct SettingsView: View {
 
 struct WidgetHelpView: View {
     @ObservedObject var vm: OrbitViewModel
-    @State private var tokenCopied = false
-
+    @State private var pairedPCs: [OrbitWidgetConnection] = []
     var body: some View {
         List {
             Section {
-                Label("A view for every moment", systemImage: "square.grid.2x2")
+                Label("Your paired PCs, ready for widgets", systemImage: "square.grid.2x2")
                     .font(.headline)
-                Text("Choose Overview, Gaming, Power, Thermals or a single reading. Launcher widgets keep your overview, library and remote controls one tap away.")
+                Text("Add a widget and choose a PC already paired in Orbit. Its address, encrypted connection and read-only access are filled in automatically.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
-            Section {
+            Section("Available PCs") {
+                ForEach(pairedPCs) { pc in
+                    Label(pc.name, systemImage: "desktopcomputer")
+                }
+                if pairedPCs.isEmpty {
+                    Text("Connect a PC in Orbit to prepare its widgets.").foregroundStyle(.secondary)
+                }
                 Button {
-                    tokenCopied = false
-                    Task { await vm.prepareWidgetAccess() }
+                    Task { await vm.prepareWidgetAccess(); pairedPCs = OrbitWidgetConnectionStore.connections() }
                 } label: {
                     HStack {
-                        Label(vm.isLoadingWidgetToken ? "Preparing…" : "Prepare widget access", systemImage: "key")
+                        Label(vm.isLoadingWidgetToken ? "Preparing…" : "Refresh widget access", systemImage: "arrow.triangle.2.circlepath")
                         Spacer()
                         if vm.isLoadingWidgetToken { ProgressView() }
                     }
-                }
-                .disabled(!vm.metrics.isOnline || vm.isDemoMode || vm.isLoadingWidgetToken)
-                if vm.isConfigured {
-                    LabeledContent("PC address", value: vm.cleanHost())
-                        .font(.subheadline).textSelection(.enabled)
-                    LabeledContent("Agent port", value: "\(vm.agentPort)")
-                        .font(.subheadline)
-                }
-                if let token = vm.widgetToken {
-                    Button {
-                        UIPasteboard.general.string = token
-                        tokenCopied = true
-                    } label: {
-                        Label(tokenCopied ? "Widget token copied" : "Copy read-only widget token", systemImage: tokenCopied ? "checkmark.circle" : "doc.on.doc")
-                    }
-                }
-                if let error = vm.widgetSetupError {
-                    Text(error).font(.caption).foregroundStyle(.orange)
-                }
-            } header: { Text("Pair your monitoring widgets") } footer: {
-                Text("Connect your PC first. Monitoring widgets use a separate read-only token. Enter this widget token when editing a widget; it cannot control your PC.")
+                }.disabled(!vm.metrics.isOnline || vm.isDemoMode || vm.isLoadingWidgetToken)
+                if let error = vm.widgetSetupError { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             Section("Add a widget") {
-                instruction(1, "Touch and hold your Home Screen, then choose Edit and Add Widget.")
-                instruction(2, "Search for Orbit and choose a widget and size.")
-                instruction(3, "Touch and hold the widget, then choose Edit Widget. Enter the PC address, agent port and read-only widget token.")
+                instruction(1, "Touch and hold the Home Screen, then choose Edit and Add Widget.")
+                instruction(2, "Search for Orbit. Choose Overview, Gaming, Power, Thermals, Cooling, Storage, Network or a single metric.")
+                instruction(3, "To change the PC, metric or colour theme, touch and hold the widget and choose Edit Widget. No token is needed.")
             }
             Section {
-                Text("iOS schedules widget refreshes. Readings are snapshots, not a continuous stream, and are marked stale after 15 minutes. The PC must be reachable on your network to update.")
+                Text("iOS decides when widgets refresh. The displayed time belongs to the PC reading; values disappear after 15 minutes if an update has not arrived. Your PC must be reachable on your network.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                Text("For a recent reading on your Lock Screen or Dynamic Island, start a Live Activity while connected to your PC.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            } header: { Text("Refresh behavior") }
+                NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
+                    Label("Set up Live Activity", systemImage: "waveform.path.ecg")
+                }
+            } header: { Text("Honest snapshots") }
         }
         .navigationTitle("Widgets")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { pairedPCs = OrbitWidgetConnectionStore.connections() }
+        .orbitAppearance()
     }
-
     private func instruction(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text("\(number)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.cyan)
-                .frame(width: 24, height: 24)
-                .background(.cyan.opacity(0.08), in: Circle())
+            Text("\(number)").font(.caption.weight(.semibold))
+                .frame(width: 24, height: 24).background(.white.opacity(0.07), in: Circle())
             Text(text).font(.subheadline)
-        }
-        .padding(.vertical, 4)
+        }.padding(.vertical, 4)
     }
 }
 
@@ -1261,6 +1245,7 @@ struct WidgetHelpView: View {
 
 struct OnboardingView: View {
     @ObservedObject var vm: OrbitViewModel
+    @State private var showsDiscovery = false
     @State private var isTesting = false
     @State private var connectionPassed = false
     @State private var didTest = false
@@ -1315,6 +1300,11 @@ struct OnboardingView: View {
                 }
             }
         }
+        .sheet(isPresented: $showsDiscovery) {
+            PCDiscoveryView(vm: vm) {
+                connectionPassed = vm.metrics.isOnline && !vm.isDemoMode; didTest = true
+            }
+        }
         .tint(.cyan).preferredColorScheme(.dark)
     }
 
@@ -1350,9 +1340,19 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Connect your PC").font(.headline)
-                Text("Start Orbit Agent 4.0.0 on Windows, then copy its address, access token and certificate fingerprint. Both devices should use the same Wi-Fi or local network.")
+                Text("Start Orbit Agent 4.1.0 on Windows and use the same local network. Orbit can find your PC and fill in all connection details after a one-use code.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Button { showsDiscovery = true } label: {
+                Label("Find my PC", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
+            }.buttonStyle(.borderedProminent)
+            Text("No IP, MAC address, access token or widget token to copy.")
+                .font(.caption).foregroundStyle(.secondary)
+            if connectionPassed {
+                Label("Paired securely with your PC", systemImage: "checkmark.shield.fill").foregroundStyle(.mint)
+            }
+            DisclosureGroup("Manual configuration") {
             VStack(alignment: .leading, spacing: 7) {
                 Text("PC address").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 TextField("e.g. 192.168.1.100", text: $vm.pcIP)
@@ -1409,6 +1409,7 @@ struct OnboardingView: View {
             if didTest {
                 Label(connectionPassed ? "Connected. Your hardware is detected automatically." : vm.statusLog, systemImage: connectionPassed ? "checkmark.circle" : "exclamationmark.circle")
                     .font(.caption).foregroundStyle(connectionPassed ? .mint : .orange)
+            }
             }
         }
         .padding(20)
@@ -1611,7 +1612,7 @@ struct ComponentNamesView: View {
                 }
             }
         }
-        .tint(.cyan).preferredColorScheme(.dark)
+        .orbitAppearance().preferredColorScheme(.dark)
         .onAppear { names = vm.componentOverrides }
     }
 

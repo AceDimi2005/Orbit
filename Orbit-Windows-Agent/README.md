@@ -1,26 +1,30 @@
 # Orbit Agent pentru Windows
 
-Agentul **4.0.0** citește componentele PC-ului și oferă monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **4.1.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
 ## Pornire și conectare
 
 1. Instalează **Python 3.11 sau mai nou** de la [python.org](https://www.python.org/downloads/windows/), cu opțiunea **Add Python to PATH**.
-2. Deschide `start_agent.bat`. Creează automat un mediu Python separat și instalează dependențele. Lasă fereastra deschisă cât timp folosești Orbit.
-3. La solicitarea Windows Firewall, permite Python în rețeaua **Private**, inclusiv portul HTTPS **8766**. Telefonul și PC-ul trebuie să fie în aceeași rețea de încredere sau accesibile prin VPN privat.
-4. În onboarding-ul Orbit, introdu **PC address**, **Agent access token** și **PC certificate fingerprint**, copiate din fereastra agentului. Nu include `https://` sau portul în câmpul adresei. Portul securizat este implicit **8766**; **Custom agent port** permite schimbarea lui și a portului legacy 8765. **Test connection** devine disponibil după completarea unei amprente valide.
-5. Apasă **Test connection → Continue to my PC**. Prima conexiune reușită salvează automat profilul, cu numele detectat al PC-ului. Așteaptă inventarul și prima măsurătoare. Pentru alt PC sau editarea unui profil existent, folosește **Tools → My PCs**. Tokenurile profilurilor sunt păstrate separat în Keychain; etichetele componentelor și dashboardul se personalizează pentru fiecare PC.
+2. Deschide `start_agent.bat` în sesiunea Windows în care ești autentificat. Creează un mediu Python separat și instalează dependențele, inclusiv descoperirea Bonjour și asocierea prin cod. Lasă fereastra deschisă. Pentru prima asociere ai nevoie de acces la desktopul Windows unde apare codul; un serviciu fără desktop interactiv nu oferă același flux.
+3. La solicitarea Windows Firewall, permite Python în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone.
+4. În onboarding, apasă **Find my PC**, alege PC-ul descoperit și introdu **codul de șase cifre** afișat în fereastra agentului și în dialogul Windows. Codul este valabil **120 de secunde**, pentru o singură încercare de confirmare. După un cod greșit sau expirat, solicită unul nou.
+5. Orbit completează automat IP/hostname, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul. Așteaptă inventarul și prima măsurătoare. Pentru alt PC, folosește **Tools → My PCs → Find a PC nearby**. Tokenul fiecărui profil rămâne separat în Keychain, iar dashboardul și favoritele se păstrează per PC.
 
-Onboarding-ul verifică certificatul înainte de trimiterea tokenului; fără o amprentă validă nu pornește testul conexiunii. Cu amprenta configurată, aplicația folosește **HTTPS/WSS pe 8766** pentru monitorizare și control. Nu revine la HTTP dacă verificarea certificatului eșuează. **Files, Clipboard, Audio mixer și Sessions & graphs cer HTTPS** și refuză accesul pe HTTP. Portul **8765** păstrează API-ul HTTP și WebSocket pentru clienți locali vechi și widgeturile numai pentru citire; traficul pe acest port nu este criptat. Nu publica porturile agentului pe Internet.
+PC-ul este anunțat prin Bonjour ca serviciu `_orbit._tcp.local.`. Asocierea folosește **SRP-6a, SHA-256 și grupul de 2048 de biți**; răspunsul cu credențiale este criptat cu **AES-GCM** sub o cheie derivată din sesiunea SRP și verifică amprenta certificatului. PIN-ul nu este transmis serverului ca text. Sunt permise cel mult un cod activ, cinci cereri acceptate pe adresă și zece în total în zece minute. Codurile ignorate sunt închise automat la expirare.
 
-`GET /api/discover` este singura rută publică și returnează doar identitatea/versionarea serviciului. Datele și comenzile cer `Authorization: Bearer <token>`, inclusiv WebSocket. Tokenurile în URL nu sunt acceptate. Widgeturile folosesc un token separat, fără drepturi asupra fișierelor, clipboardului, mixerului sau istoricului.
+După asociere, aplicația folosește **HTTPS/WSS pe 8766** și verifică certificatul exact al PC-ului. Nu revine la HTTP dacă verificarea eșuează. **Files, Clipboard, Audio mixer și Sessions & graphs cer HTTPS**. Widgeturile noi folosesc tot HTTPS, cu acces separat numai pentru citire. Portul **8765** păstrează API-ul HTTP/WebSocket pentru clienți locali vechi; traficul pe acest port nu este criptat. Nu publica porturile agentului pe Internet.
+
+Rutele publice sunt `GET /api/discover` (metadate publice de descoperire) și `POST /api/pair/start`, `POST /api/pair/finish` (asociere numai prin HTTPS). Datele și comenzile cer `Authorization: Bearer <token>`, inclusiv WebSocket. Tokenurile în URL nu sunt acceptate. Widgeturile folosesc un token separat, fără drepturi asupra fișierelor, clipboardului, mixerului sau istoricului.
+
+**Configurare manuală avansată:** în **Manual configuration** din onboarding sau **My PCs → Add manually**, introdu adresa PC-ului, tokenul **Advanced manual pairing token** și **Certificate SHA-256**, afișate de agent, apoi testează conexiunea. Adresa se introduce fără `https://` și fără port. Portul securizat implicit este **8766**, configurabil din **Custom agent port**. Această variantă rămâne disponibilă când Bonjour este blocat sau nu traversează rețeaua/VPN-ul.
 
 Certificatul și cheia se generează automat în **`%LOCALAPPDATA%\Orbit\tls\server-cert.pem`** și **`server-key.pem`**. Aceste fișiere persistă între actualizări și nu trebuie copiate în arhive sau pe alte PC-uri. O identitate existentă incompletă sau invalidă produce o eroare explicită; schimbarea intenționată a certificatului cere asociere din nou pe telefon. Dacă adresa IP se schimbă prin DHCP, actualizează adresa din profil; amprenta aceluiași certificat rămâne valabilă și nu trebuie regenerată doar pentru noul IP. O amprentă diferită este refuzată înainte de trimiterea tokenului; verifică identitatea pe PC înainte de reasociere.
 
-Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repornește. Introdu tokenul nou pe telefon. Nu distribui fișierul sau capturi ale tokenului.
+Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repornește. Reasociază PC-ul cu un cod nou sau actualizează configurația manuală. Nu distribui fișierul sau capturi ale tokenului.
 
 ## Actualizare și diagnosticare
 
-Această versiune a agentului raportează **4.0.0**. Oprește copia veche cu **Ctrl+C**, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește `start_agent.bat`. Toate modulele `orbit_*.py` trebuie actualizate împreună cu `orbit_agent.py`; copierea unui singur fișier lasă funcții vechi sau poate împiedica pornirea. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul. Nu copia `.venv` de pe alt calculator; `start_agent.bat` pregătește mediul local. Actualizarea proiectului sau a aplicației iOS nu actualizează automat agentul Windows.
+Această versiune a agentului raportează **4.1.0**. Oprește copia veche cu **Ctrl+C**, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește `start_agent.bat`. Toate modulele `orbit_*.py` trebuie actualizate împreună cu `orbit_agent.py`; copierea unui singur fișier lasă funcții vechi sau poate împiedica pornirea. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul. Nu copia `.venv` de pe alt calculator; `start_agent.bat` pregătește mediul local. Actualizează și aplicația iOS. Copia veche nu primește automat Bonjour, PIN, ZIP sau celelalte funcții noi doar pentru că proiectul a fost actualizat.
 
 În Orbit, **Tools → Monitoring sources** afișează versiunea raportată de agent, sursa senzorilor CPU/GPU, interfețele de rețea și motivul pentru care FPS este indisponibil. Dacă versiunea este veche, actualizează copia de pe PC și verifică IP-ul la care te conectezi.
 
@@ -34,9 +38,10 @@ Verificarea citește sursele de monitorizare Afterburner/RTSS și alternativele 
 
 ## Fișiere și transfer
 
-Tabul **Files** listează discurile locale și folderele rapide ale utilizatorului Windows. Poți naviga, căuta după nume în folderul curent, sorta, salva favorite pentru fiecare PC și selecta mai multe intrări. Căutarea nu scanează recursiv întregul disc.
+Tabul **Files** listează discurile locale și folderele rapide ale utilizatorului Windows. **Back / Forward** urmează locurile vizitate și restaurează căutarea/sortarea; **Up** deschide părintele și **Home** revine la locații. Poți căuta după nume în folderul curent, sorta, salva favorite per PC și selecta mai multe intrări. Fiecare rând are un meniu vizibil cu acțiuni. Căutarea nu scanează recursiv întregul disc.
 
 - **Download / Save to Files** descarcă fișiere pe telefon pentru distribuire sau salvare. **Preview** folosește Quick Look pentru tipurile acceptate.
+- **Download this folder as ZIP / Download folder as ZIP** pregătește și descarcă întregul folder, inclusiv subfolderele, numele Unicode și directoarele goale. Poți selecta mai multe foldere împreună cu fișiere; fiecare folder devine propriul ZIP. Pregătirea și descărcarea au progres separat și pot fi anulate; originalele nu sunt mutate sau șterse.
 - **Upload from Files / Upload photos or videos** trimite fișiere selectate din aplicația Fișiere sau poze/video în folderul deschis pe PC. Progresul, viteza și anularea sunt vizibile în aplicație.
 - **New folder**, redenumirea, mutarea și **Recycle** organizează fișierele. Trimiterea în Recycle Bin cere confirmare; Windows poate refuza volumele sau intrările care nu suportă reciclarea. Orbit nu recurge automat la ștergere definitivă.
 
@@ -49,18 +54,26 @@ Agentul folosește permisiunile contului Windows care îl rulează. Nu escaladea
 | Previzualizare pe telefon | Cel mult **64 MiB/fișier** |
 | Coliziune de nume | Eroare; fișierul existent nu este suprascris automat |
 | Mutare | Pe același disc; între discuri răspunde **409**, fără modificări |
-| Transfer de directoare | Fișierele se selectează individual; nu creează automat arhive de foldere |
+| Download folder ca ZIP | Cel mult **2 GiB surse / 2 GiB ZIP**, **10.000 intrări** inclusiv directoare, **32 niveluri sub folderul ales** |
+| Pregătire ZIP | Cel mult **120 secunde**, două operații active; date temporare expirate după **10 minute** |
+| Upload directoare | Nu este inclus; selectează fișierele individual |
 | Listare foarte mare | Paginată; maximum 100.000 de intrări scanate într-un folder |
 
-API: `GET /api/files/roots`, `GET /api/files/list`, `GET /api/files/download`, `POST /api/files/upload`, `/mkdir`, `/rename`, `/move`, `/trash`. Toate cer tokenul principal și HTTPS; tokenul de widget nu acordă acces. Transferurile cer ca PC-ul și agentul să rămână pornite și accesibile. Fișierele descărcate sunt temporare până le salvezi prin meniul de distribuire al telefonului.
+Arhivarea verifică fiecare intrare. Fișierele protejate/inaccesibile, linkurile sau modificările sursei în timpul pregătirii produc eroare pentru întreaga operație; nu sunt omise în tăcere. ZIP-ul temporar este păstrat în stocarea privată Orbit, cu limită de dimensiune și verificarea spațiului liber, și este curățat după transfer/anulare sau expirare. La repornire sunt curățate și arhivele abandonate mai vechi decât intervalul de expirare. PC-ul trebuie să rămână accesibil; salvarea finală pe iPhone se face din meniul de distribuire.
+
+API: `GET /api/files/roots`, `GET /api/files/list`, `GET /api/files/download`, `POST /api/files/upload`, `/mkdir`, `/rename`, `/move`, `/trash`. Pentru foldere: `POST /api/files/archive` cu `{path}` creează o operație; `GET /api/files/archive/{id}` oferă starea/progresul; `GET /api/files/archive/{id}/download` descarcă ZIP-ul gata; `DELETE /api/files/archive/{id}` anulează/curăță operația. Toate cer tokenul principal și HTTPS; tokenul de widget nu acordă acces. Descărcările acceptă intervale de octeți, dar aplicația nu implementează reluarea automată a unui transfer întrerupt. Fișierele de pe telefon sunt temporare până le salvezi prin meniul de distribuire.
 
 ## Clipboard și mixer audio
 
 În **Tools → Clipboard**, folosește **Paste from iPhone → Send text to PC** sau **Read PC clipboard → Copy to iPhone**. Sunt acceptate text și linkuri, până la **1 MiB în reprezentarea Unicode Windows**, fără caractere null. Trimiterea înlocuiește textul curent din clipboardul PC-ului; textul gol îl golește. Nu există sincronizare automată sau istoric al clipboardului. Textul afișat pe telefon este șters la ieșirea din ecran sau la schimbarea PC-ului.
 
-În **Tools → Audio mixer**, glisează volumul sau schimbă mute pentru fiecare sesiune Windows Core Audio a **ieșirii audio implicite**. O aplicație poate avea mai multe sesiuni; pornește redarea dacă nu apare. Sesiunile dispărute produc o eroare explicită, fără a schimba volumul master. Comenzile sliderului sunt grupate și trimise în ordine; nu coboară întâi volumul la zero. Lista se actualizează cât ecranul este deschis. Ieșirile audio alternative nu sunt mixate împreună.
+În **Tools → Audio mixer**, glisează volumul sau schimbă mute pentru fiecare sesiune Windows Core Audio, inclusiv sesiunile de pe alte ieșiri audio active. O aplicație poate avea mai multe sesiuni; pornește redarea dacă nu apare. Sesiunile dispărute produc o eroare explicită, fără a schimba volumul master. Comenzile sliderului sunt grupate și trimise în ordine; nu coboară întâi volumul la zero. Lista se actualizează cât ecranul este deschis și indică ieșirea curentă.
 
-API-urile `GET/PUT /api/clipboard`, `GET /api/audio/sessions` și `POST /api/audio/session` cer tokenul principal, HTTPS și o sesiune Windows disponibilă. Nu salvează textul clipboardului pe disc.
+**Output** permite alegerea unei ieșiri active sau **System default** pentru aplicația respectivă. Agentul verifică sesiunea și momentul creării procesului înainte de fiecare modificare, apoi solicită preferința Windows pentru rolurile console, multimedia și communications. Nu schimbă ieșirea implicită a întregului PC. Windows poate păstra preferința; unele aplicații schimbă dispozitivul numai după repornirea redării sau aplicației, iar cele care aleg explicit propriul dispozitiv o pot ignora. Interfața confirmă salvarea preferinței, nu pretinde că sunetul s-a mutat deja. Dacă o modificare parțială eșuează, agentul încearcă restabilirea rolurilor modificate fără a atinge un PID reutilizat.
+
+Rutarea cere **Windows 10 versiunea 2004/build 19041 sau mai nou ori Windows 11**, plus un vtable oferit printr-unul dintre cele două IID-uri cunoscute. Folosește interfața internă Windows `AudioPolicyConfig`, care nu este un API public Microsoft stabil; activarea și rezultatele sunt verificate, iar versiunile nesuportate afișează motivul. Volumul și mute pot rămâne disponibile fără rutare; alternativ folosește **Windows Settings → System → Sound → Volume mixer**. ABI-ul factual este verificat față de [definițiile originale EarTrumpet](https://github.com/File-New-Project/EarTrumpet/tree/master/EarTrumpet/Interop/MMDeviceAPI), cu [notificarea completă de licență](THIRD_PARTY_NOTICES.md); mecanismul de activare folosește [RoGetActivationFactory documentat de Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/roapi/nf-roapi-rogetactivationfactory). Nu există înlocuire cu o comandă de schimbare a dispozitivului global.
+
+API-urile `GET/PUT /api/clipboard`, `GET /api/audio/sessions`, `POST /api/audio/session`, `GET /api/audio/outputs` și `POST /api/audio/route` cer tokenul principal, HTTPS și o sesiune Windows disponibilă. Rutarea trimite `id`, `expectedCreateTime` și `deviceID`; `deviceID` gol înseamnă revenire la preferința System default a aplicației. Nu salvează textul clipboardului pe disc.
 
 ## Sesiuni, grafice și mai multe PC-uri
 
@@ -70,7 +83,7 @@ Agentul salvează o mostră la **5 secunde**, până la **30 de zile / 100 de se
 
 Istoricul rămâne în **`%LOCALAPPDATA%\Orbit\history.sqlite3`**. Reține metrici de monitorizare, nume de sesiune și procesul jocului, fără conținut clipboard, fișiere sau tokenuri. Sesiunile încheiate pot fi șterse cu confirmare de pe telefon. API-ul HTTPS cu tokenul principal: `GET /api/history/sessions`, `POST /api/history/start`, `POST /api/history/stop`, `GET/DELETE /api/history/sessions/{id}`.
 
-**Tools → My PCs** păstrează mai multe profiluri pe telefon: nume, adresă, porturi, certificat și setări Wake-on-LAN, inclusiv calculul automat al broadcastului. Tokenul fiecărui PC este separat în Keychain. Prima conectare reușită salvează automat profilul. Conexiunea existentă este migrată automat la primul profil când lista este goală; completează amprenta din butonul de editare. Dashboardul și favoritele sunt separate între PC-uri. Ștergerea unui profil nu șterge fișierele sau istoricul de pe calculator.
+**Tools → My PCs** păstrează mai multe profiluri pe telefon: nume, adresă, porturi, certificat și setări Wake-on-LAN, inclusiv calculul automat al broadcastului. **Find a PC nearby** asociază automat un calculator cu PIN-ul afișat pe Windows; **Add manually** păstrează configurarea avansată. Tokenul fiecărui PC este separat în Keychain. Profilurile manuale existente pot fi editate sau reasociate prin cod. Dashboardul și favoritele sunt separate între PC-uri. Ștergerea unui profil nu șterge fișierele sau istoricul de pe calculator.
 
 ## Ce se detectează
 
@@ -87,7 +100,7 @@ Conexiunea este **locală și automată**, prin memoria partajată a programelor
 1. Descarcă [MSI Afterburner de pe pagina oficială MSI](https://www.msi.com/Landing/afterburner/graphics-cards). La instalare, include **RivaTuner Statistics Server (RTSS)**. Pornește ambele programe în aceeași sesiune Windows ca agentul.
 2. În **Afterburner → Settings → Monitoring**, bifează graficele dorite în **Active hardware monitoring graphs**, de exemplu **CPU temperature**, **GPU temperature**, **GPU usage**, **Memory usage**, **Framerate** și **Frametime**, în funcție de ce apare pe PC-ul tău. Apasă **Apply**. Graficul trebuie să aibă o valoare curentă în Afterburner. **Show in On-Screen Display** este opțional pentru afișarea pe PC. Vezi [ghidul MSI pentru monitorizare](https://www.msi.com/blog/msi-afterburner-on-screen-display/).
 3. Deschide RTSS din system tray și setează **Application detection level → Low** pentru joc. Pentru o verificare vizuală, poți activa temporar **Show own statistics**; nu este nevoie să lași overlay-ul vizibil pe ecran pentru Orbit.
-4. Actualizează agentul complet la **4.0.0**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
+4. Actualizează agentul complet la **4.1.0**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
 5. În Orbit, verifică **Tools → Monitoring sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă cardul **Game frame rate** din **Customize dashboard**. **Tools → Settings → Set up FPS** include acești pași.
 
 **Dacă nu apare o valoare:** verifică întâi că ea există în Afterburner sau în statisticile RTSS. Unele jocuri, API-uri grafice ori sisteme anti-cheat blochează detectarea RTSS; integrarea nu garantează compatibilitatea cu fiecare joc. Pentru un executabil nerecunoscut, setează `ORBIT_GAME_PROCESSES` înainte de pornirea agentului. Datele vechi nu sunt afișate ca măsurători noi după oprirea sursei sau a jocului. PresentMon rămâne o alternativă pentru FPS, descrisă mai jos.
@@ -177,19 +190,27 @@ Dacă nu mai avansează cadrele procesului timp de peste cinci secunde, FPS devi
 
 ## Widgeturi cu acces numai pentru citire
 
-1. Actualizează agentul și aplicația iOS împreună, apoi conectează PC-ul în Orbit.
-2. Deschide **Tools → Settings → Widgets → Prepare widget access** și copiază **read-only widget token**.
-3. Adaugă un widget Orbit pe iPhone. Ține-l apăsat, alege **Edit Widget** și introdu **PC address**, **Agent port** (implicit `8765`) și tokenul copiat. Nu folosi tokenul principal de control.
+1. Actualizează agentul și aplicația iOS împreună, apoi asociază PC-ul prin **Find my PC**. Accesul pentru widgeturi este pregătit automat.
+2. În Xcode, aplicația și extensia **OrbitWidgets** trebuie să aibă același **App Group înregistrat și semnat**, cu `ORBIT_APP_GROUP_IDENTIFIER` configurat corect; vezi [ghidul de semnare](../Orbit-iOS/WIDGETS.md#testare-gratuită).
+3. Adaugă un widget Orbit pe iPhone. Prin **Edit Widget → PC**, alege unul dintre calculatoarele asociate. Nu introduci adresa, portul sau tokenul. Dacă accesul necesită refacere, folosește **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat.
 
 Agentul generează automat `.orbit-widget-token`, un secret diferit de `.orbit-token`. `POST /api/widget/pairing` necesită **tokenul principal de control** și returnează tokenul pentru widgeturi. `GET /api/widget/status` acceptă **numai tokenul de widget**, prin antet Bearer, și oferă un rezumat de telemetrie fără comenzi sau inventar complet. Tokenul de widget nu autorizează controlul PC-ului sau accesul la Task Manager.
 
-Widgeturile citesc direct acest endpoint, fără App Groups. Sunt disponibile Overview, Gaming, Power, Temperatures și un singur indicator la alegere. Afișează ora capturii și expiră după **15 minute**. Solicită o actualizare după 15 minute, dar iOS stabilește programarea efectivă; nu oferă monitorizare continuă. Live Activity are alt mecanism și marchează datele expirate după 15 secunde fără actualizare. Vezi [ghidul iOS](../Orbit-iOS/WIDGETS.md).
+Widgeturile citesc direct agentul prin **HTTPS** și verifică certificatul PC-ului. App Group partajează profilurile și exclusiv tokenul read-only, în Keychain-ul grupului; tokenul principal rămâne privat aplicației. Sunt disponibile Overview, Gaming, Power, Temperatures, Cooling, Storage, Network și un singur indicator la alegere, cu teme proprii. Afișează ora capturii și expiră după **15 minute**. Solicită o actualizare după 15 minute, dar iOS stabilește programarea efectivă; nu oferă monitorizare continuă.
 
-Pentru revocarea widgeturilor, oprește agentul, șterge `.orbit-widget-token` și repornește. Repetă asocierea pentru fiecare widget. Tokenul principal al aplicației rămâne separat. Nu distribui niciunul dintre fișierele tokenurilor.
+**Tools → Live Activity** configurează separat profilul Overview/Gaming/Power, stilul Standard/Minimal/Detailed, indicatorul compact, accentul și intervalul **5/10/15 secunde**. Actualizările locale depind de aplicația activă; în fundal se poate afișa starea de pauză, iar după trei intervale fără date valorile sunt ascunse. iOS poate suspenda aplicația; intervalul ales nu îi acordă rulare permanentă în fundal. Butonul **Stop** din prezentarea extinsă sau stilul Detailed oprește activitatea. Vezi [ghidul iOS](../Orbit-iOS/WIDGETS.md).
+
+Pentru revocarea widgeturilor, oprește agentul, șterge `.orbit-widget-token` și repornește. În aplicație, refă accesul widgeturilor pentru PC-ul respectiv; instanțele care îl selectează vor folosi accesul reînnoit. Tokenul principal rămâne separat. Nu distribui fișierele tokenurilor.
+
+**Tools → Appearance** oferă stilurile **Improved / Classic**, temele Ocean, Aurora, Violet, Ember și Graphite, un accent comun pentru cardurile de metrici și reducerea luminii de fundal. Aspectul se configurează pe iPhone; nu schimbă senzorii sau serviciile Windows.
 
 ## Task Manager de pe telefon
 
-În Orbit, deschide **Task Manager** pentru lista proceselor, caută după nume/PID, sortează după CPU sau RAM și reîmprospătează lista când este nevoie. Un proces nou poate avea CPU indisponibil până la o măsurătoare ulterioară; consumul nu este inventat dintr-o singură citire.
+În Orbit, deschide **Task Manager** pentru lista proceselor, caută după nume/PID și sortează numeric descrescător după **CPU, GPU, RAM sau VRAM**, ori alfabetic după nume. Apar separat memoria GPU dedicată (**VRAM**) și memoria GPU partajată din RAM. Un proces nou poate avea CPU/GPU indisponibil până la o măsurătoare ulterioară; consumul nu este inventat dintr-o singură citire. Reîmprospătarea se face cât ecranul este deschis.
+
+Citirile GPU folosesc direct Windows **PDH**, fără Afterburner sau PresentMon: `GPU Engine(*)\Utilization Percentage` și `GPU Process Memory(*)\Dedicated Usage` / `Shared Usage`. Sunt necesare contoarele disponibile în driver și **WDDM 2.0 sau mai nou**. Procentul afișat este cel al celui mai ocupat motor GPU al procesului, conform [metodei explicate de echipa Microsoft DirectX](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/), nu suma motoarelor. Căile sunt neutre față de limba Windows prin [PdhAddEnglishCounterW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw), iar mostrele folosesc [PdhGetFormattedCounterArrayW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw), cu dimensiuni și stări validate.
+
+`—` înseamnă că nu există o mostră validă pentru proces/driver, nu un zero estimat. Contoarele sunt amorsate pentru fiecare identitate PID + createTime, iar identitatea este reverificată înainte de atașarea datelor GPU. Memoria per proces poate include alocări partajate între aplicații, deci suma rândurilor poate depăși memoria fizică folosită. Microsoft documentează și [o problemă a contoarelor GPU Process Memory pe anumite sisteme Windows 10](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value); aceste citiri sunt valorile Windows, nu o măsurare independentă a VRAM.
 
 **End task** necesită confirmare. Pe Windows, terminarea unui proces este forțată și nu garantează salvarea documentelor sau închiderea ordonată a aplicației. Procesele critice de sistem și agentul Orbit sunt protejate. Nu există terminare automată sau comandă de închidere a tuturor proceselor.
 

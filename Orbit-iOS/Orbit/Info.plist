@@ -2,32 +2,40 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeRole</key>
-            <string>Editor</string>
-            <key>CFBundleURLName</key>
-            <string>com.dimitrie.orbit</string>
-            <key>CFBundleURLSchemes</key>
-            <array><string>orbit</string></array>
-        </dict>
-    </array>
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Orbit connects to your PC to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.</string>
-    <key>NSSupportsLiveActivities</key>
-    <true/>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <true/>
-    </dict>
-    <key>UIApplicationSceneManifest</key>
-    <dict>
-        <key>UIApplicationSupportsMultipleScenes</key>
-        <true/>
-    </dict>
-    <key>UILaunchScreen</key>
-    <dict/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.dimitrie.orbit</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>orbit</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_orbit._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Orbit connects to your PC to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>OrbitAppGroupIdentifier</key>
+	<string>$(ORBIT_APP_GROUP_IDENTIFIER)</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict/>
 </dict>
 </plist>

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
 import orbit_desktop as desktop
+import orbit_audio_policy as policy_adapter
 
 
 class ClipboardAPIs:
@@ -130,6 +131,7 @@ def session(instance="instance A", pid=123, name="game.exe", level=0.75, muted=F
     volume.SetMute.side_effect = lambda value, _: setattr(volume.GetMute, "return_value", value)
     process = MagicMock()
     process.name.return_value = name
+    process.create_time.return_value = 1700000000.25
     return SimpleNamespace(InstanceIdentifier=instance, ProcessId=pid, State=1,
                            Process=process, SimpleAudioVolume=volume)
 
@@ -213,6 +215,130 @@ class AudioMixerTests(unittest.TestCase):
                     desktop.update_audio_session("a" * 64, value)
         native.assert_not_called()
 
+    def test_per_app_routing_validates_device_and_process_lifetime(self):
+        current = session()
+        identity = desktop._session_identity(current)[0]
+        process = MagicMock(); process.create_time.return_value = 1700000000.25
+        with patch.object(desktop, "_audio_sessions", lambda: sessions([current])), \
+             patch.object(desktop, "_output_devices", return_value=[{"id": "speakers", "name": "Speakers"}]), \
+             patch.object(desktop.psutil, "Process", return_value=process), \
+             patch.object(desktop, "AudioPolicyConfig") as factory:
+            factory.return_value.__enter__.return_value.set_output.side_effect = lambda pid, output, verify: verify()
+            result = desktop.route_audio_session(identity, 1700000000.25, "speakers")
+        self.assertEqual(result["status"], "routing_requested")
+        self.assertEqual(result["pid"], 123)
+        self.assertEqual(factory.return_value.__enter__.return_value.set_output.call_args.args[:2], (123, "speakers"))
+
+    def test_per_app_route_cannot_target_reused_pid_or_disconnected_device(self):
+        current = session(); identity = desktop._session_identity(current)[0]
+        with patch.object(desktop, "_audio_sessions", lambda: sessions([current])), \
+             patch.object(desktop, "_output_devices", return_value=[]), \
+             patch.object(desktop, "AudioPolicyConfig") as native:
+            with self.assertRaises(desktop.AudioSessionGone):
+                desktop.route_audio_session(identity, 1700000000.25, "disconnected")
+        native.assert_not_called()
+        process = MagicMock(); process.create_time.return_value = 1700000001
+        with patch.object(desktop, "_audio_sessions", lambda: sessions([current])), \
+             patch.object(desktop, "_output_devices", return_value=[]), \
+             patch.object(desktop.psutil, "Process", return_value=process), \
+             patch.object(desktop, "AudioPolicyConfig") as native:
+            with self.assertRaises(desktop.AudioSessionGone):
+                desktop.route_audio_session(identity, 1700000000.25, "")
+        native.assert_not_called()
+
+    def test_routing_capability_failure_does_not_claim_global_device_switch(self):
+        with patch.object(desktop, "_audio_sessions", lambda: sessions([])), \
+             patch.object(desktop, "_output_devices", return_value=[{"id": "speaker", "name": "Speakers"}]), \
+             patch.object(desktop, "AudioPolicyConfig", side_effect=policy_adapter.AudioPolicyUnavailable("Unsupported interface")):
+            result = desktop.list_audio_outputs()
+        self.assertFalse(result["routingAvailable"])
+        self.assertEqual(result["routingUnavailableReason"], "Unsupported interface")
+        self.assertEqual(len(result["devices"]), 1)
+
+
+class AudioPolicyAdapterTests(unittest.TestCase):
+    def test_exact_known_iinspectable_slot_and_argument_layout(self):
+        adapter = policy_adapter.AudioPolicyConfig.__new__(policy_adapter.AudioPolicyConfig)
+        table = (ctypes.c_void_p * 27)()
+        table[25] = 0x12345678; table[26] = 0x23456789
+        instance = ctypes.c_void_p(ctypes.addressof(table))
+        adapter.factory = ctypes.cast(ctypes.pointer(instance), ctypes.c_void_p)
+        function = MagicMock()
+        with patch.object(ctypes, "WINFUNCTYPE", return_value=function, create=True) as signature:
+            adapter._method(adapter.SET_SLOT, ctypes.c_uint32, ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p)
+        function.assert_called_once_with(0x12345678)
+        self.assertEqual(signature.call_args.args, (ctypes.c_int32, ctypes.c_void_p, ctypes.c_uint32,
+                                                   ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p))
+        self.assertEqual(ctypes.sizeof(policy_adapter._GUID), 16)
+
+    def test_all_app_roles_are_changed_without_master_or_other_process_calls(self):
+        adapter = policy_adapter.AudioPolicyConfig.__new__(policy_adapter.AudioPolicyConfig)
+        values = {0: "", 1: "", 2: ""}; writes = []
+        adapter._get_raw = lambda pid, role: values[role]
+        def write(pid, role, output):
+            writes.append((pid, role, output)); values[role] = output
+        adapter._set_raw = write
+        verify = MagicMock()
+        adapter.set_output(123, "{test-output}", verify)
+        self.assertEqual([item[:2] for item in writes], [(123, 0), (123, 1), (123, 2)])
+        self.assertEqual(values[0], r"\\?\SWD#MMDEVAPI#{test-output}#{e6327cad-dcec-4949-ae8a-991e976a79d2}")
+        self.assertEqual(verify.call_count, 4)
+
+    def test_partial_policy_failure_restores_previous_roles(self):
+        adapter = policy_adapter.AudioPolicyConfig.__new__(policy_adapter.AudioPolicyConfig)
+        values = {0: "old-console", 1: "old-multimedia", 2: "old-communication"}
+        original = values.copy()
+        adapter._get_raw = lambda pid, role: values[role]
+        def write(pid, role, output):
+            if role == 1 and output.startswith(adapter.PREFIX):
+                raise policy_adapter.AudioPolicyUnavailable("Device removed")
+            values[role] = output
+        adapter._set_raw = write
+        with self.assertRaises(policy_adapter.AudioPolicyUnavailable):
+            adapter.set_output(123, "new-device", lambda: None)
+        self.assertEqual(values, original)
+
+    def test_failed_readback_is_not_claimed_as_success(self):
+        adapter = policy_adapter.AudioPolicyConfig.__new__(policy_adapter.AudioPolicyConfig)
+        adapter._get_raw = lambda pid, role: ""
+        adapter._set_raw = MagicMock()
+        with self.assertRaisesRegex(policy_adapter.AudioPolicyUnavailable, "retain"):
+            adapter.set_output(123, "new-device", lambda: None)
+
+    def test_winrt_apartment_and_hstring_ownership_are_balanced(self):
+        api = MagicMock(); api.RoInitialize.return_value = 0
+        def create(text, length, result):
+            result._obj.value = 123
+            return 0
+        def activate(name, iid, result):
+            result._obj.value = 456
+            return 0
+        api.WindowsCreateString.side_effect = create
+        api.RoGetActivationFactory.side_effect = activate
+        with patch.object(policy_adapter.os, "name", "nt"), \
+             patch.object(policy_adapter.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, build=22631), create=True), \
+             patch.object(ctypes, "WinDLL", return_value=api, create=True), \
+             patch.object(policy_adapter.AudioPolicyConfig, "_method", return_value=MagicMock()) as method:
+            with policy_adapter.AudioPolicyConfig():
+                pass
+        api.RoInitialize.assert_called_once_with(0)
+        api.RoUninitialize.assert_called_once()
+        api.WindowsDeleteString.assert_called_once()
+        method.assert_called_once_with(2)
+
+    def test_failed_interface_activation_closes_winrt_without_any_slot_call(self):
+        api = MagicMock(); api.RoInitialize.return_value = 1
+        api.WindowsCreateString.side_effect = lambda text, length, result: 0
+        api.RoGetActivationFactory.return_value = -2147467262
+        with patch.object(policy_adapter.os, "name", "nt"), \
+             patch.object(policy_adapter.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, build=19045), create=True), \
+             patch.object(ctypes, "WinDLL", return_value=api, create=True), \
+             patch.object(policy_adapter.AudioPolicyConfig, "_method") as method:
+            with self.assertRaises(policy_adapter.AudioPolicyUnavailable):
+                policy_adapter.AudioPolicyConfig()
+        method.assert_not_called()
+        api.RoUninitialize.assert_called_once()
+
 
 class DesktopRouteTests(unittest.TestCase):
     def setUp(self):
@@ -228,7 +354,9 @@ class DesktopRouteTests(unittest.TestCase):
         for method, path, body in (("GET", "/api/clipboard", None),
                                    ("PUT", "/api/clipboard", {"text": "hello"}),
                                    ("GET", "/api/audio/sessions", None),
-                                   ("POST", "/api/audio/session", {"id": "a" * 64, "volume": 50})):
+                                   ("POST", "/api/audio/session", {"id": "a" * 64, "volume": 50}),
+                                   ("GET", "/api/audio/outputs", None),
+                                   ("POST", "/api/audio/route", {"id": "a" * 64, "expectedCreateTime": 1700000000, "deviceID": ""})):
             with self.subTest(path=path):
                 self.assertEqual(self.client.request(method, path, json=body).status_code, 401)
                 self.assertEqual(self.client.request(method, path, json=body,
@@ -269,6 +397,17 @@ class DesktopRouteTests(unittest.TestCase):
             response = self.client.get("/api/audio/sessions", headers=self.headers)
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "No device")
+
+    def test_route_validates_creation_time_and_uses_https(self):
+        for value in (True, "1700000000", -1):
+            response = self.client.post("/api/audio/route", headers=self.headers,
+                                        json={"id": "a" * 64, "expectedCreateTime": value, "deviceID": ""})
+            self.assertEqual(response.status_code, 422)
+        with patch.object(desktop, "route_audio_session") as native:
+            response = self.client.post("http://pc.local/api/audio/route", headers=self.headers,
+                                        json={"id": "a" * 64, "expectedCreateTime": 1700000000, "deviceID": ""})
+        self.assertEqual(response.status_code, 426)
+        native.assert_not_called()
 
 
 if __name__ == "__main__":

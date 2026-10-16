@@ -7,6 +7,8 @@ Neither executable paths nor command lines are included in process snapshots.
 
 import math
 import os
+import ctypes
+import re
 import threading
 import time
 
@@ -25,6 +27,141 @@ PROTECTED_NAMES = frozenset({
 PROCESS_ATTRIBUTES = ("pid", "name", "create_time", "memory_info", "cpu_times", "status", "username")
 _cpu_samples = {}
 _sample_lock = threading.Lock()
+_gpu_identities = set()
+_gpu_reader = None
+_gpu_lock = threading.Lock()
+
+
+class _PdhNumber(ctypes.Union):
+    _fields_ = [("longValue", ctypes.c_int32), ("doubleValue", ctypes.c_double),
+                ("largeValue", ctypes.c_int64)]
+
+
+class _PdhValue(ctypes.Structure):
+    _anonymous_ = ("number",)
+    _fields_ = [("CStatus", ctypes.c_uint32), ("number", _PdhNumber)]
+
+
+class _PdhItem(ctypes.Structure):
+    _fields_ = [("szName", ctypes.c_wchar_p), ("FmtValue", _PdhValue)]
+
+
+class _WindowsGPUCounters:
+    """Documented PDH API; English paths also work on localized Windows.
+
+    References: Microsoft PdhAddEnglishCounterW / PdhGetFormattedCounterArrayW,
+    and devblogs.microsoft.com/directx/gpus-in-the-task-manager/.
+    Queries stay open so utilization uses two real snapshots without sleeping.
+    """
+    PATHS = {"gpuPercent": r"\GPU Engine(*)\Utilization Percentage",
+             "vramMB": r"\GPU Process Memory(*)\Dedicated Usage",
+             "sharedGpuMemoryMB": r"\GPU Process Memory(*)\Shared Usage"}
+
+    def __init__(self, api=None):
+        if api is None:
+            if os.name != "nt":
+                raise OSError("Per-process GPU counters require Windows WDDM 2.0 or later.")
+            api = ctypes.WinDLL("pdh", use_last_error=True)
+        self.api = api
+        self.query = ctypes.c_void_p()
+        self.counters = {}
+        self.initialized = False
+        for name, arguments in (
+            ("PdhOpenQueryW", [ctypes.c_wchar_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]),
+            ("PdhAddEnglishCounterW", [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]),
+            ("PdhCollectQueryData", [ctypes.c_void_p]),
+            ("PdhGetFormattedCounterArrayW", [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]),
+            ("PdhCloseQuery", [ctypes.c_void_p]),
+        ):
+            function = getattr(api, name)
+            function.argtypes = arguments; function.restype = ctypes.c_uint32
+        if api.PdhOpenQueryW(None, 0, ctypes.byref(self.query)) != 0:
+            raise OSError("Windows performance counters could not be opened.")
+        for field, path in self.PATHS.items():
+            counter = ctypes.c_void_p()
+            if api.PdhAddEnglishCounterW(self.query, path, 0, ctypes.byref(counter)) == 0:
+                self.counters[field] = counter
+        if not self.counters:
+            self.close()
+            raise OSError("The GPU driver does not expose Windows GPU process counters (WDDM 2.0+ required).")
+
+    def close(self):
+        if self.query:
+            self.api.PdhCloseQuery(self.query)
+            self.query = ctypes.c_void_p()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _values(self, counter):
+        # Instance count can change between calls. Re-probe bounded buffers when
+        # needed; never reuse a partially filled array or invalid status value.
+        for _ in range(3):
+            size, count = ctypes.c_uint32(), ctypes.c_uint32()
+            status = self.api.PdhGetFormattedCounterArrayW(counter, 0x200 | 0x1000, ctypes.byref(size), ctypes.byref(count), None)
+            if status == 0 and size.value == 0:
+                return []
+            if status != 0x800007D2 or not 0 < size.value <= 4 * 1024 * 1024:
+                return []
+            buffer = ctypes.create_string_buffer(size.value)
+            allocated = size.value
+            status = self.api.PdhGetFormattedCounterArrayW(counter, 0x200 | 0x1000, ctypes.byref(size), ctypes.byref(count), buffer)
+            if status == 0x800007D2:
+                continue
+            if status != 0 or count.value > 100_000 or count.value * ctypes.sizeof(_PdhItem) > allocated:
+                return []
+            items = ctypes.cast(buffer, ctypes.POINTER(_PdhItem))
+            result = []
+            for index in range(count.value):
+                item = items[index]
+                value = float(item.FmtValue.doubleValue)
+                if item.FmtValue.CStatus in (0, 1) and math.isfinite(value) and value >= 0 and item.szName:
+                    result.append((item.szName, value))
+            return result
+        return []
+
+    def snapshot(self):
+        if self.api.PdhCollectQueryData(self.query) != 0:
+            raise OSError("Windows GPU process counters are unavailable for this sample.")
+        was_initialized = self.initialized
+        self.initialized = True
+        result = {}
+        for field, counter in self.counters.items():
+            if field == "gpuPercent" and not was_initialized:
+                continue
+            for name, value in dict(self._values(counter)).items():
+                match = re.match(r"^pid_(\d+)_", name, re.IGNORECASE)
+                if not match:
+                    continue
+                pid = int(match.group(1))
+                row = result.setdefault(pid, {})
+                if field == "gpuPercent":
+                    level = min(100.0, value)
+                    if row.get(field, -1) < level:
+                        row[field] = round(level, 1)
+                        engine = re.search(r"_engtype_(.+?)(?:#\d+)?$", name, re.IGNORECASE)
+                        row["gpuEngine"] = engine.group(1)[:60] if engine else None
+                else:
+                    row[field] = row.get(field, 0.0) + value / (1024 * 1024)
+        return result
+
+
+def _gpu_snapshot():
+    global _gpu_reader
+    if os.name != "nt":
+        return {}, "Per-process GPU readings require Windows WDDM 2.0+ counters."
+    with _gpu_lock:
+        try:
+            if _gpu_reader is None:
+                _gpu_reader = _WindowsGPUCounters()
+            return _gpu_reader.snapshot(), None
+        except (OSError, ValueError, AttributeError) as error:
+            if _gpu_reader is not None:
+                _gpu_reader.close(); _gpu_reader = None
+            return {}, str(error)
 
 
 def _number(value):
@@ -86,6 +223,9 @@ def collect_processes():
     """Return a bounded, nonblocking snapshot; CPU needs a previous snapshot."""
     started = time.monotonic()
     captured_at = time.time()
+    gpu, gpu_error = _gpu_snapshot()
+    with _sample_lock:
+        previous_gpu_identities = set(_gpu_identities)
     try:
         protected_pids = _protected_pids()
     except PermissionError:
@@ -95,6 +235,11 @@ def collect_processes():
     seen = set()
     truncated = False
     try:
+        # psutil 6+ reuses Process objects without checking PID reuse. Its cached
+        # create_time must not turn a replacement process into the old row.
+        clear_cache = getattr(psutil.process_iter, "cache_clear", None)
+        if callable(clear_cache):
+            clear_cache()
         for process in psutil.process_iter(attrs=PROCESS_ATTRIBUTES, ad_value=None):
             sampled_at = time.monotonic()
             if sampled_at - started >= MAX_COLLECTION_SECONDS:
@@ -114,7 +259,17 @@ def collect_processes():
                 seen.add(identity)
                 rss = _number(getattr(info.get("memory_info"), "rss", None))
                 status = info.get("status") or "unknown"
-                processes.append({
+                graphics = {}
+                # PDH identifies processes by PID. Prime once for this exact
+                # process lifetime, and recheck a fresh object before attaching
+                # readings so a recycled PID does not inherit an old interval.
+                if identity in previous_gpu_identities and created <= captured_at and pid in gpu:
+                    try:
+                        if psutil.Process(pid).create_time() == created:
+                            graphics = gpu[pid]
+                    except (psutil.Error, OSError):
+                        pass
+                row = {
                     "pid": pid,
                     "name": name,
                     "createTime": created,
@@ -122,19 +277,28 @@ def collect_processes():
                     "cpuPercent": _cpu_percent(identity, info.get("cpu_times"), sampled_at, logical_cpus),
                     "status": status,
                     "canTerminate": _can_terminate(pid, name, info.get("username"), status, protected_pids),
-                })
+                    "gpuPercent": graphics.get("gpuPercent"),
+                    "gpuEngine": graphics.get("gpuEngine"),
+                    "vramMB": round(graphics["vramMB"], 1) if graphics.get("vramMB") is not None else None,
+                    "sharedGpuMemoryMB": round(graphics["sharedGpuMemoryMB"], 1) if graphics.get("sharedGpuMemoryMB") is not None else None,
+                }
+                processes.append(row)
             except (psutil.Error, OSError):
                 # Processes may exit while a snapshot is being assembled.
                 continue
     except (psutil.Error, OSError):
         truncated = True
     with _sample_lock:
+        _gpu_identities.clear(); _gpu_identities.update(seen)
         # Do not let old process identities grow for the lifetime of the agent.
         for identity in list(_cpu_samples):
             if identity not in seen:
                 del _cpu_samples[identity]
     processes.sort(key=lambda row: (-int(row["canTerminate"]), -(row["memoryMB"] or 0), row["name"].casefold(), row["pid"]))
-    return {"processes": processes, "capturedAt": captured_at, "totalCount": len(processes), "truncated": truncated}
+    return {"processes": processes, "capturedAt": captured_at, "totalCount": len(processes), "truncated": truncated,
+            "gpuMetricsAvailable": gpu_error is None,
+            "gpuMetricsStatus": gpu_error or "Windows GPU counters; the first process snapshot needs a second sample. GPU % uses its busiest engine. — means no valid counter for this process or driver. Dedicated/shared memory can include allocations shared between applications.",
+            "gpuMetricsSource": "Windows PDH · GPU Engine / GPU Process Memory" if gpu_error is None else None}
 
 
 def _verified_process(pid, expected_create_time, protected_pids):

@@ -18,6 +18,11 @@ from orbit_hardware import basic_specs
 source = (ROOT / "Orbit-iOS/Orbit/ModelsAndServices.swift").read_text()
 models = "import Foundation\n" + source.split("struct PCMetrics: Codable", 1)[1].split("final class WakeOnLANService", 1)[0]
 models = models.replace("import Foundation\n", "import Foundation\nstruct PCMetrics: Codable", 1)
+models = "import Darwin\n" + models
+wake = source[source.index("final class WakeOnLANService"):source.index("private enum TokenStore")]
+profiles = (ROOT / "Orbit-iOS/Orbit/PCProfilesView.swift").read_text()
+saved_pc = profiles[profiles.index("struct SavedPC:"):profiles.index("enum PCProfileStore")]
+models += wake + saved_pc
 
 with tempfile.TemporaryDirectory(prefix="orbit-protocol-") as directory:
     temporary = Path(directory)
@@ -62,7 +67,17 @@ precondition(specs.gpus.first?.vramGB == 32)
 precondition(specs.motherboard.model == nil && specs.coolerName == nil)
 let games = try decode([SunshineGame].self, "games")
 precondition(games.count == 1 && games[0].cmd == nil)
-print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library")
+let wakeIP = WakeOnLANService.ipv4ForWake(host: "orbit-paired-pc.local.", knownAddress: "192.168.20.50")
+precondition(wakeIP == "192.168.20.50")
+precondition(WakeOnLANService.calculateBroadcastAddress(ip: wakeIP, subnetMask: "255.255.255.0") == "192.168.20.255")
+precondition(WakeOnLANService.ipv4ForWake(host: "192.168.20.51", knownAddress: "192.168.20.50") == "192.168.20.51")
+precondition(WakeOnLANService.ipv4ForWake(host: "sleeping-pc.local", knownAddress: "invalid") == "")
+let profile = SavedPC(name: "Legacy PC", address: "192.168.20.50")
+var legacyProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as! [String: Any]
+legacyProfile.removeValue(forKey: "lastKnownIPv4")
+let migrated = try JSONDecoder().decode(SavedPC.self, from: JSONSerialization.data(withJSONObject: legacyProfile))
+precondition(migrated.name == "Legacy PC" && migrated.lastKnownIPv4 == nil)
+print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address and legacy PC profiles")
 ''')
     binary = temporary / "protocol-check"
     subprocess.run(["swiftc", str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)

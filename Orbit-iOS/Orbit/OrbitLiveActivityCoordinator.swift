@@ -10,6 +10,7 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
     private var activity: Activity<OrbitActivityAttributes>?
     private var stateTask: Task<Void, Never>?
     private var lastPublishedAt = Date.distantPast
+    private var lastPreferences = OrbitActivityPreferences()
 
     init() {
         if let existing = Activity<OrbitActivityAttributes>.activities.first(where: {
@@ -35,7 +36,7 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
         do {
             let created = try Activity.request(
                 attributes: OrbitActivityAttributes(pcName: String(pcName.prefix(80))),
-                content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(15)),
+                content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval)),
                 pushType: nil
             )
             lastPublishedAt = Date()
@@ -52,10 +53,22 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
         guard let activity, isActive else { return }
         let connectionChanged = activity.content.state.isConnected != isConnected
         let availabilityChanged = activity.content.state.telemetryAvailable != telemetryAvailable
-        guard connectionChanged || availabilityChanged || Date().timeIntervalSince(lastPublishedAt) >= 5 else { return }
+        let preferences = OrbitActivityPreferences()
+        let preferenceChanged = lastPreferences != preferences
+        let wasPaused = activity.content.state.isPaused == true
+        guard connectionChanged || availabilityChanged || preferenceChanged || wasPaused || Date().timeIntervalSince(lastPublishedAt) >= Double(preferences.interval) else { return }
+        lastPreferences = preferences
         lastPublishedAt = Date()
         let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: isConnected, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
-        await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(15)))
+        await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval)))
+    }
+
+    func pauseUpdates() async {
+        guard let activity, isActive else { return }
+        var state = activity.content.state
+        state.isPaused = true
+        lastPublishedAt = .distantPast
+        await activity.update(ActivityContent(state: state, staleDate: Date()))
     }
 
     func stop() async {
@@ -95,6 +108,7 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
         func nonnegative(_ value: Double?) -> Double? {
             telemetryAvailable ? value.flatMap { $0.isFinite && $0 >= 0 && $0 <= 1_000_000 ? $0 : nil } : nil
         }
+        let preferences = OrbitActivityPreferences()
         return OrbitActivityAttributes.ContentState(
             cpuUsage: percentage(cpuUsage), gpuUsage: percentage(gpuUsage), ramUsage: percentage(ramUsage),
             fps: telemetryAvailable ? fps.flatMap { $0.isFinite && $0 >= 0 && $0 <= 100_000 ? $0 : nil } : nil,
@@ -103,7 +117,10 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
             vramUsedGB: nonnegative(vramUsedGB), vramTotalGB: nonnegative(vramTotalGB),
             cpuPowerWatts: nonnegative(cpuPowerWatts), gpuPowerWatts: nonnegative(gpuPowerWatts),
             focus: ["overview", "gaming", "power"].contains(focus) ? focus : "overview",
-            telemetryAvailable: telemetryAvailable
+            telemetryAvailable: telemetryAvailable,
+            style: preferences.style, primaryMetric: preferences.primaryMetric, accent: preferences.accent,
+            showGame: preferences.showGame, showTimestamp: preferences.showTimestamp,
+            updateInterval: preferences.interval, isPaused: false
         )
     }
 }

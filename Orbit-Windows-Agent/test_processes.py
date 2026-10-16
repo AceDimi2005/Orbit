@@ -1,6 +1,7 @@
 """Process manager tests: every OS process API is mocked; nothing is ended."""
 
 import unittest
+import ctypes
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +33,7 @@ def fake_process(pid=PID, created=CREATED, name="Example.exe", username="DESKTOP
 class ProcessSnapshotTests(unittest.TestCase):
     def setUp(self):
         processes._cpu_samples.clear()
+        processes._gpu_identities.clear()
         self.patchers = [patch.object(processes.os, "getpid", return_value=500),
                          patch.object(processes.psutil, "Process", return_value=fake_process(pid=500)),
                          patch.object(processes.psutil, "process_iter", return_value=[]),
@@ -44,7 +46,8 @@ class ProcessSnapshotTests(unittest.TestCase):
         result = processes.collect_processes()
         self.assertEqual(result["totalCount"], 1)
         row = result["processes"][0]
-        self.assertEqual(set(row), {"pid", "name", "createTime", "memoryMB", "cpuPercent", "status", "canTerminate"})
+        self.assertEqual(set(row), {"pid", "name", "createTime", "memoryMB", "cpuPercent", "status", "canTerminate",
+                                    "gpuPercent", "vramMB", "sharedGpuMemoryMB", "gpuEngine"})
         self.assertIsNone(row["cpuPercent"])
         self.assertEqual(row["memoryMB"], 64)
         self.assertTrue(row["canTerminate"])
@@ -92,6 +95,81 @@ class ProcessSnapshotTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(result["totalCount"], 1)
         self.assertFalse(result["processes"][0]["canTerminate"])
+
+    def test_gpu_metrics_prime_per_process_lifetime_and_verify_identity(self):
+        target = fake_process()
+        self.mocks[2].return_value = [target]
+        self.mocks[1].side_effect = lambda pid: fake_process(pid=500) if pid == 500 else target
+        reading = {PID: {"gpuPercent": 86.5, "vramMB": 1024, "sharedGpuMemoryMB": 30, "gpuEngine": "3D"}}
+        with patch.object(processes, "_gpu_snapshot", return_value=(reading, None)):
+            self.assertIsNone(processes.collect_processes()["processes"][0]["gpuPercent"])
+            row = processes.collect_processes()["processes"][0]
+            self.assertEqual(row["gpuPercent"], 86.5)
+            self.assertEqual(row["vramMB"], 1024)
+            target.create_time.return_value = CREATED + 1
+            self.assertIsNone(processes.collect_processes()["processes"][0]["vramMB"])
+
+    def test_unavailable_gpu_is_null_with_a_reason_not_zero(self):
+        self.mocks[2].return_value = [fake_process()]
+        with patch.object(processes, "_gpu_snapshot", return_value=({}, "GPU driver counters unavailable")):
+            result = processes.collect_processes()
+        self.assertFalse(result["gpuMetricsAvailable"])
+        self.assertIn("unavailable", result["gpuMetricsStatus"])
+        self.assertIsNone(result["processes"][0]["gpuPercent"])
+        self.assertIsNone(result["processes"][0]["vramMB"])
+
+
+class GPUCounterTests(unittest.TestCase):
+    def test_busiest_engine_and_memory_sum_match_windows_semantics(self):
+        reader = processes._WindowsGPUCounters.__new__(processes._WindowsGPUCounters)
+        reader.query = ctypes.c_void_p()
+        reader.api = MagicMock()
+        reader.api.PdhCollectQueryData.return_value = 0
+        reader.initialized = False
+        reader.counters = {"gpuPercent": 1, "vramMB": 2, "sharedGpuMemoryMB": 3}
+        readings = {
+            1: [("pid_200_luid_1_phys_0_eng_0_engtype_3D", 70),
+                ("pid_200_luid_1_phys_0_eng_1_engtype_Copy", 40),
+                ("pid_300_luid_1_phys_0_eng_0_engtype_3D", 4)],
+            2: [("pid_200_luid_1_phys_0", 100 * 1024**2), ("pid_200_luid_2_phys_0", 50 * 1024**2),
+                ("pid_200_luid_2_phys_0", 50 * 1024**2)],
+            3: [("pid_200_luid_1_phys_0", 12 * 1024**2)],
+        }
+        reader._values = lambda counter: readings[counter]
+        self.assertNotIn("gpuPercent", reader.snapshot()[200])
+        current = reader.snapshot()[200]
+        self.assertEqual(current["gpuPercent"], 70)  # not 110% or an engine average
+        self.assertEqual(current["gpuEngine"], "3D")
+        self.assertEqual(current["vramMB"], 150)  # distinct adapters, duplicate ignored
+        self.assertEqual(current["sharedGpuMemoryMB"], 12)
+
+    def test_native_array_ignores_invalid_values_and_uses_fixed_width_status(self):
+        reader = processes._WindowsGPUCounters.__new__(processes._WindowsGPUCounters)
+        reader.query = ctypes.c_void_p()
+        api = MagicMock(); reader.api = api
+        names = [ctypes.create_unicode_buffer("pid_200_luid_1"), ctypes.create_unicode_buffer("pid_300_luid_1")]
+        def values(counter, format, size, count, buffer):
+            size._obj.value = ctypes.sizeof(processes._PdhItem) * 2; count._obj.value = 2
+            if buffer is None:
+                return 0x800007D2
+            array = ctypes.cast(buffer, ctypes.POINTER(processes._PdhItem))
+            for index, status in enumerate((0, 0xC0000BC6)):
+                array[index].szName = ctypes.cast(names[index], ctypes.c_wchar_p)
+                array[index].FmtValue.CStatus = status
+                array[index].FmtValue.doubleValue = 20 + index
+            return 0
+        api.PdhGetFormattedCounterArrayW.side_effect = values
+        self.assertEqual(reader._values(1), [("pid_200_luid_1", 20)])
+        self.assertEqual(ctypes.sizeof(processes._PdhValue), 16)
+
+    def test_oversized_native_array_is_never_allocated(self):
+        reader = processes._WindowsGPUCounters.__new__(processes._WindowsGPUCounters)
+        reader.query = ctypes.c_void_p(); reader.api = MagicMock()
+        def values(counter, format, size, count, buffer):
+            size._obj.value = 10 * 1024**2
+            return 0x800007D2
+        reader.api.PdhGetFormattedCounterArrayW.side_effect = values
+        self.assertEqual(reader._values(1), [])
 
 
 class EndTaskTests(unittest.TestCase):

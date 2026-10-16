@@ -20,12 +20,13 @@ from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from orbit_processes import collect_processes, terminate_process
 from orbit_files import create_files_router
 from orbit_desktop import create_desktop_router
 from orbit_history import SessionRecorder, create_history_router
+from orbit_pairing import PairingManager, OrbitAdvertisement, create_pairing_router
 
 from orbit_hardware import (GPU_SENSOR_FIELDS, IOCounterRates, RATE_FIELDS, SENSOR_FIELDS, basic_specs,
                             collect_specs, detect_game, io_metrics, nvidia_metrics,
@@ -45,11 +46,15 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.0.0"
+AGENT_VERSION = "4.1.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
 AGENT_PORT = int(os.getenv("ORBIT_PORT", "8765"))
+SECURE_PORT = int(os.getenv("ORBIT_TLS_PORT", "8766"))
+PAIRING_MANAGER = None
+ADVERTISEMENT = None
+CERTIFICATE_FINGERPRINT = ""
 TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(Path(__file__).with_name(".orbit-token"))))
 WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(Path(__file__).with_name(".orbit-widget-token"))))
 SUNSHINE_APPS_PATHS = [
@@ -270,8 +275,17 @@ async def lifespan(application):
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
     for thread in threads:
         thread.start()
+    if ADVERTISEMENT is not None:
+        try:
+            await asyncio.to_thread(ADVERTISEMENT.start)
+        except Exception:
+            LOGGER.exception("Automatic discovery unavailable; manual pairing is still available")
     yield
     STOP_EVENT.set()
+    if PAIRING_MANAGER is not None:
+        PAIRING_MANAGER.close()
+    if ADVERTISEMENT is not None:
+        await asyncio.to_thread(ADVERTISEMENT.close)
     for thread in threads:
         await asyncio.to_thread(thread.join, 5)
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
@@ -284,15 +298,18 @@ app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=
 app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
+app.include_router(create_pairing_router(lambda: PAIRING_MANAGER))
 
 
 @app.get("/api/discover")
 def discover():
-    # Minimal identity only: discovery must not disclose system or network details.
-    return {"service": "orbit-agent", "version": 3}
+    # Public bootstrap hints only. Secrets and network configuration require PIN proof.
+    return {"service": "orbit-agent", "version": 3, "agentVersion": AGENT_VERSION,
+            "name": socket.gethostname(), "securePort": SECURE_PORT,
+            "fingerprint": CERTIFICATE_FINGERPRINT, "pairingAvailable": PAIRING_MANAGER is not None}
 
 
-def get_local_network_details():
+def get_local_network_details(preferred_ip=None):
     """Prefer the routed interface and return only an actual adapter's MAC."""
     routed_ip = None
     try:
@@ -318,15 +335,20 @@ def get_local_network_details():
             candidates.append({"hostname": socket.gethostname(), "ipAddress": address.address,
                                "subnetMask": mask, "broadcastAddress": broadcast, "macAddress": mac,
                                "agentPort": AGENT_PORT})
-    return next((n for n in candidates if n["ipAddress"] == routed_ip), candidates[0] if candidates else {
+    return next((n for n in candidates if n["ipAddress"] == preferred_ip), None) or next((n for n in candidates if n["ipAddress"] == routed_ip), candidates[0] if candidates else {
         "hostname": socket.gethostname(), "ipAddress": "", "subnetMask": "", "broadcastAddress": "",
         "macAddress": "", "agentPort": AGENT_PORT})
 
 
+def pairing_payload(host):
+    return {**get_local_network_details(host), "securePort": SECURE_PORT,
+            "apiToken": API_TOKEN, "widgetToken": WIDGET_TOKEN, "agentVersion": AGENT_VERSION}
+
+
 @app.get("/api/network-info")
-def api_network_info(authorization: str = Header(None)):
+def api_network_info(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
-    return get_local_network_details()
+    return get_local_network_details((request.scope.get("server") or (None,))[0])
 
 
 @app.get("/api/specs")
@@ -633,15 +655,18 @@ if __name__ == "__main__":
     from orbit_tls import ensure_tls_identity, serve_both
     API_TOKEN = load_api_token()
     certificate, private_key, fingerprint = ensure_tls_identity()
-    secure_port = int(os.getenv("ORBIT_TLS_PORT", "8766"))
+    CERTIFICATE_FINGERPRINT = fingerprint
+    PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
+    ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
     network = get_local_network_details()
     print(f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}")
     print(f"PC IP: {network['ipAddress'] or 'No active LAN adapter'}")
-    print(f"Pairing token (enter in the iPhone app): {API_TOKEN}")
-    print(f"Encrypted connection port: {secure_port}")
-    print(f"Certificate SHA-256 (copy into My PCs): {fingerprint}")
+    print("In Orbit on iPhone, choose Find my PC. A one-use code will appear here and in a Windows dialog.")
+    print(f"Advanced manual pairing token: {API_TOKEN}")
+    print(f"Encrypted connection port: {SECURE_PORT}")
+    print(f"Certificate SHA-256 (manual setup only): {fingerprint}")
     print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
     try:
-        asyncio.run(serve_both(app, os.getenv("ORBIT_HOST", "0.0.0.0"), AGENT_PORT, secure_port, certificate, private_key))
+        asyncio.run(serve_both(app, os.getenv("ORBIT_HOST", "0.0.0.0"), AGENT_PORT, SECURE_PORT, certificate, private_key))
     except KeyboardInterrupt:
         pass

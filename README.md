@@ -10,13 +10,15 @@ Orbit are două părți: aplicația iPhone/iPad din `Orbit-iOS` și agentul Wind
 
 ### Pornire
 
-1. Copiază întregul folder `Orbit-Windows-Agent` **4.0.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. La prima pornire se instalează dependențele și se generează un token privat și un certificat pentru acel PC.
-2. Păstrează fereastra agentului deschisă. Notează **PC IP**, **Pairing token** și **Certificate SHA-256 fingerprint**. Permite accesul Python în Windows Firewall pentru rețeaua **Private**, inclusiv portul securizat **8766**.
-3. Deschide `Orbit-iOS/Orbit.xcodeproj` în Xcode. Alege echipa ta la **Signing & Capabilities**, atât pentru **Orbit**, cât și pentru **OrbitWidgets**. Pentru iPhone personal poți folosi Personal Team. Dacă Xcode cere, schimbă bundle identifiers în două valori proprii, păstrând prefixul comun.
-4. Rulează Orbit și acordă permisiunea pentru rețeaua locală. În onboarding, introdu **adresa PC-ului**, **tokenul** și **amprenta SHA-256 a certificatului** copiate din fereastra agentului, apoi **Test connection → Continue to my PC**. Portul securizat este implicit **8766**; schimbă-l în **Custom agent port** doar dacă ai configurat altul. Prima conectare reușită salvează automat profilul PC-ului. Telefonul și PC-ul trebuie să fie accesibile în aceeași rețea sau prin VPN privat.
-5. **Explore with sample data** permite explorarea interfeței înainte de conectare. Modul este marcat vizibil; valorile lui sunt simulate.
+1. Copiază întregul folder `Orbit-Windows-Agent` **4.1.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. Agentul instalează dependențele și păstrează identitatea PC-ului pentru conectările următoare.
+2. Lasă agentul deschis în sesiunea Windows în care ești autentificat, ca să poți vedea codul de asociere. Permite Python în Windows Firewall pe rețeaua **Private**, inclusiv HTTPS **8766** și descoperirea Bonjour/mDNS **UDP 5353**. Pentru prima asociere, telefonul și PC-ul trebuie să fie în aceeași rețea locală.
+3. Deschide `Orbit-iOS/Orbit.xcodeproj` în Xcode. Alege aceeași echipă pentru **Orbit** și **OrbitWidgets** și identificatori proprii dacă Xcode îi cere. Configurează același **App Group** în ambele ținte și `ORBIT_APP_GROUP_IDENTIFIER` pentru asocierea automată a widgeturilor; vezi [pașii de semnare](Orbit-iOS/WIDGETS.md#testare-gratuită).
+4. Rulează Orbit, acordă acces la rețeaua locală și apasă **Find my PC** în onboarding. Alege PC-ul găsit, apoi introdu pe iPhone **codul de șase cifre afișat de agent și în dialogul Windows**. Codul expiră după **120 de secunde** și funcționează o singură dată. Orbit completează automat adresa, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul.
+5. Pentru alt calculator, deschide **Tools → My PCs → Find a PC nearby**. **Explore with sample data** permite explorarea interfeței fără conectare și afișează explicit valori simulate.
 
-Aplicația păstrează tokenul fiecărui PC separat în Keychain. Cu amprenta configurată, monitorizarea și comenzile folosesc **HTTPS cu verificarea certificatului acelui PC**; o eroare de certificat nu produce revenirea la HTTP. Files, Clipboard, Audio mixer și Sessions cer această conexiune criptată. Portul HTTP **8765** rămâne pentru widgeturile și clienții vechi, cu token separat pentru widgeturi. Nu publica porturile agentului pe Internet.
+Asocierea folosește SRP și un răspuns criptat pentru a verifica PC-ul și a transfera credențialele; nu copiezi IP, MAC sau tokenuri în fluxul obișnuit. Tokenul principal al fiecărui PC rămâne separat în Keychain. Monitorizarea și comenzile folosesc **HTTPS cu verificarea certificatului acelui PC**, fără revenire la HTTP când verificarea eșuează. Files, Clipboard, Audio mixer și Sessions cer conexiunea criptată. Portul HTTP **8765** rămâne pentru clienți locali vechi. Nu publica porturile agentului pe Internet.
+
+**Configurarea manuală avansată** rămâne în **Manual configuration** din onboarding și **My PCs → Add manually**. Folosește adresa, tokenul avansat și amprenta SHA-256 afișate de agent, apoi testează conexiunea. Este utilă dacă rețeaua blochează descoperirea; Bonjour nu traversează automat orice VPN sau rețea de oaspeți.
 
 ### Ce găsești în aplicație
 
@@ -31,23 +33,26 @@ Sliderul de volum actualizează direct nivelul audio Windows în timpul glisări
 
 ### Fișiere și transfer
 
-Deschide tabul **Files** și alege discul sau unul dintre folderele rapide: Desktop, Downloads, Documents, Pictures. Poți naviga, căuta în folderul curent, sorta și selecta mai multe intrări. Favoritele se păstrează separat pentru fiecare PC.
+Deschide **Files** și alege discul sau unul dintre folderele rapide: Desktop, Downloads, Documents, Pictures. **Back / Forward** urmăresc locurile vizitate, inclusiv căutarea și sortarea; **Up** deschide părintele, iar **Home** revine la locații. Favoritele sunt separate pentru fiecare PC, iar meniul vizibil al fiecărei intrări oferă acțiunile disponibile.
 
-- **PC → iPhone:** descarcă, deschide previzualizarea Quick Look, apoi distribuie sau salvează în aplicația Fișiere.
-- **iPhone → PC:** alege fișiere din Fișiere sau poze din biblioteca foto și trimite-le în folderul deschis. Transferul arată progresul și viteza și poate fi anulat.
+- **PC → iPhone:** descarcă fișiere, deschide previzualizarea Quick Look, apoi distribuie sau salvează în Fișiere.
+- **Foldere întregi:** apasă **Download this folder as ZIP** sau alege **Download folder as ZIP** din meniul unui folder. Sunt păstrate structura, numele Unicode și directoarele goale. Pregătirea și descărcarea au progres separat și pot fi anulate; ZIP-ul se salvează prin meniul de distribuire. Selecția multiplă acceptă fișiere și foldere.
+- **iPhone → PC:** trimite fișiere din Fișiere sau poze/video în folderul deschis, cu progres, viteză și anulare.
 - **Organizare:** creează foldere, redenumește, mută pe același disc și trimite în Recycle Bin, cu confirmare. Fișierele existente nu sunt suprascrise automat.
 
-Accesul este limitat la permisiunile contului Windows; tokenurile Orbit și stocarea internă privată sunt protejate. Limitele curente sunt **2 GiB/upload**, **16 GiB/download** și **64 MiB/previzualizare**. Transferurile sunt pentru fișiere individuale; nu arhivează automat foldere. Linkurile/junctions și căile de rețea UNC nu sunt disponibile. Mutarea între discuri este refuzată fără modificări; folosește transferul și gestionează separat originalul. PC-ul și agentul trebuie să rămână pornite.
+Limitele pentru fișiere sunt **2 GiB/upload**, **16 GiB/download** și **64 MiB/previzualizare**. Arhiva unui folder permite **2 GiB de fișiere sursă și 2 GiB ZIP**, **10.000 de intrări**, **32 de niveluri sub folderul ales** și cel mult **120 de secunde de pregătire**. Agentul păstrează cel mult două operații de arhivare și șterge datele temporare la anulare sau după **10 minute**. Un fișier inaccesibil, protejat sau modificat în timpul pregătirii produce eroare pentru întreaga arhivă; nu se livrează un ZIP incomplet fără avertizare. Originalele rămân pe PC.
+
+Accesul respectă permisiunile contului Windows; tokenurile și stocarea internă Orbit sunt protejate. Linkurile/junctions și căile de rețea UNC nu sunt disponibile. Uploadul de directoare și mutarea între discuri nu sunt incluse; mutarea între discuri este refuzată fără modificări. PC-ul și agentul trebuie să rămână pornite.
 
 ### Clipboard, mixer și sesiuni
 
 În **Tools → Clipboard**, folosește **Paste from iPhone → Send text to PC** sau **Read PC clipboard → Copy to iPhone**. Se transferă numai text și linkuri, la cerere, până la **1 MiB**. Orbit nu urmărește clipboardul în fundal și nu salvează un istoric; textul ecranului este șters la ieșire sau la schimbarea PC-ului.
 
-În **Tools → Audio mixer**, fiecare sesiune audio a ieșirii Windows implicite are volum și mute proprii. Pornește sunetul într-o aplicație dacă nu apare. O aplicație poate avea mai multe sesiuni, iar schimbarea ieșirii implicite poate schimba lista. Glisările sunt grupate și livrate în ordine, folosind direct Windows Core Audio.
+În **Tools → Audio mixer**, sesiunile aplicațiilor au volum și mute proprii, iar **Output** permite alegerea unei ieșiri active sau **System default** pentru aplicația respectivă. Pornește redarea dacă o aplicație nu apare. Glisările sunt grupate și livrate în ordine prin Windows Core Audio. Windows sau aplicația pot cere repornirea redării pentru schimbarea ieșirii; vezi [compatibilitatea și limitele mixerului](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
 
 În **Tools → Sessions & graphs**, jocurile detectate pornesc automat o sesiune; **+** pornește o înregistrare manuală pentru activitatea desktopului. Oprește înregistrarea când ai terminat. Agentul salvează o măsurătoare la **5 secunde**, păstrează cel mult **100 de sesiuni / 30 de zile** și permite ștergerea sesiunilor încheiate. Graficele interactive includ FPS, încărcare și temperaturi CPU/GPU, putere, RAM, VRAM și trafic. Mediile și vârfurile folosesc citirile disponibile; senzorii lipsă rămân goluri, fără valori zero inventate. Sesiunile se păstrează pe PC, inclusiv dacă telefonul se deconectează. Acestea sunt mostre periodice, nu o captură completă a fiecărui cadru.
 
-În **Tools → My PCs**, adaugă și selectează mai multe calculatoare. Fiecare are adresă, token, certificat și setări Wake-on-LAN proprii, inclusiv calcularea automată a broadcastului; configurația dashboardului și favoritele sunt separate. Prima conexiune reușită creează profilul automat. Conexiunea veche este migrată dacă lista este goală; editează profilul pentru a completa amprenta lipsă. Datele profilurilor rămân pe telefon, iar secretele în Keychain. Schimbarea PC-ului închide contextul operațiilor vechi.
+În **Tools → My PCs**, adaugă și selectează mai multe calculatoare. Fiecare are adresă, token, certificat și setări Wake-on-LAN proprii, inclusiv calcularea automată a broadcastului; configurația dashboardului și favoritele sunt separate. Asocierea prin **Find a PC nearby** salvează automat profilul și pregătește widgeturile. Profilurile manuale existente pot fi editate sau reasociate cu un cod nou. Datele profilurilor rămân pe telefon, iar secretele în Keychain. Schimbarea PC-ului închide contextul operațiilor vechi.
 
 ### Dashboardul tău
 
@@ -57,7 +62,13 @@ Puterea CPU este valoarea **CPU package**, iar puterea GPU provine din senzorul 
 
 ### Task Manager
 
-Deschide **Tools → Task Manager**, caută aplicația sau sortează lista după CPU/RAM, apoi folosește **End task** numai după verificarea procesului. Lista poate fi reîmprospătată manual. Orbit cere confirmare și verifică identitatea procesului înainte de închidere, pentru a evita închiderea altui proces care a reutilizat același PID. Pe Windows, închiderea prin acest mecanism este forțată: aplicația nu are garanția că își salvează lucrul. Orbit nu închide automat aplicații.
+Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descrescător după **CPU, GPU, RAM sau VRAM**, ori alfabetic. Memoria GPU dedicată și cea partajată din RAM sunt afișate separat. Citirile GPU folosesc contoarele Windows disponibile în driver; procentul reprezintă motorul cel mai ocupat al procesului. Un senzor sau o mostră lipsă apare ca **—**, inclusiv la prima citire.
+
+**End task** cere confirmare și verifică identitatea PID + momentul creării procesului pentru a evita închiderea unui PID reutilizat. Pe Windows, terminarea este forțată și nu garantează salvarea lucrului. Procesele critice și agentul Orbit sunt protejate; aplicațiile nu sunt închise automat. Vezi [detaliile și limitele Windows](Orbit-Windows-Agent/README.md#task-manager-de-pe-telefon).
+
+### Aspect
+
+**Tools → Appearance** oferă **Improved**, cu suprafețe mai clare și contrast mai puternic, și **Classic**, cu cardurile translucide originale. Alege Ocean, Aurora, Violet, Ember sau Graphite, o singură culoare pentru cardurile de metrici și reducerea luminii de fundal. Setările de accesibilitate ale telefonului sunt respectate; textul mare folosește automat o coloană pe dashboard.
 
 ### Senzori și FPS
 
@@ -68,7 +79,7 @@ Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` 
 1. Instalează [MSI Afterburner de pe site-ul MSI](https://www.msi.com/Landing/afterburner/graphics-cards), inclusiv **RivaTuner Statistics Server (RTSS)**, și lasă ambele programe pornite pe PC.
 2. În **Afterburner → Settings → Monitoring**, bifează senzorii doriți din **Active hardware monitoring graphs**, inclusiv CPU/GPU temperature și Framerate, când există. Apasă **Apply**. **Show in On-Screen Display** este opțional pentru verificarea pe ecran; [ghidul MSI](https://www.msi.com/blog/msi-afterburner-on-screen-display/) arată opțiunile.
 3. În RTSS, alege **Application detection level → Low** pentru joc. Poți activa temporar **Show own statistics** ca să verifici detectarea.
-4. Pornește jocul și agentul **4.0.0**, apoi deschide Orbit. Datele sunt citite automat, prin memoria partajată locală; nu trebuie să conectezi telefonul direct la Afterburner sau să introduci o cheie suplimentară. În **Tools → Settings → Set up FPS** ai aceiași pași.
+4. Pornește jocul și agentul **4.1.0**, apoi deschide Orbit. Datele sunt citite automat, prin memoria partajată locală; nu trebuie să conectezi telefonul direct la Afterburner sau să introduci o cheie suplimentară. În **Tools → Settings → Set up FPS** ai aceiași pași.
 
 **FPS:** RTSS are prioritate și nu cere `ORBIT_PRESENTMON_CSV`. Jocurile care blochează RTSS sau unele sisteme anti-cheat pot rămâne incompatibile. Valoarea descrie cadrele aplicației, fără garanția FPS-ului afișat după generarea cadrelor sau streaming. Pentru un joc nerecunoscut, se poate configura executabilul prin `ORBIT_GAME_PROCESSES`.
 
@@ -78,19 +89,19 @@ Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` 
 
 ### Actualizare și diagnosticare
 
-Agentul din această versiune raportează **4.0.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul `%LOCALAPPDATA%\Orbit` cu identitatea TLS și istoricul; nu copia mediul `.venv` de pe alt calculator. Completează certificatul din Tools → My PCs pentru funcțiile noi. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
+Agentul din această versiune raportează **4.1.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul `%LOCALAPPDATA%\Orbit` cu identitatea TLS și istoricul; nu copia mediul `.venv` de pe alt calculator. Pentru asociere automată, folosește **Find my PC**; profilurile manuale existente rămân disponibile. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
 
 În **Tools → Monitoring sources**, verifică versiunea raportată și sursele datelor. Pe PC, `check_monitoring.bat` sau `.venv\Scripts\python.exe check_monitoring.py` verifică sursele disponibile și configurarea FPS fără să trimită comenzi de control. Păstrează Afterburner și RTSS pornite și deschide jocul pentru verificarea FPS; dacă folosești o sursă alternativă, las-o pornită și pe aceea. Senzorii, cadrele jocului și comenzile Windows trebuie validate pe PC-ul tău; verificările automate folosesc și surse simulate.
 
 ### Widgeturi și Dynamic Island
 
-Extensia WidgetKit oferă cinci widgeturi de monitorizare: **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **CPU & GPU temperatures** și **Choose a PC metric**. Ultimul permite alegerea CPU, GPU, RAM, VRAM, puterii, temperaturii sau FPS; poți adăuga mai multe instanțe pentru metrici sau PC-uri diferite. Scurtăturile existente către aplicație și controale rămân disponibile.
+WidgetKit oferă **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **CPU & GPU temperatures**, **PC cooling**, **Storage activity**, **Network activity** și **Choose a PC metric**, plus scurtăturile către aplicație. Poți adăuga mai multe instanțe și alege PC-uri, indicatori și teme diferite.
 
-Conectează PC-ul, apoi deschide **Tools → Settings → Widgets → Prepare widget access** și copiază **read-only widget token**. Adaugă widgetul pe Home Screen, ține-l apăsat și alege **Edit Widget**, apoi introdu adresa PC-ului, portul **8765** și acest token separat. Widgeturile actuale folosesc HTTP numai în rețeaua privată, separat de conexiunea HTTPS a aplicației. Widgetul citește direct agentul, fără App Groups sau cont Apple Developer plătit. Nu folosi tokenul principal de control în configurația widgetului.
+După asocierea PC-ului, Orbit pregătește automat accesul widgeturilor. Adaugă widgetul pe Home Screen și alege un PC din **Edit Widget → PC**; **nu introduci IP, port sau token**. Aplicația și extensia au nevoie de același **App Group configurat și semnat în Xcode**. Este partajat exclusiv tokenul de monitorizare **read-only**, separat de tokenul principal privat. Widgeturile folosesc HTTPS și verifică certificatul PC-ului. Dacă partajarea nu este disponibilă, verifică semnarea și **Tools → Widgets → Refresh widget access**.
 
-Widgeturile arată capturi periodice cu ora măsurătorii. iOS decide când le actualizează; o nouă citire la fiecare 15 minute este solicitată, fără garanția frecvenței. După 15 minute valorile sunt marcate ca expirate. PC-ul trebuie să fie accesibil în rețea.
+Widgeturile arată capturi periodice cu ora măsurătorii. Solicită o actualizare după **15 minute**, dar iOS decide programarea; citirile mai vechi de 15 minute sunt ascunse. PC-ul trebuie să fie accesibil în rețea.
 
-Live Activity locală ActivityKit este separată: afișează măsurători recente pe Lock Screen și, pe iPhone compatibil, în Dynamic Island, cu profil **Overview**, **Gaming** sau **Power**. Actualizările depind de rularea aplicației; după 15 secunde fără date, ascunde valorile expirate. Nu există monitorizare permanentă garantată în fundal. Vezi [configurarea, testarea gratuită și sursele Apple](Orbit-iOS/WIDGETS.md).
+În **Tools → Live Activity**, alege profilul **Overview / Gaming / Power**, stilul Lock Screen **Standard / Minimal / Detailed**, indicatorul compact, accentul și intervalul **5 / 10 / 15 secunde**. Butonul **Stop** din insula extinsă sau stilul Detailed oprește activitatea. Actualizările locale depind de aplicația activă; în fundal poate apărea starea de pauză, iar după trei intervale fără actualizare valorile sunt ascunse. iOS poate suspenda aplicația: nu există actualizări continue garantate în fundal. Vezi [configurarea și semnarea iOS](Orbit-iOS/WIDGETS.md).
 
 ### Wake-on-LAN
 
@@ -125,6 +136,13 @@ Testul de compatibilitate JSON agent–iOS (Python cu dependențele agentului ș
 python Orbit-iOS/Tests/check_protocol.py
 ```
 
+Verificări complete pe macOS, cu Swift și dependențele agentului: transfer HTTPS și asociere prin PIN între clientul Swift real și serverul Python. Folosesc certificate și date temporare; prima verificare SRP descarcă și compilează pachetele Swift fixate în proiect.
+
+```sh
+python Orbit-iOS/Tests/check_companion_transport.py
+python Orbit-iOS/Tests/check_pin_pairing.py
+```
+
 Testele configurației dashboardului:
 
 ```sh
@@ -138,7 +156,7 @@ Regresiile agentului, din rădăcina proiectului, cu dependențele din `Orbit-Wi
 python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
-Comanda include regresii pentru fișiere și transferuri, clipboard, sesiuni audio, istoric SQLite și identitate TLS, alături de Afterburner/RTSS, senzori HTTP/WMI, formatele CSV FPS și contoarele de trafic. Configurarea Windows este descrisă în ghidul agentului. Acțiunile fizice Windows, senzorii reali, Wake-on-LAN și semnarea pe iPhone necesită validare pe dispozitivele respective.
+Comanda include regresii pentru asocierea SRP și credențialele criptate, arhive ZIP/anulare, fișiere și transferuri, clipboard, sesiuni audio, istoric SQLite și identitate TLS, alături de Afterburner/RTSS, senzori HTTP/WMI, formatele CSV FPS și contoarele de trafic. Configurarea Windows este descrisă în ghidul agentului. Acțiunile fizice Windows, senzorii reali, Wake-on-LAN și semnarea pe iPhone necesită validare pe dispozitivele respective.
 
 ---
 
@@ -148,13 +166,15 @@ Orbit has two parts: the iPhone/iPad app in `Orbit-iOS` and the Windows agent in
 
 ### Getting started
 
-1. Copy the entire `Orbit-Windows-Agent` **4.0.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The first run installs dependencies and generates a private token and certificate for that PC.
-2. Keep the agent window open. Note **PC IP**, **Pairing token**, and **Certificate SHA-256 fingerprint**. Allow Python through Windows Firewall on **Private** networks, including secure port **8766**.
-3. Open `Orbit-iOS/Orbit.xcodeproj` in Xcode. Select your team under **Signing & Capabilities** for both **Orbit** and **OrbitWidgets**. You can use a Personal Team for your own iPhone. If Xcode requires it, change both bundle identifiers to unique values while keeping their shared prefix.
-4. Run Orbit and grant local network permission. During onboarding, enter the **PC address**, **token**, and **certificate SHA-256 fingerprint** copied from the agent window, then choose **Test connection → Continue to my PC**. The secure port defaults to **8766**; change it under **Custom agent port** only if you configured another one. The first successful connection saves the PC profile automatically. Your phone and PC must be reachable on the same network or through a private VPN.
-5. **Explore with sample data** lets you try the interface before connecting. Preview mode is clearly labeled and uses simulated readings.
+1. Copy the entire `Orbit-Windows-Agent` **4.1.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The agent installs dependencies and preserves this PC's identity for later connections.
+2. Keep the agent open in your signed-in Windows desktop session so its pairing code is visible. Allow Python through Windows Firewall on **Private** networks, including HTTPS **8766** and Bonjour/mDNS discovery over **UDP 5353**. Use the same local network for initial pairing.
+3. Open `Orbit-iOS/Orbit.xcodeproj` in Xcode. Choose the same team for **Orbit** and **OrbitWidgets**, using unique bundle identifiers if required. Configure the same **App Group** on both targets and `ORBIT_APP_GROUP_IDENTIFIER` for automatic widget setup; see the [signing instructions (Romanian)](Orbit-iOS/WIDGETS.md#testare-gratuită).
+4. Run Orbit, grant local network access, and choose **Find my PC** during onboarding. Select your PC and enter the **six-digit code shown by the agent and its Windows dialog**. The code expires after **120 seconds** and works once. Orbit automatically fills in the address, tokens, certificate, and Wake-on-LAN details and saves the profile.
+5. Add another computer through **Tools → My PCs → Find a PC nearby**. **Explore with sample data** lets you try the interface without connecting and clearly marks simulated readings.
 
-The app keeps each PC's token separately in Keychain. Once the fingerprint is configured, monitoring and controls use **HTTPS with verification of that PC's certificate**; a certificate error never falls back to HTTP. Files, Clipboard, Audio mixer, and Sessions require this encrypted connection. HTTP port **8765** remains for legacy widgets and clients, with a separate read-only token for widgets. Do not expose the agent ports to the Internet.
+Pairing uses SRP and an encrypted response to verify the PC and transfer credentials; the normal flow needs no IP, MAC, or token copying. Each PC's main token stays separately in Keychain. Monitoring and controls use **HTTPS with verification of that PC's certificate**, without falling back to HTTP on a certificate error. Files, Clipboard, Audio mixer, and Sessions require encryption. HTTP port **8765** remains for legacy local clients. Do not expose the agent ports to the Internet.
+
+**Advanced manual setup** remains under **Manual configuration** in onboarding and **My PCs → Add manually**. Enter the address, advanced access token, and SHA-256 fingerprint printed by the agent, then test the connection. This helps when the network blocks discovery; Bonjour does not automatically cross every VPN or guest network.
 
 ### Inside the app
 
@@ -169,23 +189,26 @@ The volume slider directly updates the Windows audio level while you drag. Comma
 
 ### Files and transfers
 
-Open **Files** and choose a drive or a quick folder: Desktop, Downloads, Documents, or Pictures. Browse, search the current folder, sort, and select multiple entries. Favorites are saved separately for each PC.
+Open **Files** and choose a drive or a quick folder: Desktop, Downloads, Documents, or Pictures. **Back / Forward** follow visited locations, restoring search and sort; **Up** opens the parent and **Home** returns to locations. Favorites are saved per PC, and each entry has a visible action menu.
 
-- **PC → iPhone:** download a file, open its Quick Look preview, then share or save it to Files.
-- **iPhone → PC:** choose files from Files or pictures from Photos and send them to the open PC folder. Transfers show progress and speed and can be cancelled.
-- **Organization:** create folders, rename, move on the same drive, and send items to Recycle Bin with confirmation. Existing files are not overwritten automatically.
+- **PC → iPhone:** download files, open Quick Look previews, and share or save to Files.
+- **Entire folders:** use **Download this folder as ZIP**, or **Download folder as ZIP** in a folder's menu. Structure, Unicode names, and empty directories are preserved. Preparation and download show separate progress and support cancellation; save the ZIP through the share sheet. Multiple selection supports files and folders.
+- **iPhone → PC:** send files from Files or photos/videos into the open folder, with progress, speed, and cancellation.
+- **Organization:** create folders, rename, move on the same drive, and send items to Recycle Bin with confirmation. Existing files are never overwritten automatically.
 
-Access follows the Windows account's permissions; Orbit tokens and private internal storage are protected. Current limits are **2 GiB/upload**, **16 GiB/download**, and **64 MiB/preview**. Transfers handle individual files and do not automatically archive folders. Links/junctions and UNC network paths are unavailable. Moves between drives are rejected without changes; use transfers and manage the original separately. The PC and agent must stay running.
+File limits are **2 GiB/upload**, **16 GiB/download**, and **64 MiB/preview**. A folder archive allows **2 GiB of source files and a 2 GiB ZIP**, **10,000 entries**, **32 levels below the selected folder**, and **120 seconds of preparation**. The agent keeps at most two archive jobs and removes temporary data on cancellation or after **10 minutes**. Inaccessible, protected, or changing entries fail the complete archive rather than silently producing an incomplete ZIP. Originals remain on the PC.
+
+Access follows the Windows account's permissions; Orbit tokens and private internal storage are protected. Links/junctions and UNC network paths are unavailable. Folder upload and moves between drives are not included; cross-drive moves are rejected without changes. The PC and agent must stay running.
 
 ### Clipboard, mixer, and sessions
 
 In **Tools → Clipboard**, use **Paste from iPhone → Send text to PC** or **Read PC clipboard → Copy to iPhone**. Only text and links are transferred, on request, up to **1 MiB**. Orbit does not watch the clipboard in the background or save clipboard history. Text on this screen is cleared when you leave or change PCs.
 
-In **Tools → Audio mixer**, each audio session on the default Windows output has its own volume and mute controls. Play sound in an app if it does not appear. One app may have several sessions; changing the default output can change the list. Slider updates are combined and delivered in order through Windows Core Audio.
+In **Tools → Audio mixer**, application sessions have individual volume and mute controls, and **Output** chooses an active device or **System default** for that application. Start playback if an app is missing. Slider updates are combined and sent in order through Windows Core Audio. Windows or the app may require playback to restart before an output change takes effect; see [mixer compatibility and limits (Romanian)](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
 
 In **Tools → Sessions & graphs**, detected games start sessions automatically; **+** starts a manual recording for desktop work. Stop recording when finished. The agent saves a reading every **5 seconds**, keeps at most **100 sessions / 30 days**, and allows completed sessions to be deleted. Interactive graphs include FPS, CPU/GPU load and temperatures, power, RAM, VRAM, and traffic. Averages and peaks use available measurements; missing sensors remain gaps without invented zeros. Sessions stay on the PC and continue if the phone disconnects. These are periodic samples, not a complete capture of every frame.
 
-In **Tools → My PCs**, add and select multiple computers. Each has its own address, token, certificate, and Wake-on-LAN settings, including automatic broadcast calculation; dashboard configuration and file favorites are separate. The first successful connection creates a profile automatically. The previous connection is migrated when the list is empty; edit it to add a missing fingerprint. Profile metadata stays on the phone and secrets stay in Keychain. Switching PCs clears the previous operation context.
+In **Tools → My PCs**, add and select multiple computers. Each has its own address, token, certificate, and Wake-on-LAN settings, including automatic broadcast calculation; dashboard configuration and file favorites are separate. Pairing through **Find a PC nearby** automatically saves the profile and prepares widgets. Existing manual profiles can be edited or paired again with a new code. Profile metadata stays on the phone and secrets stay in Keychain. Switching PCs clears the previous operation context.
 
 ### Your dashboard
 
@@ -195,7 +218,13 @@ CPU power is the **CPU package** reading; GPU power comes from the graphics card
 
 ### Task Manager
 
-Open **Tools → Task Manager**, search for an app or sort by CPU/RAM, then check the process before choosing **End task**. Refresh the list manually when needed. Orbit asks for confirmation and checks the process identity before termination, preventing another process that reused the same PID from being closed. On Windows, this termination is forceful: the application is not guaranteed an opportunity to save work. Orbit never ends applications automatically.
+Open **Tools → Task Manager**, search by name/PID, and sort descending by **CPU, GPU, RAM, or VRAM**, or alphabetically. Dedicated GPU memory and shared GPU memory from RAM appear separately. GPU readings use driver-provided Windows counters; the percentage represents the process's busiest GPU engine. Missing sensors or samples show **—**, including the first reading.
+
+**End task** asks for confirmation and verifies PID + process creation time to avoid closing a reused PID. Termination on Windows is forceful and does not guarantee saved work. Critical processes and Orbit Agent are protected; applications are never ended automatically. See the [Windows details and limitations (Romanian)](Orbit-Windows-Agent/README.md#task-manager-de-pe-telefon).
+
+### Appearance
+
+**Tools → Appearance** offers **Improved**, with clearer surfaces and stronger contrast, and **Classic**, with the original translucent cards. Choose Ocean, Aurora, Violet, Ember, or Graphite, one accent for metric cards, and reduced background glow. Phone accessibility settings are respected; larger accessibility text automatically uses one dashboard column.
 
 ### Sensors and FPS
 
@@ -206,7 +235,7 @@ Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains
 1. Install [MSI Afterburner from MSI](https://www.msi.com/Landing/afterburner/graphics-cards), including **RivaTuner Statistics Server (RTSS)**, and keep both running on the PC.
 2. In **Afterburner → Settings → Monitoring**, tick the desired **Active hardware monitoring graphs**, including CPU/GPU temperature and Framerate when present. Click **Apply**. **Show in On-Screen Display** is optional for checking readings on the PC; see the [MSI monitoring guide](https://www.msi.com/support/technical_details/VGA_MSI_Utility_AfterBurner).
 3. In RTSS, set **Application detection level → Low** for the game. Enable **Show own statistics** temporarily if you want to check detection.
-4. Start the game and agent **4.0.0**, then open Orbit. Readings are detected through local shared memory; there is no direct phone connection to Afterburner or extra pairing key. **Tools → Settings → Set up FPS** includes the same steps.
+4. Start the game and agent **4.1.0**, then open Orbit. Readings are detected through local shared memory; there is no direct phone connection to Afterburner or extra pairing key. **Tools → Settings → Set up FPS** includes the same steps.
 
 **FPS:** RTSS has priority and does not need `ORBIT_PRESENTMON_CSV`. Games that block RTSS and some anti-cheat systems may be incompatible. The reading describes application frames and does not guarantee displayed FPS after frame generation or streaming. Set `ORBIT_GAME_PROCESSES` to the executable if a game is not recognized.
 
@@ -216,19 +245,19 @@ Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains
 
 ### Updating and troubleshooting
 
-The agent in this version reports **4.0.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token`, `.orbit-widget-token`, and `%LOCALAPPDATA%\Orbit` folder containing TLS identity and history; do not copy another computer's `.venv`. Add the certificate in Tools → My PCs for the new features. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
+The agent in this version reports **4.1.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token`, `.orbit-widget-token`, and `%LOCALAPPDATA%\Orbit` folder containing TLS identity and history; do not copy another computer's `.venv`. Use **Find my PC** for automatic pairing; existing manual profiles remain available. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
 
 Open **Tools → Monitoring sources** to check the reported version and providers. On the PC, `check_monitoring.bat` or `.venv\Scripts\python.exe check_monitoring.py` checks available sources and FPS configuration without sending control commands. Keep Afterburner and RTSS running and open a game to check FPS; keep any fallback source you use running as well. Actual sensors, game frames, and Windows controls still need validation on your PC; automated checks also use mocked sources.
 
 ### Widgets and Dynamic Island
 
-The WidgetKit extension includes five monitoring widgets: **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **CPU & GPU temperatures**, and **Choose a PC metric**. The last lets you choose CPU, GPU, RAM, VRAM, power, temperature, or FPS; add multiple instances for different readings or PCs. Existing app and control shortcuts remain available.
+WidgetKit includes **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **CPU & GPU temperatures**, **PC cooling**, **Storage activity**, **Network activity**, and **Choose a PC metric**, plus app shortcuts. Add multiple instances and choose different PCs, metrics, and themes.
 
-Connect the PC, open **Tools → Settings → Widgets → Prepare widget access**, and copy the **read-only widget token**. Add a widget to your Home Screen, touch and hold it, choose **Edit Widget**, and enter the PC address, port **8765**, and this separate token. Current widgets use HTTP on the private network, separately from the app’s HTTPS connection. The widget reads directly from the agent, without App Groups or a paid Apple Developer account. Do not enter the main control token in widget configuration.
+Pairing the PC automatically prepares widget access. Add a Home Screen widget and select a PC under **Edit Widget → PC**; **no IP, port, or token entry is needed**. The app and extension require the same **App Group registered and signed in Xcode**. Only the **read-only** monitoring token is shared; the main control token remains private. Widgets use HTTPS and verify the PC certificate. If sharing is unavailable, check signing and **Tools → Widgets → Refresh widget access**.
 
-Widgets show periodic snapshots with the measurement time. They request another reading after 15 minutes, but iOS decides when updates run and does not guarantee that frequency. Readings expire after 15 minutes. The PC must be reachable on your network.
+Widgets show periodic snapshots with the measurement timestamp. They request an update after **15 minutes**, but iOS controls scheduling; readings older than 15 minutes are hidden. The PC must be reachable on your network.
 
-The local ActivityKit Live Activity is separate. It shows recent readings on the Lock Screen and, on supported iPhones, in Dynamic Island, with **Overview**, **Gaming**, or **Power** focus. Updates depend on the app being allowed to run; readings expire and are hidden after 15 seconds without new data. Continuous background monitoring is not guaranteed. See the [setup, free testing instructions, and Apple references (Romanian)](Orbit-iOS/WIDGETS.md).
+Under **Tools → Live Activity**, choose **Overview / Gaming / Power**, a **Standard / Minimal / Detailed** Lock Screen style, compact metric, accent, and **5 / 10 / 15-second** interval. **Stop** in the expanded island or Detailed style ends the activity. Local updates depend on the app running in the foreground; the background may show a paused state, and readings are hidden after three missed intervals. iOS can suspend the app, so continuous background updates are not guaranteed. See the [iOS setup and signing guide (Romanian)](Orbit-iOS/WIDGETS.md).
 
 ### Wake-on-LAN
 
@@ -263,6 +292,13 @@ Check JSON compatibility between the agent and iOS (requires Python with the age
 python Orbit-iOS/Tests/check_protocol.py
 ```
 
+End-to-end checks on macOS with Swift and the agent dependencies: HTTPS transfers and PIN pairing between the production Swift client and Python server. They use temporary certificates and data; the first SRP check resolves and builds the pinned Swift packages.
+
+```sh
+python Orbit-iOS/Tests/check_companion_transport.py
+python Orbit-iOS/Tests/check_pin_pairing.py
+```
+
 Test dashboard configuration:
 
 ```sh
@@ -276,4 +312,4 @@ Run agent regressions from the project root, with `Orbit-Windows-Agent/requireme
 python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
-This includes files/transfers, clipboard, audio sessions, SQLite history, and TLS identity, alongside Afterburner/RTSS shared memory, HTTP/WMI sensors, FPS CSV formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.
+This includes SRP pairing and encrypted credentials, ZIP archives/cancellation, files/transfers, clipboard, audio sessions, SQLite history, and TLS identity, alongside Afterburner/RTSS shared memory, HTTP/WMI sensors, FPS CSV formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.

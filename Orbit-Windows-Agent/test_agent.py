@@ -36,7 +36,12 @@ class APITests(unittest.TestCase):
     def test_discovery_exposes_identity_only_without_token(self):
         response = self.client.get("/api/discover")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"service": "orbit-agent", "version": 3})
+        public = response.json()
+        self.assertEqual(public["service"], "orbit-agent")
+        self.assertEqual(public["version"], 3)
+        self.assertEqual(set(public), {"service", "version", "agentVersion", "name", "securePort", "fingerprint", "pairingAvailable"})
+        self.assertNotIn(TOKEN, response.text)
+        self.assertNotIn(WIDGET_TOKEN, response.text)
 
     def test_private_reads_and_mutations_require_auth(self):
         for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps"):

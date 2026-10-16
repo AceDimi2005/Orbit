@@ -13,6 +13,7 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var broadcastAddress = ""
     var wolPort = 9
     var autoCalcBroadcast = true
+    var lastKnownIPv4: String? = nil
 }
 
 enum PCProfileStore {
@@ -45,6 +46,24 @@ enum PCProfileStore {
 
 @MainActor
 extension OrbitViewModel {
+    func acceptPairing(_ credentials: PCPairingCredentials, discoveredHost: String) throws {
+        let fingerprint = OrbitAPIClient.normalizedFingerprint(credentials.certificateFingerprint)
+        guard OrbitAPIClient.validFingerprint(fingerprint), !discoveredHost.isEmpty else { throw OrbitError(message: "Invalid PC pairing response.") }
+        var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }) ?? SavedPC(name: credentials.hostname, address: discoveredHost)
+        profile.name = credentials.hostname; profile.address = discoveredHost
+        profile.agentPort = credentials.agentPort; profile.securePort = credentials.securePort
+        profile.certificateFingerprint = fingerprint; profile.macAddress = credentials.macAddress
+        profile.subnetMask = credentials.subnetMask; profile.broadcastAddress = credentials.broadcastAddress
+        profile.lastKnownIPv4 = credentials.ipAddress
+        profile.autoCalcBroadcast = true
+        savePC(profile, token: credentials.apiToken)
+        widgetToken = credentials.widgetToken
+        do {
+            try OrbitWidgetConnectionStore.save(id: profile.id, name: profile.name, host: profile.address, port: profile.securePort,
+                                                readOnlyToken: credentials.widgetToken, certificateSHA256: fingerprint)
+            try OrbitWidgetConnectionStore.setDefault(id: profile.id)
+        } catch { widgetSetupError = error.localizedDescription }
+    }
     var selectedPCStorageKey: String {
         if let profile = savedPCs.first(where: { $0.id == selectedPCID && $0.address == cleanHost() && $0.agentPort == agentPort }) { return profile.id }
         return "\(cleanHost().lowercased()):\(agentPort)"
@@ -71,6 +90,7 @@ extension OrbitViewModel {
         savedPCs[index].macAddress = pcMAC; savedPCs[index].subnetMask = subnetMask
         savedPCs[index].broadcastAddress = wolTargetIP; savedPCs[index].wolPort = wolPort
         savedPCs[index].autoCalcBroadcast = autoCalcBroadcast
+        savedPCs[index].lastKnownIPv4 = lastKnownPCIPv4
         savedPCs[index].securePort = securePort; savedPCs[index].certificateFingerprint = certificateFingerprint
         PCProfileStore.save(savedPCs)
         PCProfileStore.saveToken(apiToken, for: savedPCs[index].id)
@@ -82,6 +102,7 @@ extension OrbitViewModel {
         profile.certificateFingerprint = certificateFingerprint
         profile.macAddress = pcMAC; profile.subnetMask = subnetMask; profile.broadcastAddress = wolTargetIP
         profile.wolPort = wolPort; profile.autoCalcBroadcast = autoCalcBroadcast
+        profile.lastKnownIPv4 = lastKnownPCIPv4
         savePC(profile, token: apiToken, select: false)
         selectedPCID = profile.id; UserDefaults.standard.set(profile.id, forKey: "selectedPCID")
     }
@@ -95,10 +116,13 @@ extension OrbitViewModel {
         securePort = profile.securePort; certificateFingerprint = profile.certificateFingerprint
         pcMAC = profile.macAddress; subnetMask = profile.subnetMask
         wolTargetIP = profile.broadcastAddress; wolPort = profile.wolPort; autoCalcBroadcast = profile.autoCalcBroadcast
+        lastKnownPCIPv4 = profile.lastKnownIPv4 ?? ""
         resetConnection()
+        try? OrbitWidgetConnectionStore.setDefault(id: profile.id)
         Task { await connect() }
     }
     func removePC(_ profile: SavedPC) {
+        try? OrbitWidgetConnectionStore.remove(id: profile.id)
         PCProfileStore.removeToken(profile.id)
         savedPCs.removeAll { $0.id == profile.id }; PCProfileStore.save(savedPCs)
         if selectedPCID == profile.id {
@@ -113,6 +137,7 @@ struct PCProfilesView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var editing: SavedPC?
     @State private var removing: SavedPC?
+    @State private var showsDiscovery = false
     var body: some View {
         List {
             Section {
@@ -139,10 +164,11 @@ struct PCProfilesView: View {
                     }
                     .swipeActions { Button("Remove", role: .destructive) { removing = profile } }
                 }
-                Button("Add a PC", systemImage: "plus") { editing = SavedPC(name: "", address: "") }
+                Button("Find a PC nearby", systemImage: "dot.radiowaves.left.and.right") { showsDiscovery = true }
+                Button("Add manually", systemImage: "plus") { editing = SavedPC(name: "", address: "") }
             }
             Section("Encrypted connection") {
-                Text("Orbit Agent 4.0.0 starts HTTPS on port 8766 and prints a certificate fingerprint. Copy that fingerprint from the PC into its saved profile. Files, clipboard, mixer and history use this verified connection.")
+                Text("Orbit Agent 4.1.0 appears automatically on your local network. Select it and enter the temporary code shown on your PC. Addresses, access tokens, the certificate and Wake-on-LAN details are filled in automatically.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("The existing pairing token is still required. Compare the fingerprint with the PC; a different certificate is rejected before sending your token or files.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -150,6 +176,7 @@ struct PCProfilesView: View {
         }
         .navigationTitle("My PCs")
         .sheet(item: $editing) { profile in PCProfileEditor(vm: vm, profile: profile) }
+        .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
         .confirmationDialog("Remove \(removing?.name ?? "this PC")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             if let profile = removing { Button("Remove saved PC", role: .destructive) { vm.removePC(profile); removing = nil } }
         } message: { Text("This removes its saved connection from this phone. It does not change files on the PC.") }

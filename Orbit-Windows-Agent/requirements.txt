@@ -6,3 +6,5 @@ pillow>=10.4,<13
 pycaw>=20251023; sys_platform == 'win32'
 comtypes>=1.4,<2; sys_platform == 'win32'
 cryptography>=43,<50
+srptools>=1.0.1,<2
+zeroconf>=0.140,<1

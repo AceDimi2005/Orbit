@@ -58,7 +58,7 @@ private struct Result: Decodable { var ok: Bool }
         let source = URL(fileURLWithPath: args[5])
         let expected = try Data(contentsOf: source)
         let status: Status = try await client.get("/api/status")
-        precondition(status.agentVersion == "4.0.0")
+        precondition(status.agentVersion == args[6])
         let page: FilePage = try await client.get(path: "/api/files/list", query: ["path": directory])
         precondition(page.total == 0)
         let uploaded = try await client.upload(path: "/api/files/upload", query: ["directory": directory, "name": "roundtrip.bin"], file: source, progress: { value in precondition(value >= 0 && value <= 1) })
@@ -116,7 +116,7 @@ def main():
                     break
                 time.sleep(.025)
             assert server.started, "Local TLS server did not start"
-            subprocess.run([str(binary), str(port), TOKEN, fingerprint, str(files), str(source)], check=True, timeout=30)
+            subprocess.run([str(binary), str(port), TOKEN, fingerprint, str(files), str(source), agent.AGENT_VERSION], check=True, timeout=30)
             assert requests_seen.count("/api/status") == 1, requests_seen
             assert requests_seen.count("/api/transport-test-redirect") == 1
             assert "token-must-never-reach-this-host" not in " ".join(requests_seen)

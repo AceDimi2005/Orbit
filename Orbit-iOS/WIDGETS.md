@@ -1,12 +1,12 @@
 # Widgeturi și Dynamic Island
 
-Orbit **4.0.0** include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Nu folosește App Groups, notificări push sau entitlements care cer un abonament Apple Developer plătit. Setările sunt acum în **Tools → Settings**; sursele de monitorizare sunt și în **Tools → Monitoring sources**.
+Orbit include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Widgeturile folosesc un **App Group** comun și Keychain pentru asociere automată, fără notificări push. În tabelul Apple actual, App Groups și Keychain Sharing sunt disponibile și coloanei gratuite **Apple Developer**. Setările se găsesc în **Tools → Settings**; aspectul, widgeturile și Live Activity au pagini dedicate și în **Tools**.
 
 ## Testare gratuită
 
 1. Deschide `Orbit.xcodeproj` în Xcode.
 2. În **Signing & Capabilities**, alege același **Personal Team** pentru țintele **Orbit** și **OrbitWidgets**. Păstrează **Automatically manage signing** activ.
-3. Dacă identificatorii existenți nu sunt disponibili pentru contul tău, schimbă-i în ambele ținte: de exemplu `com.nume.orbit` și `com.nume.orbit.widgets`. Identificatorul extensiei trebuie să înceapă cu identificatorul aplicației.
+3. Dacă identificatorii existenți nu sunt disponibili pentru contul tău, schimbă-i în ambele ținte: de exemplu `com.nume.orbit` și `com.nume.orbit.widgets`. Identificatorul extensiei trebuie să înceapă cu identificatorul aplicației. Activează același App Group în ambele ținte și setează `ORBIT_APP_GROUP_IDENTIFIER` la identificatorul înregistrat (de exemplu `group.com.nume.orbit`). Xcode trebuie să includă grupul în profilurile ambelor ținte. Nu este suficientă schimbarea textului din entitlements fără înregistrarea grupului.
 4. Rulează aplicația pe simulator sau pe iPhone. Pentru telefonul personal, activează Developer Mode dacă iOS îl solicită și acordă acces la rețeaua locală.
 5. Pentru widget: ține apăsat pe Home Screen, alege **Edit → Add Widget → Orbit**, apoi alege un stil și o dimensiune. Widgeturile de monitorizare trebuie asociate cu PC-ul folosind pașii de mai jos. Există și variante pentru Lock Screen.
 6. Pentru Live Activity: conectează PC-ul și pornește funcția din Orbit. Alege profilul **Overview**, **Gaming** sau **Power** din setările Live Activity. Verifică Lock Screen; Dynamic Island apare numai pe modelele de iPhone care au acest hardware. Extinde insula prin apăsare lungă. Permisiunea pentru Live Activities trebuie activată în setările iOS ale aplicației.
@@ -21,39 +21,51 @@ Personal Team are limite de instalare și semnare; aplicația trebuie de regulă
 | **Gaming snapshot** | FPS măsurat, VRAM utilizată, încărcare și temperatură GPU | Mic, mediu |
 | **CPU & GPU power** | Putere CPU package și GPU în wați | Mic, mediu |
 | **CPU & GPU temperatures** | Temperaturile CPU și GPU | Mic, mediu |
+| **PC cooling** | Ventilatoare CPU/GPU și lichid de răcire | Mic, mediu |
+| **Storage activity** | Transfer citire/scriere al discurilor | Mic, mediu |
+| **Network activity** | Transfer download/upload | Mic, mediu |
 | **Choose a PC metric** | Un indicator ales: CPU, GPU, RAM, VRAM în procente sau GB, putere CPU/GPU, temperatură CPU/GPU ori FPS | Mic, mediu, Lock Screen circular sau dreptunghiular |
 
 Poți adăuga mai multe instanțe, fiecare cu altă metrică sau alt PC. Există în continuare widgeturi cu scurtături către aplicație și controale. **Wake PC** deschide controalele și nu trimite automat o comandă.
 
 Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lipsă apar cu „—”. FPS apare când RTSS raportează cadre recente pentru joc. Agentul detectează automat RTSS pe PC, fără CSV. PresentMon rămâne alternativă; sursa sa poate fi **application FPS** (`MsBetweenPresents`) sau **CPU frame FPS** (`FrameTime` v2). Citirile nu garantează FPS-ul ecranului, al cadrelor generate sau al streamingului.
 
-## Asocierea widgeturilor de monitorizare
+## Asociere automată a widgeturilor
 
-1. Instalează și pornește agentul Windows actualizat. Conectează PC-ul în Orbit și acordă accesul la rețeaua locală pe iPhone.
-2. În aplicație, deschide **Tools → Settings → Widgets → Prepare widget access**. Apasă **Copy read-only widget token**.
-3. Adaugă unul dintre widgeturile de monitorizare pe Home Screen. Ține apăsat widgetul și alege **Edit Widget**.
-4. Completează **PC address** cu IP-ul sau hostname-ul PC-ului, fără port; **Agent port** este implicit `8765`. Lipește tokenul în **Read-only widget token**. Pentru **Choose a PC metric**, selectează și **Metric**.
-5. Păstrează PC-ul pornit și accesibil în aceeași rețea sau prin conexiunea ta VPN privată. Prima citire depinde de programarea iOS. Dacă apare o eroare de token, verifică dacă ai copiat tokenul pentru widgeturi, apoi repetă asocierea.
+1. Asociază PC-ul în aplicația Orbit. Aplicația pregătește automat accesul de monitorizare pentru widgeturi.
+2. Adaugă widgetul pe Home Screen. PC-ul asociat este disponibil în lista **PC**; nu introduci IP, port sau token.
+3. Prin **Edit Widget**, alege alt PC asociat, o metrică și una dintre cele cinci teme: Ocean, Aurora, Violet, Ember sau Graphite. Opțiunea **Use one accent colour** înlocuiește culorile separate ale metricilor cu accentul ales.
+4. Dacă accesul necesită refacere, deschide **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
 
-Widgetul comunică direct cu agentul. Nu citește Keychain-ul aplicației și nu are nevoie de App Groups. Configurarea este separată pentru fiecare instanță, inclusiv pe Lock Screen; dacă se schimbă IP-ul PC-ului, actualizează **Edit Widget**. Configurația dashboardului din aplicație nu schimbă automat layoutul widgeturilor.
+Widgeturile se conectează prin **HTTPS**, pe portul securizat al profilului, și verifică exact certificatul PC-ului deja asociat. Redirecturile nu sunt urmate. În Keychain-ul grupului comun este păstrat exclusiv tokenul **read-only** pentru `GET /api/widget/status`; tokenul principal de control rămâne în Keychain-ul privat al aplicației. Numele, adresa și amprenta certificatului sunt partajate separat pentru configurare. Datele de acces nu apar în câmpurile Edit Widget.
 
-**Conexiunea widgetului este separată de profilurile My PCs.** Aplicația 4.0.0 poate folosi certificatul PC-ului pentru HTTPS pe **8766**, dar aceste widgeturi continuă să citească HTTP pe portul compatibil **8765**, cu tokenul lor numai pentru citire. Nu completa portul 8766 în widgetul actual: acesta nu are configurare de certificat. Păstrează accesul pe 8765 în rețeaua privată dacă folosești widgeturile; acest transport nu este criptat. Selectarea altui PC în aplicație nu schimbă automat PC-ul fiecărui widget.
+Widgeturile nu pot trimite comenzi, accesa fișiere sau închide procese. Un widget configurat explicit pentru un PC rămâne la acel PC când schimbi computerul activ în aplicație. Dacă nu are o selecție explicită, folosește PC-ul implicit partajat de aplicație. Configurația dashboardului nu înlocuiește layoutul ales pentru widget.
 
-Nu introduce tokenul principal de control al PC-ului într-un widget. Agentul păstrează un secret separat în `.orbit-widget-token`: acesta autorizează numai `GET /api/widget/status`, un rezumat de monitorizare. Obținerea lui prin `POST /api/widget/pairing` cere tokenul principal al aplicației. Tokenul de widget nu poate trimite comenzi, închide procese sau accesa inventarul complet. Pentru revocare, oprește agentul, șterge `.orbit-widget-token`, repornește și asociază din nou widgeturile.
-
-Noile funcții **Files**, **Clipboard**, **Audio mixer** și **Sessions & graphs** cer conexiunea criptată din **Tools → My PCs**, cu tokenul principal și amprenta SHA-256 copiată din fereastra PC-ului. Nu sunt accesibile din tokenul de widget. Istoricul sesiunilor este salvat de agent pe PC și continuă independent de actualizările widgeturilor sau de suspendarea aplicației iOS.
+Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcode; aplicația nu pretinde că accesul a fost partajat dacă salvarea în Keychain eșuează. După o instalare nouă, deblochează telefonul cel puțin o dată pentru accesul la aceste date. Conexiunile locale ale widgeturilor pot depinde și de permisiunea **Local Network** acordată aplicației.
 
 ## Actualizare și expirare
 
 **Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Solicită o nouă citire după **15 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. După **15 minute** de la măsurătoare, valorile sunt marcate ca expirate și ascunse. PC-ul oprit, agentul indisponibil sau lipsa accesului la rețea produc un mesaj de indisponibilitate. Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
 
-**Live Activity** este o funcție separată. Profilul **Overview** pune în față CPU/GPU/RAM, **Gaming** prioritizează FPS/VRAM/GPU, iar **Power** pune în față wații CPU/GPU. Aplicația o actualizează cel mult o dată la cinci secunde, cât timp poate rula și primi date. Ora ultimei actualizări rămâne vizibilă.
+**Live Activity** este separată de widgeturi. În **Tools → Live Activity** poți porni sau opri sesiunea și alege:
 
-iOS poate suspenda aplicația în fundal. După **15 secunde** fără actualizare, Live Activity arată **Open to refresh** și ascunde valorile expirate. La o deconectare cunoscută arată **Offline**. Nu există monitorizare continuă garantată în fundal; o arhitectură suplimentară, de exemplu server și APNs, ar trebui evaluată separat.
+- Profilul **Overview**, **Gaming** sau **Power**.
+- Stilul Lock Screen **Standard**, **Minimal** sau **Detailed**.
+- Citirea compactă a insulei: automată, CPU, GPU, RAM, FPS, putere CPU/GPU sau VRAM.
+- Accentul, afișarea numelui jocului și a orei ultimei actualizări.
+- Intervalul de actualizare în foreground: **5, 10 sau 15 secunde**.
+
+Insula extinsă și stilul Detailed oferă un buton real **Stop**, fără deschiderea aplicației. La trecerea în fundal, activitatea poate afișa starea de pauză. Ca protecție suplimentară, după trei intervale fără o actualizare, valorile sunt ascunse și apare **Open to refresh**. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
+
+iOS poate suspenda aplicația; alegerea unui interval mai scurt nu acordă rulare continuă în fundal. Nu există promisiunea unor actualizări în timp real cu aplicația suspendată. Dynamic Island apare doar pe modele compatibile, iar iOS controlează prezentarea ei.
+
+## Aspectul aplicației
+
+**Tools → Appearance** oferă **Improved** (suprafețe mai clare și contrast mai puternic) și **Classic** (cardurile translucide), cinci teme, o singură culoare pentru metrici și reducerea luminii de fundal. Aplicația respectă textul mărit și Reduce Transparency; modul de text accesibil folosește o coloană pe dashboard.
 
 ## Dacă lipsesc temperaturile sau FPS
 
-Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.0.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
+Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.1.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
 
 Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Tools → Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
 
@@ -77,7 +89,9 @@ Pentru WoL broadcast fiabil pe dispozitiv fizic trebuie evaluată aprobarea Appl
 - [Displaying live data with Live Activities](https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities) — extensia WidgetKit, pornirea locală în foreground, actualizarea și încetarea prin ActivityKit; push este o opțiune separată.
 - [Keeping a widget up to date](https://developer.apple.com/documentation/widgetkit/keeping-a-widget-up-to-date) — WidgetKit folosește timeline-uri și bugete de actualizare administrate de iOS.
 - [Developer account overview](https://developer.apple.com/help/account/basics/about-your-developer-account) — limitele Personal Team și profilurile valabile șapte zile.
-- [Supported capabilities (iOS)](https://developer.apple.com/help/account/reference/supported-capabilities-ios) — disponibilitatea serviciilor după tipul contului.
+- [Supported capabilities (iOS)](https://developer.apple.com/help/account/reference/supported-capabilities-ios) — tabelul actual confirmă App Groups și Keychain Sharing pentru Apple Developer, inclusiv fără abonament plătit.
+- [Configuring app groups](https://developer.apple.com/documentation/xcode/configuring-app-groups) — același grup pentru aplicație și extensie; grupul poate fi folosit și drept Keychain access group.
+- [Sharing access to keychain items among a collection of apps](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps) — partajarea selectivă a credențialelor între ținte.
 - [TN3179: Understanding local network privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy) — UDP unicast nu cere entitlement multicast; UDP broadcast îl cere pe iOS.
 - [TN3151: Choosing the right networking API](https://developer.apple.com/documentation/technotes/tn3151-choosing-the-right-networking-api) — cerința se aplică indiferent de API, inclusiv BSD sockets.
 

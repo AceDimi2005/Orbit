@@ -27,6 +27,12 @@
 		A2000000000000000000000D /* DesktopToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* DesktopToolsView.swift */; };
 		A2000000000000000000000E /* SessionHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* SessionHistoryView.swift */; };
 		A2000000000000000000000F /* CompanionToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* CompanionToolsView.swift */; };
+		A20000000000000000000010 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
+		A20000000000000000000011 /* PCDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* PCDiscoveryView.swift */; };
+		A20000000000000000000012 /* Appearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* Appearance.swift */; };
+		A20000000000000000000013 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
+		A20000000000000000000014 = {isa = PBXBuildFile; fileRef = B20000000000000000000013; };
+		A20000000000000000000030 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000001 /* SRP */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +66,10 @@
 		B2000000000000000000000D /* DesktopToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopToolsView.swift; sourceTree = "<group>"; };
 		B2000000000000000000000E /* SessionHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryView.swift; sourceTree = "<group>"; };
 		B2000000000000000000000F /* CompanionToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionToolsView.swift; sourceTree = "<group>"; };
+		B20000000000000000000010 /* OrbitPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPairing.swift; sourceTree = "<group>"; };
+		B20000000000000000000011 /* PCDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCDiscoveryView.swift; sourceTree = "<group>"; };
+		B20000000000000000000012 /* Appearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Appearance.swift; sourceTree = "<group>"; };
+		B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWidgetConnectionStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +77,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000030 /* SRP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,6 +98,9 @@
 		C10000000000000000000002 /* Orbit */ = {
 			isa = PBXGroup;
 			children = (
+				B20000000000000000000010 /* OrbitPairing.swift */,
+				B20000000000000000000011 /* PCDiscoveryView.swift */,
+				B20000000000000000000012 /* Appearance.swift */,
 				B10000000000000000000002 /* OrbitApp.swift */,
 				B20000000000000000000006 /* VolumeCommandQueue.swift */,
 				B20000000000000000000008 /* DashboardConfiguration.swift */,
@@ -117,7 +131,7 @@
 			sourceTree = "<group>";
 		};
 		C20000000000000000000001 /* OrbitWidgets */ = {isa = PBXGroup; children = (B20000000000000000000003 /* OrbitWidgets.swift */, B20000000000000000000007 /* OrbitTelemetryWidgets.swift */, B20000000000000000000005 /* Info.plist */, ); path = OrbitWidgets; sourceTree = "<group>"; };
-		C20000000000000000000002 /* Shared */ = {isa = PBXGroup; children = (B20000000000000000000002 /* OrbitActivityAttributes.swift */, ); path = Shared; sourceTree = "<group>"; };
+		C20000000000000000000002 /* Shared */ = {isa = PBXGroup; children = (B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */, B20000000000000000000002 /* OrbitActivityAttributes.swift */, ); path = Shared; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -135,6 +149,7 @@
 			dependencies = (
 				D20000000000000000000006 /* PBXTargetDependency */,
 			);
+			packageProductDependencies = (F20000000000000000000001 /* SRP */, );
 			name = Orbit;
 			productName = Orbit;
 			productReference = B10000000000000000000001 /* Orbit.app */;
@@ -171,6 +186,7 @@
 			);
 			mainGroup = C10000000000000000000001;
 			productRefGroup = C10000000000000000000003 /* Products */;
+			packageReferences = (F10000000000000000000001, );
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -197,6 +213,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000010 /* OrbitPairing.swift in Sources */,
+				A20000000000000000000011 /* PCDiscoveryView.swift in Sources */,
+				A20000000000000000000012 /* Appearance.swift in Sources */,
+				A20000000000000000000013 /* OrbitWidgetConnectionStore.swift in Sources */,
 				A10000000000000000000001 /* OrbitApp.swift in Sources */,
 				A20000000000000000000006 /* VolumeCommandQueue.swift in Sources */,
 				A20000000000000000000008 /* DashboardConfiguration.swift in Sources */,
@@ -215,12 +235,19 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D20000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000003 /* OrbitActivityAttributes.swift in Sources */, A20000000000000000000004 /* OrbitWidgets.swift in Sources */, A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		D20000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000014 /* OrbitWidgetConnectionStore.swift in Sources */, A20000000000000000000003 /* OrbitActivityAttributes.swift in Sources */, A20000000000000000000004 /* OrbitWidgets.swift in Sources */, A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		D20000000000000000000006 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = D20000000000000000000001 /* OrbitWidgets */; targetProxy = D20000000000000000000007; };
 /* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F10000000000000000000001 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/adam-fowler/swift-srp.git"; requirement = {kind = revision; revision = 1345dfeff4d1bc54fc36257325371df3d1d7a813; }; };
+/* End XCRemoteSwiftPackageReference section */
+/* Begin XCSwiftPackageProductDependency section */
+		F20000000000000000000001 /* SRP */ = {isa = XCSwiftPackageProductDependency; package = F10000000000000000000001; productName = SRP; };
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E10000000000000000000004 /* Debug */ = {
@@ -277,6 +304,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Orbit/Orbit.entitlements;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -303,6 +332,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Orbit/Orbit.entitlements;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -328,6 +359,8 @@
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWidgets/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = OrbitWidgets/OrbitWidgets.entitlements;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
 				INFOPLIST_KEY_CFBundleDisplayName = "Orbit Widgets";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );
@@ -352,6 +385,8 @@
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWidgets/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = OrbitWidgets/OrbitWidgets.entitlements;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
 				INFOPLIST_KEY_CFBundleDisplayName = "Orbit Widgets";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );

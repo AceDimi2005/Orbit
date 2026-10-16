@@ -10,6 +10,7 @@ final class OrbitAPIClient: @unchecked Sendable {
     private let fingerprint: String
     private let session: URLSession
     private let authentication: OrbitPinnedDelegate
+    private let pairingOnly: Bool
 
     static func normalizedFingerprint(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
@@ -19,14 +20,15 @@ final class OrbitAPIClient: @unchecked Sendable {
         return normalized.count == 64 && normalized.allSatisfy { $0.isASCII && $0.isHexDigit }
     }
 
-    init(host: String, port: Int, token: String, fingerprint: String) throws {
-        guard !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port), !token.isEmpty else {
+    init(host: String, port: Int, token: String, fingerprint: String, pairingOnly: Bool = false) throws {
+        guard !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port), (!token.isEmpty || pairingOnly) else {
             throw OrbitError(message: "Enter the PC address, secure port and pairing token in My PCs.")
         }
         guard Self.validFingerprint(fingerprint) else {
             throw OrbitError(message: "Set up the encrypted connection in My PCs. Copy the certificate fingerprint printed by Orbit Agent 4.0.0 on your PC.")
         }
         self.host = host; self.port = port; self.token = token
+        self.pairingOnly = pairingOnly
         self.fingerprint = Self.normalizedFingerprint(fingerprint)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -41,13 +43,14 @@ final class OrbitAPIClient: @unchecked Sendable {
 
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
         guard path.hasPrefix("/api/") || path == "/ws/stream" else { throw OrbitError(message: "Invalid PC request.") }
+        guard !pairingOnly || path.hasPrefix("/api/pair/") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
         var components = URLComponents()
         components.scheme = path == "/ws/stream" ? "wss" : "https"
         components.host = host; components.port = port; components.path = path
         components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw OrbitError(message: "Invalid PC address.") }
         var request = URLRequest(url: url); request.httpMethod = method
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         return request
     }

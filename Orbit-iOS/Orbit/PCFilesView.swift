@@ -34,10 +34,16 @@ private struct PCFileEntry: Decodable, Identifiable {
         if type?.conforms(to: .pdf) == true { return "doc.richtext" }
         return "doc"
     }
+    private static let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let regularDateFormatter = ISO8601DateFormatter()
     var detail: String {
-        var values: [String] = []
+        var values: [String] = isDirectory ? ["Folder"] : []
         if let sizeBytes { values.append(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)) }
-        if let modifiedAt, let date = ISO8601DateFormatter().date(from: modifiedAt) {
+        if let modifiedAt, let date = Self.fractionalDateFormatter.date(from: modifiedAt) ?? Self.regularDateFormatter.date(from: modifiedAt) {
             values.append(date.formatted(date: .abbreviated, time: .shortened))
         }
         return values.joined(separator: " · ")
@@ -52,6 +58,23 @@ private struct PCFilePage: Decodable {
     let offset: Int
     let limit: Int
     let truncated: Bool?
+}
+
+private struct PCFileArchiveJob: Decodable {
+    let id: String
+    let name: String
+    let status: String
+    let progress: Double
+    let totalBytes: Int64
+    let totalEntries: Int
+    let archiveBytes: Int64?
+    let error: String?
+}
+
+private struct PCFileNavigationLocation {
+    let path: String?
+    let search: String
+    let sort: PCFileSort
 }
 
 private struct PCFileResult: Decodable { let ok: Bool; let path: String? }
@@ -70,6 +93,8 @@ struct PCFilesView: View {
     @State private var roots: PCFileRoots?
     @State private var currentPath: String?
     @State private var parentPath: String?
+    @State private var backHistory: [PCFileNavigationLocation] = []
+    @State private var forwardHistory: [PCFileNavigationLocation] = []
     @State private var entries: [PCFileEntry] = []
     @State private var favorites: [PCFileFavorite] = []
     @State private var search = ""
@@ -94,6 +119,8 @@ struct PCFilesView: View {
     @State private var transferID = UUID()
     @State private var transferTitle: String?
     @State private var transferProgress: Double = 0
+    @State private var transferIndeterminate = false
+    @State private var transferPhase = "encrypted transfer"
     @State private var temporaryFiles: [URL] = []
     @State private var transferTotalBytes: Int64 = 0
     @State private var transferSpeed: Double = 0
@@ -116,6 +143,7 @@ struct PCFilesView: View {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
             }
             if let notice { Section { Text(notice).font(.caption).foregroundStyle(.secondary) } }
+            Section { navigationControls }
             if transferTitle != nil { transferSection }
             if let currentPath { folderSection(currentPath) } else { locationsSection }
         }
@@ -148,6 +176,28 @@ struct PCFilesView: View {
             Button("Recycle \(actionEntries.count) item\(actionEntries.count == 1 ? "" : "s")", role: .destructive) { recycleSelection() }
             Button("Cancel", role: .cancel) { actionEntries = [] }
         } message: { Text("The selected items will be moved to the Windows Recycle Bin. Orbit never permanently deletes them.") }
+    }
+
+    private var navigationControls: some View {
+        HStack(spacing: 12) {
+            Button { goBack() } label: { Label("Back", systemImage: "arrow.left") }
+                .disabled(backHistory.isEmpty || !enabled || transferTitle != nil)
+                .accessibilityHint("Return to the previous location you visited")
+            Button { goForward() } label: { Image(systemName: "arrow.right") }
+                .disabled(forwardHistory.isEmpty || !enabled || transferTitle != nil)
+                .accessibilityLabel("Forward")
+            Divider().frame(height: 20)
+            Button { if let parentPath { open(parentPath) } } label: { Image(systemName: "arrow.up") }
+                .disabled(parentPath == nil || !enabled || transferTitle != nil)
+                .accessibilityLabel("Parent folder")
+            Spacer(minLength: 0)
+            Button { open(nil) } label: { Image(systemName: "house") }
+                .disabled(currentPath == nil || !enabled || transferTitle != nil)
+                .accessibilityLabel("All locations")
+        }
+        .font(.subheadline)
+        .buttonStyle(.borderless)
+        .frame(minHeight: 30)
     }
 
     @ViewBuilder private var locationsSection: some View {
@@ -184,13 +234,16 @@ struct PCFilesView: View {
     @ViewBuilder private func folderSection(_ path: String) -> some View {
         Section {
             HStack {
-                Button { open(nil) } label: { Image(systemName: "house") }.accessibilityLabel("All locations")
-                if let parentPath { Button { open(parentPath) } label: { Image(systemName: "arrow.up") }.accessibilityLabel("Parent folder") }
                 Text(path).font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
                 Spacer(minLength: 0)
                 Button { toggleFavorite(path) } label: { Image(systemName: favorites.contains { $0.path == path } ? "star.fill" : "star") }
                     .accessibilityLabel("Favorite folder")
             }.buttonStyle(.borderless)
+            if !selecting {
+                Button { download([folderEntry(path)], preview: false) } label: {
+                    Label("Download this folder as ZIP", systemImage: "arrow.down.doc")
+                }.font(.subheadline).disabled(!enabled || transferTitle != nil)
+            }
             if selecting {
                 HStack {
                     Text("\(selected.count) selected").font(.caption)
@@ -215,33 +268,48 @@ struct PCFilesView: View {
     }
 
     private func fileRow(_ entry: PCFileEntry) -> some View {
-        Button {
-            if selecting {
-                if selected.contains(entry.path) { selected.remove(entry.path) } else { selected.insert(entry.path) }
-            } else if entry.isDirectory { open(entry.path) } else { download([entry], preview: entry.canPreview) }
-        } label: {
-            HStack(spacing: 12) {
-                if selecting { Image(systemName: selected.contains(entry.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(.cyan) }
-                Image(systemName: entry.symbol).font(.title3).foregroundStyle(entry.isDirectory ? .cyan : .secondary).frame(width: 28)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(entry.name).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
-                    if !entry.detail.isEmpty { Text(entry.detail).font(.caption2).foregroundStyle(.secondary) }
+        HStack(spacing: 8) {
+            Button {
+                if selecting {
+                    if selected.contains(entry.path) { selected.remove(entry.path) } else { selected.insert(entry.path) }
+                } else if entry.isDirectory { open(entry.path) } else { download([entry], preview: entry.canPreview) }
+            } label: {
+                HStack(spacing: 12) {
+                    if selecting { Image(systemName: selected.contains(entry.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(.cyan) }
+                    Image(systemName: entry.symbol).font(.title3).foregroundStyle(entry.isDirectory ? .cyan : .secondary).frame(width: 28)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.name).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
+                        if !entry.detail.isEmpty { Text(entry.detail).font(.caption2).foregroundStyle(.secondary) }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: entry.isDirectory ? "chevron.right" : entry.canPreview ? "eye" : "arrow.down.circle")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            if !selecting {
+                Menu { fileActions(entry) } label: {
+                    Image(systemName: "ellipsis.circle").font(.title3).frame(minWidth: 32, minHeight: 36)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: entry.isDirectory ? "chevron.right" : entry.canPreview ? "eye" : "arrow.down.circle").font(.caption).foregroundStyle(.tertiary)
-            }.padding(.vertical, 3)
-        }
-        .disabled(!enabled || transferTitle != nil)
-        .contextMenu {
-            if !entry.isDirectory {
-                if entry.canPreview { Button("Preview", systemImage: "eye") { download([entry], preview: true) } }
-                Button("Download / Save to Files", systemImage: "square.and.arrow.down") { download([entry], preview: false) }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Actions for \(entry.name)")
             }
-            if entry.isDirectory { Button("Favorite", systemImage: "star") { toggleFavorite(entry.path) } }
-            Button("Rename", systemImage: "pencil") { actionEntries = [entry]; promptValue = entry.name; prompt = .rename }
-            Button("Move", systemImage: "folder") { actionEntries = [entry]; promptValue = ""; prompt = .move }
-            Button("Recycle", systemImage: "trash", role: .destructive) { actionEntries = [entry]; confirmTrash = true }
         }
+        .padding(.vertical, 3)
+        .disabled(!enabled || transferTitle != nil)
+        .contextMenu { fileActions(entry) }
+    }
+
+    @ViewBuilder private func fileActions(_ entry: PCFileEntry) -> some View {
+        if entry.isDirectory {
+            Button("Download folder as ZIP", systemImage: "arrow.down.doc") { download([entry], preview: false) }
+            Button("Favorite", systemImage: "star") { toggleFavorite(entry.path) }
+        } else {
+            if entry.canPreview { Button("Preview", systemImage: "eye") { download([entry], preview: true) } }
+            Button("Download / Save to Files", systemImage: "square.and.arrow.down") { download([entry], preview: false) }
+        }
+        Button("Rename", systemImage: "pencil") { actionEntries = [entry]; promptValue = entry.name; prompt = .rename }
+        Button("Move", systemImage: "folder") { actionEntries = [entry]; promptValue = ""; prompt = .move }
+        Button("Recycle", systemImage: "trash", role: .destructive) { actionEntries = [entry]; confirmTrash = true }
     }
 
     @ToolbarContentBuilder private var fileToolbar: some ToolbarContent {
@@ -252,6 +320,9 @@ struct PCFilesView: View {
             Menu {
                 Picker("Sort by", selection: $sort) { ForEach(PCFileSort.allCases, id: \.self) { Text($0.title).tag($0) } }
                 if currentPath != nil {
+                    Button("Download this folder as ZIP", systemImage: "arrow.down.doc") {
+                        if let currentPath { download([folderEntry(currentPath)], preview: false) }
+                    }
                     Button("New folder", systemImage: "folder.badge.plus") { actionEntries = []; promptValue = ""; prompt = .folder }
                     Button("Upload from Files", systemImage: "square.and.arrow.up") { showImporter = true }
                     PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
@@ -263,8 +334,8 @@ struct PCFilesView: View {
         }
         if selecting && !selected.isEmpty {
             ToolbarItemGroup(placement: .bottomBar) {
-                Button("Download", systemImage: "arrow.down.circle") { download(entries.filter { selected.contains($0.path) && !$0.isDirectory }, preview: false) }
-                    .disabled(!enabled || transferTitle != nil || !entries.contains { selected.contains($0.path) && !$0.isDirectory })
+                Button("Download", systemImage: "arrow.down.circle") { download(entries.filter { selected.contains($0.path) }, preview: false) }
+                    .disabled(!enabled || transferTitle != nil || !entries.contains { selected.contains($0.path) })
                 Spacer()
                 Button("Move", systemImage: "folder") { actionEntries = entries.filter { selected.contains($0.path) }; promptValue = ""; prompt = .move }
                     .disabled(!enabled || transferTitle != nil)
@@ -279,9 +350,9 @@ struct PCFilesView: View {
         Section {
             VStack(alignment: .leading, spacing: 9) {
                 HStack { Text(transferTitle ?? "Transfer").font(.subheadline).lineLimit(2); Spacer(); Button("Cancel", role: .cancel) { cancelTransfer() } }
-                ProgressView(value: transferProgress)
+                if transferIndeterminate { ProgressView() } else { ProgressView(value: transferProgress) }
                 HStack {
-                    Text("\(Int(transferProgress * 100))% · encrypted transfer")
+                    Text(transferIndeterminate ? transferPhase : "\(Int(transferProgress * 100))% · \(transferPhase)")
                     Spacer()
                     if transferSpeed > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(transferSpeed), countStyle: .file))/s") }
                 }.font(.caption).foregroundStyle(.secondary)
@@ -363,12 +434,42 @@ struct PCFilesView: View {
         } catch { if vm.connectionID == generation { self.error = error.localizedDescription } }
     }
 
+    private var navigationLocation: PCFileNavigationLocation {
+        PCFileNavigationLocation(path: currentPath, search: search, sort: sort)
+    }
+
     private func open(_ path: String?) {
-        currentPath = path; parentPath = nil; entries = []; selected = []; selecting = false; search = ""; error = nil; notice = nil
+        guard currentPath != path else { return }
+        backHistory.append(navigationLocation)
+        if backHistory.count > 100 { backHistory.removeFirst() }
+        forwardHistory = []
+        restoreLocation(PCFileNavigationLocation(path: path, search: "", sort: sort))
+    }
+
+    private func goBack() {
+        guard let previous = backHistory.popLast() else { return }
+        forwardHistory.append(navigationLocation)
+        restoreLocation(previous)
+    }
+
+    private func goForward() {
+        guard let next = forwardHistory.popLast() else { return }
+        backHistory.append(navigationLocation)
+        restoreLocation(next)
+    }
+
+    private func restoreLocation(_ location: PCFileNavigationLocation) {
+        currentPath = location.path; search = location.search; sort = location.sort
+        parentPath = nil; entries = []; total = 0; selected = []; selecting = false; error = nil; notice = nil
+    }
+
+    private func folderEntry(_ path: String) -> PCFileEntry {
+        let name = path.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last.map(String.init) ?? "PC files"
+        return PCFileEntry(name: name, path: path, isDirectory: true, sizeBytes: nil, modifiedAt: nil, canPreview: false)
     }
 
     private func resetConnection() {
-        cancelTransfer(); roots = nil; currentPath = nil; parentPath = nil; entries = []; favorites = []; selected = []; selecting = false
+        cancelTransfer(); roots = nil; currentPath = nil; parentPath = nil; backHistory = []; forwardHistory = []; entries = []; favorites = []; selected = []; selecting = false
         actionEntries = []; prompt = nil; confirmTrash = false; previewURL = nil; showShare = false; error = nil; notice = nil; search = ""; loading = false
         loadFavorites()
     }
@@ -387,7 +488,7 @@ struct PCFilesView: View {
     }
 
     private func cancelTransfer() {
-        transferTask?.cancel(); transferTask = nil; transferID = UUID(); transferTitle = nil; transferProgress = 0; transferSpeed = 0
+        transferTask?.cancel(); transferTask = nil; transferID = UUID(); transferTitle = nil; transferProgress = 0; transferSpeed = 0; transferIndeterminate = false; transferPhase = "encrypted transfer"
     }
 
     private func cleanTemporaryFiles() {
@@ -398,6 +499,7 @@ struct PCFilesView: View {
 
     private func beginProgress(size: Int64) {
         transferTotalBytes = size; transferSpeed = 0; transferProgress = 0; lastProgressBytes = 0; lastProgressTime = Date()
+        transferIndeterminate = false; transferPhase = "encrypted transfer"
     }
 
     private func progressHandler(_ identifier: UUID, generation: Int) -> @Sendable (Double) -> Void {
@@ -431,9 +533,14 @@ struct PCFilesView: View {
                 for (index, item) in items.enumerated() {
                     try Task.checkCancellation()
                     guard generation == vm.connectionID else { throw CancellationError() }
-                    beginProgress(size: item.sizeBytes ?? 0)
-                    transferTitle = "Downloading \(item.name) · \(index + 1)/\(items.count)"
-                    let url = try await client.download(path: "/api/files/download", query: ["path": item.path], progress: progressHandler(identifier, generation: generation))
+                    let url: URL
+                    if item.isDirectory {
+                        url = try await downloadArchive(item, index: index, count: items.count, client: client, identifier: identifier, generation: generation)
+                    } else {
+                        beginProgress(size: item.sizeBytes ?? 0)
+                        transferTitle = "Downloading \(item.name) · \(index + 1)/\(items.count)"
+                        url = try await client.download(path: "/api/files/download", query: ["path": item.path], progress: progressHandler(identifier, generation: generation))
+                    }
                     downloads.append(url)
                     temporaryFiles.append(url)
                 }
@@ -457,6 +564,51 @@ struct PCFilesView: View {
                 if generation == vm.connectionID && transferID == identifier { self.error = error.localizedDescription }
             }
         }
+    }
+
+    @MainActor private func downloadArchive(_ folder: PCFileEntry, index: Int, count: Int, client: OrbitAPIClient,
+                                           identifier: UUID, generation: Int) async throws -> URL {
+        transferTitle = "Preparing \(folder.name).zip · \(index + 1)/\(count)"
+        transferProgress = 0; transferSpeed = 0; transferIndeterminate = true; transferPhase = "Checking folder contents…"
+        // An unstructured request can finish returning its job ID after a
+        // cancellation, allowing the matching server job to be removed.
+        let preparation = Task { () throws -> PCFileArchiveJob in
+            try await client.send(path: "/api/files/archive", body: PCFilePathRequest(path: folder.path))
+        }
+        var job = try await preparation.value
+        let jobID = job.id
+        guard jobID.count == 32 && jobID.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            throw NSError(domain: "Orbit.Files", code: 3, userInfo: [NSLocalizedDescriptionKey: "The PC returned an invalid folder transfer. Update Orbit Agent and try again."])
+        }
+        defer {
+            let path = "/api/files/archive/\(jobID)"
+            Task { _ = try? await client.data(path, method: "DELETE") }
+        }
+        let deadline = Date().addingTimeInterval(150)
+        while true {
+            try Task.checkCancellation()
+            guard generation == vm.connectionID && identifier == transferID else { throw CancellationError() }
+            guard job.id == jobID else {
+                throw NSError(domain: "Orbit.Files", code: 3, userInfo: [NSLocalizedDescriptionKey: "The folder transfer changed unexpectedly. Start the download again."])
+            }
+            if job.status == "ready" { break }
+            guard Date() < deadline else {
+                throw NSError(domain: "Orbit.Files", code: 4, userInfo: [NSLocalizedDescriptionKey: "This folder is taking too long to prepare. Choose a smaller folder and try again."])
+            }
+            if job.status == "failed" || job.status == "cancelling" {
+                throw NSError(domain: "Orbit.Files", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: job.error ?? "Folder download was cancelled. Start it again when ready."])
+            }
+            transferIndeterminate = job.status == "scanning"
+            transferProgress = min(1, max(0, job.progress))
+            transferPhase = transferIndeterminate ? "Checking folder contents…" : "preparing ZIP · \(job.totalEntries) items"
+            try await Task.sleep(for: .milliseconds(400))
+            job = try await client.get(path: "/api/files/archive/\(jobID)")
+        }
+        beginProgress(size: job.archiveBytes ?? 0)
+        transferTitle = "Downloading \(job.name) · \(index + 1)/\(count)"
+        return try await client.download(path: "/api/files/archive/\(jobID)/download", query: [:],
+                                         progress: progressHandler(identifier, generation: generation))
     }
 
     private func uploadFiles(_ urls: [URL], securityScoped: Bool) {

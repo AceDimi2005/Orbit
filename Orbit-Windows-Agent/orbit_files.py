@@ -12,11 +12,15 @@ import ntpath
 import os
 from pathlib import Path
 import re
+import shutil
+import threading
+import time
+import zipfile
 import stat
 import tempfile
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path as PathParameter, Query, Request
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -24,6 +28,14 @@ MAX_PREVIEW_BYTES = 64 * 1024 ** 2
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_DOWNLOAD_BYTES = 16 * 1024 ** 3
 MAX_DIRECTORY_ENTRIES = 100_000
+MAX_ARCHIVE_SOURCE_BYTES = 2 * 1024 ** 3
+MAX_ARCHIVE_BYTES = 2 * 1024 ** 3
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_ARCHIVE_DEPTH = 32
+MAX_ARCHIVE_SECONDS = 120
+MAX_ARCHIVE_JOBS = 2
+ARCHIVE_TTL_SECONDS = 10 * 60
+ARCHIVE_SWEEP_SECONDS = 30
 CHUNK_BYTES = 256 * 1024
 AGENT_DIRECTORY = Path(__file__).absolute().parent
 SECRET_NAMES = frozenset({".orbit-token", ".orbit-widget-token", "server-key.pem", "server-cert.pem", ".orbit-tls-key.pem", ".env"})
@@ -413,6 +425,376 @@ async def receive_upload(request, directory, name):
                 pass
 
 
+class _ArchiveCancelled(Exception):
+    pass
+
+
+def _archive_directory():
+    from orbit_tls import data_directory
+    return data_directory() / "folder-transfers"
+
+
+class _ArchiveJob:
+    def __init__(self, path):
+        self.id = uuid.uuid4().hex
+        self.source = path
+        self.name = (path.name or "PC files") + ".zip"
+        self.status = "scanning"
+        self.progress = 0.0
+        self.total_bytes = 0
+        self.total_entries = 0
+        self.archive_bytes = None
+        self.error = None
+        self.created = time.monotonic()
+        self.cancelled = threading.Event()
+        self.worker_finished = False
+        self.readers = 0
+        self.directory = None
+        self.archive = None
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise _ArchiveCancelled()
+        if time.monotonic() - self.created > MAX_ARCHIVE_SECONDS:
+            _fail(408, "Preparing this folder took more than two minutes. Choose a smaller folder.")
+
+    def snapshot(self):
+        return {"id": self.id, "name": self.name, "status": self.status,
+                "progress": round(self.progress, 4), "totalBytes": self.total_bytes,
+                "totalEntries": self.total_entries, "archiveBytes": self.archive_bytes,
+                "error": self.error}
+
+
+class _BoundedArchiveFile:
+    def __init__(self, stream, job):
+        self.stream, self.job = stream, job
+
+    def write(self, data):
+        self.job.check()
+        if self.stream.tell() + len(data) > MAX_ARCHIVE_BYTES:
+            _fail(413, "The ZIP archive exceeds the 2 GB limit. Choose a smaller folder.")
+        return self.stream.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def _archive_identity(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def _archive_scan(job):
+    """Reject the complete operation if any entry cannot be safely included."""
+    entries = []
+    total = 0
+    seen_names = set()
+    root_name = job.source.name or "PC files"
+
+    def visit(path, relative, depth):
+        nonlocal total
+        job.check()
+        if depth > MAX_ARCHIVE_DEPTH:
+            _fail(413, "This folder exceeds the 32-level archive depth limit. Choose a subfolder.")
+        candidate = _exists(checked_path(str(path)))
+        info = candidate.stat()
+        folder = stat.S_ISDIR(info.st_mode)
+        archive_name = "/".join((root_name, *relative)) + ("/" if folder else "")
+        # Windows extraction must not collapse two different archive entries.
+        key = archive_name.rstrip("/").casefold()
+        if key in seen_names:
+            _fail(409, "This folder contains names that conflict on Windows. Rename the conflicting items first.")
+        seen_names.add(key)
+        entries.append((candidate, archive_name, info, folder))
+        if len(entries) > MAX_ARCHIVE_ENTRIES:
+            _fail(413, "This folder exceeds 10,000 archive entries. Choose a smaller folder.")
+        if not folder:
+            total += info.st_size
+            if total > MAX_ARCHIVE_SOURCE_BYTES:
+                _fail(413, "This folder contains more than 2 GB of files. Choose a smaller folder.")
+            return
+        with os.scandir(candidate) as iterator:
+            children = []
+            for child in iterator:
+                job.check()
+                children.append(child.name)
+                if len(children) + len(entries) > MAX_ARCHIVE_ENTRIES:
+                    _fail(413, "This folder exceeds 10,000 archive entries. Choose a smaller folder.")
+        for name in sorted(children, key=lambda value: (value.casefold(), value)):
+            visit(candidate / name, (*relative, name), depth + 1)
+
+    visit(job.source, (), 0)
+    return entries, total
+
+
+def _archive_zip_info(name, info, folder):
+    date = dt.datetime.fromtimestamp(info.st_mtime)
+    year = min(2107, max(1980, date.year))
+    # A leap day remains valid when clamping an out-of-range year.
+    day = min(date.day, 28) if date.month == 2 and date.day == 29 and year % 4 else date.day
+    value = zipfile.ZipInfo(name, (year, date.month, day, date.hour, date.minute, date.second))
+    value.compress_type = zipfile.ZIP_STORED if folder else zipfile.ZIP_DEFLATED
+    value._compresslevel = 1
+    value.file_size = 0 if folder else info.st_size
+    value.external_attr = ((stat.S_IFDIR | 0o755) << 16 | 0x10) if folder else ((stat.S_IFREG | 0o644) << 16)
+    return value
+
+
+class _ArchiveReader:
+    def __init__(self, stream, manager, job):
+        self.stream, self.manager, self.job = stream, manager, job
+        self.closed = False
+
+    def read(self, size):
+        if self.job.cancelled.is_set():
+            raise _ArchiveCancelled()
+        return self.stream.read(size)
+
+    def seek(self, offset):
+        return self.stream.seek(offset)
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            try:
+                self.stream.close()
+            finally:
+                self.manager.release(self.job)
+
+
+class ArchiveManager:
+    """At most two bounded local ZIPs; no paths or credentials in job metadata."""
+    def __init__(self):
+        self.jobs = {}
+        self.lock = threading.RLock()
+        self.janitor = None
+
+    def _remove_locked(self, job):
+        if not job.worker_finished or job.readers:
+            return False
+        try:
+            if job.directory:
+                shutil.rmtree(job.directory)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # AV or another Windows handle may temporarily delay deletion.
+            # Keep tracking the directory so the janitor retries it.
+            return False
+        self.jobs.pop(job.id, None)
+        return True
+
+    def _sweep_locked(self):
+        now = time.monotonic()
+        for job in list(self.jobs.values()):
+            if now - job.created >= ARCHIVE_TTL_SECONDS:
+                job.cancelled.set()
+                job.status = "cancelling"
+            if job.cancelled.is_set():
+                self._remove_locked(job)
+
+    def _stale_directories(self):
+        directory = _archive_directory()
+        try:
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    if not entry.name.startswith("archive-") or entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                        if getattr(info, "st_file_attributes", 0) & 0x400:
+                            continue
+                        if time.time() - info.st_mtime >= ARCHIVE_TTL_SECONDS:
+                            with self.lock:
+                                active = any(job.directory == Path(entry.path) for job in self.jobs.values())
+                            if not active:
+                                shutil.rmtree(entry.path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    def _cleaner(self):
+        while True:
+            self._stale_directories()
+            time.sleep(ARCHIVE_SWEEP_SECONDS)
+            with self.lock:
+                self._sweep_locked()
+                if not self.jobs:
+                    self.janitor = None
+                    return
+
+    def create(self, value):
+        path = _exists(checked_path(value, directory=True))
+        with self.lock:
+            self._sweep_locked()
+            if len(self.jobs) >= MAX_ARCHIVE_JOBS:
+                _fail(429, "Two folder transfers are already active. Finish or cancel one before starting another.")
+            job = _ArchiveJob(path)
+            self.jobs[job.id] = job
+            if self.janitor is None:
+                self.janitor = threading.Thread(target=self._cleaner, name="Orbit archive cleanup", daemon=True)
+                self.janitor.start()
+            worker = threading.Thread(target=self._build, args=(job,), name="Orbit folder archive", daemon=True)
+            worker.start()
+            return job.snapshot()
+
+    def _build(self, job):
+        try:
+            entries, total = _archive_scan(job)
+            with self.lock:
+                job.check()
+                job.total_entries, job.total_bytes, job.status = len(entries), total, "preparing"
+            directory = _archive_directory()
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Include metadata overhead and leave a small free-space reserve.
+            needed = total + len(entries) * 1024 + 16 * 1024 ** 2
+            if shutil.disk_usage(directory).free < needed:
+                _fail(507, "The PC needs more free space to prepare this folder. Choose a smaller folder or free disk space.")
+            job.directory = Path(tempfile.mkdtemp(prefix="archive-", dir=directory))
+            job.archive = job.directory / "download.zip"
+            processed = 0
+            with job.archive.open("w+b") as destination:
+                bounded = _BoundedArchiveFile(destination, job)
+                with zipfile.ZipFile(bounded, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
+                    for index, (path, name, original, folder) in enumerate(entries):
+                        job.check()
+                        path = _exists(checked_path(str(path), directory=folder))
+                        current = path.stat()
+                        if _archive_identity(current) != _archive_identity(original):
+                            _fail(409, "A file or folder changed while preparing the ZIP. Wait for PC changes to finish and try again.")
+                        info = _archive_zip_info(name, original, folder)
+                        if folder:
+                            archive.writestr(info, b"")
+                        else:
+                            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+                            with os.fdopen(descriptor, "rb") as source:
+                                opened = os.fstat(descriptor)
+                                if not stat.S_ISREG(opened.st_mode) or opened.st_nlink > 1:
+                                    _fail(403, "This folder contains a protected file or link and cannot be archived.")
+                                if _archive_identity(opened) != _archive_identity(original):
+                                    _fail(409, "A file changed while preparing the ZIP. Wait for PC changes to finish and try again.")
+                                remaining = original.st_size
+                                with archive.open(info, "w", force_zip64=original.st_size >= zipfile.ZIP64_LIMIT) as entry:
+                                    while remaining:
+                                        job.check()
+                                        data = source.read(min(CHUNK_BYTES, remaining))
+                                        if not data:
+                                            _fail(409, "A file changed while preparing the ZIP. Try again when it is no longer being modified.")
+                                        entry.write(data)
+                                        remaining -= len(data)
+                                        processed += len(data)
+                                        with self.lock:
+                                            job.progress = min(0.99, processed / total) if total else index / len(entries)
+                                if source.read(1) or _archive_identity(os.fstat(descriptor)) != _archive_identity(original):
+                                    _fail(409, "A file changed while preparing the ZIP. Wait for PC changes to finish and try again.")
+                        with self.lock:
+                            job.progress = min(0.99, processed / total) if total else (index + 1) / len(entries)
+                    # A directory gaining/losing an entry must not produce a
+                    # silently incomplete folder archive.
+                    for path, _, original, folder in entries:
+                        job.check()
+                        if folder and _archive_identity(_exists(checked_path(str(path), directory=True)).stat()) != _archive_identity(original):
+                            _fail(409, "A folder changed while preparing the ZIP. Wait for PC changes to finish and try again.")
+            with self.lock:
+                job.check()
+                job.archive_bytes = job.archive.stat().st_size
+                job.progress, job.status, job.worker_finished = 1.0, "ready", True
+        except _ArchiveCancelled:
+            with self.lock:
+                job.status = "cancelling"
+        except HTTPException as exc:
+            with self.lock:
+                job.status, job.error = "failed", str(exc.detail)[:300]
+        except OSError as exc:
+            try:
+                _os_error(exc)
+            except HTTPException as failure:
+                with self.lock:
+                    job.status, job.error = "failed", str(failure.detail)[:300]
+        except Exception:
+            with self.lock:
+                job.status, job.error = "failed", "The folder ZIP could not be prepared. Choose a smaller folder and try again."
+        finally:
+            with self.lock:
+                job.worker_finished = True
+                if job.status != "ready":
+                    try:
+                        if job.directory:
+                            shutil.rmtree(job.directory)
+                        job.directory = None
+                        job.archive = None
+                    except OSError:
+                        job.cancelled.set()
+                if job.cancelled.is_set():
+                    self._remove_locked(job)
+
+    def _get_locked(self, identifier):
+        self._sweep_locked()
+        job = self.jobs.get(identifier)
+        if job is None:
+            _fail(404, "This folder transfer has expired or was cancelled. Start the download again.")
+        return job
+
+    def status(self, identifier):
+        with self.lock:
+            return self._get_locked(identifier).snapshot()
+
+    def cancel(self, identifier):
+        with self.lock:
+            job = self._get_locked(identifier)
+            job.cancelled.set()
+            job.status = "cancelling"
+            self._remove_locked(job)
+            return {"ok": True}
+
+    def release(self, job):
+        with self.lock:
+            job.readers = max(0, job.readers - 1)
+            if job.cancelled.is_set():
+                self._remove_locked(job)
+
+    def download(self, identifier, request):
+        from urllib.parse import quote
+        with self.lock:
+            job = self._get_locked(identifier)
+            if job.status != "ready" or not job.archive or not job.worker_finished:
+                _fail(409, "The ZIP is not ready yet. Keep this folder transfer open.")
+            stream = None
+            try:
+                size = job.archive.stat().st_size
+                start, end, partial = _range(request.headers.get("range"), size)
+                stream = job.archive.open("rb")
+                stream.seek(start)
+                job.readers += 1
+                reader = _ArchiveReader(stream, self, job)
+            except HTTPException:
+                if stream:
+                    stream.close()
+                raise
+            except OSError as exc:
+                if stream:
+                    stream.close()
+                _os_error(exc)
+        async def content():
+            remaining = max(0, end - start + 1)
+            try:
+                while remaining:
+                    data = await _file_io(reader.read, min(CHUNK_BYTES, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+            finally:
+                reader.close()
+        headers = {"Content-Length": str(max(0, end - start + 1)), "Accept-Ranges": "bytes",
+                   "Content-Disposition": f"attachment; filename*=UTF-8''{quote(job.name)}",
+                   "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if partial:
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        return _ClosingStreamingResponse(reader, content(), status_code=206 if partial else 200,
+                                         media_type="application/zip", headers=headers)
+
+
 def _mutation_target(path):
     if _within(AGENT_DIRECTORY, path) or any(_within(protected.absolute(), path) for protected in _protected_paths()):
         _fail(403, "Folders containing the running companion or its private settings are protected.")
@@ -519,8 +901,25 @@ def recycle_path(value):
             ole.CoUninitialize()
 
 
-def create_files_router(verify_control):
+def create_files_router(verify_control, archive_manager=None):
     router = APIRouter(prefix="/api/files", dependencies=[Depends(verify_control), Depends(require_secure)])
+    archives = archive_manager or ArchiveManager()
+
+    @router.post("/archive", status_code=202)
+    def prepare_archive(body: PathBody):
+        return archives.create(body.path)
+
+    @router.get("/archive/{identifier}")
+    def archive_status(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
+        return archives.status(identifier)
+
+    @router.get("/archive/{identifier}/download")
+    def archive_download(request: Request, identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
+        return archives.download(identifier, request)
+
+    @router.delete("/archive/{identifier}")
+    def archive_cancel(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
+        return archives.cancel(identifier)
 
     @router.get("/roots")
     def roots():

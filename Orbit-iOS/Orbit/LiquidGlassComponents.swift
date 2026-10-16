@@ -2,18 +2,25 @@ import SwiftUI
 
 /// A restrained material surface shared by the monitoring and remote screens.
 struct LiquidGlassCard: ViewModifier {
+    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var cornerRadius: CGFloat = 24
     var tint: Color = .white
 
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(tint.opacity(0.035))
-                    }
+                if style == .improved || reduceTransparency {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(theme.surface)
+                } else {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(tint.opacity(0.035))
+                        }
+                }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -29,22 +36,36 @@ extension View {
 }
 
 struct OrbitAmbientBackground: View {
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
+    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var isOnline: Bool
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color(red: 0.035, green: 0.045, blue: 0.065)
-            Ellipse()
-                .fill((isOnline ? Color.cyan : .indigo).opacity(0.10))
-                .frame(width: 430, height: 350)
-                .blur(radius: 100)
-                .offset(x: -140, y: -130)
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
+                theme.background
+                if !reduceGlow && !reduceTransparency {
+                    Ellipse()
+                        .fill(theme.accent.opacity(style == .improved ? 0.06 : 0.12))
+                        .frame(width: 430, height: 350)
+                        .blur(radius: 100)
+                        .offset(x: -140, y: -130)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
         .ignoresSafeArea()
     }
 }
 
 struct HardwareMetricCard: View {
+    @AppStorage("orbit.monochromeMetrics") private var monochrome = false
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
+    private var metricAccent: Color { monochrome ? theme.accent : accent }
     let title: String
     let subtitle: String
     let valueText: String
@@ -58,10 +79,10 @@ struct HardwareMetricCard: View {
             HStack {
                 Image(systemName: icon)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(metricAccent)
                 Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(style == .improved ? Color.white.opacity(0.9) : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                 Spacer(minLength: 0)
@@ -78,11 +99,13 @@ struct HardwareMetricCard: View {
                 Text(subtitle)
                     .font(.caption.weight(.medium))
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 30, alignment: .topLeading)
                 Text(detail ?? "Sensor unavailable")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 28, alignment: .topLeading)
             }
 
@@ -92,7 +115,7 @@ struct HardwareMetricCard: View {
                         .fill(.white.opacity(0.08))
                         .overlay(alignment: .leading) {
                             Capsule()
-                                .fill(accent.opacity(0.85))
+                                .fill(metricAccent.opacity(0.85))
                                 .frame(width: geometry.size.width * min(1, max(0, progress)))
                         }
                 }
@@ -102,7 +125,7 @@ struct HardwareMetricCard: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlass(cornerRadius: 22, tint: accent)
+        .liquidGlass(cornerRadius: 22, tint: metricAccent)
         .accessibilityElement(children: .combine)
     }
 }

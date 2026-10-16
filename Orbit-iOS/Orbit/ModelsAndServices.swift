@@ -96,19 +96,26 @@ struct PCProcess: Codable, Identifiable {
     var createTime: Double
     var memoryMB: Double?
     var cpuPercent: Double?
+    var gpuPercent: Double? = nil
+    var vramMB: Double? = nil
+    var sharedGpuMemoryMB: Double? = nil
+    var gpuEngine: String? = nil
     var status: String
     var canTerminate: Bool
     // Local origin is never sent by the agent or reused after switching PCs.
     var originGeneration: Int? = nil
     var id: String { "\(originGeneration ?? -1):\(pid):\(createTime)" }
     private enum CodingKeys: String, CodingKey {
-        case pid, name, createTime, memoryMB, cpuPercent, status, canTerminate
+        case pid, name, createTime, memoryMB, cpuPercent, gpuPercent, vramMB, sharedGpuMemoryMB, gpuEngine, status, canTerminate
     }
 }
 struct PCProcessList: Decodable {
     var processes: [PCProcess]
     var capturedAt: Double
     var totalCount: Int
+    var gpuMetricsAvailable: Bool?
+    var gpuMetricsStatus: String?
+    var gpuMetricsSource: String?
 }
 
 struct PCNetworkConfigResponse: Codable {
@@ -136,6 +143,13 @@ struct OrbitError: LocalizedError {
 }
 
 final class WakeOnLANService {
+    static func ipv4ForWake(host: String, knownAddress: String) -> String {
+        // Bonjour names can disappear when the PC sleeps. Keep the last
+        // authenticated adapter address for unicast and broadcast calculation.
+        var address = in_addr()
+        if inet_pton(AF_INET, host, &address) == 1 { return host }
+        return inet_pton(AF_INET, knownAddress, &address) == 1 ? knownAddress : ""
+    }
     static func calculateBroadcastAddress(ip: String, subnetMask: String) -> String {
         var addr = in_addr(), mask = in_addr()
         guard inet_pton(AF_INET, ip, &addr) == 1, inet_pton(AF_INET, subnetMask, &mask) == 1 else { return "" }
@@ -215,12 +229,13 @@ final class OrbitViewModel: ObservableObject {
     @Published var certificateFingerprint = UserDefaults.standard.string(forKey: "certificateFingerprint") ?? "" {
         didSet { UserDefaults.standard.set(certificateFingerprint, forKey: "certificateFingerprint"); if oldValue != certificateFingerprint { resetConnection() } }
     }
-    @Published var pcIP = UserDefaults.standard.string(forKey: "pcIP") ?? "" { didSet { UserDefaults.standard.set(pcIP, forKey: "pcIP"); if oldValue != pcIP { pcMAC = ""; wolTargetIP = "" }; resetConnection() } }
+    @Published var pcIP = UserDefaults.standard.string(forKey: "pcIP") ?? "" { didSet { UserDefaults.standard.set(pcIP, forKey: "pcIP"); if oldValue != pcIP { pcMAC = ""; wolTargetIP = ""; lastKnownPCIPv4 = "" }; resetConnection() } }
     @Published var agentPort = (UserDefaults.standard.object(forKey: "agentPort") as? Int) ?? 8765 { didSet { UserDefaults.standard.set(agentPort, forKey: "agentPort"); resetConnection() } }
     @Published var apiToken = TokenStore.read() { didSet { TokenStore.save(apiToken); resetConnection() } }
     @AppStorage("wolTargetIP") var wolTargetIP = ""
     @AppStorage("subnetMask") var subnetMask = "255.255.255.0"
     @AppStorage("pcMAC") var pcMAC = ""
+    @AppStorage("lastKnownPCIPv4") var lastKnownPCIPv4 = ""
     @AppStorage("wolPort") var wolPort = 9
     @AppStorage("autoCalcBroadcast") var autoCalcBroadcast = true
     @AppStorage("demoMode") var isDemoMode = false
@@ -244,6 +259,7 @@ final class OrbitViewModel: ObservableObject {
     @Published var processActionStatus: String?
     @Published var endingProcessID: Int?
     @Published var lastProcessesUpdated: Date?
+    @Published var processGpuStatus: String?
     var connectionID: Int { generation }
     @Published var isWakingUp = false
     @Published var isScanningLAN = false
@@ -308,7 +324,7 @@ final class OrbitViewModel: ObservableObject {
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
         metrics = PCMetrics(); specs = nil; games = []; lastUpdated = nil; pingMs = 0
         widgetToken = nil; widgetSetupError = nil
-        processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil
+        processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil; processGpuStatus = nil
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
         statusLog = "Connection settings changed — ready to connect"
         stopScreenFeed(); isShowingStreamView = false; activeStreamingGame = nil; loadOverrides(); loadDashboardConfiguration()
@@ -336,11 +352,16 @@ final class OrbitViewModel: ObservableObject {
         return data
     }
     func recalculateBroadcastIfNeeded() {
-        if autoCalcBroadcast { wolTargetIP = WakeOnLANService.calculateBroadcastAddress(ip: cleanHost(), subnetMask: subnetMask) }
+        let address = WakeOnLANService.ipv4ForWake(host: cleanHost(), knownAddress: lastKnownPCIPv4)
+        let calculated = WakeOnLANService.calculateBroadcastAddress(ip: address, subnetMask: subnetMask)
+        if autoCalcBroadcast && !calculated.isEmpty { wolTargetIP = calculated }
     }
     func setAppActive(_ active: Bool) {
         appActive = active
-        if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else { monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed() }
+        if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else {
+            monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed()
+            Task { await activity.pauseUpdates() }
+        }
     }
     func startMonitoringLoop() {
         monitoringTask?.cancel()
@@ -370,8 +391,8 @@ final class OrbitViewModel: ObservableObject {
     func refreshMetrics() async {
         guard !isRefreshing, appActive else { return }
         if isDemoMode { statusLog = "Preview • simulated data"; return }
-        guard hasCompletedOnboarding || hasSecureConnection else { statusLog = "Copy the PC certificate fingerprint to establish your encrypted connection."; return }
-        guard isConfigured else { metrics.isOnline = false; statusLog = "Add your PC address and pairing token in Settings"; return }
+        guard hasCompletedOnboarding || hasSecureConnection else { statusLog = "Choose Find my PC to pair with the code shown on Windows."; return }
+        guard isConfigured else { metrics.isOnline = false; statusLog = "Find and pair your PC in My PCs"; return }
         isRefreshing = true; defer { isRefreshing = false }
         let version = generation
         let start = Date()
@@ -392,6 +413,8 @@ final class OrbitViewModel: ObservableObject {
                 guard generation == version, !Task.isCancelled else { return }
                 await fetchSunshineApps()
                 guard generation == version, !Task.isCancelled else { return }
+                if hasSecureConnection { await prepareWidgetAccess() }
+                guard generation == version, !Task.isCancelled else { return }
                 hasSynced = true
             }
             if specs == nil && Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
@@ -408,6 +431,7 @@ final class OrbitViewModel: ObservableObject {
         do {
             let info = try JSONDecoder().decode(PCNetworkConfigResponse.self, from: await request("/api/network-info"))
             guard generation == version else { return }
+            if IPv4Address(info.ipAddress) != nil { lastKnownPCIPv4 = info.ipAddress }
             if !info.macAddress.isEmpty { pcMAC = info.macAddress }
             if !info.subnetMask.isEmpty { subnetMask = info.subnetMask }
             if autoCalcBroadcast && !info.broadcastAddress.isEmpty { wolTargetIP = info.broadcastAddress }
@@ -476,6 +500,12 @@ final class OrbitViewModel: ObservableObject {
             guard version == generation else { return }
             guard !pairing.token.isEmpty else { throw OrbitError(message: "The agent did not return a widget access token.") }
             widgetToken = pairing.token
+            guard hasSecureConnection, let profile = savedPCs.first(where: { $0.id == selectedPCID }) else {
+                throw OrbitError(message: "Pair this PC securely in My PCs to configure widgets automatically.")
+            }
+            try OrbitWidgetConnectionStore.save(id: profile.id, name: profile.name, host: cleanHost(), port: securePort,
+                                                readOnlyToken: pairing.token, certificateSHA256: certificateFingerprint)
+            try OrbitWidgetConnectionStore.setDefault(id: profile.id)
         } catch {
             if version == generation { widgetSetupError = "Widget access unavailable. Update Orbit Agent and try again. \(error.localizedDescription)" }
         }
@@ -489,7 +519,7 @@ final class OrbitViewModel: ObservableObject {
                 PCProcess(pid: 4100, name: "Example game.exe", createTime: 1, memoryMB: 2840, cpuPercent: 14.2, status: "running", canTerminate: false),
                 PCProcess(pid: 4200, name: "Example browser.exe", createTime: 2, memoryMB: 620, cpuPercent: 2.8, status: "running", canTerminate: false)
             ]
-            processesError = nil; lastProcessesUpdated = Date()
+            processesError = nil; lastProcessesUpdated = Date(); processGpuStatus = "Preview processes · GPU readings unavailable"
             return
         }
         isLoadingProcesses = true
@@ -502,6 +532,7 @@ final class OrbitViewModel: ObservableObject {
                 var process = item; process.originGeneration = version; return process
             }
             lastProcessesUpdated = Date(timeIntervalSince1970: list.capturedAt)
+            processGpuStatus = list.gpuMetricsStatus ?? "Update Orbit Agent for per-process GPU readings."
             processesError = nil
         } catch {
             if version == generation, !Task.isCancelled { processesError = "Could not refresh processes. \(error.localizedDescription)" }
@@ -616,7 +647,8 @@ final class OrbitViewModel: ObservableObject {
         let version = generation
         recalculateBroadcastIfNeeded()
         do {
-            try await WakeOnLANService.sendMagicPacket(macAddress: pcMAC, pcIP: cleanHost(), targetBroadcastIP: wolTargetIP, subnetMask: subnetMask, port: UInt16(wolPort))
+            let address = WakeOnLANService.ipv4ForWake(host: cleanHost(), knownAddress: lastKnownPCIPv4)
+            try await WakeOnLANService.sendMagicPacket(macAddress: pcMAC, pcIP: address, targetBroadcastIP: wolTargetIP, subnetMask: subnetMask, port: UInt16(wolPort))
             statusLog = "Wake packet sent • waiting for PC"
             for _ in 0..<15 {
                 try await Task.sleep(for: .seconds(2))

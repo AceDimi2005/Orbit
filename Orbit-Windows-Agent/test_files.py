@@ -1,9 +1,12 @@
 import asyncio
 import ctypes
+import io
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import threading
+import time
+import zipfile
 import unittest
 from unittest.mock import patch
 
@@ -32,7 +35,10 @@ class FileAPITests(unittest.TestCase):
     def test_all_routes_require_control_token_and_https(self):
         routes = [("GET", "/roots", None), ("GET", "/list", None), ("GET", "/download", None),
                   ("POST", "/upload", None), ("POST", "/mkdir", {}), ("POST", "/rename", {}),
-                  ("POST", "/move", {}), ("POST", "/trash", {})]
+                  ("POST", "/move", {}), ("POST", "/trash", {}),
+                  ("POST", "/archive", {}), ("GET", "/archive/" + "a" * 32, None),
+                  ("GET", "/archive/" + "a" * 32 + "/download", None),
+                  ("DELETE", "/archive/" + "a" * 32, None)]
         for method, route, body in routes:
             with self.subTest(route=route):
                 response = self.client.request(method, "/api/files" + route, json=body, headers={"Authorization": "Bearer readonly"})
@@ -357,6 +363,242 @@ class FileAPITests(unittest.TestCase):
         self.assertEqual(response.content, b"")
         response = self.client.get("/api/files/download", params={"path": str(self.root / "missing.txt")})
         self.assertEqual(response.status_code, 404)
+
+
+class FolderArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / "Proiecte și poze"
+        self.source.mkdir()
+        self.archive_root = self.root / "private-output"
+        self.archive_directory = patch.object(files, "_archive_directory", return_value=self.archive_root)
+        self.archive_directory.start()
+        self.manager = files.ArchiveManager()
+        app = FastAPI()
+        app.include_router(files.create_files_router(authorized, archive_manager=self.manager))
+        self.client = TestClient(app, base_url="https://test", headers={"Authorization": "Bearer control"})
+
+    def tearDown(self):
+        with self.manager.lock:
+            jobs = list(self.manager.jobs.values())
+            for job in jobs: job.cancelled.set()
+        deadline = time.monotonic() + 3
+        while any(not job.worker_finished for job in jobs) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        with self.manager.lock:
+            for job in jobs: self.manager._remove_locked(job)
+        self.archive_directory.stop()
+        self.temporary.cleanup()
+
+    def create(self):
+        result = self.client.post("/api/files/archive", json={"path": str(self.source)})
+        self.assertEqual(result.status_code, 202, result.text)
+        return result.json()["id"]
+
+    def settled(self, identifier):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            result = self.client.get("/api/files/archive/" + identifier)
+            self.assertEqual(result.status_code, 200, result.text)
+            value = result.json()
+            if value["status"] in ("ready", "failed"): return value
+            time.sleep(0.005)
+        self.fail("archive worker did not settle")
+
+    def assert_failed_without_partial_zip(self, identifier, message):
+        value = self.settled(identifier)
+        self.assertEqual(value["status"], "failed", value)
+        self.assertIn(message, value["error"])
+        self.assertEqual(self.client.get(f"/api/files/archive/{identifier}/download").status_code, 409)
+        deadline = time.monotonic() + 2
+        while any(self.archive_root.glob("archive-*")) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(list(self.archive_root.glob("archive-*")), [])
+
+    def test_folder_zip_preserves_unicode_structure_empty_directories_and_contents(self):
+        (self.source / "poze goale").mkdir()
+        (self.source / "subfolder").mkdir()
+        (self.source / "subfolder" / "mâine.txt").write_text("Salut 🌍", encoding="utf-8")
+        (self.source / "empty.txt").touch()
+        identifier = self.create()
+        status = self.settled(identifier)
+        self.assertEqual(status["status"], "ready", status)
+        self.assertEqual(status["totalEntries"], 5)
+        self.assertEqual(status["totalBytes"], len("Salut 🌍".encode()))
+        self.assertEqual(status["progress"], 1)
+        self.assertNotIn(str(self.root), str(status))
+        response = self.client.get(f"/api/files/archive/{identifier}/download")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/zip")
+        self.assertEqual(len(response.content), status["archiveBytes"])
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            root = self.source.name + "/"
+            self.assertEqual(set(archive.namelist()), {root, root + "poze goale/", root + "subfolder/", root + "subfolder/mâine.txt", root + "empty.txt"})
+            self.assertEqual(archive.read(root + "subfolder/mâine.txt").decode(), "Salut 🌍")
+            self.assertEqual(archive.read(root + "empty.txt"), b"")
+        self.assertEqual((self.source / "subfolder" / "mâine.txt").read_text(), "Salut 🌍")
+        response = self.client.get(f"/api/files/archive/{identifier}/download", headers={"Range": "bytes=0-3"})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b"PK\x03\x04")
+        self.assertEqual(self.client.delete(f"/api/files/archive/{identifier}").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/files/archive/{identifier}").status_code, 404)
+        self.assertEqual(list(self.archive_root.glob("archive-*")), [])
+
+    def test_archive_of_empty_folder_is_valid(self):
+        identifier = self.create()
+        self.assertEqual(self.settled(identifier)["status"], "ready")
+        response = self.client.get(f"/api/files/archive/{identifier}/download")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(archive.namelist(), [self.source.name + "/"])
+
+    def test_protected_nested_file_fails_entire_archive_instead_of_skipping(self):
+        (self.source / "safe.txt").write_text("allowed")
+        private = self.source / "nested"
+        private.mkdir()
+        (private / ".orbit-token").write_text("never export")
+        self.assert_failed_without_partial_zip(self.create(), "protected")
+
+    def test_junction_or_symbolic_link_fails_entire_archive(self):
+        outside = self.root / "outside.txt"
+        outside.write_text("outside")
+        (self.source / "link.txt").symlink_to(outside)
+        self.assert_failed_without_partial_zip(self.create(), "Links")
+
+    def test_hard_link_fails_entire_archive(self):
+        outside = self.root / "outside.txt"
+        outside.write_text("outside")
+        files.os.link(outside, self.source / "alias.txt")
+        self.assert_failed_without_partial_zip(self.create(), "hard links")
+
+    def test_nested_private_history_store_is_not_exported(self):
+        private = self.source / "AppData" / "Orbit"
+        private.mkdir(parents=True)
+        (private / "history.sqlite3").write_text("private")
+        with patch.dict(files.os.environ, {"LOCALAPPDATA": str(private.parent)}):
+            self.assert_failed_without_partial_zip(self.create(), "private")
+
+    def test_source_size_entry_count_and_depth_limits(self):
+        path = self.source / "file.bin"
+        path.write_bytes(b"12345")
+        with patch.object(files, "MAX_ARCHIVE_SOURCE_BYTES", 4):
+            self.assert_failed_without_partial_zip(self.create(), "2 GB")
+        self.client.delete("/api/files/archive/" + next(iter(self.manager.jobs)))
+        with patch.object(files, "MAX_ARCHIVE_ENTRIES", 1):
+            self.assert_failed_without_partial_zip(self.create(), "10,000")
+        self.client.delete("/api/files/archive/" + next(iter(self.manager.jobs)))
+        (self.source / "first" / "second").mkdir(parents=True)
+        with patch.object(files, "MAX_ARCHIVE_DEPTH", 1):
+            self.assert_failed_without_partial_zip(self.create(), "32-level")
+
+    def test_archive_disk_size_cap_and_insufficient_free_space_are_cleaned(self):
+        (self.source / "text.txt").write_text("x" * 512)
+        with patch.object(files, "MAX_ARCHIVE_BYTES", 80):
+            self.assert_failed_without_partial_zip(self.create(), "ZIP archive exceeds")
+        self.client.delete("/api/files/archive/" + next(iter(self.manager.jobs)))
+        with patch.object(files.shutil, "disk_usage", return_value=SimpleNamespace(free=0)):
+            self.assert_failed_without_partial_zip(self.create(), "free space")
+
+    def test_cancellation_while_building_cleans_temporary_and_preserves_source(self):
+        (self.source / "text.txt").write_text("important")
+        entered, release = threading.Event(), threading.Event()
+        original_write = files._BoundedArchiveFile.write
+        def slow_write(instance, data):
+            entered.set()
+            if not release.wait(3): raise TimeoutError("test release missing")
+            return original_write(instance, data)
+        with patch.object(files._BoundedArchiveFile, "write", slow_write):
+            identifier = self.create()
+            try:
+                self.assertTrue(entered.wait(2))
+                result = self.client.delete(f"/api/files/archive/{identifier}")
+                self.assertEqual(result.status_code, 200)
+            finally:
+                release.set()
+            deadline = time.monotonic() + 2
+            while identifier in self.manager.jobs and time.monotonic() < deadline: time.sleep(0.005)
+        self.assertNotIn(identifier, self.manager.jobs)
+        self.assertEqual(list(self.archive_root.glob("archive-*")), [])
+        self.assertEqual((self.source / "text.txt").read_text(), "important")
+
+    def test_file_change_after_scan_fails_instead_of_returning_incomplete_folder(self):
+        path = self.source / "text.txt"
+        path.write_text("original")
+        original_scan = files._archive_scan
+        def changed(job):
+            result = original_scan(job)
+            path.write_text("modified larger payload")
+            return result
+        with patch.object(files, "_archive_scan", changed):
+            self.assert_failed_without_partial_zip(self.create(), "changed")
+
+    def test_unreadable_nested_folder_fails_without_a_partial_archive(self):
+        restricted = self.source / "restricted"
+        restricted.mkdir()
+        original = files.os.scandir
+        def denied(path):
+            if Path(path) == restricted: raise PermissionError("simulated Windows permission denial")
+            return original(path)
+        with patch.object(files.os, "scandir", denied):
+            self.assert_failed_without_partial_zip(self.create(), "denied access")
+
+    def test_preparation_timeout_leaves_no_zip(self):
+        with patch.object(files, "MAX_ARCHIVE_SECONDS", 0):
+            self.assert_failed_without_partial_zip(self.create(), "two minutes")
+
+    def test_cancelling_active_download_waits_for_reader_close_before_cleanup(self):
+        (self.source / "text.txt").write_text("keep source")
+        identifier = self.create()
+        self.assertEqual(self.settled(identifier)["status"], "ready")
+        response = self.manager.download(identifier, SimpleNamespace(headers={}))
+        directory = self.manager.jobs[identifier].directory
+        self.assertEqual(self.client.delete(f"/api/files/archive/{identifier}").status_code, 200)
+        self.assertTrue(directory.exists())
+        self.assertEqual(self.manager.jobs[identifier].readers, 1)
+        response._file_stream.close()
+        self.assertNotIn(identifier, self.manager.jobs)
+        self.assertFalse(directory.exists())
+        self.assertEqual((self.source / "text.txt").read_text(), "keep source")
+
+    def test_abandoned_old_zip_cleanup_keeps_fresh_folders_and_links(self):
+        stale = self.archive_root / "archive-old"
+        fresh = self.archive_root / "archive-fresh"
+        stale.mkdir(parents=True); fresh.mkdir()
+        (stale / "download.zip").write_bytes(b"abandoned")
+        old = time.time() - files.ARCHIVE_TTL_SECONDS - 1
+        files.os.utime(stale, (old, old))
+        outside = self.root / "outside"
+        outside.mkdir(); (outside / "keep.txt").write_text("keep")
+        (self.archive_root / "archive-link").symlink_to(outside, target_is_directory=True)
+        self.manager._stale_directories()
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+        self.assertEqual((outside / "keep.txt").read_text(), "keep")
+
+    def test_archive_slots_expiry_and_identifier_validation(self):
+        first, second = self.create(), self.create()
+        self.settled(first); self.settled(second)
+        self.assertEqual(self.client.post("/api/files/archive", json={"path": str(self.source)}).status_code, 429)
+        self.assertEqual(self.client.get("/api/files/archive/../../anything").status_code, 404)
+        self.assertEqual(self.client.get("/api/files/archive/invalid").status_code, 422)
+        with self.manager.lock: self.manager.jobs[first].created -= files.ARCHIVE_TTL_SECONDS + 1
+        self.assertEqual(self.client.get(f"/api/files/archive/{first}").status_code, 404)
+        third = self.create()
+        self.assertEqual(self.settled(third)["status"], "ready")
+
+    def test_download_start_failure_releases_reader_and_allows_delete(self):
+        identifier = self.create()
+        self.assertEqual(self.settled(identifier)["status"], "ready")
+        response = self.manager.download(identifier, SimpleNamespace(headers={}))
+        self.assertEqual(self.manager.jobs[identifier].readers, 1)
+        async def receive(): return {"type": "http.disconnect"}
+        async def send(_): raise OSError("disconnected")
+        async def fail():
+            with self.assertRaises(Exception): await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+        asyncio.run(fail())
+        self.assertEqual(self.manager.jobs[identifier].readers, 0)
+        self.client.delete(f"/api/files/archive/{identifier}")
+        self.assertEqual(list(self.archive_root.glob("archive-*")), [])
 
 
 if __name__ == "__main__":

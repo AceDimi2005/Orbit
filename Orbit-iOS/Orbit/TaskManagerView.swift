@@ -15,6 +15,10 @@ struct TaskManagerView: View {
                 if left.memoryMB != right.memoryMB { return (left.memoryMB ?? -1) > (right.memoryMB ?? -1) }
             case .cpu:
                 if left.cpuPercent != right.cpuPercent { return (left.cpuPercent ?? -1) > (right.cpuPercent ?? -1) }
+            case .gpu:
+                if left.gpuPercent != right.gpuPercent { return (left.gpuPercent ?? -1) > (right.gpuPercent ?? -1) }
+            case .vram:
+                if left.vramMB != right.vramMB { return (left.vramMB ?? -1) > (right.vramMB ?? -1) }
             case .name:
                 if left.name != right.name { return left.name.localizedStandardCompare(right.name) == .orderedAscending }
             }
@@ -42,6 +46,9 @@ struct TaskManagerView: View {
                 }
                 Text("CPU uses the whole PC as 100%. The first sample may be unavailable. Process usage refreshes while this screen is open.")
                     .font(.caption).foregroundStyle(.secondary)
+                if let status = vm.processGpuStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
             }
             if let error = vm.processesError {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
@@ -117,9 +124,17 @@ struct TaskManagerView: View {
                         .accessibilityLabel("End task: \(process.name), PID \(process.pid)")
                 }
             }
-            HStack(spacing: 18) {
-                Text(process.cpuPercent.flatMap { $0.isFinite ? String(format: "CPU %.1f%%", $0) : nil } ?? "CPU —")
-                Text(process.memoryMB.flatMap { $0.isFinite ? String(format: "RAM %.0f MB", $0) : nil } ?? "RAM —")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 18) {
+                    Text(process.cpuPercent.flatMap { $0.isFinite ? String(format: "CPU %.1f%%", $0) : nil } ?? "CPU —")
+                    Text(process.gpuPercent.flatMap { $0.isFinite ? String(format: "GPU %.1f%%", $0) : nil } ?? "GPU —")
+                    Text(process.memoryMB.flatMap { $0.isFinite ? String(format: "RAM %.0f MB", $0) : nil } ?? "RAM —")
+                }
+                HStack(spacing: 18) {
+                    Text(process.vramMB.flatMap { $0.isFinite ? String(format: "VRAM %.0f MB", $0) : nil } ?? "VRAM —")
+                    Text(process.sharedGpuMemoryMB.flatMap { $0.isFinite ? String(format: "Shared GPU %.0f MB", $0) : nil } ?? "Shared GPU —")
+                }
+                if let engine = process.gpuEngine { Text("Busiest engine · \(engine)").font(.caption2).foregroundStyle(.secondary) }
                 if !process.canTerminate { Text("Protected").foregroundStyle(.secondary) }
             }
             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -129,9 +144,9 @@ struct TaskManagerView: View {
 }
 
 private enum ProcessSortOrder: String, CaseIterable, Identifiable {
-    case memory, cpu, name
+    case memory, cpu, gpu, vram, name
     var id: String { rawValue }
-    var title: String { switch self { case .memory: return "Memory"; case .cpu: return "CPU"; case .name: return "Name" } }
+    var title: String { switch self { case .memory: return "RAM"; case .cpu: return "CPU"; case .gpu: return "GPU"; case .vram: return "VRAM"; case .name: return "Name" } }
 }
 
 struct FPSSetupView: View {

@@ -11,9 +11,11 @@ import math
 import os
 import threading
 import time
+import psutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from orbit_audio_policy import AudioPolicyConfig, AudioPolicyUnavailable
 
 MAX_CLIPBOARD_BYTES = 1024 * 1024
 _CLIPBOARD_LOCK = threading.Lock()
@@ -168,6 +170,33 @@ def _audio_sessions():
         comtypes.CoInitialize()
         initialized = True
         sessions = AudioUtilities.GetAllSessions()
+        # Include streams on every active render endpoint. After routing an app
+        # away from the default device it must remain visible in Orbit's mixer.
+        default = AudioUtilities.GetSpeakers()
+        default_id = getattr(default, "id", None)
+        default_name = getattr(default, "FriendlyName", None)
+        for session in sessions:
+            session.orbitOutputID = default_id if isinstance(default_id, str) else None
+            session.orbitOutputName = default_name if isinstance(default_name, str) else None
+        for device in AudioUtilities.GetAllDevices(data_flow=0, device_state=1):
+            if device.id == default_id:
+                continue
+            try:
+                from pycaw.utils import AudioSession
+                from pycaw.api.audiopolicy import IAudioSessionControl2
+                enumerator = device.AudioSessionManager.GetSessionEnumerator()
+                for index in range(enumerator.GetCount()):
+                    control = enumerator.GetSession(index)
+                    if control is None:
+                        continue
+                    session = AudioSession(control.QueryInterface(IAudioSessionControl2))
+                    session.orbitOutputID = device.id
+                    session.orbitOutputName = device.FriendlyName
+                    sessions.append(session)
+            except Exception:
+                # USB/Bluetooth endpoints can disappear during enumeration.
+                # Other still-active endpoints remain usable.
+                continue
         yield sessions
     except (DesktopUnavailable, AudioSessionGone):
         raise
@@ -200,11 +229,18 @@ def _session_snapshot(session):
     try:
         process = session.Process
         name = process.name() if process is not None else ("System sounds" if pid == 0 else f"Application {pid}")
+        created = float(process.create_time()) if process is not None else None
+        if created is not None and (not math.isfinite(created) or created <= 0):
+            created = None
     except Exception:
         name = f"Application {pid}"
+        created = None
     name = "".join(character for character in str(name) if ord(character) >= 32)[:260]
     return {"id": identity, "pid": pid, "name": name or f"Application {pid}",
-            "volume": round(min(100.0, level), 1), "isMuted": bool(volume.GetMute())}
+            "volume": round(min(100.0, level), 1), "isMuted": bool(volume.GetMute()),
+            "processCreateTime": created,
+            "outputDeviceID": getattr(session, "orbitOutputID", None),
+            "outputDeviceName": getattr(session, "orbitOutputName", None)}
 
 
 def list_audio_sessions():
@@ -250,6 +286,64 @@ def update_audio_session(identity, volume=None, muted=None):
     raise AudioSessionGone("This audio session has ended or the playback device changed. Refresh the mixer.")
 
 
+def _output_devices():
+    from pycaw.pycaw import AudioUtilities
+    devices = []
+    for device in AudioUtilities.GetAllDevices(data_flow=0, device_state=1):
+        if isinstance(device.id, str) and device.id:
+            devices.append({"id": device.id, "name": str(device.FriendlyName or "Audio output")[:260]})
+    return devices
+
+
+def list_audio_outputs():
+    with _AUDIO_LOCK, _audio_sessions():  # Same worker-thread COM apartment.
+        devices = _output_devices()
+        try:
+            with AudioPolicyConfig():
+                pass
+            return {"devices": devices, "routingAvailable": True, "routingUnavailableReason": None}
+        except (AudioPolicyUnavailable, OSError, AttributeError) as error:
+            return {"devices": devices, "routingAvailable": False, "routingUnavailableReason": str(error)}
+
+
+def route_audio_session(identity, expected_create_time, device_id):
+    if not isinstance(identity, str) or len(identity) != 64:
+        raise AudioSessionGone("Invalid audio session. Refresh the mixer.")
+    if isinstance(expected_create_time, bool) or not isinstance(expected_create_time, (int, float)) or not math.isfinite(expected_create_time) or expected_create_time <= 0:
+        raise ValueError("The selected process creation time is required for routing.")
+    if not isinstance(device_id, str):
+        raise ValueError("Select an audio output or System default.")
+    with _AUDIO_LOCK, _audio_sessions() as sessions:
+        if device_id and device_id not in {device["id"] for device in _output_devices()}:
+            raise AudioSessionGone("That audio device disconnected. Refresh the mixer and select an active output.")
+        for session in sessions:
+            try:
+                current, pid = _session_identity(session)
+            except Exception:
+                continue
+            if current != identity:
+                continue
+            if pid <= 0:
+                raise ValueError("Windows system sounds do not have a per-application output preference.")
+
+            def verify():
+                try:
+                    if (_session_identity(session)[0] != identity or int(session.State) == 2
+                            or psutil.Process(pid).create_time() != expected_create_time):
+                        raise AudioSessionGone("This application changed or closed. Refresh the mixer before routing audio.")
+                except psutil.Error as error:
+                    raise AudioSessionGone("This application is no longer accessible. Refresh the mixer.") from error
+
+            verify()
+            try:
+                with AudioPolicyConfig() as policy:
+                    policy.set_output(pid, device_id, verify)
+            except AudioPolicyUnavailable as error:
+                raise DesktopUnavailable(str(error)) from error
+            return {"status": "routing_requested", "pid": pid, "deviceID": device_id}
+    raise AudioSessionGone("This audio session ended. Refresh the mixer before changing its output.")
+
+
 class ClipboardWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(max_length=MAX_CLIPBOARD_BYTES // 2 - 1)
@@ -288,6 +382,20 @@ class AudioSessionWrite(BaseModel):
         return self
 
 
+class AudioRouteWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expectedCreateTime: float = Field(gt=0, allow_inf_nan=False)
+    deviceID: str = Field(max_length=32768)
+
+    @field_validator("expectedCreateTime", mode="before")
+    @classmethod
+    def valid_creation_time(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Process creation time must be a number.")
+        return value
+
+
 def create_desktop_router(verify_control):
     router = APIRouter(prefix="/api", dependencies=[Depends(verify_control)])
 
@@ -324,5 +432,13 @@ def create_desktop_router(verify_control):
     def audio_session(body: AudioSessionWrite):
         session = translate(lambda: update_audio_session(body.id, body.volume, body.isMuted))
         return {"status": "ok", "session": session}
+
+    @router.get("/audio/outputs", dependencies=[Depends(require_encrypted)])
+    def audio_outputs():
+        return translate(list_audio_outputs)
+
+    @router.post("/audio/route", dependencies=[Depends(require_encrypted)])
+    def audio_route(body: AudioRouteWrite):
+        return translate(lambda: route_audio_session(body.id, body.expectedCreateTime, body.deviceID))
 
     return router

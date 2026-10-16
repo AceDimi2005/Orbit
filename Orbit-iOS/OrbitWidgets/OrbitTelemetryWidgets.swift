@@ -2,24 +2,60 @@ import AppIntents
 import Foundation
 import SwiftUI
 import WidgetKit
+import Security
+import CryptoKit
 
-/// Credentials belong to this widget's configuration, not a shared app container.
-/// The agent accepts this read-only token only on /api/widget/status.
+struct OrbitWidgetPC: AppEntity {
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Paired PC")
+    static var defaultQuery = OrbitWidgetPCQuery()
+    var id: String
+    var name: String
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+}
+struct OrbitWidgetPCQuery: EntityQuery {
+    func entities(for identifiers: [String]) async throws -> [OrbitWidgetPC] {
+        OrbitWidgetConnectionStore.connections().filter { identifiers.contains($0.id) }.map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+    }
+    func suggestedEntities() async throws -> [OrbitWidgetPC] {
+        OrbitWidgetConnectionStore.connections().map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+    }
+    func defaultResult() async -> OrbitWidgetPC? {
+        OrbitWidgetConnectionStore.defaultConnection().map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+    }
+}
 struct OrbitPCWidgetIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Choose Your PC"
-    static var description = IntentDescription("Use the PC address and read-only widget token from Orbit Settings. Readings are periodic snapshots.")
-
-    @Parameter(title: "PC address", description: "IP or hostname, without a port. Use the same address as in Orbit.")
-    var host: String?
-
-    @Parameter(title: "Agent port", default: 8765)
-    var port: Int
-
-    @Parameter(title: "Read-only widget token", description: "Copy this from Orbit Settings → Widgets. Do not use the agent control token.")
-    var token: String?
-
-    @Parameter(title: "Metric", default: .cpuUsage)
-    var metric: OrbitWidgetMetric
+    static var description = IntentDescription("Choose a PC paired in Orbit. Secure read-only access is configured automatically.")
+    @Parameter(title: "PC") var pc: OrbitWidgetPC?
+    @Parameter(title: "Metric", default: .cpuUsage) var metric: OrbitWidgetMetric
+    @Parameter(title: "Theme", default: .ocean) var theme: OrbitWidgetTheme
+    @Parameter(title: "Use one accent colour", default: false) var monochrome: Bool
+    static var parameterSummary: some ParameterSummary {
+        Summary("\(\.$pc)") { \.$metric; \.$theme; \.$monochrome }
+    }
+}
+enum OrbitWidgetTheme: String, AppEnum {
+    case ocean, aurora, violet, ember, graphite
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Theme")
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [.ocean: "Ocean", .aurora: "Aurora", .violet: "Violet", .ember: "Ember", .graphite: "Graphite"]
+    var accent: Color {
+        switch self {
+        case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
+        case .aurora: Color(red: 0.45, green: 0.92, blue: 0.73)
+        case .violet: Color(red: 0.76, green: 0.66, blue: 1)
+        case .ember: Color(red: 1, green: 0.70, blue: 0.43)
+        case .graphite: Color(red: 0.82, green: 0.88, blue: 0.97)
+        }
+    }
+    var background: Color {
+        switch self {
+        case .ocean: Color(red: 0.035, green: 0.065, blue: 0.105)
+        case .aurora: Color(red: 0.035, green: 0.08, blue: 0.07)
+        case .violet: Color(red: 0.075, green: 0.05, blue: 0.115)
+        case .ember: Color(red: 0.11, green: 0.06, blue: 0.045)
+        case .graphite: Color(red: 0.065, green: 0.075, blue: 0.09)
+        }
+    }
 }
 
 enum OrbitWidgetMetric: String, AppEnum {
@@ -189,9 +225,9 @@ private enum OrbitWidgetRequestError: Error {
 
     var message: String {
         switch self {
-        case .address: "Edit widget to set your PC address"
-        case .token: "Add a read-only widget token"
-        case .denied: "Widget token expired. Copy a new token."
+        case .address: "Pair your PC in Orbit"
+        case .token: "Open Orbit to enable widget access"
+        case .denied: "Reconnect this PC in Orbit"
         case .invalidResponse: "Update your Orbit PC agent"
         case .unavailable: "PC unavailable · open Orbit"
         }
@@ -199,7 +235,26 @@ private enum OrbitWidgetRequestError: Error {
 }
 
 /// Never forward the read-only credential to a different address via redirects.
-private final class OrbitWidgetSessionDelegate: NSObject, URLSessionTaskDelegate {
+private final class OrbitWidgetSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    let fingerprint: String
+    init(fingerprint: String) { self.fingerprint = fingerprint }
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let certificate = chain.first else {
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        let received = SHA256.hash(data: SecCertificateCopyData(certificate) as Data).map { String(format: "%02x", $0) }.joined()
+        guard received == fingerprint,
+              SecTrustSetPolicies(trust, SecPolicyCreateBasicX509()) == errSecSuccess,
+              SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustEvaluateWithError(trust, nil) else {
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -211,12 +266,12 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
     typealias Entry = OrbitPCWidgetEntry
 
     func placeholder(in context: Context) -> Entry {
-        Entry(date: Date(), configuration: Intent(), message: "Connect your PC in Edit Widget")
+        Entry(date: Date(), configuration: Intent(), message: "Pair your PC in Orbit")
     }
 
     func snapshot(for configuration: Intent, in context: Context) async -> Entry {
         if context.isPreview {
-            return Entry(date: Date(), configuration: configuration, message: "Connect your PC in Edit Widget")
+            return Entry(date: Date(), configuration: configuration, message: "Pair your PC in Orbit")
         }
         return await load(configuration)
     }
@@ -243,9 +298,15 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
     private func load(_ configuration: Intent) async -> Entry {
         let now = Date()
         do {
-            let url = try endpoint(configuration)
-            guard let token = configuration.token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty,
-                  !token.contains("\n"), !token.contains("\r") else { throw OrbitWidgetRequestError.token }
+            let connection: OrbitWidgetConnection?
+            if let pc = configuration.pc {
+                connection = OrbitWidgetConnectionStore.connections().first { $0.id == pc.id }
+            } else { connection = OrbitWidgetConnectionStore.defaultConnection() }
+            guard let connection else { throw OrbitWidgetRequestError.address }
+            let url = try endpoint(connection)
+            let token: String
+            do { token = try OrbitWidgetConnectionStore.readOnlyToken(for: connection.id) }
+            catch { throw OrbitWidgetRequestError.token }
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.timeoutInterval = 6
@@ -253,9 +314,11 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.httpCookieStorage = nil
+            sessionConfiguration.urlCredentialStorage = nil
             sessionConfiguration.timeoutIntervalForRequest = 6
             sessionConfiguration.timeoutIntervalForResource = 8
-            let session = URLSession(configuration: sessionConfiguration, delegate: OrbitWidgetSessionDelegate(), delegateQueue: nil)
+            let session = URLSession(configuration: sessionConfiguration, delegate: OrbitWidgetSessionDelegate(fingerprint: connection.certificateSHA256), delegateQueue: nil)
             defer { session.invalidateAndCancel() }
             let (data, response) = try await session.data(for: request)
             guard let response = response as? HTTPURLResponse else { throw OrbitWidgetRequestError.invalidResponse }
@@ -274,16 +337,11 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
         }
     }
 
-    private func endpoint(_ configuration: Intent) throws -> URL {
-        guard var host = configuration.host?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty,
-              (1...65535).contains(configuration.port) else { throw OrbitWidgetRequestError.address }
-        if !host.contains("://") { host = "http://\(host)" }
-        guard var parts = URLComponents(string: host), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
-              let hostname = parts.host, !hostname.isEmpty, parts.user == nil, parts.password == nil,
-              parts.query == nil, parts.fragment == nil, parts.path.isEmpty || parts.path == "/" else {
-            throw OrbitWidgetRequestError.address
-        }
-        parts.port = configuration.port
+    private func endpoint(_ connection: OrbitWidgetConnection) throws -> URL {
+        guard !connection.host.isEmpty, !connection.host.contains("/"), !connection.host.contains(":"),
+              (1...65535).contains(connection.port) else { throw OrbitWidgetRequestError.address }
+        var parts = URLComponents()
+        parts.scheme = "https"; parts.host = connection.host; parts.port = connection.port
         parts.path = "/api/widget/status"
         guard let url = parts.url else { throw OrbitWidgetRequestError.address }
         return url
@@ -339,7 +397,7 @@ struct OrbitOverviewWidget: Widget {
             OrbitTelemetryWidgetView(entry: entry, kind: .overview)
         }
         .configurationDisplayName("PC overview")
-        .description("CPU, GPU, RAM, and VRAM at a glance. Configure your PC address and read-only widget token.")
+        .description("CPU, GPU, RAM, and VRAM at a glance. Choose a PC paired in Orbit; access is configured automatically.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -426,7 +484,7 @@ private struct OrbitTelemetryWidgetView: View {
     var entry: OrbitPCWidgetEntry
     var kind: OrbitTelemetryWidgetKind
 
-    private let accent = Color(red: 0.25, green: 0.84, blue: 0.96)
+    private var accent: Color { entry.configuration.theme.accent }
     private var metrics: [OrbitWidgetMetric] { kind.metrics(entry.configuration.metric) }
 
     var body: some View {
@@ -440,7 +498,7 @@ private struct OrbitTelemetryWidgetView: View {
             }
         }
         .widgetURL(URL(string: "orbit://dashboard"))
-        .containerBackground(Color(red: 0.035, green: 0.055, blue: 0.095).gradient, for: .widget)
+        .containerBackground(entry.configuration.theme.background.gradient, for: .widget)
     }
 
     private var panel: some View {
@@ -475,7 +533,7 @@ private struct OrbitTelemetryWidgetView: View {
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                    .foregroundStyle(entry.configuration.metric.color)
+                    .foregroundStyle(entry.configuration.monochrome ? accent : entry.configuration.metric.color)
                 if entry.configuration.metric == .fps {
                     Text(entry.snapshot?.gameName ?? "No measured game FPS").font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
                 } else if entry.snapshot?.value(entry.configuration.metric) == nil {
@@ -517,7 +575,7 @@ private struct OrbitTelemetryWidgetView: View {
                 .lineLimit(1)
             Text(entry.formatted(metric))
                 .font(.system(size: prominent ? 23 : 20, weight: .semibold, design: .rounded))
-                .foregroundStyle(metric.color)
+                .foregroundStyle(entry.configuration.monochrome ? accent : metric.color)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
@@ -568,7 +626,7 @@ private struct OrbitTelemetryWidgetView: View {
                     Text("Snapshot"); Text(measured, style: .time)
                 }.font(.system(size: 9))
             } else {
-                Text(entry.message ?? "Set up in Edit Widget").font(.system(size: 9)).lineLimit(1)
+                Text(entry.message ?? "Pair your PC in Orbit").font(.system(size: 9)).lineLimit(1)
             }
         }
     }
