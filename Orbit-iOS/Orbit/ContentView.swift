@@ -72,6 +72,25 @@ struct ContentView: View {
 
 // MARK: - Overview
 
+enum OrbitDuoPane: String, CaseIterable, Identifiable {
+    case remote = "Remote"
+    case processes = "Processes"
+    case audio = "Audio"
+    case graphs = "Graphs"
+    case games = "Games"
+
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .remote: return "computermouse.fill"
+        case .processes: return "list.bullet.rectangle.portrait.fill"
+        case .audio: return "slider.vertical.3"
+        case .graphs: return "chart.xyaxis.line"
+        case .games: return "gamecontroller.fill"
+        }
+    }
+}
+
 struct DashboardView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var pendingAction: PowerConfirmation?
@@ -79,46 +98,78 @@ struct DashboardView: View {
     @State private var isShowingPCs = false
     @State private var isShowingDiscovery = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.duoMode") private var isDuoMode = false
+    @State private var duoPane: OrbitDuoPane = .remote
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 12), count: dynamicTypeSize.isAccessibilitySize ? 1 : vm.dashboardConfiguration.columnCount)
+    private func adaptiveColumns(for availableWidth: CGFloat) -> [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: 12)]
+        }
+        let targetCount: Int
+        if availableWidth >= 980 {
+            targetCount = 4
+        } else if availableWidth >= 640 {
+            targetCount = 3
+        } else {
+            targetCount = vm.dashboardConfiguration.columnCount
+        }
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: max(1, targetCount))
     }
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 16) {
-                        if vm.isDemoMode { previewNotice }
-                        computerHeader
-                        if vm.metrics.isOnline {
-                            if vm.dashboardConfiguration.showsGame, let game = vm.metrics.activeGame { activeGameCard(game) }
-                            if vm.metrics.telemetryAvailable == false {
-                                OrbitNotice(title: "Syncing sensors…", message: "Collecting initial readings from your PC.", icon: "waveform.path.ecg")
-                            } else {
-                                metricsGrid
+            GeometryReader { geo in
+                let isWideScreen = geo.size.width >= 700 || horizontalSizeClass == .regular
+                ZStack {
+                    OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+                    if isDuoMode && isWideScreen {
+                        HStack(alignment: .top, spacing: 18) {
+                            ScrollView(showsIndicators: false) {
+                                overviewColumn(width: (geo.size.width - 54) * 0.52, isWide: false)
+                                    .padding(.vertical, 8)
                             }
-                            if vm.dashboardConfiguration.showsVolume { volumeCard }
-                            if vm.dashboardConfiguration.showsQuickControls { powerCard }
-                            if vm.dashboardConfiguration.showsSpecifications { specsLink }
-                        } else {
-                            offlineCard
-                            if vm.dashboardConfiguration.showsSpecifications { specsLink }
+                            .frame(width: max(320, (geo.size.width - 54) * 0.52))
+                            .refreshable { await vm.refreshMetrics() }
+
+                            duoCompanionDeck
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .padding(.vertical, 8)
                         }
+                        .frame(maxWidth: 1520)
+                        .padding(.horizontal, 18)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView(showsIndicators: false) {
+                            VStack(spacing: 16) {
+                                overviewColumn(width: min(geo.size.width - 36, 1400), isWide: isWideScreen)
+                                if isDuoMode {
+                                    duoCompanionDeck
+                                        .frame(minHeight: 470)
+                                }
+                            }
+                            .frame(maxWidth: 1400)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 8)
+                            .padding(.bottom, 28)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .refreshable { await vm.refreshMetrics() }
                     }
-                    .frame(maxWidth: 720)
-                    .padding(.horizontal, 18)
-                    .padding(.top, 8)
-                    .padding(.bottom, 28)
-                    .frame(maxWidth: .infinity)
                 }
-                .refreshable { await vm.refreshMetrics() }
             }
-            .navigationTitle("Overview")
+            .navigationTitle(isDuoMode ? "Orbit Duo" : "Overview")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        withAnimation(.snappy) { isDuoMode.toggle() }
+                    } label: {
+                        Image(systemName: isDuoMode ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                            .foregroundStyle(isDuoMode ? theme.accent : .primary)
+                    }
+                    .accessibilityLabel(isDuoMode ? "Disable Duo Split View" : "Enable Duo Split View")
+
                     Button {
                         vm.toggleDynamicIsland()
                     } label: {
@@ -145,7 +196,12 @@ struct DashboardView: View {
                             }
                         }
 
-                        Section("Dashboard Layout") {
+                        Section("Dashboard & Duo Layout") {
+                            Button {
+                                withAnimation(.snappy) { isDuoMode.toggle() }
+                            } label: {
+                                Label(isDuoMode ? "Exit Orbit Duo Split View" : "Enter Orbit Duo Split View", systemImage: "rectangle.split.2x1.fill")
+                            }
                             Menu("Presets") {
                                 Button("Balanced") { vm.dashboardConfiguration = .balanced }
                                 Button("Gaming") { vm.dashboardConfiguration = .gaming }
@@ -211,6 +267,83 @@ struct DashboardView: View {
                 Text(pendingAction?.message ?? "")
             }
         }
+    }
+
+    @ViewBuilder
+    private func overviewColumn(width: CGFloat, isWide: Bool) -> some View {
+        VStack(spacing: 16) {
+            if vm.isDemoMode { previewNotice }
+            computerHeader
+            if vm.metrics.isOnline {
+                if vm.dashboardConfiguration.showsGame, let game = vm.metrics.activeGame { activeGameCard(game) }
+                if vm.metrics.telemetryAvailable == false {
+                    OrbitNotice(title: "Syncing sensors…", message: "Collecting initial readings from your PC.", icon: "waveform.path.ecg")
+                } else {
+                    metricsGrid(width: width)
+                }
+                if isWide && vm.dashboardConfiguration.showsVolume && vm.dashboardConfiguration.showsQuickControls {
+                    HStack(spacing: 14) {
+                        volumeCard.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        powerCard.frame(maxWidth: .infinity)
+                    }
+                } else {
+                    if vm.dashboardConfiguration.showsVolume { volumeCard }
+                    if vm.dashboardConfiguration.showsQuickControls { powerCard }
+                }
+                if vm.dashboardConfiguration.showsSpecifications { specsLink }
+            } else {
+                offlineCard
+                if vm.dashboardConfiguration.showsSpecifications { specsLink }
+            }
+        }
+    }
+
+    private var duoCompanionDeck: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Label("Duo Second Screen", systemImage: "rectangle.split.2x1.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(theme.accent)
+                Spacer()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(OrbitDuoPane.allCases) { item in
+                            Button {
+                                withAnimation(.snappy) { duoPane = item }
+                            } label: {
+                                Label(item.rawValue, systemImage: item.icon)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(duoPane == item ? theme.accent.opacity(0.22) : .white.opacity(0.05), in: Capsule())
+                                    .foregroundStyle(duoPane == item ? theme.accent : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+
+            Group {
+                switch duoPane {
+                case .remote:
+                    QuickRemoteView(vm: vm, isEmbeddedInDuo: true)
+                case .processes:
+                    TaskManagerView(vm: vm)
+                case .audio:
+                    AudioMixerView(vm: vm)
+                case .graphs:
+                    SessionHistoryView(vm: vm)
+                case .games:
+                    GameLibraryView(vm: vm, isEmbeddedInDuo: true)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .liquidGlass(cornerRadius: 24, tint: theme.accent)
     }
 
     private var previewNotice: some View {
@@ -309,14 +442,14 @@ struct DashboardView: View {
     }
 
     @ViewBuilder
-    private var metricsGrid: some View {
+    private func metricsGrid(width: CGFloat) -> some View {
         if vm.dashboardConfiguration.orderedVisibleMetrics.isEmpty {
             Button { isShowingCustomization = true } label: {
                 OrbitNotice(title: "No cards selected", message: "Tap to choose hardware metrics.", icon: "slider.horizontal.3")
             }
             .buttonStyle(.plain)
         } else {
-            LazyVGrid(columns: columns, spacing: 12) {
+            LazyVGrid(columns: adaptiveColumns(for: width), spacing: 12) {
                 ForEach(vm.dashboardConfiguration.orderedVisibleMetrics) { metric in
                     metricCard(metric)
                 }
@@ -778,6 +911,7 @@ private enum PowerConfirmation: String {
 
 struct GameLibraryView: View {
     @ObservedObject var vm: OrbitViewModel
+    var isEmbeddedInDuo = false
     @State private var searchText = ""
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -785,69 +919,83 @@ struct GameLibraryView: View {
         searchText.isEmpty ? vm.games : vm.games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if !vm.metrics.isOnline {
-                            OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
-                        }
-                        if filteredGames.isEmpty {
-                            ContentUnavailableView(
-                                searchText.isEmpty ? "No Sunshine Apps" : "No Matches",
-                                systemImage: "gamecontroller",
-                                description: Text(searchText.isEmpty ? "Apps configured in Sunshine on your PC appear here automatically." : "Try a different search term.")
-                            )
-                            .padding(.vertical, 36)
-                        } else {
-                            LazyVGrid(
-                                columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2),
-                                spacing: 14
-                            ) {
-                                ForEach(filteredGames) { game in
-                                    GameCoverCard(game: game) { Task { await vm.smartLaunch(game: game) } }
-                                        .disabled(!vm.metrics.isOnline)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: 720)
-                    .padding(18)
-                    .frame(maxWidth: .infinity)
-                }
-                .refreshable { await vm.fetchSunshineApps() }
-            }
-            .navigationTitle("Library")
-            .searchable(text: $searchText, prompt: "Search games & apps")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        Task { await vm.fetchSunshineApps() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(!vm.metrics.isOnline)
-                    .accessibilityLabel("Refresh library")
+    private var adaptiveGameColumns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: 14)]
+        }
+        return [GridItem(.adaptive(minimum: 175, maximum: 320), spacing: 14)]
+    }
 
-                    Menu {
-                        Button("Open Moonlight", systemImage: "arrow.up.forward.app") {
-                            vm.openNativeMoonlight()
-                        }
-                        Button("Desktop Preview", systemImage: "display") {
-                            vm.openDesktopPreview()
-                        }
-                        .disabled(!vm.metrics.isOnline)
-                        Divider()
-                        Toggle("Auto-Open Moonlight on Launch", isOn: $vm.autoOpenMoonlight)
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+    var body: some View {
+        Group {
+            if isEmbeddedInDuo {
+                libraryContent
+            } else {
+                NavigationStack {
+                    ZStack {
+                        OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+                        libraryContent
                     }
-                    .accessibilityLabel("Library Menu")
+                    .navigationTitle("Library")
+                    .searchable(text: $searchText, prompt: "Search games & apps")
+                    .toolbar {
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            Button {
+                                Task { await vm.fetchSunshineApps() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .disabled(!vm.metrics.isOnline)
+                            .accessibilityLabel("Refresh library")
+
+                            Menu {
+                                Button("Open Moonlight", systemImage: "arrow.up.forward.app") {
+                                    vm.openNativeMoonlight()
+                                }
+                                Button("Desktop Preview", systemImage: "display") {
+                                    vm.openDesktopPreview()
+                                }
+                                .disabled(!vm.metrics.isOnline)
+                                Divider()
+                                Toggle("Auto-Open Moonlight on Launch", isOn: $vm.autoOpenMoonlight)
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .accessibilityLabel("Library Menu")
+                        }
+                    }
                 }
             }
         }
+    }
+
+    private var libraryContent: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                if !vm.metrics.isOnline {
+                    OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
+                }
+                if filteredGames.isEmpty {
+                    ContentUnavailableView(
+                        searchText.isEmpty ? "No Sunshine Apps" : "No Matches",
+                        systemImage: "gamecontroller",
+                        description: Text(searchText.isEmpty ? "Apps configured in Sunshine on your PC appear here automatically." : "Try a different search term.")
+                    )
+                    .padding(.vertical, 36)
+                } else {
+                    LazyVGrid(columns: adaptiveGameColumns, spacing: 14) {
+                        ForEach(filteredGames) { game in
+                            GameCoverCard(game: game) { Task { await vm.smartLaunch(game: game) } }
+                                .disabled(!vm.metrics.isOnline)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 1400)
+            .padding(isEmbeddedInDuo ? 12 : 18)
+            .frame(maxWidth: .infinity)
+        }
+        .refreshable { await vm.fetchSunshineApps() }
     }
 }
 
@@ -891,6 +1039,7 @@ struct GameCoverCard: View {
 
 struct QuickRemoteView: View {
     @ObservedObject var vm: OrbitViewModel
+    var isEmbeddedInDuo = false
     @State private var keyboardInput = ""
     @State private var lastDragLocation: CGPoint?
     @State private var lastSentTime: Date = .distantPast
@@ -900,74 +1049,101 @@ struct QuickRemoteView: View {
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 16) {
-                        if !vm.metrics.isOnline {
-                            OrbitNotice(title: "PC Offline", message: "Connect to your PC to use trackpad, keyboard, and media controls.", icon: "wifi.slash", tint: .orange)
-                        }
-                        VStack(spacing: 16) {
-                            trackpad
-                            keyboard
-                            mediaControls
-                        }
-                        .disabled(!vm.metrics.isOnline)
-                        .opacity(vm.metrics.isOnline ? 1 : 0.5)
+        Group {
+            if isEmbeddedInDuo {
+                remoteContent
+            } else {
+                NavigationStack {
+                    ZStack {
+                        OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+                        remoteContent
                     }
-                    .frame(maxWidth: 720)
-                    .padding(18)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-            .navigationTitle("Remote")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        vm.openDesktopPreview()
-                    } label: {
-                        Image(systemName: "display")
-                    }
-                    .disabled(!vm.metrics.isOnline)
-                    .accessibilityLabel("Desktop Preview")
+                    .navigationTitle("Remote")
+                    .toolbar {
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            Button {
+                                vm.openDesktopPreview()
+                            } label: {
+                                Image(systemName: "display")
+                            }
+                            .disabled(!vm.metrics.isOnline)
+                            .accessibilityLabel("Desktop Preview")
 
-                    Menu {
-                        NavigationLink { TaskManagerView(vm: vm) } label: {
-                            Label("Task Manager", systemImage: "list.bullet.rectangle")
+                            Menu {
+                                NavigationLink { TaskManagerView(vm: vm) } label: {
+                                    Label("Task Manager", systemImage: "list.bullet.rectangle")
+                                }
+                                NavigationLink { AudioMixerView(vm: vm) } label: {
+                                    Label("Audio Mixer", systemImage: "slider.vertical.3")
+                                }
+                                NavigationLink { ClipboardView(vm: vm) } label: {
+                                    Label("Clipboard Sync", systemImage: "doc.on.clipboard")
+                                }
+                                Divider()
+                                Button("Toggle HDR", systemImage: "sun.max") {
+                                    Task { await vm.sendPowerAction("toggle_hdr") }
+                                }
+                                Button("Restore Display", systemImage: "display") {
+                                    Task { await vm.sendPowerAction("restore_display") }
+                                }
+                                Button("Lock PC", systemImage: "lock") {
+                                    Task { await vm.sendPowerAction("lock") }
+                                }
+                                Divider()
+                                Button("Close Active Game", systemImage: "xmark.square", role: .destructive) {
+                                    confirmCloseApp = true
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .disabled(!vm.metrics.isOnline)
+                            .accessibilityLabel("Remote Actions Menu")
                         }
-                        NavigationLink { AudioMixerView(vm: vm) } label: {
-                            Label("Audio Mixer", systemImage: "slider.vertical.3")
-                        }
-                        NavigationLink { ClipboardView(vm: vm) } label: {
-                            Label("Clipboard Sync", systemImage: "doc.on.clipboard")
-                        }
-                        Divider()
-                        Button("Toggle HDR", systemImage: "sun.max") {
-                            Task { await vm.sendPowerAction("toggle_hdr") }
-                        }
-                        Button("Restore Display", systemImage: "display") {
-                            Task { await vm.sendPowerAction("restore_display") }
-                        }
-                        Button("Lock PC", systemImage: "lock") {
-                            Task { await vm.sendPowerAction("lock") }
-                        }
-                        Divider()
-                        Button("Close Active Game", systemImage: "xmark.square", role: .destructive) {
-                            confirmCloseApp = true
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
                     }
-                    .disabled(!vm.metrics.isOnline)
-                    .accessibilityLabel("Remote Actions Menu")
+                    .confirmationDialog("Close the active game?", isPresented: $confirmCloseApp, titleVisibility: .visible) {
+                        Button("Close Game", role: .destructive) { Task { await vm.sendPowerAction("kill_game") } }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Sends a close request to the active foreground game on your PC.")
+                    }
                 }
             }
-            .confirmationDialog("Close the active game?", isPresented: $confirmCloseApp, titleVisibility: .visible) {
-                Button("Close Game", role: .destructive) { Task { await vm.sendPowerAction("kill_game") } }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Sends a close request to the active foreground game on your PC.")
+        }
+    }
+
+    private var remoteContent: some View {
+        GeometryReader { geo in
+            let isSplitRemote = geo.size.width >= 680 && !isEmbeddedInDuo
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 16) {
+                    if !vm.metrics.isOnline {
+                        OrbitNotice(title: "PC Offline", message: "Connect to your PC to use trackpad, keyboard, and media controls.", icon: "wifi.slash", tint: .orange)
+                    }
+                    Group {
+                        if isSplitRemote {
+                            HStack(alignment: .top, spacing: 16) {
+                                trackpad
+                                    .frame(maxWidth: .infinity)
+                                VStack(spacing: 16) {
+                                    keyboard
+                                    mediaControls
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                        } else {
+                            VStack(spacing: 16) {
+                                trackpad
+                                keyboard
+                                mediaControls
+                            }
+                        }
+                    }
+                    .disabled(!vm.metrics.isOnline)
+                    .opacity(vm.metrics.isOnline ? 1 : 0.5)
+                }
+                .frame(maxWidth: 1400)
+                .padding(isEmbeddedInDuo ? 12 : 18)
+                .frame(maxWidth: .infinity)
             }
         }
     }

@@ -8,10 +8,9 @@ struct CompanionToolsView: View {
     @State private var showsProPaywall = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: 175, maximum: 340), spacing: 12)]
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,8 +18,16 @@ struct CompanionToolsView: View {
                 OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
-                        pcSwitcherCard
-                        orbitProCard
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 14) {
+                                pcSwitcherCard
+                                orbitProCard
+                            }
+                            VStack(spacing: 14) {
+                                pcSwitcherCard
+                                orbitProCard
+                            }
+                        }
 
                         sectionHeader("PC Control", icon: "slider.horizontal.3")
                         LazyVGrid(columns: columns, spacing: 12) {
@@ -77,9 +84,11 @@ struct CompanionToolsView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: 1380)
                     .padding(.horizontal, 18)
                     .padding(.top, 8)
                     .padding(.bottom, 28)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.plain)
@@ -120,7 +129,7 @@ struct CompanionToolsView: View {
                         Button {
                             showsProPaywall = true
                         } label: {
-                            Label(proStore.isProUnlocked ? "Orbit Pro (Active)" : "Orbit Pro...", systemImage: "crown.fill")
+                            Label("Orbit Pro · Coming Soon", systemImage: "crown.fill")
                         }
 
                         Button {
@@ -150,23 +159,26 @@ struct CompanionToolsView: View {
                     Circle()
                         .fill(Color.yellow.opacity(0.18))
                         .frame(width: 40, height: 40)
-                    Image(systemName: proStore.isProUnlocked ? "checkmark.seal.fill" : "crown.fill")
+                    Image(systemName: "crown.fill")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.yellow)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(proStore.isProUnlocked ? "Orbit Pro Active" : "Upgrade to Orbit Pro · \(proStore.displayPrice)")
+                    Text("Orbit Pro · Coming Soon")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)
-                    Text(proStore.isProUnlocked ? "All 11 themes, 5 Home Screen icons & Pro features unlocked" : "One-time purchase · Extra themes, Home Screen icons & Power widgets")
+                    Text("All 9 themes & 6 Home Screen icons unlocked for free testing")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.yellow.opacity(0.8))
+                Text("SOON")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.yellow.opacity(0.2), in: Capsule())
+                    .foregroundStyle(.yellow)
             }
             .padding(14)
             .liquidGlass(cornerRadius: 18, tint: .yellow)
