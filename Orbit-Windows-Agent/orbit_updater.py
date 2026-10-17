@@ -108,23 +108,66 @@ def _select_release_download_url(release_payload, owner=GITHUB_OWNER, repo=GITHU
     return f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/main"
 
 
-def _check_latest_release(owner, repo, opener=None, timeout=6.0):
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    raw = _fetch_bytes(api_url, opener=opener, timeout=timeout)
-    data = json.loads(raw.decode("utf-8"))
+def _is_pc_companion_release(release_payload):
+    """Return True if a GitHub release targets the Windows PC Companion (not iOS-only)."""
+    if not isinstance(release_payload, dict) or release_payload.get("draft"):
+        return False
+    tag = str(release_payload.get("tag_name") or "").strip().lower()
+    title = str(release_payload.get("name") or "").strip().lower()
+    if tag.startswith(("ios-", "ios_", "iphone-", "ipad-")):
+        return False
+    if tag.startswith(("pc-", "pc_", "windows-", "companion-", "agent-")):
+        return True
+    assets = release_payload.get("assets") or []
+    for asset in assets:
+        if isinstance(asset, dict):
+            asset_name = str(asset.get("name") or "").lower()
+            if "windows" in asset_name or "agent" in asset_name or "companion" in asset_name:
+                return True
+    if ("ios" in title or "iphone" in title or "testflight" in title) and not any(
+        kw in title for kw in ("windows", "pc", "companion", "agent")
+    ):
+        return False
+    return True
+
+
+def _release_dict_to_candidate(data, owner, repo):
     tag_name = str(data.get("tag_name") or data.get("name") or "").strip()
     latest_version = normalize_version_string(tag_name)
     if not latest_version:
         return None
     return {
         "latestVersion": latest_version,
-        "releaseTitle": str(data.get("name") or f"Orbit {latest_version}").strip(),
+        "releaseTitle": str(data.get("name") or f"Orbit PC Companion {latest_version}").strip(),
         "releaseNotes": str(data.get("body") or "").strip(),
         "releaseUrl": str(data.get("html_url") or f"https://github.com/{owner}/{repo}/releases").strip(),
         "downloadUrl": _select_release_download_url(data, owner=owner, repo=repo),
         "publishedAt": data.get("published_at"),
         "source": "github_release",
     }
+
+
+def _check_latest_release(owner, repo, opener=None, timeout=6.0):
+    releases_url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=20"
+    try:
+        raw = _fetch_bytes(releases_url, opener=opener, timeout=timeout)
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        raw = _fetch_bytes(api_url, opener=opener, timeout=timeout)
+        payload = json.loads(raw.decode("utf-8"))
+
+    releases = payload if isinstance(payload, list) else ([payload] if isinstance(payload, dict) else [])
+    best_candidate = None
+    for item in releases:
+        if not _is_pc_companion_release(item):
+            continue
+        candidate = _release_dict_to_candidate(item, owner, repo)
+        if candidate is None:
+            continue
+        if best_candidate is None or is_newer_version(candidate["latestVersion"], best_candidate["latestVersion"]):
+            best_candidate = candidate
+    return best_candidate
 
 
 def _check_main_branch_version(owner, repo, opener=None, timeout=6.0):

@@ -240,19 +240,28 @@ class UpdaterTests(unittest.TestCase):
 
         def fake_opener(request, timeout=6.0):
             url = request.full_url
-            if "/releases/latest" in url:
-                payload = json.dumps({
-                    "tag_name": "v4.3.0",
-                    "name": "Orbit 4.3.0",
-                    "body": "Faster telemetry and tray improvements.",
-                    "html_url": "https://github.com/AceDimi2005/Orbit/releases/tag/v4.3.0",
-                    "assets": [
-                        {
-                            "name": "Orbit-Windows-Agent-4.3.0.zip",
-                            "browser_download_url": "https://github.com/AceDimi2005/Orbit/releases/download/v4.3.0/Orbit-Windows-Agent-4.3.0.zip",
-                        }
-                    ],
-                }).encode("utf-8")
+            if "/releases?per_page=20" in url or "/releases/latest" in url:
+                payload = json.dumps([
+                    {
+                        "tag_name": "ios-v9.9.9",
+                        "name": "Orbit for iOS 9.9.9",
+                        "body": "iPhone App Store release only.",
+                        "html_url": "https://github.com/AceDimi2005/Orbit/releases/tag/ios-v9.9.9",
+                        "assets": [],
+                    },
+                    {
+                        "tag_name": "pc-v4.3.0",
+                        "name": "Orbit PC Companion 4.3.0",
+                        "body": "Faster telemetry and tray improvements.",
+                        "html_url": "https://github.com/AceDimi2005/Orbit/releases/tag/pc-v4.3.0",
+                        "assets": [
+                            {
+                                "name": "Orbit-Windows-Agent-4.3.0.zip",
+                                "browser_download_url": "https://github.com/AceDimi2005/Orbit/releases/download/pc-v4.3.0/Orbit-Windows-Agent-4.3.0.zip",
+                            }
+                        ],
+                    },
+                ]).encode("utf-8")
                 return io.BytesIO(payload)
             if "raw.githubusercontent.com" in url:
                 return io.BytesIO(b'AGENT_VERSION = "4.1.0"\n')
@@ -263,7 +272,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(info["latestVersion"], "4.3.0")
         self.assertEqual(
             info["downloadUrl"],
-            "https://github.com/AceDimi2005/Orbit/releases/download/v4.3.0/Orbit-Windows-Agent-4.3.0.zip",
+            "https://github.com/AceDimi2005/Orbit/releases/download/pc-v4.3.0/Orbit-Windows-Agent-4.3.0.zip",
         )
 
     def test_apply_update_archive_updates_agent_files_and_preserves_tokens(self):
