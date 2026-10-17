@@ -777,9 +777,9 @@ final class OrbitViewModel: ObservableObject {
             catch { if generation == version { statusLog = "Could not launch: \(error.localizedDescription)" }; return }
         }
         guard version == generation, !Task.isCancelled else { return }
-        if autoOpenMoonlight { openNativeMoonlight() } else { openDesktopPreview() }
+        if autoOpenMoonlight { openNativeMoonlight() }
     }
-    func openDesktopPreview() { guard metrics.isOnline else { return }; isShowingStreamView = true; startLiveScreenFeed() }
+    func openDesktopPreview() { isShowingStreamView = true }
     func openNativeMoonlight() {
         guard let u = URL(string: "moonlight://") else { return }
         UIApplication.shared.open(u, options: [:]) { [weak self] opened in

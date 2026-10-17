@@ -1,17 +1,102 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Custom tvOS Focusable Styles (Prevents tvOS default button text-wrapping)
+
+struct TVActionPillStyle: ButtonStyle {
+    var tint: Color = .cyan
+    var isDestructive: Bool = false
+    var isProminent: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVActionPillBody(
+            configuration: configuration,
+            tint: isDestructive ? .red : tint,
+            isProminent: isProminent
+        )
+    }
+
+    private struct TVActionPillBody: View {
+        let configuration: Configuration
+        let tint: Color
+        let isProminent: Bool
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(isFocused ? Color.black : Color.white)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 13)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            isFocused
+                                ? tint
+                                : (isProminent ? tint.opacity(0.28) : Color.white.opacity(0.09))
+                        )
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            isFocused ? Color.white : tint.opacity(isProminent ? 0.65 : 0.30),
+                            lineWidth: isFocused ? 2.5 : 1
+                        )
+                )
+                .scaleEffect(configuration.isPressed ? 0.96 : (isFocused ? 1.05 : 1.0))
+                .shadow(color: isFocused ? tint.opacity(0.55) : .clear, radius: 16, y: 6)
+                .animation(.spring(duration: 0.2), value: isFocused)
+        }
+    }
+}
+
+struct TVSurfaceCardStyle: ButtonStyle {
+    var accent: Color = .cyan
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVSurfaceCardBody(configuration: configuration, accent: accent)
+    }
+
+    private struct TVSurfaceCardBody: View {
+        let configuration: Configuration
+        let accent: Color
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(
+                            isFocused
+                                ? Color.white.opacity(0.13)
+                                : Color.white.opacity(0.06)
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(
+                            isFocused ? accent : accent.opacity(0.26),
+                            lineWidth: isFocused ? 3 : 1
+                        )
+                )
+                .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.025 : 1.0))
+                .shadow(color: isFocused ? accent.opacity(0.42) : .clear, radius: 18, y: 8)
+                .animation(.spring(duration: 0.2), value: isFocused)
+        }
+    }
+}
+
 // MARK: - Root Apple TV View
 
 struct OrbitTVRootView: View {
     @EnvironmentObject var vm: OrbitTVViewModel
     @State private var showShutdownConfirm = false
     @State private var showRestartConfirm = false
-    @State private var isFullscreenMonitor = false
 
     var body: some View {
         ZStack {
-            // Deep space living-room background
             LinearGradient(
                 colors: [
                     Color(red: 0.03, green: 0.04, blue: 0.09),
@@ -26,32 +111,28 @@ struct OrbitTVRootView: View {
             TabView(selection: $vm.selectedTab) {
                 TVDashboardTab(
                     showShutdownConfirm: $showShutdownConfirm,
-                    showRestartConfirm: $showRestartConfirm,
-                    onOpenLiveMonitor: {
-                        vm.selectedTab = 1
-                        vm.startScreenStream()
-                    }
+                    showRestartConfirm: $showRestartConfirm
                 )
                 .tabItem {
                     Label("Dashboard", systemImage: "gauge.with.dots.needle.67percent")
                 }
                 .tag(0)
 
-                TVMonitorAndGamesTab(isFullscreenMonitor: $isFullscreenMonitor)
+                TVControlsAndGamesTab()
                     .tabItem {
-                        Label("Monitor & Games", systemImage: "play.tv.fill")
+                        Label("Controls", systemImage: "gamecontroller.fill")
                     }
                     .tag(1)
 
                 TVAudioAndMediaTab()
                     .tabItem {
-                        Label("Audio & Media", systemImage: "hifispeaker.2.fill")
+                        Label("Audio", systemImage: "hifispeaker.2.fill")
                     }
                     .tag(2)
 
                 TVTaskManagerTab()
                     .tabItem {
-                        Label("Task Manager", systemImage: "cpu.fill")
+                        Label("Processes", systemImage: "cpu.fill")
                     }
                     .tag(3)
 
@@ -60,25 +141,6 @@ struct OrbitTVRootView: View {
                         Label("My PCs", systemImage: "desktopcomputer")
                     }
                     .tag(4)
-            }
-
-            // Bottom status banner
-            if !vm.statusBanner.isEmpty {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 12) {
-                        Image(systemName: vm.metrics.isOnline ? "bolt.horizontal.circle.fill" : "sparkles.tv")
-                            .font(.callout)
-                            .foregroundStyle(.cyan)
-                        Text(vm.statusBanner)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, 22)
-                }
             }
         }
         .onPlayPauseCommand {
@@ -120,27 +182,34 @@ struct TVDashboardTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
     @Binding var showShutdownConfirm: Bool
     @Binding var showRestartConfirm: Bool
-    var onOpenLiveMonitor: () -> Void
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 28),
-        GridItem(.flexible(), spacing: 28),
-        GridItem(.flexible(), spacing: 28),
-        GridItem(.flexible(), spacing: 28)
+    private let telemetryColumns = [
+        GridItem(.flexible(), spacing: 22),
+        GridItem(.flexible(), spacing: 22),
+        GridItem(.flexible(), spacing: 22),
+        GridItem(.flexible(), spacing: 22)
+    ]
+
+    private let quickActionColumns = [
+        GridItem(.flexible(), spacing: 18),
+        GridItem(.flexible(), spacing: 18),
+        GridItem(.flexible(), spacing: 18),
+        GridItem(.flexible(), spacing: 18),
+        GridItem(.flexible(), spacing: 18),
+        GridItem(.flexible(), spacing: 18)
     ]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 34) {
-                // Top Hero Status + Power Control Bar
+            VStack(alignment: .leading, spacing: 26) {
+                // Hero Status + Start / Shut Down Power Deck
                 TVHeroPowerDeck(
                     showShutdownConfirm: $showShutdownConfirm,
-                    showRestartConfirm: $showRestartConfirm,
-                    onOpenLiveMonitor: onOpenLiveMonitor
+                    showRestartConfirm: $showRestartConfirm
                 )
 
                 // 8-Card 4K Telemetry Grid
-                LazyVGrid(columns: columns, spacing: 28) {
+                LazyVGrid(columns: telemetryColumns, spacing: 22) {
                     TVTelemetryCard(
                         title: "CPU LOAD",
                         primaryValue: String(format: "%.0f%%", vm.metrics.cpuUsage),
@@ -239,20 +308,21 @@ struct TVDashboardTab: View {
                     )
                 }
 
-                // Living Room Quick Actions Strip
-                VStack(alignment: .leading, spacing: 18) {
+                // Living Room Quick Controls Strip
+                VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         Text("LIVING ROOM QUICK CONTROLS")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.6)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .tracking(1.4)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("Tip: Press Play/Pause on your Siri Remote anytime to control PC media")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(vm.statusBanner)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.cyan)
+                            .lineLimit(1)
                     }
 
-                    HStack(spacing: 22) {
+                    LazyVGrid(columns: quickActionColumns, spacing: 18) {
                         TVQuickActionCard(
                             title: "Volume -",
                             subtitle: "Step Down",
@@ -300,7 +370,7 @@ struct TVDashboardTab: View {
 
                         TVQuickActionCard(
                             title: "Toggle HDR",
-                            subtitle: "Win+Alt+B",
+                            subtitle: "Win + Alt + B",
                             icon: "sparkles.tv.fill",
                             tint: .yellow
                         ) {
@@ -309,8 +379,9 @@ struct TVDashboardTab: View {
                     }
                 }
             }
-            .padding(.horizontal, 60)
-            .padding(.vertical, 40)
+            .padding(.horizontal, 52)
+            .padding(.top, 18)
+            .padding(.bottom, 36)
         }
     }
 }
@@ -321,123 +392,106 @@ struct TVHeroPowerDeck: View {
     @EnvironmentObject var vm: OrbitTVViewModel
     @Binding var showShutdownConfirm: Bool
     @Binding var showRestartConfirm: Bool
-    var onOpenLiveMonitor: () -> Void
 
     var body: some View {
-        HStack(spacing: 30) {
+        HStack(spacing: 24) {
             // Left: PC Identity & Live Status
-            HStack(spacing: 22) {
+            HStack(spacing: 18) {
                 ZStack {
                     Circle()
-                        .fill(statusColor.opacity(0.2))
-                        .frame(width: 78, height: 78)
+                        .fill(statusColor.opacity(0.18))
+                        .frame(width: 64, height: 64)
                     Image(systemName: "desktopcomputer")
-                        .font(.system(size: 34, weight: .semibold))
+                        .font(.system(size: 28, weight: .semibold))
                         .foregroundStyle(statusColor)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 12) {
                         Text(vm.metrics.hostname)
-                            .font(.title2.weight(.bold))
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
+                            .lineLimit(1)
 
                         HStack(spacing: 6) {
                             Circle()
                                 .fill(statusColor)
-                                .frame(width: 10, height: 10)
+                                .frame(width: 8, height: 8)
                             Text(statusText)
-                                .font(.caption.weight(.bold))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
                                 .foregroundStyle(statusColor)
+                                .lineLimit(1)
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 11)
                         .padding(.vertical, 5)
                         .background(statusColor.opacity(0.16), in: Capsule())
+                        .fixedSize(horizontal: true, vertical: false)
                     }
 
                     Text("\(vm.metrics.cpuName) • \(vm.metrics.gpuName)")
-                        .font(.callout)
+                        .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
                     if let game = vm.metrics.activeGame, !game.isEmpty {
-                        Label("Playing \(game) (\(Int(vm.metrics.fps ?? 0)) FPS)", systemImage: "gamecontroller.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.green)
+                        HStack(spacing: 6) {
+                            Image(systemName: "gamecontroller.fill")
+                            Text("Playing \(game) • \(Int(vm.metrics.fps ?? 0)) FPS")
+                                .lineLimit(1)
+                        }
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.green)
                     }
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 16)
 
-            // Right: Prominent Power On (Start) & Shut Down Controls
-            HStack(spacing: 18) {
+            // Right: Single-line Power Controls (Start / Shut Down / Sleep / Restart / Lock)
+            HStack(spacing: 14) {
                 Button {
                     Task { await vm.wakePC() }
                 } label: {
                     Label(vm.isWaking ? "Waking..." : "Power On (WoL)", systemImage: "power.circle.fill")
-                        .font(.callout.weight(.bold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
                 }
-                .tint(.green)
+                .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
 
                 Button {
                     showShutdownConfirm = true
                 } label: {
                     Label("Shut Down", systemImage: "power")
-                        .font(.callout.weight(.bold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
                 }
-                .tint(.red)
+                .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true, isProminent: true))
 
                 Button {
                     Task { await vm.sendAction("sleep") }
                 } label: {
                     Label("Sleep", systemImage: "moon.zzz.fill")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
                 }
-                .tint(.indigo)
+                .buttonStyle(TVActionPillStyle(tint: .indigo))
 
                 Button {
                     showRestartConfirm = true
                 } label: {
-                    Label("Restart", systemImage: "arrow.clockwise.circle.fill")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                    Label("Restart", systemImage: "arrow.clockwise")
                 }
-                .tint(.orange)
+                .buttonStyle(TVActionPillStyle(tint: .orange))
 
                 Button {
                     Task { await vm.sendAction("lock") }
                 } label: {
                     Label("Lock", systemImage: "lock.fill")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
                 }
-
-                Button {
-                    onOpenLiveMonitor()
-                } label: {
-                    Label("Live Screen", systemImage: "tv.inset.filled")
-                        .font(.callout.weight(.bold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                }
-                .tint(.cyan)
+                .buttonStyle(TVActionPillStyle(tint: .cyan))
             }
         }
-        .padding(28)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(Color.white.opacity(0.06))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
                 )
         )
@@ -451,8 +505,8 @@ struct TVHeroPowerDeck: View {
 
     private var statusText: String {
         if vm.metrics.isOnline && !vm.isDemoMode { return "ONLINE" }
-        if vm.isDemoMode { return "PREVIEW DEMO" }
-        return "OFFLINE • READY FOR WOL"
+        if vm.isDemoMode { return "PREVIEW" }
+        return "OFFLINE"
     }
 }
 
@@ -471,29 +525,34 @@ struct TVTelemetryCard: View {
 
     var body: some View {
         Button(action: {}) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 8) {
                     Text(title)
-                        .font(.caption.weight(.bold))
-                        .tracking(1.4)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .tracking(1.1)
                         .foregroundStyle(accent)
-                    Spacer()
+                        .lineLimit(1)
+
+                    Spacer(minLength: 4)
+
                     Text(secondaryBadge)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 4)
                         .background(accent.opacity(0.18), in: Capsule())
                         .foregroundStyle(accent)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
                 Text(primaryValue)
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.75)
 
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
@@ -501,13 +560,14 @@ struct TVTelemetryCard: View {
                     TVSparklineShape(points: sparkline)
                         .stroke(
                             LinearGradient(
-                                colors: [accent.opacity(0.5), accent],
+                                colors: [accent.opacity(0.45), accent],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             ),
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
+                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
                         )
-                        .frame(height: 36)
+                        .frame(height: 30)
+                        .padding(.vertical, 2)
                 } else {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
@@ -518,32 +578,27 @@ struct TVTelemetryCard: View {
                                 .frame(width: max(8, geo.size.width * min(1.0, max(0.0, progress))))
                         }
                     }
-                    .frame(height: 10)
+                    .frame(height: 8)
                     .padding(.vertical, 13)
                 }
 
-                HStack {
+                HStack(spacing: 6) {
                     Text(footerLeft)
-                        .font(.caption2)
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Spacer()
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
                     Text(footerRight)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
-            .padding(24)
+            .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(accent.opacity(0.28), lineWidth: 1)
-                    )
-            )
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVSurfaceCardStyle(accent: accent))
     }
 }
 
@@ -580,205 +635,229 @@ struct TVQuickActionCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: icon)
-                    .font(.title2)
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(tint)
                 Text(title)
-                    .font(.callout.weight(.bold))
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
+                    .lineLimit(1)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .padding(20)
+            .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVSurfaceCardStyle(accent: tint))
     }
 }
 
-// MARK: - Tab 2: Big Screen Live Monitor & Couch Game Launcher
+// MARK: - Tab 2: Desktop Controls, Sunshine Game Launcher & Video Streaming (Coming Soon)
 
-struct TVMonitorAndGamesTab: View {
+struct TVControlsAndGamesTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
-    @Binding var isFullscreenMonitor: Bool
+
+    private let desktopColumns = [
+        GridItem(.flexible(), spacing: 20),
+        GridItem(.flexible(), spacing: 20),
+        GridItem(.flexible(), spacing: 20),
+        GridItem(.flexible(), spacing: 20)
+    ]
 
     private let gameColumns = [
-        GridItem(.flexible(), spacing: 26),
-        GridItem(.flexible(), spacing: 26),
-        GridItem(.flexible(), spacing: 26)
+        GridItem(.flexible(), spacing: 22),
+        GridItem(.flexible(), spacing: 22),
+        GridItem(.flexible(), spacing: 22)
     ]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
-                // Live PC Desktop Monitor Card
-                VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 32) {
+                // Section 1: Windows Desktop & Window Controls
+                VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("LIVE PC DESKTOP MONITOR")
-                                .font(.callout.weight(.bold))
-                                .tracking(1.6)
+                            Text("WINDOWS DESKTOP & DISPLAY SHORTCUTS")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .tracking(1.4)
                                 .foregroundStyle(.cyan)
-                            Text("Watch renders, downloads, or game queues from your living room couch (view-only mode)")
-                                .font(.caption)
+                            Text("Control active windows, take PC screenshots, or switch HDR directly from your Siri Remote")
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        HStack(spacing: 16) {
-                            Button {
-                                vm.toggleScreenStream()
-                            } label: {
-                                Label(
-                                    vm.isStreamingScreen ? "Stop Stream" : "Start Live View",
-                                    systemImage: vm.isStreamingScreen ? "stop.circle.fill" : "play.tv.fill"
-                                )
-                            }
-                            .tint(vm.isStreamingScreen ? .red : .cyan)
-
-                            Button {
-                                Task { await vm.sendAction("show_desktop") }
-                            } label: {
-                                Label("Show Desktop", systemImage: "menubar.dock.rectangle")
-                            }
-
-                            Button {
-                                Task { await vm.sendAction("task_view") }
-                            } label: {
-                                Label("Task View", systemImage: "rectangle.3.group.fill")
-                            }
-
-                            Button {
-                                Task { await vm.sendAction("alt_tab") }
-                            } label: {
-                                Label("Alt + Tab", systemImage: "macwindow.on.rectangle")
-                            }
-
-                            Button {
-                                Task { await vm.sendAction("screenshot") }
-                            } label: {
-                                Label("Screenshot", systemImage: "camera.viewfinder")
-                            }
-                        }
+                        Text(vm.statusBanner)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.cyan)
+                            .lineLimit(1)
                     }
 
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(Color.black.opacity(0.55))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                    .strokeBorder(Color.cyan.opacity(0.30), lineWidth: 1.5)
-                            )
+                    LazyVGrid(columns: desktopColumns, spacing: 20) {
+                        TVQuickActionCard(
+                            title: "Show Desktop",
+                            subtitle: "Minimize All (Win + D)",
+                            icon: "menubar.dock.rectangle",
+                            tint: .cyan
+                        ) {
+                            Task { await vm.sendAction("show_desktop") }
+                        }
 
-                        if let frame = vm.liveFrameImage {
-                            Image(uiImage: frame)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                .padding(8)
-                        } else {
-                            VStack(spacing: 16) {
-                                Image(systemName: "tv.and.mediabox")
-                                    .font(.system(size: 56))
-                                    .foregroundStyle(.cyan.opacity(0.75))
-                                Text(vm.streamStatus)
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(.white)
-                                Text("Optimized for 10-foot Apple TV viewing • No mouse cursor required")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(44)
+                        TVQuickActionCard(
+                            title: "Task View",
+                            subtitle: "Virtual Desktops (Win + Tab)",
+                            icon: "rectangle.3.group.fill",
+                            tint: .purple
+                        ) {
+                            Task { await vm.sendAction("task_view") }
+                        }
+
+                        TVQuickActionCard(
+                            title: "Switch Window",
+                            subtitle: "Next App (Alt + Tab)",
+                            icon: "macwindow.on.rectangle",
+                            tint: .mint
+                        ) {
+                            Task { await vm.sendAction("alt_tab") }
+                        }
+
+                        TVQuickActionCard(
+                            title: "PC Screenshot",
+                            subtitle: "Save to PC Pictures",
+                            icon: "camera.viewfinder",
+                            tint: .orange
+                        ) {
+                            Task { await vm.sendAction("screenshot") }
                         }
                     }
-                    .frame(height: 440)
                 }
 
-                // Sunshine Couch Game Launcher
-                VStack(alignment: .leading, spacing: 20) {
+                // Section 2: Sunshine Couch Game Launcher
+                VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("COUCH GAMING & SUNSHINE LAUNCHER")
-                                .font(.callout.weight(.bold))
-                                .tracking(1.6)
+                            Text("COUCH GAME LAUNCHER (SUNSHINE & STEAM)")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .tracking(1.4)
                                 .foregroundStyle(.purple)
-                            Text("Auto-wakes your PC via Wake-on-LAN and launches your game ready for controller play")
-                                .font(.caption)
+                            Text("Auto-wakes your PC via Wake-on-LAN and starts the selected title on your PC")
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        HStack(spacing: 16) {
+                        HStack(spacing: 14) {
                             Button {
                                 Task { await vm.refreshGames() }
                             } label: {
                                 Label("Refresh Library", systemImage: "arrow.clockwise")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .cyan))
 
-                            Button(role: .destructive) {
+                            Button {
                                 Task { await vm.sendAction("kill_game") }
                             } label: {
                                 Label("Quit Active Game", systemImage: "xmark.octagon.fill")
                             }
-                            .tint(.red)
+                            .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
                         }
                     }
 
-                    LazyVGrid(columns: gameColumns, spacing: 26) {
+                    LazyVGrid(columns: gameColumns, spacing: 22) {
                         ForEach(vm.games) { game in
                             Button {
                                 Task { await vm.launchGame(game) }
                             } label: {
-                                HStack(spacing: 20) {
+                                HStack(spacing: 18) {
                                     ZStack {
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
                                             .fill(
                                                 LinearGradient(
-                                                    colors: [.purple.opacity(0.6), .cyan.opacity(0.4)],
+                                                    colors: [.purple.opacity(0.55), .cyan.opacity(0.35)],
                                                     startPoint: .topLeading,
                                                     endPoint: .bottomTrailing
                                                 )
                                             )
-                                            .frame(width: 74, height: 74)
+                                            .frame(width: 64, height: 64)
                                         Image(systemName: game.iconSymbol)
-                                            .font(.title2)
+                                            .font(.system(size: 26, weight: .semibold))
                                             .foregroundStyle(.white)
                                     }
 
-                                    VStack(alignment: .leading, spacing: 6) {
+                                    VStack(alignment: .leading, spacing: 5) {
                                         Text(game.title)
-                                            .font(.headline.weight(.bold))
+                                            .font(.system(size: 20, weight: .bold, design: .rounded))
                                             .foregroundStyle(.white)
                                             .lineLimit(1)
                                         Text(game.genre)
-                                            .font(.caption)
+                                            .font(.system(size: 14, weight: .medium))
                                             .foregroundStyle(.secondary)
-                                        Text("Tap with Siri Remote to Start")
-                                            .font(.caption2.weight(.semibold))
+                                            .lineLimit(1)
+                                        Text("Press to Launch on PC")
+                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
                                             .foregroundStyle(.cyan)
+                                            .lineLimit(1)
                                     }
-                                    Spacer()
+                                    Spacer(minLength: 0)
                                 }
-                                .padding(22)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .fill(Color.white.opacity(0.06))
-                                )
+                                .padding(20)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(TVSurfaceCardStyle(accent: .purple))
                         }
                     }
                 }
+
+                // Section 3: Live PC Video Streaming — Coming Soon
+                HStack(spacing: 24) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(Color.cyan.opacity(0.16))
+                            .frame(width: 76, height: 76)
+                        Image(systemName: "play.tv.fill")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundStyle(.cyan)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 12) {
+                            Text("Live PC Desktop & Game Video Streaming")
+                                .font(.system(size: 22, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            Text("COMING SOON")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .tracking(1.1)
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(Color.cyan, in: Capsule())
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+
+                        Text("Ultra-low-latency live video streaming from your Windows PC to Apple TV and iOS is currently in development and will arrive in an upcoming Orbit update.")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+                }
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .strokeBorder(Color.cyan.opacity(0.28), lineWidth: 1)
+                        )
+                )
             }
-            .padding(.horizontal, 60)
-            .padding(.vertical, 40)
-        }
-        .onDisappear {
-            vm.stopScreenStream()
+            .padding(.horizontal, 52)
+            .padding(.top, 18)
+            .padding(.bottom, 36)
         }
     }
 }
@@ -790,100 +869,127 @@ struct TVAudioAndMediaTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 34) {
-                // Master Volume & Media Transport Deck
-                HStack(spacing: 28) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("MASTER PC AUDIO (\(Int(vm.metrics.volume))%)")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.5)
-                            .foregroundStyle(.cyan)
+            VStack(alignment: .leading, spacing: 28) {
+                // Top Row: Master Volume & Now Playing Transport
+                HStack(spacing: 22) {
+                    // Master PC Audio Deck
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text("MASTER PC AUDIO")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .tracking(1.3)
+                                .foregroundStyle(.cyan)
+                            Spacer()
+                            Text(vm.metrics.isMuted ? "MUTED" : "\(Int(vm.metrics.volume))%")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .foregroundStyle(vm.metrics.isMuted ? .orange : .white)
+                        }
 
-                        HStack(spacing: 18) {
+                        HStack(spacing: 12) {
                             Button {
                                 Task { await vm.adjustMasterVolume(by: -10) }
                             } label: {
                                 Label("-10%", systemImage: "speaker.wave.1.fill")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .cyan))
 
                             Button {
                                 Task { await vm.sendAction("volume_down") }
                             } label: {
                                 Label("-5%", systemImage: "speaker.minus.fill")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .cyan))
 
                             Button {
                                 Task { await vm.sendAction("mute") }
                             } label: {
                                 Label(vm.metrics.isMuted ? "Unmute" : "Mute", systemImage: "speaker.slash.fill")
                             }
-                            .tint(.orange)
+                            .buttonStyle(TVActionPillStyle(tint: .orange, isProminent: vm.metrics.isMuted))
 
                             Button {
                                 Task { await vm.sendAction("volume_up") }
                             } label: {
                                 Label("+5%", systemImage: "speaker.plus.fill")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .cyan))
 
                             Button {
                                 Task { await vm.adjustMasterVolume(by: 10) }
                             } label: {
                                 Label("+10%", systemImage: "speaker.wave.3.fill")
                             }
-                            .tint(.cyan)
+                            .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: true))
                         }
                     }
-                    .padding(28)
+                    .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
                             .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                            )
                     )
 
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("NOW PLAYING TRANSPORT")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.5)
-                            .foregroundStyle(.green)
+                    // Now Playing Transport Deck
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text("NOW PLAYING TRANSPORT")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .tracking(1.3)
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Text("Siri Remote Play/Pause")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
 
-                        HStack(spacing: 18) {
+                        HStack(spacing: 14) {
                             Button {
                                 Task { await vm.sendAction("prev_track") }
                             } label: {
                                 Label("Prev", systemImage: "backward.fill")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .green))
 
                             Button {
                                 Task { await vm.sendAction("play_pause") }
                             } label: {
                                 Label("Play / Pause", systemImage: "playpause.fill")
                             }
-                            .tint(.green)
+                            .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
 
                             Button {
                                 Task { await vm.sendAction("next_track") }
                             } label: {
                                 Label("Next", systemImage: "forward.fill")
                             }
+                            .buttonStyle(TVActionPillStyle(tint: .green))
                         }
                     }
-                    .padding(28)
+                    .padding(24)
                     .background(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
                             .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                            )
                     )
                 }
 
                 // Per-App Windows Core Audio Mixer
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("PER-APPLICATION WINDOWS AUDIO MIXER")
-                                .font(.callout.weight(.bold))
-                                .tracking(1.5)
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .tracking(1.4)
                                 .foregroundStyle(.purple)
                             Text("Adjust individual game, voice chat, or browser volume and route audio to TV HDMI or Headset")
-                                .font(.caption)
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -892,84 +998,126 @@ struct TVAudioAndMediaTab: View {
                         } label: {
                             Label("Refresh Mixer", systemImage: "arrow.clockwise")
                         }
+                        .buttonStyle(TVActionPillStyle(tint: .purple))
                     }
 
                     ForEach(vm.audioSessions) { session in
-                        HStack(spacing: 24) {
+                        HStack(spacing: 20) {
                             Image(systemName: session.isMuted ? "speaker.slash.circle.fill" : "speaker.wave.2.circle.fill")
-                                .font(.title)
+                                .font(.system(size: 30))
                                 .foregroundStyle(session.isMuted ? .orange : .cyan)
 
-                            VStack(alignment: .leading, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 Text(session.name)
-                                    .font(.headline.weight(.bold))
+                                    .font(.system(size: 21, weight: .bold, design: .rounded))
                                     .foregroundStyle(.white)
-                                Text("PID \(session.pid) • Volume \(Int(session.volume))% • \(session.outputDeviceName ?? "Default Output")")
-                                    .font(.caption)
+                                    .lineLimit(1)
+                                Text("PID \(session.pid) • \(session.outputDeviceName ?? "Default Output")")
+                                    .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                             .frame(width: 340, alignment: .leading)
 
-                            GeometryReader { geo in
+                            // Fixed-width volume bar so it never crushes sibling buttons
+                            HStack(spacing: 14) {
                                 ZStack(alignment: .leading) {
                                     Capsule()
-                                        .fill(Color.white.opacity(0.10))
+                                        .fill(Color.white.opacity(0.12))
+                                        .frame(width: 220, height: 12)
                                     Capsule()
                                         .fill(session.isMuted ? Color.orange : Color.cyan)
-                                        .frame(width: max(10, geo.size.width * CGFloat(min(100, max(0, session.volume)) / 100.0)))
+                                        .frame(
+                                            width: max(10, 220.0 * CGFloat(min(100, max(0, session.volume)) / 100.0)),
+                                            height: 12
+                                        )
                                 }
-                            }
-                            .frame(height: 14)
 
-                            HStack(spacing: 14) {
+                                Text("\(Int(session.volume))%")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                                    .foregroundStyle(session.isMuted ? .orange : .white)
+                                    .frame(width: 58, alignment: .trailing)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 10)
+
+                            HStack(spacing: 12) {
                                 Button {
                                     Task { await vm.adjustAppVolume(session, by: -10) }
                                 } label: {
                                     Text("-10%")
                                 }
+                                .buttonStyle(TVActionPillStyle(tint: .cyan))
 
                                 Button {
                                     Task { await vm.toggleAppMute(session) }
                                 } label: {
-                                    Image(systemName: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    Label(session.isMuted ? "Unmute" : "Mute", systemImage: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                 }
-                                .tint(session.isMuted ? .orange : .gray)
+                                .buttonStyle(TVActionPillStyle(tint: .orange, isProminent: session.isMuted))
 
                                 Button {
                                     Task { await vm.adjustAppVolume(session, by: 10) }
                                 } label: {
                                     Text("+10%")
                                 }
+                                .buttonStyle(TVActionPillStyle(tint: .cyan))
 
                                 ForEach(vm.audioOutputs.prefix(2)) { device in
                                     Button {
                                         Task { await vm.routeAppAudio(session, to: device.id) }
                                     } label: {
-                                        Label(device.name.components(separatedBy: " ").first ?? "Output", systemImage: "hifispeaker.fill")
-                                            .font(.caption)
+                                        Label(shortDeviceLabel(device.name), systemImage: "hifispeaker.fill")
                                     }
+                                    .buttonStyle(
+                                        TVActionPillStyle(
+                                            tint: .purple,
+                                            isProminent: session.outputDeviceID == device.id
+                                        )
+                                    )
                                 }
                             }
                         }
-                        .padding(22)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 18)
                         .background(
                             RoundedRectangle(cornerRadius: 20, style: .continuous)
                                 .fill(Color.white.opacity(0.06))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                                )
                         )
                     }
                 }
             }
-            .padding(.horizontal, 60)
-            .padding(.vertical, 40)
+            .padding(.horizontal, 52)
+            .padding(.top, 18)
+            .padding(.bottom, 36)
         }
         .onAppear {
             Task { await vm.refreshAudioMixer() }
         }
     }
+
+    private func shortDeviceLabel(_ fullName: String) -> String {
+        let lower = fullName.lowercased()
+        if lower.contains("tv") || lower.contains("oled") || lower.contains("hdmi") {
+            return "TV HDMI"
+        }
+        if lower.contains("headset") || lower.contains("headphone") {
+            return "Headset"
+        }
+        if lower.contains("speaker") || lower.contains("monitor") {
+            return "Speakers"
+        }
+        let words = fullName.split(separator: " ").prefix(2).joined(separator: " ")
+        return words.isEmpty ? "Output" : words
+    }
 }
 
-// MARK: - Tab 4: Couch Task Manager & Session Peaks
+// MARK: - Tab 4: Couch Task Manager
 
 struct TVTaskManagerTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
@@ -977,67 +1125,77 @@ struct TVTaskManagerTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
+            VStack(alignment: .leading, spacing: 24) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("WINDOWS PROCESS & RESOURCE MONITOR")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.5)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .tracking(1.4)
                             .foregroundStyle(.cyan)
-                        Text("Select any unresponsive game or background hog with the Siri Remote to terminate it")
-                            .font(.caption)
+                        Text("Select any unresponsive game or background app with the Siri Remote to terminate it")
+                            .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if let msg = vm.processStatusMessage {
+                        Text(msg)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.cyan)
+                            .lineLimit(1)
+                            .padding(.trailing, 12)
+                    }
                     Button {
                         Task { await vm.refreshProcesses() }
                     } label: {
                         Label("Refresh Processes", systemImage: "arrow.clockwise")
                     }
-                }
-
-                if let msg = vm.processStatusMessage {
-                    Text(msg)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                    .buttonStyle(TVActionPillStyle(tint: .cyan))
                 }
 
                 ForEach(vm.processes) { proc in
-                    HStack(spacing: 24) {
+                    HStack(spacing: 22) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(proc.name)
-                                .font(.headline.weight(.bold))
+                                .font(.system(size: 21, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
-                            Text("PID \(proc.pid) • \(proc.status)")
-                                .font(.caption)
+                                .lineLimit(1)
+                            Text("PID \(proc.pid) • \(proc.status.capitalized)")
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                        .frame(width: 320, alignment: .leading)
+                        .frame(width: 340, alignment: .leading)
 
                         TVMetricPill(label: "CPU", value: String(format: "%.1f%%", proc.cpuPercent ?? 0), tint: .cyan)
                         TVMetricPill(label: "GPU", value: String(format: "%.1f%%", proc.gpuPercent ?? 0), tint: .purple)
                         TVMetricPill(label: "RAM", value: String(format: "%.0f MB", proc.memoryMB ?? 0), tint: .mint)
                         TVMetricPill(label: "VRAM", value: String(format: "%.0f MB", proc.vramMB ?? 0), tint: .indigo)
 
-                        Spacer()
+                        Spacer(minLength: 12)
 
-                        Button(role: .destructive) {
+                        Button {
                             processToKill = proc
                         } label: {
                             Label("End Task", systemImage: "xmark.circle.fill")
                         }
-                        .tint(.red)
+                        .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
                         .disabled(!proc.canTerminate)
                     }
-                    .padding(22)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
                     .background(
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
                             .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                            )
                     )
                 }
             }
-            .padding(.horizontal, 60)
-            .padding(.vertical, 40)
+            .padding(.horizontal, 52)
+            .padding(.top, 18)
+            .padding(.bottom, 36)
         }
         .onAppear {
             Task { await vm.refreshProcesses() }
@@ -1069,17 +1227,19 @@ struct TVMetricPill: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.caption2.weight(.bold))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(tint)
+                .lineLimit(1)
             Text(value)
-                .font(.callout.weight(.semibold))
+                .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+                .lineLimit(1)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .frame(width: 140, alignment: .leading)
+        .frame(width: 145, alignment: .leading)
         .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
@@ -1093,13 +1253,13 @@ struct TVPCsAndPairingTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
+            VStack(alignment: .leading, spacing: 28) {
                 // Saved PCs Section
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         Text("SAVED WORKSTATIONS")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.5)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .tracking(1.4)
                             .foregroundStyle(.cyan)
                         Spacer()
                         Button {
@@ -1110,29 +1270,32 @@ struct TVPCsAndPairingTab: View {
                                 systemImage: "sparkles.tv"
                             )
                         }
+                        .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: vm.isDemoMode))
                     }
 
                     if vm.savedPCs.isEmpty {
                         Text("No saved PCs yet. Select a discovered PC below or enter an IP address to pair with a 6-digit PIN.")
-                            .font(.callout)
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .padding(24)
+                            .padding(22)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.05)))
                     } else {
                         ForEach(vm.savedPCs) { pc in
-                            HStack(spacing: 24) {
+                            HStack(spacing: 20) {
                                 Image(systemName: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
-                                    .font(.title2)
+                                    .font(.system(size: 26))
                                     .foregroundStyle(vm.selectedPCID == pc.id ? .green : .cyan)
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(pc.name)
-                                        .font(.headline.weight(.bold))
+                                        .font(.system(size: 20, weight: .bold, design: .rounded))
                                         .foregroundStyle(.white)
+                                        .lineLimit(1)
                                     Text("\(pc.address):\(pc.securePort) • MAC: \(pc.macAddress.isEmpty ? "Auto" : pc.macAddress)")
-                                        .font(.caption)
+                                        .font(.system(size: 14, weight: .medium))
                                         .foregroundStyle(.secondary)
+                                        .lineLimit(1)
                                 }
 
                                 Spacer()
@@ -1142,7 +1305,7 @@ struct TVPCsAndPairingTab: View {
                                 } label: {
                                     Text(vm.selectedPCID == pc.id ? "Active PC" : "Connect")
                                 }
-                                .tint(vm.selectedPCID == pc.id ? .green : .cyan)
+                                .buttonStyle(TVActionPillStyle(tint: vm.selectedPCID == pc.id ? .green : .cyan, isProminent: vm.selectedPCID == pc.id))
 
                                 Button {
                                     vm.selectPC(pc)
@@ -1150,12 +1313,14 @@ struct TVPCsAndPairingTab: View {
                                 } label: {
                                     Label("Wake (WoL)", systemImage: "power")
                                 }
+                                .buttonStyle(TVActionPillStyle(tint: .green))
 
-                                Button(role: .destructive) {
+                                Button {
                                     vm.deletePC(pc)
                                 } label: {
-                                    Image(systemName: "trash")
+                                    Label("Remove", systemImage: "trash")
                                 }
+                                .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
                             }
                             .padding(22)
                             .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
@@ -1164,11 +1329,11 @@ struct TVPCsAndPairingTab: View {
                 }
 
                 // Automatic Bonjour Discovery on Local LAN
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         Text("DISCOVERED ON LOCAL NETWORK (BONJOUR)")
-                            .font(.callout.weight(.bold))
-                            .tracking(1.5)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .tracking(1.4)
                             .foregroundStyle(.purple)
                         Spacer()
                         Button {
@@ -1176,28 +1341,31 @@ struct TVPCsAndPairingTab: View {
                         } label: {
                             Label(vm.isScanningNetwork ? "Scanning..." : "Scan Network", systemImage: "dot.radiowaves.left.and.right")
                         }
+                        .buttonStyle(TVActionPillStyle(tint: .purple))
                     }
 
                     if vm.discoveredPCs.isEmpty {
                         Text("Press 'Scan Network' or enter your PC IP below to discover Orbit Windows Companion (_orbit._tcp)...")
-                            .font(.callout)
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .padding(24)
+                            .padding(22)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.05)))
                     } else {
                         ForEach(vm.discoveredPCs) { pc in
-                            HStack(spacing: 24) {
+                            HStack(spacing: 20) {
                                 Image(systemName: "wifi.circle.fill")
-                                    .font(.title2)
+                                    .font(.system(size: 26))
                                     .foregroundStyle(.purple)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(pc.name)
-                                        .font(.headline.weight(.bold))
+                                        .font(.system(size: 20, weight: .bold, design: .rounded))
                                         .foregroundStyle(.white)
+                                        .lineLimit(1)
                                     Text("\(pc.host):\(pc.securePort) • Companion v\(pc.agentVersion)")
-                                        .font(.caption)
+                                        .font(.system(size: 14, weight: .medium))
                                         .foregroundStyle(.secondary)
+                                        .lineLimit(1)
                                 }
                                 Spacer()
                                 Button {
@@ -1205,7 +1373,7 @@ struct TVPCsAndPairingTab: View {
                                 } label: {
                                     Label("Pair with 6-Digit PIN", systemImage: "lock.shield.fill")
                                 }
-                                .tint(.purple)
+                                .buttonStyle(TVActionPillStyle(tint: .purple, isProminent: true))
                             }
                             .padding(22)
                             .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
@@ -1214,17 +1382,19 @@ struct TVPCsAndPairingTab: View {
                 }
 
                 // Manual IP + 6-Digit SRP PIN Pairing Box
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 16) {
                     Text("PAIR BY IP & 6-DIGIT PIN (SRP ZERO-KNOWLEDGE)")
-                        .font(.callout.weight(.bold))
-                        .tracking(1.5)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .tracking(1.4)
                         .foregroundStyle(.green)
 
-                    HStack(spacing: 20) {
+                    HStack(spacing: 18) {
                         TextField("PC IP Address (e.g. 192.168.1.50)", text: $manualHost)
-                            .frame(width: 420)
+                            .font(.system(size: 18))
+                            .frame(width: 440)
 
                         TextField("Port", text: $manualPort)
+                            .font(.system(size: 18))
                             .frame(width: 140)
 
                         Button {
@@ -1233,35 +1403,38 @@ struct TVPCsAndPairingTab: View {
                         } label: {
                             Label("Probe PC", systemImage: "magnifyingglass.circle.fill")
                         }
-                        .tint(.cyan)
+                        .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: true))
                     }
 
                     if let target = vm.activePairingTarget {
-                        HStack(spacing: 20) {
+                        HStack(spacing: 18) {
                             TextField("Enter 6-Digit PIN shown on \(target.name)", text: $vm.pairingPIN)
-                                .frame(width: 420)
+                                .font(.system(size: 18))
+                                .frame(width: 440)
 
                             Button {
                                 Task { await vm.finishPINPairing() }
                             } label: {
                                 Label(vm.isPairingInProgress ? "Pairing..." : "Verify PIN & Pair", systemImage: "checkmark.shield.fill")
                             }
-                            .tint(.green)
+                            .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
                             .disabled(vm.isPairingInProgress || vm.pairingPIN.trimmingCharacters(in: .whitespaces).count < 4)
                         }
                     }
 
                     if let error = vm.pairingErrorMessage {
                         Text(error)
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.red)
                     }
                 }
-                .padding(28)
-                .background(RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.06)))
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 22).fill(Color.white.opacity(0.06)))
             }
-            .padding(.horizontal, 60)
-            .padding(.vertical, 40)
+            .padding(.horizontal, 52)
+            .padding(.top, 18)
+            .padding(.bottom, 36)
         }
         .onAppear {
             vm.startDiscovery()

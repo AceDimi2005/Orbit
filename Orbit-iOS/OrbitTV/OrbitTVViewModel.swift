@@ -223,11 +223,8 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var peakFPS: Double = 0
     @Published var peakPowerWatts: Double = 0
 
-    // Games & Live Desktop Stream
+    // Games
     @Published var games: [TVSunshineGame] = []
-    @Published var liveFrameImage: UIImage?
-    @Published var isStreamingScreen: Bool = false
-    @Published var streamStatus: String = "Press Start Stream to view your PC desktop on Apple TV"
 
     // Audio Mixer
     @Published var audioSessions: [TVAudioSession] = []
@@ -249,9 +246,6 @@ final class OrbitTVViewModel: ObservableObject {
 
     private var activeHandshake: OrbitPairingHandshake?
     private var pollTask: Task<Void, Never>?
-    private var streamTask: Task<Void, Never>?
-    private var streamWebSocket: URLSessionWebSocketTask?
-    private var streamClient: OrbitAPIClient?
     private var browser: NWBrowser?
     private var appActive: Bool = true
     private var hasSyncedExtras: Bool = false
@@ -259,6 +253,9 @@ final class OrbitTVViewModel: ObservableObject {
     private static let savedPCsKey = "tv.savedPCs.v1"
 
     init() {
+        if UserDefaults.standard.object(forKey: "tv.initialTab") != nil {
+            selectedTab = UserDefaults.standard.integer(forKey: "tv.initialTab")
+        }
         loadSavedPCs()
         if savedPCs.isEmpty && !isDemoMode {
             // Enable demo mode initially if no PC is paired yet so the 4K dashboard is immediately interactive
@@ -278,7 +275,6 @@ final class OrbitTVViewModel: ObservableObject {
         if active {
             startPollingLoop()
         } else {
-            stopScreenStream()
             pollTask?.cancel()
             pollTask = nil
         }
@@ -313,7 +309,7 @@ final class OrbitTVViewModel: ObservableObject {
             TVSunshineGame(id: "3", title: "Elden Ring", genre: "Action RPG", iconSymbol: "shield.lefthalf.filled", accentHex: "#E5B85B"),
             TVSunshineGame(id: "4", title: "Baldur's Gate 3", genre: "CRPG", iconSymbol: "sparkles", accentHex: "#9D7BFF"),
             TVSunshineGame(id: "5", title: "Steam Big Picture", genre: "Launcher · Couch UI", iconSymbol: "tv.and.mediabox.fill", accentHex: "#3FD5F6"),
-            TVSunshineGame(id: "6", title: "Desktop Stream", genre: "Windows 11 Pro", iconSymbol: "display", accentHex: "#59F0A8")
+            TVSunshineGame(id: "6", title: "God of War Ragnarök", genre: "Action Adventure · HDR", iconSymbol: "flame.fill", accentHex: "#59F0A8")
         ]
         audioSessions = [
             TVAudioSession(id: "demo-1", pid: 4100, name: "Cyberpunk2077.exe", volume: 85, isMuted: false, processCreateTime: 1, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)"),
@@ -489,7 +485,6 @@ final class OrbitTVViewModel: ObservableObject {
             statusBanner = "Executed \(label) on \(currentPC?.name ?? "PC")"
             if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false
-                stopScreenStream()
             } else if action == "mute" {
                 metrics.isMuted.toggle()
             }
@@ -514,7 +509,7 @@ final class OrbitTVViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Sunshine Games & Live Desktop Stream on Apple TV
+    // MARK: - Sunshine Games on Apple TV
 
     func refreshGames() async {
         guard !isDemoMode, metrics.isOnline else { return }
@@ -528,7 +523,7 @@ final class OrbitTVViewModel: ObservableObject {
         if isDemoMode {
             metrics.activeGame = game.title
             metrics.fps = 120
-            statusBanner = "Preview · Launched \(game.title)"
+            statusBanner = "Preview · Launched \(game.title) on PC"
             return
         }
         if !metrics.isOnline {
@@ -538,69 +533,9 @@ final class OrbitTVViewModel: ObservableObject {
             let apiClient = try client()
             _ = try await apiClient.data("/api/sunshine/launch", method: "POST", query: [URLQueryItem(name: "app", value: game.title)])
             statusBanner = "Launched \(game.title) on \(currentPC?.name ?? "PC")"
-            startScreenStream()
         } catch {
             statusBanner = "Could not launch \(game.title): \(error.localizedDescription)"
         }
-    }
-
-    func toggleScreenStream() {
-        if isStreamingScreen {
-            stopScreenStream()
-        } else {
-            startScreenStream()
-        }
-    }
-
-    func startScreenStream() {
-        stopScreenStream()
-        if isDemoMode {
-            isStreamingScreen = true
-            streamStatus = "Preview Stream Active · Connect a real PC to stream its live desktop at 720p/20fps"
-            return
-        }
-        guard metrics.isOnline else {
-            streamStatus = "Connect to your PC first to start the live desktop monitor."
-            return
-        }
-        do {
-            let apiClient = try client()
-            streamClient = apiClient
-            let ws = try apiClient.webSocket()
-            streamWebSocket = ws
-            ws.resume()
-            isStreamingScreen = true
-            streamStatus = "Streaming live desktop from \(currentPC?.name ?? "PC")…"
-            streamTask = Task { [weak self] in
-                do {
-                    while !Task.isCancelled {
-                        let msg = try await ws.receive()
-                        guard !Task.isCancelled else { break }
-                        if case .data(let data) = msg, let image = UIImage(data: data) {
-                            self?.liveFrameImage = image
-                        }
-                    }
-                } catch {
-                    if !Task.isCancelled {
-                        self?.isStreamingScreen = false
-                        self?.streamStatus = "Desktop stream ended."
-                    }
-                }
-            }
-        } catch {
-            streamStatus = error.localizedDescription
-        }
-    }
-
-    func stopScreenStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        streamWebSocket?.cancel(with: .goingAway, reason: nil)
-        streamWebSocket = nil
-        streamClient = nil
-        liveFrameImage = nil
-        isStreamingScreen = false
-        streamStatus = "Stream paused"
     }
 
     // MARK: - Audio Mixer on Apple TV

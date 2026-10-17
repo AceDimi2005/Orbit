@@ -1250,22 +1250,39 @@ struct MoonlightStreamView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
-                if let frame = vm.liveFrameImage {
-                    Image(uiImage: frame)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityLabel("Current PC desktop screenshot")
-                } else {
-                    ContentUnavailableView(
-                        vm.streamError == nil ? "Connecting to Desktop…" : "Preview Unavailable",
-                        systemImage: "display",
-                        description: Text(vm.streamError ?? "Waiting for live screen frames from Orbit PC Companion.")
-                    )
+                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+                VStack(spacing: 18) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.cyan.opacity(0.16))
+                            .frame(width: 84, height: 84)
+                        Image(systemName: "play.tv.fill")
+                            .font(.system(size: 36, weight: .semibold))
+                            .foregroundStyle(.cyan)
+                    }
+
+                    Text("COMING SOON")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.4)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.cyan, in: Capsule())
+
+                    Text("Live PC Video Streaming")
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
+
+                    Text("Low-latency live desktop and game video streaming directly inside Orbit for iPhone, iPad, and Apple TV is currently in development and will arrive in an upcoming update.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                        .padding(.horizontal, 20)
                 }
+                .padding(28)
             }
-            .navigationTitle("Desktop Preview")
+            .navigationTitle("Live Stream · Coming Soon")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -1273,19 +1290,6 @@ struct MoonlightStreamView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Moonlight", systemImage: "arrow.up.forward.app") { vm.openNativeMoonlight() }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let error = vm.streamError {
-                    HStack {
-                        Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
-                        Spacer()
-                        Button("Retry") { vm.startLiveScreenFeed() }
-                            .font(.caption.weight(.bold))
-                            .disabled(vm.isDemoMode || !vm.metrics.isOnline)
-                    }
-                    .padding(14)
-                    .background(.ultraThinMaterial)
                 }
             }
         }
