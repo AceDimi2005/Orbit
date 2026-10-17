@@ -47,6 +47,14 @@
 		A40000000000000000000002 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
 		A40000000000000000000003 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000004 /* PrivacyInfo.xcprivacy */; };
 		A40000000000000000000004 /* OrbitWatchWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* OrbitWatchWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A50000000000000000000001 /* OrbitTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000002 /* OrbitTVApp.swift */; };
+		A50000000000000000000002 /* OrbitTVViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000003 /* OrbitTVViewModel.swift */; };
+		A50000000000000000000003 /* OrbitTVViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000004 /* OrbitTVViews.swift */; };
+		A50000000000000000000004 /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
+		A50000000000000000000005 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
+		A50000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000005 /* Assets.xcassets */; };
+		A50000000000000000000007 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000007 /* PrivacyInfo.xcprivacy */; };
+		A50000000000000000000008 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000002 /* SRP */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -150,6 +158,13 @@
 		B40000000000000000000002 /* OrbitWatchWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchWidgets.swift; sourceTree = "<group>"; };
 		B40000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B40000000000000000000004 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B50000000000000000000001 /* OrbitTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B50000000000000000000002 /* OrbitTVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVApp.swift; sourceTree = "<group>"; };
+		B50000000000000000000003 /* OrbitTVViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVViewModel.swift; sourceTree = "<group>"; };
+		B50000000000000000000004 /* OrbitTVViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVViews.swift; sourceTree = "<group>"; };
+		B50000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B50000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B50000000000000000000007 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -182,6 +197,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D50000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A50000000000000000000008 /* SRP in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -192,6 +215,7 @@
 				C20000000000000000000001 /* OrbitWidgets */,
 				C30000000000000000000001 /* OrbitWatch */,
 				C40000000000000000000001 /* OrbitWatchWidgets */,
+				C50000000000000000000001 /* OrbitTV */,
 				C20000000000000000000002 /* Shared */,
 				C10000000000000000000003 /* Products */,
 			);
@@ -232,6 +256,7 @@
 				B20000000000000000000004 /* OrbitWidgets.appex */,
 				B30000000000000000000001 /* OrbitWatch.app */,
 				B40000000000000000000001 /* OrbitWatchWidgets.appex */,
+				B50000000000000000000001 /* OrbitTV.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -277,6 +302,19 @@
 				B40000000000000000000004 /* PrivacyInfo.xcprivacy */,
 			);
 			path = OrbitWatchWidgets;
+			sourceTree = "<group>";
+		};
+		C50000000000000000000001 /* OrbitTV */ = {
+			isa = PBXGroup;
+			children = (
+				B50000000000000000000002 /* OrbitTVApp.swift */,
+				B50000000000000000000003 /* OrbitTVViewModel.swift */,
+				B50000000000000000000004 /* OrbitTVViews.swift */,
+				B50000000000000000000005 /* Assets.xcassets */,
+				B50000000000000000000006 /* Info.plist */,
+				B50000000000000000000007 /* PrivacyInfo.xcprivacy */,
+			);
+			path = OrbitTV;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -359,6 +397,26 @@
 			productReference = B40000000000000000000001 /* OrbitWatchWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		D50000000000000000000001 /* OrbitTV */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E50000000000000000000001 /* Build configuration list for PBXNativeTarget "OrbitTV" */;
+			buildPhases = (
+				D50000000000000000000002 /* Sources */,
+				D50000000000000000000003 /* Frameworks */,
+				D50000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OrbitTV;
+			packageProductDependencies = (
+				F20000000000000000000002 /* SRP */,
+			);
+			productName = OrbitTV;
+			productReference = B50000000000000000000001 /* OrbitTV.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -389,6 +447,7 @@
 				D20000000000000000000001 /* OrbitWidgets */,
 				D30000000000000000000001 /* OrbitWatch */,
 				D40000000000000000000001 /* OrbitWatchWidgets */,
+				D50000000000000000000001 /* OrbitTV */,
 			);
 		};
 /* End PBXProject section */
@@ -425,6 +484,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				A40000000000000000000003 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D50000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A50000000000000000000006 /* Assets.xcassets in Resources */,
+				A50000000000000000000007 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -486,6 +554,18 @@
 			files = (
 				A40000000000000000000001 /* OrbitWatchWidgets.swift in Sources */,
 				A40000000000000000000002 /* OrbitWidgetConnectionStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D50000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A50000000000000000000001 /* OrbitTVApp.swift in Sources */,
+				A50000000000000000000002 /* OrbitTVViewModel.swift in Sources */,
+				A50000000000000000000003 /* OrbitTVViews.swift in Sources */,
+				A50000000000000000000004 /* OrbitAPIClient.swift in Sources */,
+				A50000000000000000000005 /* OrbitPairing.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -561,7 +641,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Orbit/Orbit.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -598,7 +678,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Orbit/Orbit.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -634,7 +714,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitWidgets/OrbitWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWidgets/Info.plist;
@@ -664,7 +744,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitWidgets/OrbitWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWidgets/Info.plist;
@@ -694,7 +774,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OrbitWatch/OrbitWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -728,7 +808,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OrbitWatch/OrbitWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -762,7 +842,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitWatchWidgets/OrbitWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWatchWidgets/Info.plist;
@@ -792,7 +872,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OrbitWatchWidgets/OrbitWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W3Q78RNLD6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitWatchWidgets/Info.plist;
@@ -813,6 +893,68 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		E50000000000000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OrbitTV/OrbitTV.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = W3Q78RNLD6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitTV/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Orbit TV";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit TV uses your local network to discover your Windows PC, display live 4K hardware telemetry, send Wake-on-LAN and power commands, stream live desktop previews, and control Windows audio from your Apple TV.";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrie.orbit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Debug;
+		};
+		E50000000000000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OrbitTV/OrbitTV.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = W3Q78RNLD6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitTV/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Orbit TV";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit TV uses your local network to discover your Windows PC, display live 4K hardware telemetry, send Wake-on-LAN and power commands, stream live desktop previews, and control Windows audio from your Apple TV.";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				ORBIT_APP_GROUP_IDENTIFIER = group.com.dimitrie.orbit;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrie.orbit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
 			};
 			name = Release;
 		};
@@ -864,6 +1006,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E50000000000000000000001 /* Build configuration list for PBXNativeTarget "OrbitTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E50000000000000000000002 /* Debug */,
+				E50000000000000000000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -879,6 +1030,11 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		F20000000000000000000001 /* SRP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */;
+			productName = SRP;
+		};
+		F20000000000000000000002 /* SRP */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */;
 			productName = SRP;
