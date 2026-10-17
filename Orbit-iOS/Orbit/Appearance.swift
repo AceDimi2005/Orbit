@@ -172,7 +172,7 @@ final class OrbitProStore: ObservableObject {
     static let productID = "com.dimitrie.orbit.pro"
     static let isComingSoon = true
 
-    @Published private(set) var isProUnlocked: Bool = false
+    @Published private(set) var isProUnlocked: Bool = true
     @Published private(set) var product: Product?
     @Published private(set) var isPurchasing = false
     @Published var statusMessage: String?
@@ -186,12 +186,7 @@ final class OrbitProStore: ObservableObject {
     }
 
     private init() {
-        UserDefaults.standard.set(false, forKey: "orbit.pro.unlocked")
-        if let savedTheme = UserDefaults.standard.string(forKey: "orbit.theme"),
-           let currentTheme = OrbitTheme(rawValue: savedTheme),
-           currentTheme.isPro {
-            UserDefaults.standard.set(OrbitTheme.ocean.rawValue, forKey: "orbit.theme")
-        }
+        isProUnlocked = true
     }
 
     func loadProducts() async {
@@ -216,7 +211,7 @@ final class OrbitProStore: ObservableObject {
 
     func purchase() async {
         if Self.isComingSoon {
-            statusMessage = "Orbit Pro will be available in an upcoming update!"
+            statusMessage = "All Pro features are unlocked for free right now! Paid version coming soon."
             return
         }
         guard !isPurchasing else { return }
@@ -317,37 +312,35 @@ struct AppearanceSettingsView: View {
 
     var body: some View {
         Form {
-            if !proStore.isProUnlocked {
-                Section {
-                    Button {
-                        showPaywall = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.yellow.opacity(0.18))
-                                    .frame(width: 38, height: 38)
-                                Image(systemName: "crown.fill")
-                                    .foregroundStyle(.yellow)
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Orbit Pro · Coming Soon")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(.white)
-                                Text("6 exclusive luxury themes & 5 custom Home Screen icons")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("SOON")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.yellow.opacity(0.2), in: Capsule())
+            Section {
+                Button {
+                    showPaywall = true
+                } label: {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.yellow.opacity(0.18))
+                                .frame(width: 38, height: 38)
+                            Image(systemName: "crown.fill")
                                 .foregroundStyle(.yellow)
                         }
-                        .padding(.vertical, 4)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Orbit Pro · Coming Soon")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.white)
+                            Text("All Pro themes & icons are unlocked for free right now")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("SOON")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.yellow.opacity(0.2), in: Capsule())
+                            .foregroundStyle(.yellow)
                     }
+                    .padding(.vertical, 4)
                 }
             }
 
@@ -380,9 +373,9 @@ struct AppearanceSettingsView: View {
                 HStack {
                     Text("Orbit Pro Themes")
                     Spacer()
-                    Label(proStore.isProUnlocked ? "Unlocked" : "Pro · Coming Soon", systemImage: proStore.isProUnlocked ? "checkmark.seal.fill" : "lock.fill")
+                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(.mint)
                 }
             }
 
@@ -402,9 +395,9 @@ struct AppearanceSettingsView: View {
                 HStack {
                     Text("Home Screen App Icon")
                     Spacer()
-                    Label(proStore.isProUnlocked ? "All Icons Active" : "Pro · Coming Soon", systemImage: "lock.fill")
+                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(theme.accent)
+                        .foregroundStyle(.mint)
                 }
             }
 
