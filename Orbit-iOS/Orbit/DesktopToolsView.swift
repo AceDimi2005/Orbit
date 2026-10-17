@@ -24,69 +24,86 @@ struct ClipboardView: View {
 
     var body: some View {
         List {
-            Section {
-                Label("Copy between your iPhone and PC", systemImage: "doc.on.clipboard")
-                    .font(.headline)
-                Text("Transfer text and links when you choose. Orbit does not watch either clipboard or save a clipboard history. Text on this screen is cleared when you leave or change PCs.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if vm.isDemoMode {
-                    Label("Connect a PC to use clipboard transfers", systemImage: "sparkles")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-            }
-            Section("Text") {
+            Section("Clipboard Text") {
                 TextEditor(text: $text)
-                    .frame(minHeight: 190, maxHeight: 300)
+                    .frame(minHeight: 170, maxHeight: 280)
                     .font(.body)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .accessibilityLabel("Clipboard text")
                 HStack {
-                    Text("\(text.count.formatted()) characters")
+                    Text("\(text.count.formatted()) chars")
                     Spacer()
-                    Button("Clear", role: .destructive) { text = ""; status = nil }
-                        .disabled(text.isEmpty || isBusy)
-                }.font(.caption).foregroundStyle(.secondary)
-                if !fitsLimit {
-                    Text("Text must fit within 1 MB and cannot include null characters.")
-                        .font(.caption).foregroundStyle(.orange)
+                    if !text.isEmpty {
+                        Button("Clear", role: .destructive) { text = ""; status = nil }
+                            .disabled(isBusy)
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            Section("iPhone") {
+
+            Section("Quick Transfer") {
+                Button { readPC() } label: {
+                    Label("Pull from PC Clipboard", systemImage: "arrow.down.doc.fill")
+                }
+                .disabled(!canUsePC)
+
+                Button { sendToPC() } label: {
+                    Label(text.isEmpty ? "Clear PC Clipboard" : "Push to PC Clipboard", systemImage: "arrow.up.doc.fill")
+                }
+                .disabled(!canUsePC || !fitsLimit)
+
                 HStack {
                     Label("Paste from iPhone", systemImage: "iphone")
                     Spacer()
                     PasteButton(payloadType: String.self) { values in
                         text = values.joined(separator: "\n")
-                        status = "Pasted into Orbit. Tap Send to PC to transfer it."
+                        status = "Pasted from iPhone."
                         error = nil
                     }
                     .labelStyle(.titleOnly)
                     .disabled(isBusy)
                 }
+
                 Button {
                     UIPasteboard.general.string = text
-                    status = "Copied to the iPhone clipboard."
+                    status = "Copied to iPhone."
                     error = nil
-                } label: { Label("Copy to iPhone", systemImage: "doc.on.doc") }
-                    .disabled(text.isEmpty || !fitsLimit || isBusy)
+                } label: {
+                    Label("Copy to iPhone Clipboard", systemImage: "doc.on.doc.fill")
+                }
+                .disabled(text.isEmpty || !fitsLimit || isBusy)
             }
-            Section("PC") {
-                Button { readPC() } label: {
-                    Label("Read PC clipboard", systemImage: "arrow.down.doc")
-                }.disabled(!canUsePC)
-                Button { sendToPC() } label: {
-                    Label(text.isEmpty ? "Clear PC clipboard" : "Send text to PC", systemImage: "arrow.up.doc")
-                }.disabled(!canUsePC || !fitsLimit)
-                Text("Sending replaces the PC's current clipboard text. The connection uses the certificate paired in My PCs.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if isBusy { Section { HStack { ProgressView(); Text("Transferring text…").font(.subheadline) } } }
-            if let status { Section { Label(status, systemImage: "checkmark.circle").font(.caption).foregroundStyle(.mint) } }
-            if let error { Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) } }
+
+            if isBusy { Section { HStack { ProgressView(); Text("Syncing…").font(.subheadline) } } }
+            if let status { Section { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) } }
+            if let error { Section { Label(error, systemImage: "exclamationmark.circle.fill").font(.caption).foregroundStyle(.orange) } }
         }
         .navigationTitle("Clipboard")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Pull from PC", systemImage: "arrow.down.doc") { readPC() }
+                        .disabled(!canUsePC)
+                    Button("Push to PC", systemImage: "arrow.up.doc") { sendToPC() }
+                        .disabled(!canUsePC || !fitsLimit)
+                    Button("Copy to iPhone", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = text
+                        status = "Copied to iPhone."
+                    }
+                    .disabled(text.isEmpty)
+                    Divider()
+                    Button("Clear Editor", systemImage: "trash", role: .destructive) {
+                        text = ""; status = nil
+                    }
+                    .disabled(text.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
         .onChange(of: vm.connectionID) { _, _ in clearScreen() }
         .onDisappear { clearScreen() }
     }
@@ -206,7 +223,23 @@ private final class AudioMixerModel: ObservableObject {
     private var lifetime = 0
 
     func refresh(_ vm: OrbitViewModel) async {
-        guard !isLoading, !vm.isDemoMode, vm.metrics.isOnline else { return }
+        if vm.isDemoMode {
+            if sessions.isEmpty {
+                sessions = [
+                    AudioMixerSession(id: "demo-1", pid: 4100, name: "Example Game", volume: 80, isMuted: false, processCreateTime: 1, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)"),
+                    AudioMixerSession(id: "demo-2", pid: 5210, name: "Voice Chat", volume: 65, isMuted: false, processCreateTime: 2, outputDeviceID: "out-2", outputDeviceName: "Headset Earphone"),
+                    AudioMixerSession(id: "demo-3", pid: 6320, name: "Music Player", volume: 45, isMuted: false, processCreateTime: 3, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)")
+                ]
+                outputs = [
+                    AudioOutputDevice(id: "out-1", name: "Speakers (Realtek Audio)"),
+                    AudioOutputDevice(id: "out-2", name: "Headset Earphone")
+                ]
+                routingAvailable = true
+                updated = Date()
+            }
+            return
+        }
+        guard !isLoading, vm.metrics.isOnline else { return }
         let generation = vm.connectionID
         let currentLifetime = lifetime
         let initialRevisions = revisions
@@ -364,20 +397,23 @@ struct AudioMixerView: View {
     var body: some View {
         List {
             Section {
-                Label("Volume for each application", systemImage: "slider.horizontal.3")
-                    .font(.headline)
-                Text("Open an app and play audio to create its Windows audio session. Orbit lists sessions across active output devices. An app can have more than one session.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("Output selection changes the app's Windows preference for all audio roles. Apps with their own device selection may ignore it. The PC's default output stays unchanged.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let reason = mixer.routingReason { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                HStack {
+                    Label("App Volume & Routing", systemImage: "slider.horizontal.3")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if let updated = mixer.updated {
+                        Text("\(mixer.sessions.count) sessions · ")
+                            .font(.caption).foregroundStyle(.secondary)
+                        + Text(updated, style: .time)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let reason = mixer.routingReason {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
                 if vm.isDemoMode {
                     Label("Connect a PC to use the audio mixer", systemImage: "sparkles")
                         .font(.caption).foregroundStyle(.orange)
-                }
-                if let updated = mixer.updated {
-                    HStack { Text("\(mixer.sessions.count) sessions"); Spacer(); Text(updated, style: .time) }
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let error = mixer.error {
@@ -390,8 +426,8 @@ struct AudioMixerView: View {
                 if mixer.isLoading && mixer.sessions.isEmpty {
                     HStack { ProgressView(); Text("Reading audio sessions…").padding(.leading, 8) }
                 } else if mixer.sessions.isEmpty {
-                    ContentUnavailableView("No audio sessions", systemImage: "speaker.wave.2",
-                                           description: Text("Keep Orbit Agent running on your PC, then open an app and play audio. Set up the encrypted connection in My PCs to use this feature."))
+                    ContentUnavailableView("No active audio sessions", systemImage: "speaker.wave.2",
+                                           description: Text("Play audio in any PC app to control its volume here."))
                 } else {
                     ForEach(mixer.sessions) { session in sessionRow(session) }
                 }

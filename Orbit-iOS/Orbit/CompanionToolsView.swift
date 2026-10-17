@@ -2,58 +2,266 @@ import SwiftUI
 
 struct CompanionToolsView: View {
     @ObservedObject var vm: OrbitViewModel
+    @ObservedObject private var proStore = OrbitProStore.shared
     @State private var showsSettings = false
+    @State private var showsDiscovery = false
+    @State private var showsProPaywall = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
+
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    HStack(spacing: 14) {
-                        OrbitMark(size: 48)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(vm.isDemoMode ? "Explore Orbit" : vm.selectedPCName).font(.title3.weight(.semibold))
-                            Label(vm.hasSecureConnection ? "Paired securely" : "Ready when you are", systemImage: vm.hasSecureConnection ? "lock.shield" : "desktopcomputer")
-                                .font(.subheadline).foregroundStyle(.secondary)
+            ZStack {
+                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        pcSwitcherCard
+                        orbitProCard
+
+                        sectionHeader("PC Control", icon: "slider.horizontal.3")
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { ClipboardView(vm: vm) } label: {
+                                toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
+                            }
+                            NavigationLink { AudioMixerView(vm: vm) } label: {
+                                toolTile("Audio Mixer", subtitle: "Per-app volume", icon: "slider.vertical.3", tint: .purple)
+                            }
+                            NavigationLink { TaskManagerView(vm: vm) } label: {
+                                toolTile("Task Manager", subtitle: "Processes & apps", icon: "list.bullet.rectangle.portrait.fill", tint: .orange)
+                            }
+                            NavigationLink { PCFilesView(vm: vm) } label: {
+                                toolTile("PC Files", subtitle: "Browse & download", icon: "folder.fill", tint: .blue)
+                            }
                         }
-                    }.padding(.vertical, 8)
-                    NavigationLink { PCProfilesView(vm: vm) } label: { tool("My PCs", detail: "Pair a computer or switch connections", icon: "desktopcomputer") }
-                }
-                Section("Everyday controls") {
-                    NavigationLink { ClipboardView(vm: vm) } label: { tool("Clipboard", detail: "Text and links, in both directions", icon: "doc.on.clipboard") }
-                    NavigationLink { AudioMixerView(vm: vm) } label: { tool("Audio mixer", detail: "Set the volume for each application", icon: "slider.vertical.3") }
-                    NavigationLink { TaskManagerView(vm: vm) } label: { tool("Task Manager", detail: "See what is running on your PC", icon: "list.bullet.rectangle") }
-                }
-                Section("Understand your PC") {
-                    NavigationLink { SessionHistoryView(vm: vm) } label: { tool("Sessions & graphs", detail: "Performance over time", icon: "chart.xyaxis.line") }
-                    NavigationLink { FullSpecsView(vm: vm) } label: { tool("PC specifications", detail: "Your hardware, automatically detected", icon: "cpu") }
-                    NavigationLink { MonitoringSourcesView(vm: vm) } label: { tool("Monitoring sources", detail: "Sensor availability and agent status", icon: "waveform.path.ecg") }
-                }
-                Section("Make it yours") {
-                    NavigationLink { AppearanceSettingsView() } label: { tool("Appearance", detail: "Classic or Improved, with five colour themes", icon: "paintpalette") }
-                    NavigationLink { WidgetHelpView(vm: vm) } label: { tool("Widgets", detail: "Your PCs at a glance", icon: "square.grid.2x2") }
-                    NavigationLink { LiveActivitySettingsView(vm: vm) } label: { tool("Live Activity", detail: "Lock Screen and Dynamic Island", icon: "capsule.portrait.tophalf.filled") }
+
+                        sectionHeader("Diagnostics & History", icon: "waveform.path.ecg")
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { SessionHistoryView(vm: vm) } label: {
+                                toolTile("Session Graphs", subtitle: "History & peaks", icon: "chart.xyaxis.line", tint: .mint)
+                            }
+                            NavigationLink { FullSpecsView(vm: vm) } label: {
+                                toolTile("Hardware Specs", subtitle: "Detected components", icon: "cpu.fill", tint: .indigo)
+                            }
+                            NavigationLink { MonitoringSourcesView(vm: vm) } label: {
+                                toolTile("Sensor Status", subtitle: "Telemetry sources", icon: "sensor.tag.radiowaves.forward.fill", tint: .teal)
+                            }
+                            NavigationLink { PCProfilesView(vm: vm) } label: {
+                                toolTile("My PCs", subtitle: "Manage connections", icon: "desktopcomputer", tint: theme.accent)
+                            }
+                        }
+
+                        sectionHeader("Personalization & iOS", icon: "sparkles")
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
+                                toolTile(
+                                    "Live Activity",
+                                    subtitle: vm.isDynamicIslandActive ? "Running on Island" : "Island & Lock Screen",
+                                    icon: "capsule.portrait.tophalf.filled",
+                                    tint: vm.isDynamicIslandActive ? .mint : .pink
+                                )
+                            }
+                            NavigationLink { WidgetHelpView(vm: vm) } label: {
+                                toolTile("Widgets & Siri", subtitle: "Home & Control Center", icon: "square.grid.2x2.fill", tint: .yellow)
+                            }
+                            NavigationLink { AppearanceSettingsView() } label: {
+                                toolTile("Themes & Icons", subtitle: "\(theme.title) · App Icons", icon: "paintpalette.fill", tint: theme.accent)
+                            }
+                            Button {
+                                showsSettings = true
+                            } label: {
+                                toolTile("Settings", subtitle: "Network & updates", icon: "gearshape.fill", tint: .gray)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                    .padding(.bottom, 28)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(theme.background)
+            .buttonStyle(.plain)
             .navigationTitle("Tools")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showsSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("Settings")
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            vm.toggleDynamicIsland()
+                        } label: {
+                            Label(
+                                vm.isDynamicIslandActive ? "Stop Live Activity" : "Start Live Activity",
+                                systemImage: vm.isDynamicIslandActive ? "stop.circle" : "capsule.portrait.tophalf.filled"
+                            )
+                        }
+                        .disabled(!vm.isDynamicIslandActive && !vm.metrics.isOnline)
+
+                        Button {
+                            showsDiscovery = true
+                        } label: {
+                            Label("Pair New PC...", systemImage: "dot.radiowaves.left.and.right")
+                        }
+
+                        if !vm.savedPCs.isEmpty {
+                            Menu("Switch PC") {
+                                ForEach(vm.savedPCs) { pc in
+                                    Button {
+                                        vm.selectPC(pc)
+                                    } label: {
+                                        Label(pc.name, systemImage: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
+                                    }
+                                }
+                            }
+                        }
+
+                        Divider()
+
+                        Button {
+                            showsProPaywall = true
+                        } label: {
+                            Label(proStore.isProUnlocked ? "Orbit Pro (Active)" : "Orbit Pro...", systemImage: "crown.fill")
+                        }
+
+                        Button {
+                            showsSettings = true
+                        } label: {
+                            Label("Settings...", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Quick Actions Menu")
                 }
             }
             .sheet(isPresented: $showsSettings) { SettingsView(vm: vm, isPresentedAsSheet: true) }
-        }.orbitAppearance()
+            .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
+            .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
+        }
+        .orbitAppearance()
     }
-    private func tool(_ title: String, detail: String, icon: String) -> some View {
-        HStack(spacing: 13) {
-            Image(systemName: icon).font(.system(size: 18, weight: .medium))
-                .foregroundStyle(theme.accent).frame(width: 40, height: 40)
-                .background(theme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.body.weight(.medium)).foregroundStyle(.primary)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+
+    private var orbitProCard: some View {
+        Button {
+            showsProPaywall = true
+        } label: {
+            HStack(spacing: 13) {
+                ZStack {
+                    Circle()
+                        .fill(Color.yellow.opacity(0.18))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: proStore.isProUnlocked ? "checkmark.seal.fill" : "crown.fill")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.yellow)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(proStore.isProUnlocked ? "Orbit Pro Active" : "Upgrade to Orbit Pro · \(proStore.displayPrice)")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(proStore.isProUnlocked ? "All 11 themes, 5 Home Screen icons & Pro features unlocked" : "One-time purchase · Extra themes, Home Screen icons & Power widgets")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.yellow.opacity(0.8))
             }
-        }.padding(.vertical, 5)
+            .padding(14)
+            .liquidGlass(cornerRadius: 18, tint: .yellow)
+        }
+    }
+
+    private var pcSwitcherCard: some View {
+        HStack(spacing: 14) {
+            OrbitMark(size: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(vm.isDemoMode ? "Demo Mode" : vm.selectedPCName)
+                    .font(.headline.weight(.bold))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(vm.metrics.isOnline ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                    Text(vm.metrics.isOnline ? (vm.hasSecureConnection ? "Encrypted TLS" : "Connected") : "Offline")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            Menu {
+                ForEach(vm.savedPCs) { pc in
+                    Button {
+                        vm.selectPC(pc)
+                    } label: {
+                        Label(pc.name, systemImage: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
+                    }
+                }
+                Divider()
+                Button {
+                    showsDiscovery = true
+                } label: {
+                    Label("Find a PC...", systemImage: "plus.circle")
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text("Switch")
+                        .font(.caption.weight(.semibold))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(theme.accent.opacity(0.16), in: Capsule())
+                .foregroundStyle(theme.accent)
+            }
+        }
+        .padding(15)
+        .liquidGlass(cornerRadius: 20, tint: theme.accent)
+    }
+
+    private func sectionHeader(_ title: String, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(theme.accent)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 4)
+    }
+
+    private func toolTile(_ title: String, subtitle: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(tint.opacity(0.16))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.28))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlass(cornerRadius: 18, tint: tint)
     }
 }

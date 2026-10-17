@@ -1,22 +1,30 @@
 @echo off
+setlocal
+title Orbit PC Companion 4.1.0
 cd /d "%~dp0"
-title Orbit PC Companion Agent
-where python >nul 2>nul
-if errorlevel 1 (
-    echo Install Python 3.11 or newer from python.org and enable Add Python to PATH.
-    pause
-    exit /b 1
+
+if not exist ".venv\Scripts\python.exe" (
+    call "%~dp0install_orbit.bat"
+    exit /b %errorlevel%
 )
-if not exist ".venv\Scripts\python.exe" python -m venv .venv
-if errorlevel 1 goto failed
-echo Installing / verifying Orbit dependencies in a private environment...
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
-if errorlevel 1 goto failed
-echo Starting Orbit Agent...
-".venv\Scripts\python.exe" orbit_agent.py
-pause
-exit /b
-:failed
-echo Setup failed. Check the error above and your Internet connection.
-pause
-exit /b 1
+
+if not exist "OrbitCompanion.exe" (
+    if exist "OrbitCompanion.cs" (
+        if exist "%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" (
+            "%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /win32icon:orbit.ico /r:System.Windows.Forms.dll /out:OrbitCompanion.exe OrbitCompanion.cs >nul 2>nul
+        )
+    )
+)
+
+if /I "%~1"=="--console" (
+    ".venv\Scripts\python.exe" "%~dp0orbit_agent.py" --console
+    pause
+    exit /b 0
+)
+
+if exist ".venv\Scripts\pythonw.exe" (
+    start "" ".venv\Scripts\pythonw.exe" "%~dp0orbit_agent.py" --tray
+    exit /b 0
+)
+
+".venv\Scripts\python.exe" "%~dp0orbit_agent.py" --tray

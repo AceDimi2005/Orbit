@@ -71,7 +71,7 @@ def ensure_tls_identity(directory=None):
     return certificate_path, key_path, ":".join(fingerprint[index:index + 2] for index in range(0, len(fingerprint), 2))
 
 
-async def serve_both(app, host, port, secure_port, certificate, key):
+async def serve_both(app, host, port, secure_port, certificate, key, stop_event=None):
     """One application lifespan; legacy LAN clients and pinned HTTPS coexist."""
     import asyncio
     import uvicorn
@@ -92,8 +92,17 @@ async def serve_both(app, host, port, secure_port, certificate, key):
             server.install_signal_handlers = lambda: None
             await server.serve()
     tasks = [asyncio.create_task(run(legacy)), asyncio.create_task(run(secure))]
+    if stop_event is not None:
+        async def watch_stop():
+            while not stop_event.is_set():
+                await asyncio.sleep(0.05)
+            legacy.should_exit = True
+            secure.should_exit = True
+        tasks.append(asyncio.create_task(watch_stop()))
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        if stop_event is not None:
+            stop_event.set()
         legacy.should_exit = True; secure.should_exit = True
         await asyncio.gather(*tasks)

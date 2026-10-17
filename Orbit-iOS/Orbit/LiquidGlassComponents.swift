@@ -5,7 +5,7 @@ struct LiquidGlassCard: ViewModifier {
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    var cornerRadius: CGFloat = 24
+    var cornerRadius: CGFloat = 22
     var tint: Color = .white
 
     func body(content: Content) -> some View {
@@ -14,23 +14,41 @@ struct LiquidGlassCard: ViewModifier {
                 if style == .improved || reduceTransparency {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(theme.surface)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [tint.opacity(0.055), .clear],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        }
                 } else {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .overlay {
-                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(tint.opacity(0.035))
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .fill(tint.opacity(0.045))
                         }
                 }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(.white.opacity(0.09), lineWidth: 1)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.14), .white.opacity(0.05)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
             }
     }
 }
 
 extension View {
-    func liquidGlass(cornerRadius: CGFloat = 24, tint: Color = .white) -> some View {
+    func liquidGlass(cornerRadius: CGFloat = 22, tint: Color = .white) -> some View {
         modifier(LiquidGlassCard(cornerRadius: cornerRadius, tint: tint))
     }
 }
@@ -48,10 +66,10 @@ struct OrbitAmbientBackground: View {
                 theme.background
                 if !reduceGlow && !reduceTransparency {
                     Ellipse()
-                        .fill(theme.accent.opacity(style == .improved ? 0.06 : 0.12))
-                        .frame(width: 430, height: 350)
-                        .blur(radius: 100)
-                        .offset(x: -140, y: -130)
+                        .fill(theme.accent.opacity(style == .improved ? 0.08 : 0.14))
+                        .frame(width: 420, height: 320)
+                        .blur(radius: 95)
+                        .offset(x: -120, y: -120)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -75,57 +93,64 @@ struct HardwareMetricCard: View {
     var detail: String? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(metricAccent)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(metricAccent.opacity(0.15))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(metricAccent)
+                }
                 Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(style == .improved ? Color.white.opacity(0.9) : Color.secondary)
+                    .foregroundStyle(style == .improved ? Color.white.opacity(0.92) : Color.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
             }
 
             Text(valueText)
-                .font(.system(.title, design: .rounded).weight(.semibold))
+                .font(.system(size: 26, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .minimumScaleFactor(0.65)
                 .lineLimit(1)
                 .contentTransition(.numericText())
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(subtitle)
                     .font(.caption.weight(.medium))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(minHeight: 30, alignment: .topLeading)
-                Text(detail ?? "Sensor unavailable")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(minHeight: 28, alignment: .topLeading)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
+            .frame(minHeight: 28, alignment: .topLeading)
 
             GeometryReader { geometry in
-                if let progress, progress.isFinite {
+                ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(.white.opacity(0.08))
-                        .overlay(alignment: .leading) {
-                            Capsule()
-                                .fill(metricAccent.opacity(0.85))
-                                .frame(width: geometry.size.width * min(1, max(0, progress)))
-                        }
+                        .fill(.white.opacity(0.07))
+                    if let progress, progress.isFinite {
+                        Capsule()
+                            .fill(metricAccent.gradient)
+                            .frame(width: max(4, geometry.size.width * min(1, max(0, progress))))
+                    }
                 }
             }
             .frame(height: 4)
             .accessibilityHidden(true)
         }
-        .padding(18)
+        .padding(15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlass(cornerRadius: 22, tint: metricAccent)
+        .liquidGlass(cornerRadius: 20, tint: metricAccent)
         .accessibilityElement(children: .combine)
     }
 }
@@ -146,21 +171,26 @@ struct OrbitMark: View {
 struct OrbitNotice: View {
     var title: String
     var message: String
-    var icon: String = "info.circle"
+    var icon: String = "info.circle.fill"
     var tint: Color = .cyan
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(tint)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.16))
+                    .frame(width: 34, height: 34)
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.subheadline.weight(.semibold))
-                Text(message).font(.caption).foregroundStyle(.secondary)
+                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .liquidGlass(cornerRadius: 18, tint: tint)
     }

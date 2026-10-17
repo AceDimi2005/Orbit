@@ -30,7 +30,8 @@ struct TaskManagerView: View {
         List {
             Section {
                 if vm.isDemoMode {
-                    Label("Preview processes · no PC actions", systemImage: "sparkles").foregroundStyle(.orange)
+                    Label("Preview processes · no PC actions", systemImage: "sparkles")
+                        .font(.caption).foregroundStyle(.orange)
                 }
                 Picker("Sort processes", selection: $sortOrder) {
                     ForEach(ProcessSortOrder.allCases) { order in Text(order.title).tag(order) }
@@ -44,8 +45,6 @@ struct TaskManagerView: View {
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("CPU uses the whole PC as 100%. The first sample may be unavailable. Process usage refreshes while this screen is open.")
-                    .font(.caption).foregroundStyle(.secondary)
                 if let status = vm.processGpuStatus {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
@@ -62,7 +61,7 @@ struct TaskManagerView: View {
                 } else if sortedProcesses.isEmpty {
                     ContentUnavailableView(search.isEmpty ? "No processes available" : "No matching processes",
                                            systemImage: "list.bullet.rectangle",
-                                           description: Text(search.isEmpty ? "Keep Orbit Agent running on your PC and refresh this screen." : "Try another application name or process ID."))
+                                           description: Text(search.isEmpty ? "Keep Orbit Agent running on your PC." : "Try another name or PID."))
                 } else {
                     ForEach(sortedProcesses) { process in processRow(process) }
                 }
@@ -99,47 +98,46 @@ struct TaskManagerView: View {
             }
             Button("Cancel", role: .cancel) { selectedProcess = nil }
         } message: {
-            Text("This stops the selected process on your PC. Unsaved work may be lost. Protected system processes cannot be ended here.")
+            Text("Stops the selected process on your PC. Unsaved work may be lost.")
         }
     }
 
     private func processRow(_ process: PCProcess) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: process.canTerminate ? "app" : "lock.shield")
+                Image(systemName: process.canTerminate ? "app.fill" : "lock.shield")
                     .foregroundStyle(process.canTerminate ? .cyan : .secondary)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 4) {
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
                     Text(process.name).font(.subheadline.weight(.medium)).lineLimit(2)
                     Text("PID \(process.pid) · \(process.status)").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 if vm.endingProcessID == process.pid {
                     ProgressView()
-                } else {
+                } else if process.canTerminate {
                     Button("End task", role: .destructive) { selectedProcess = process }
                         .font(.caption.weight(.medium))
                         .buttonStyle(.bordered)
-                        .disabled(!process.canTerminate || vm.endingProcessID != nil || !vm.metrics.isOnline || vm.isDemoMode)
+                        .disabled(vm.endingProcessID != nil || !vm.metrics.isOnline || vm.isDemoMode)
                         .accessibilityLabel("End task: \(process.name), PID \(process.pid)")
+                } else {
+                    Text("Protected")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 18) {
-                    Text(process.cpuPercent.flatMap { $0.isFinite ? String(format: "CPU %.1f%%", $0) : nil } ?? "CPU —")
-                    Text(process.gpuPercent.flatMap { $0.isFinite ? String(format: "GPU %.1f%%", $0) : nil } ?? "GPU —")
-                    Text(process.memoryMB.flatMap { $0.isFinite ? String(format: "RAM %.0f MB", $0) : nil } ?? "RAM —")
+            HStack(spacing: 14) {
+                Text(process.cpuPercent.flatMap { $0.isFinite ? String(format: "CPU %.1f%%", $0) : nil } ?? "CPU —")
+                Text(process.gpuPercent.flatMap { $0.isFinite ? String(format: "GPU %.1f%%", $0) : nil } ?? "GPU —")
+                Text(process.memoryMB.flatMap { $0.isFinite ? String(format: "RAM %.0f MB", $0) : nil } ?? "RAM —")
+                if let vram = process.vramMB, vram.isFinite, vram > 0 {
+                    Text(String(format: "VRAM %.0f MB", vram))
                 }
-                HStack(spacing: 18) {
-                    Text(process.vramMB.flatMap { $0.isFinite ? String(format: "VRAM %.0f MB", $0) : nil } ?? "VRAM —")
-                    Text(process.sharedGpuMemoryMB.flatMap { $0.isFinite ? String(format: "Shared GPU %.0f MB", $0) : nil } ?? "Shared GPU —")
-                }
-                if let engine = process.gpuEngine { Text("Busiest engine · \(engine)").font(.caption2).foregroundStyle(.secondary) }
-                if !process.canTerminate { Text("Protected").foregroundStyle(.secondary) }
             }
             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 }
 
@@ -167,51 +165,37 @@ struct FPSSetupView: View {
 
     var body: some View {
         List {
-            Section("MSI Afterburner + RTSS") {
-                Text("Orbit Agent 3.2.0 reads FPS from RivaTuner Statistics Server automatically and supported sensors from MSI Afterburner. No CSV or pairing code is needed between these apps.")
-                Text("Update the complete Windows agent folder first. The iPhone still connects to Orbit Agent with your existing PC address and pairing token.")
+            Section("MSI Afterburner + RTSS (Recommended)") {
+                Label("Automatic FPS & Sensor Reading", systemImage: "speedometer")
+                    .font(.subheadline.weight(.semibold))
+                Text("Install MSI Afterburner with RivaTuner Statistics Server (RTSS) included, and keep both open on your PC.")
                     .font(.caption).foregroundStyle(.secondary)
+                Link("Download MSI Afterburner", destination: URL(string: "https://www.msi.com/Landing/afterburner/graphics-cards")!)
+                    .font(.subheadline)
             }
-            Section("1. Install and open both apps") {
-                Link("Get MSI Afterburner from MSI", destination: URL(string: "https://www.msi.com/Landing/afterburner/graphics-cards")!)
-                Text("Include RivaTuner Statistics Server (RTSS) during installation. Keep both apps running on the PC, in the same Windows user session as Orbit Agent.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            Section("2. Enable monitoring") {
-                Text("In Afterburner → Settings → Monitoring, tick the sensors you want under Active hardware monitoring graphs, including CPU/GPU temperature and Framerate when available. Click Apply.")
-                Text("Show in On-Screen Display is optional if you want to check the readings on the PC. Orbit cannot read sensors that Afterburner does not expose; CPU power, VRAM capacity and fan readings depend on your hardware.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("3. Open a game") {
-                Text("Open RTSS from the system tray. Set Application detection level to Low for the game and keep RTSS running. Show own statistics can be enabled temporarily to check that RTSS detects the game.")
-                Text("Run the game, reconnect Orbit, and enable Game frame rate in Customize dashboard. Check Monitoring sources for the selected provider or the reason a reading is missing.")
-                Text("Some games or anti-cheat systems block RTSS. FPS describes the application's frame rate and does not guarantee displayed or generated frames. PresentMon remains available below as a fallback.")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("Quick Checklist") {
+                Label("1. In Afterburner → Settings → Monitoring, enable CPU/GPU Temp & Framerate.", systemImage: "1.circle.fill")
+                    .font(.caption)
+                Label("2. Keep RTSS running in the Windows system tray with Application detection level set to Low.", systemImage: "2.circle.fill")
+                    .font(.caption)
+                Label("3. Enable Game frame rate in Customize Dashboard.", systemImage: "3.circle.fill")
+                    .font(.caption)
             }
             Section {
                 DisclosureGroup("Advanced: PresentMon CSV fallback") {
-                    Text("Use this if RTSS cannot provide a recent reading. RTSS has priority when both sources are available.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    Link("Open official PresentMon releases", destination: URL(string: "https://github.com/GameTechDev/PresentMon/releases")!)
-                    Text("Download the Console executable and rename it PresentMon.exe. Open PowerShell in its folder. Use the real game executable from Windows Task Manager → Details; this example uses \(processName). Start the capture and leave it open.")
+                    Text("Use PresentMon if RTSS is blocked by anti-cheat.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Link("PresentMon Releases", destination: URL(string: "https://github.com/GameTechDev/PresentMon/releases")!)
                     command(captureCommand, id: "capture")
-                    Text("Stop Orbit Agent. In another PowerShell window in Orbit-Windows-Agent, set ORBIT_PRESENTMON_CSV and start the agent from that window.")
-                        .font(.caption).foregroundStyle(.secondary)
                     command(agentCommand, id: "agent")
-                    Text("Keep the game, capture and agent running. The CSV must contain recent frames for the game. Legacy, default and native v2 PresentMon CSV formats are supported.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-            } footer: {
-                Link("MSI monitoring guide", destination: URL(string: "https://www.msi.com/blog/msi-afterburner-on-screen-display/")!)
-                    .font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Set up FPS")
         .navigationBarTitleDisplayMode(.inline)
     }
     private func command(_ text: String, id: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(text).font(.caption.monospaced()).textSelection(.enabled)
             Button {
                 UIPasteboard.general.string = text
@@ -221,7 +205,7 @@ struct FPSSetupView: View {
             }
             .font(.caption.weight(.semibold))
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 }
 
@@ -234,61 +218,34 @@ struct MonitoringSourcesView: View {
 
     var body: some View {
         List {
-            Section("Windows agent") {
+            Section("Windows Companion") {
                 LabeledContent("Connection", value: vm.isDemoMode ? "Simulated preview" : (vm.metrics.isOnline ? "Connected" : "Unavailable"))
-                LabeledContent("Reported version", value: vm.metrics.agentVersion ?? "Older agent or not connected")
-                if needsAgentUpdate && !vm.isDemoMode {
-                    Text("MSI Afterburner and RTSS support needs Orbit Agent 3.2.0 or later. Stop the previous agent, copy the complete updated Orbit-Windows-Agent folder to your PC, then run start_agent.bat again. Updating the iPhone app does not update Windows automatically.")
-                        .font(.caption).foregroundStyle(.orange)
-                }
+                LabeledContent("Version", value: vm.metrics.agentVersion ?? "Not connected")
                 if vm.metrics.telemetryAvailable == false {
-                    Text("The agent is reachable but has no recent telemetry sample. Readings stay unavailable until sampling resumes.")
+                    Text("Agent reachable, waiting for telemetry sample.")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Button("Refresh connection", systemImage: "arrow.clockwise") { Task { await vm.refreshMetrics() } }
             }
-            Section("Temperatures and power") {
-                LabeledContent("CPU sensor provider", value: vm.metrics.sensorSource ?? "Not connected")
-                LabeledContent("GPU sensor provider", value: vm.metrics.gpuSource ?? "Not connected")
-                LabeledContent("CPU temperature", value: vm.metrics.cpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
-                LabeledContent("GPU temperature", value: vm.metrics.gpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
+            Section("Temperatures & Sensors") {
+                LabeledContent("CPU sensor", value: vm.metrics.sensorSource ?? "Not connected")
+                LabeledContent("GPU sensor", value: vm.metrics.gpuSource ?? "Not connected")
+                LabeledContent("CPU temp", value: vm.metrics.cpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
+                LabeledContent("GPU temp", value: vm.metrics.gpuTemp.map { String(format: "%.1f°C", $0) } ?? "Unavailable")
                 if let status = vm.metrics.sensorStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
-                Text("Keep MSI Afterburner running and enable the desired sensors in Settings → Monitoring. Supported readings are detected automatically; NVIDIA driver readings take priority for GPU.")
-                    .font(.caption).foregroundStyle(.secondary)
-                DisclosureGroup("Optional: LibreHardwareMonitor sensors") {
-                    Text("Use LibreHardwareMonitor if Afterburner does not expose a needed sensor. For recent versions, choose Options → Remote Web Server → Run on port 8085 and keep it open. Run as administrator if the sensors require it. Orbit reads available measurements and cannot create a missing sensor.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up Afterburner and RTSS", systemImage: "slider.horizontal.3") }
+                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up Afterburner & RTSS", systemImage: "slider.horizontal.3") }
             }
-            Section("Network traffic") {
-                LabeledContent("Adapters", value: vm.metrics.networkInterface ?? "Waiting for interface counters")
+            Section("Network & Game FPS") {
+                LabeledContent("Adapter", value: vm.metrics.networkInterface ?? "Auto")
                 LabeledContent("Download", value: traffic(vm.metrics.networkDownloadMBps))
                 LabeledContent("Upload", value: traffic(vm.metrics.networkUploadMBps))
-                Text("The first sample needs one more reading to calculate speed. Traffic is measured in bytes per second: 1 MB/s equals 8 Mb/s. Very small transfers appear in B/s.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("To monitor one specific adapter, set ORBIT_NETWORK_INTERFACE to its Windows name, for example Ethernet or Wi-Fi, before starting the agent.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Game FPS") {
-                LabeledContent("Detected process", value: vm.metrics.activeGameProcess ?? "No game detected")
+                LabeledContent("Detected game", value: vm.metrics.activeGameProcess ?? "None")
                 LabeledContent("FPS", value: vm.metrics.fps.map { String(format: "%.1f", $0) } ?? "Unavailable")
-                if let source = vm.metrics.fpsSource { LabeledContent("Source", value: source) }
-                if vm.metrics.fps == nil {
-                    Text(vm.metrics.fpsUnavailableReason ?? "Keep RTSS running and open a game. Use Set up FPS to check the Windows setup.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up FPS", systemImage: "speedometer") }
-                Text("RTSS is read automatically on the PC. PresentMon CSV is an optional fallback. Neither method requires a connection from the phone directly to Afterburner or RTSS.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let source = vm.metrics.fpsSource { LabeledContent("FPS source", value: source) }
             }
         }
-        .navigationTitle("Monitoring sources")
+        .navigationTitle("Monitoring Sources")
         .navigationBarTitleDisplayMode(.inline)
-    }
-    private var needsAgentUpdate: Bool {
-        guard let version = vm.metrics.agentVersion else { return true }
-        return version.compare("3.2.0", options: .numeric) == .orderedAscending
     }
     private func traffic(_ value: Double?) -> String {
         guard let value, value.isFinite, value >= 0 else { return "Unavailable" }

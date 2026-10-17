@@ -1,3 +1,6 @@
+import AppIntents
+import CryptoKit
+import Darwin
 import Foundation
 import Security
 import WidgetKit
@@ -8,19 +11,31 @@ struct OrbitWidgetConnection: Codable, Identifiable, Hashable {
     var host: String
     var port: Int
     var certificateSHA256: String
+    var macAddress: String? = nil
+    var broadcastAddress: String? = nil
+    var subnetMask: String? = nil
+    var wolPort: Int? = nil
+    var lastKnownIPv4: String? = nil
 }
 
-/// Only widget-scoped, read-only credentials are shared. The control token never
-/// leaves the app's private Keychain. App Groups supply this Keychain access group.
+/// Shared connection and credential store backed by the App Group container and Keychain.
+/// Supports read-only telemetry tokens for timeline polling as well as authenticated
+/// power actions (Wake-on-LAN, Shutdown, Sleep, Restart) triggered by interactive
+/// Home Screen Widgets, Control Center Widgets, and Siri Shortcuts.
 enum OrbitWidgetConnectionStore {
     private static let service = "Orbit.WidgetReadOnly.v1"
+    private static let controlService = "Orbit.WidgetControl.v1"
     private static let profilesKey = "Orbit.WidgetConnections.v1"
     private static let selectedKey = "Orbit.WidgetDefaultPC.v1"
+    private static let powerStatusKey = "Orbit.WidgetPowerStatus.v1"
+    private static let powerStatusTimeKey = "Orbit.WidgetPowerStatusTime.v1"
+
     private static var group: String? {
         guard let value = Bundle.main.object(forInfoDictionaryKey: "OrbitAppGroupIdentifier") as? String,
               value.hasPrefix("group."), !value.contains("$(") else { return nil }
         return value
     }
+
     enum StoreError: LocalizedError {
         case unavailable, invalidConnection, credential(OSStatus)
         var errorDescription: String? {
@@ -31,67 +46,438 @@ enum OrbitWidgetConnectionStore {
             }
         }
     }
+
     private static func defaults() throws -> UserDefaults {
         guard let group, FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) != nil,
               let defaults = UserDefaults(suiteName: group) else { throw StoreError.unavailable }
         return defaults
     }
+
+    private static var fallbackDefaults: UserDefaults {
+        (try? defaults()) ?? .standard
+    }
+
     static func connections() -> [OrbitWidgetConnection] {
-        guard let data = try? defaults().data(forKey: profilesKey) else { return [] }
+        guard let data = fallbackDefaults.data(forKey: profilesKey) else { return [] }
         return (try? JSONDecoder().decode([OrbitWidgetConnection].self, from: data)) ?? []
     }
+
     static func defaultConnection() -> OrbitWidgetConnection? {
         let entries = connections()
-        let selected = try? defaults().string(forKey: selectedKey)
+        let selected = fallbackDefaults.string(forKey: selectedKey)
         return entries.first { $0.id == selected } ?? entries.first
     }
-    static func save(id: String, name: String, host: String, port: Int, readOnlyToken: String, certificateSHA256: String) throws {
+
+    static func save(
+        id: String,
+        name: String,
+        host: String,
+        port: Int,
+        readOnlyToken: String,
+        certificateSHA256: String,
+        controlToken: String? = nil,
+        macAddress: String? = nil,
+        broadcastAddress: String? = nil,
+        subnetMask: String? = nil,
+        wolPort: Int? = nil,
+        lastKnownIPv4: String? = nil
+    ) throws {
         let fingerprint = certificateSHA256.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
         guard !id.isEmpty, !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port),
               !readOnlyToken.isEmpty, !readOnlyToken.contains(where: { $0.isNewline }),
               fingerprint.count == 64, fingerprint.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw StoreError.invalidConnection }
-        let defaults = try defaults()
-        let query = try keychainQuery(id: id)
-        let value = Data(readOnlyToken.utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: value] as CFDictionary)
+        let storeDefaults = try defaults()
+        try saveKeychainItem(value: readOnlyToken, id: id, serviceName: service)
+        if let controlToken, !controlToken.isEmpty, !controlToken.contains(where: { $0.isNewline }) {
+            try? saveKeychainItem(value: controlToken, id: id, serviceName: controlService)
+        }
+        let existing = connections().first { $0.id == id }
+        let entry = OrbitWidgetConnection(
+            id: id,
+            name: String(name.prefix(80)),
+            host: host,
+            port: port,
+            certificateSHA256: fingerprint,
+            macAddress: macAddress ?? existing?.macAddress,
+            broadcastAddress: broadcastAddress ?? existing?.broadcastAddress,
+            subnetMask: subnetMask ?? existing?.subnetMask,
+            wolPort: wolPort ?? existing?.wolPort ?? 9,
+            lastKnownIPv4: lastKnownIPv4 ?? existing?.lastKnownIPv4
+        )
+        var entries = connections()
+        entries.removeAll { $0.id == id }
+        entries.append(entry)
+        let encoded = try JSONEncoder().encode(entries)
+        storeDefaults.set(encoded, forKey: profilesKey)
+        UserDefaults.standard.set(encoded, forKey: profilesKey)
+        if storeDefaults.string(forKey: selectedKey) == nil {
+            storeDefaults.set(id, forKey: selectedKey)
+            UserDefaults.standard.set(id, forKey: selectedKey)
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    static func syncPowerProfile(
+        id: String,
+        name: String,
+        host: String,
+        port: Int,
+        certificateSHA256: String,
+        controlToken: String,
+        macAddress: String,
+        broadcastAddress: String,
+        subnetMask: String,
+        wolPort: Int,
+        lastKnownIPv4: String?
+    ) {
+        let fingerprint = certificateSHA256.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
+        guard !id.isEmpty, !host.isEmpty else { return }
+        if !controlToken.isEmpty {
+            try? saveKeychainItem(value: controlToken, id: id, serviceName: controlService)
+        }
+        var entries = connections()
+        let existing = entries.first { $0.id == id }
+        let entry = OrbitWidgetConnection(
+            id: id,
+            name: String(name.prefix(80)),
+            host: host,
+            port: port,
+            certificateSHA256: fingerprint.count == 64 ? fingerprint : (existing?.certificateSHA256 ?? ""),
+            macAddress: macAddress.isEmpty ? existing?.macAddress : macAddress,
+            broadcastAddress: broadcastAddress.isEmpty ? existing?.broadcastAddress : broadcastAddress,
+            subnetMask: subnetMask.isEmpty ? (existing?.subnetMask ?? "255.255.255.0") : subnetMask,
+            wolPort: (1...65535).contains(wolPort) ? wolPort : (existing?.wolPort ?? 9),
+            lastKnownIPv4: (lastKnownIPv4?.isEmpty == false) ? lastKnownIPv4 : existing?.lastKnownIPv4
+        )
+        entries.removeAll { $0.id == id }
+        entries.append(entry)
+        if let encoded = try? JSONEncoder().encode(entries) {
+            (try? defaults())?.set(encoded, forKey: profilesKey)
+            UserDefaults.standard.set(encoded, forKey: profilesKey)
+        }
+    }
+
+    static func setDefault(id: String) throws {
+        UserDefaults.standard.set(id, forKey: selectedKey)
+        try defaults().set(id, forKey: selectedKey)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    static func remove(id: String) throws {
+        let storeDefaults = try defaults()
+        let status = SecItemDelete(try keychainQuery(id: id, serviceName: service) as CFDictionary)
+        _ = SecItemDelete(try keychainQuery(id: id, serviceName: controlService) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw StoreError.credential(status) }
+        let remaining = try JSONEncoder().encode(connections().filter { $0.id != id })
+        storeDefaults.set(remaining, forKey: profilesKey)
+        UserDefaults.standard.set(remaining, forKey: profilesKey)
+        if storeDefaults.string(forKey: selectedKey) == id { storeDefaults.removeObject(forKey: selectedKey) }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    static func readOnlyToken(for id: String) throws -> String {
+        try readKeychainItem(id: id, serviceName: service)
+    }
+
+    static func controlToken(for id: String) throws -> String {
+        if let shared = try? readKeychainItem(id: id, serviceName: controlService), !shared.isEmpty {
+            return shared
+        }
+        // Fallback to private app keychain when invoked in-process (e.g. Siri / App Shortcuts)
+        let appQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "OrbitSavedPC",
+            kSecAttrAccount as String: id,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        if SecItemCopyMatching(appQuery as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            return token
+        }
+        throw StoreError.credential(errSecItemNotFound)
+    }
+
+    static func recordPowerFeedback(_ message: String) {
+        let store = fallbackDefaults
+        store.set(message, forKey: powerStatusKey)
+        store.set(Date().timeIntervalSince1970, forKey: powerStatusTimeKey)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    static func recentPowerFeedback() -> String? {
+        let store = fallbackDefaults
+        let timestamp = store.double(forKey: powerStatusTimeKey)
+        guard timestamp > 0, Date().timeIntervalSince1970 - timestamp < 45 else { return nil }
+        return store.string(forKey: powerStatusKey)
+    }
+
+    private static func saveKeychainItem(value: String, id: String, serviceName: String) throws {
+        let query = try keychainQuery(id: id, serviceName: serviceName)
+        let data = Data(value.utf8)
+        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var addition = query
-            addition[kSecValueData as String] = value
+            addition[kSecValueData as String] = data
             addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             status = SecItemAdd(addition as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw StoreError.credential(status) }
-        let entry = OrbitWidgetConnection(id: id, name: String(name.prefix(80)), host: host, port: port, certificateSHA256: fingerprint)
-        var entries = connections()
-        entries.removeAll { $0.id == id }; entries.append(entry)
-        defaults.set(try JSONEncoder().encode(entries), forKey: profilesKey)
-        if defaults.string(forKey: selectedKey) == nil { defaults.set(id, forKey: selectedKey) }
-        WidgetCenter.shared.reloadAllTimelines()
     }
-    static func setDefault(id: String) throws {
-        try defaults().set(id, forKey: selectedKey)
-        WidgetCenter.shared.reloadAllTimelines()
-    }
-    static func remove(id: String) throws {
-        let defaults = try defaults()
-        let status = SecItemDelete(try keychainQuery(id: id) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw StoreError.credential(status) }
-        defaults.set(try JSONEncoder().encode(connections().filter { $0.id != id }), forKey: profilesKey)
-        if defaults.string(forKey: selectedKey) == id { defaults.removeObject(forKey: selectedKey) }
-        WidgetCenter.shared.reloadAllTimelines()
-    }
-    static func readOnlyToken(for id: String) throws -> String {
-        var query = try keychainQuery(id: id)
+
+    private static func readKeychainItem(id: String, serviceName: String) throws -> String {
+        var query = try keychainQuery(id: id, serviceName: serviceName)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty else { throw StoreError.credential(status) }
+        guard status == errSecSuccess, let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty else {
+            throw StoreError.credential(status)
+        }
         return token
     }
-    private static func keychainQuery(id: String) throws -> [String: Any] {
+
+    private static func keychainQuery(id: String, serviceName: String) throws -> [String: Any] {
         guard let group else { throw StoreError.unavailable }
-        return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                kSecAttrAccount as String: id, kSecAttrAccessGroup as String: group]
+        return [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: id,
+            kSecAttrAccessGroup as String: group
+        ]
+    }
+}
+
+// MARK: - Background Power Service for Widgets, Control Center & Siri
+
+enum OrbitWidgetPowerService {
+    private final class PinnedTLSDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+        let fingerprint: String
+        init(fingerprint: String) { self.fingerprint = fingerprint.lowercased() }
+
+        func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                  let trust = challenge.protectionSpace.serverTrust,
+                  let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+                  let certificate = chain.first else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+                return
+            }
+            let received = SHA256.hash(data: SecCertificateCopyData(certificate) as Data).map { String(format: "%02x", $0) }.joined()
+            guard received == fingerprint,
+                  SecTrustSetPolicies(trust, SecPolicyCreateBasicX509()) == errSecSuccess,
+                  SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
+                  SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+                  SecTrustEvaluateWithError(trust, nil) else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+                return
+            }
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
+    private static func resolveConnection(id: String?) -> OrbitWidgetConnection? {
+        if let id, let match = OrbitWidgetConnectionStore.connections().first(where: { $0.id == id }) {
+            return match
+        }
+        return OrbitWidgetConnectionStore.defaultConnection()
+    }
+
+    static func wakePC(id: String? = nil) async throws -> String {
+        guard let connection = resolveConnection(id: id) else {
+            OrbitWidgetConnectionStore.recordPowerFeedback("Pair your PC in Orbit first")
+            return "Pair your PC in Orbit first."
+        }
+        let macRaw = (connection.macAddress ?? UserDefaults.standard.string(forKey: "pcMAC") ?? "").filter { !":-. ".contains($0) }
+        guard macRaw.count == 12 else {
+            OrbitWidgetConnectionStore.recordPowerFeedback("Open Orbit once while PC is on to save MAC")
+            return "Connect to \(connection.name) once in Orbit to save its Wake-on-LAN MAC address."
+        }
+        let chars = Array(macRaw)
+        var macBytes: [UInt8] = []
+        for i in stride(from: 0, to: 12, by: 2) {
+            guard let byte = UInt8(String(chars[i...i + 1]), radix: 16) else {
+                return "Invalid MAC address for \(connection.name)."
+            }
+            macBytes.append(byte)
+        }
+        let packet = Array(repeating: UInt8(255), count: 6) + Array(repeating: macBytes, count: 16).flatMap { $0 }
+        let sock = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard sock >= 0 else { return "Could not open UDP socket." }
+        defer { Darwin.close(sock) }
+        var broadcastEnabled: Int32 = 1
+        _ = setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnabled, socklen_t(MemoryLayout<Int32>.size))
+
+        let port = UInt16((1...65535).contains(connection.wolPort ?? 9) ? (connection.wolPort ?? 9) : 9)
+        let ipv4 = ipv4Address(host: connection.host, fallback: connection.lastKnownIPv4 ?? "")
+        let calculatedBroadcast = broadcastAddress(ip: ipv4, mask: connection.subnetMask ?? "255.255.255.0")
+        let targets = Set([connection.broadcastAddress ?? "", calculatedBroadcast, ipv4, "255.255.255.255"]).filter { !$0.isEmpty }
+
+        var sent = false
+        for target in targets {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            guard inet_pton(AF_INET, target, &addr.sin_addr) == 1 else { continue }
+            for _ in 0..<3 {
+                let written = packet.withUnsafeBytes { bytes in
+                    withUnsafePointer(to: &addr) { ptr in
+                        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                            Darwin.sendto(sock, bytes.baseAddress, packet.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        }
+                    }
+                }
+                sent = sent || (written == packet.count)
+            }
+        }
+        let message = sent ? "Wake packet sent to \(connection.name)" : "Could not send Wake packet"
+        OrbitWidgetConnectionStore.recordPowerFeedback(message)
+        return message
+    }
+
+    static func sendPowerAction(_ action: String, id: String? = nil) async throws -> String {
+        guard ["shutdown", "sleep", "restart", "lock"].contains(action) else {
+            return "Unsupported action."
+        }
+        guard let connection = resolveConnection(id: id) else {
+            OrbitWidgetConnectionStore.recordPowerFeedback("Pair your PC in Orbit first")
+            return "Pair your PC in Orbit first."
+        }
+        guard let token = try? OrbitWidgetConnectionStore.controlToken(for: connection.id),
+              !token.isEmpty,
+              connection.certificateSHA256.count == 64 else {
+            OrbitWidgetConnectionStore.recordPowerFeedback("Open Orbit to refresh widget control")
+            return "Open Orbit once to authorize widget power control for \(connection.name)."
+        }
+
+        var parts = URLComponents()
+        parts.scheme = "https"
+        parts.host = connection.host
+        parts.port = connection.port
+        parts.path = "/api/action/\(action)"
+        guard let url = parts.url else { return "Invalid PC address." }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 6
+        let session = URLSession(configuration: config, delegate: PinnedTLSDelegate(fingerprint: connection.certificateSHA256), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                let label = action == "shutdown" ? "Shutting down" : (action == "sleep" ? "Sleeping" : "Restarting")
+                let message = "\(label) \(connection.name)"
+                OrbitWidgetConnectionStore.recordPowerFeedback(message)
+                return message
+            } else {
+                let message = "\(connection.name) rejected \(action)"
+                OrbitWidgetConnectionStore.recordPowerFeedback(message)
+                return message
+            }
+        } catch {
+            let message = "\(connection.name) is offline or unreachable"
+            OrbitWidgetConnectionStore.recordPowerFeedback(message)
+            return message
+        }
+    }
+
+    private static func ipv4Address(host: String, fallback: String) -> String {
+        var addr = in_addr()
+        if inet_pton(AF_INET, host, &addr) == 1 { return host }
+        return inet_pton(AF_INET, fallback, &addr) == 1 ? fallback : ""
+    }
+
+    private static func broadcastAddress(ip: String, mask: String) -> String {
+        var addr = in_addr(), subnet = in_addr()
+        guard inet_pton(AF_INET, ip, &addr) == 1, inet_pton(AF_INET, mask, &subnet) == 1 else { return "" }
+        var broadcast = in_addr(s_addr: addr.s_addr | ~subnet.s_addr)
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &broadcast, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { return "" }
+        return String(cString: buffer)
+    }
+}
+
+// MARK: - Shared AppIntents for Widgets, Control Center & Siri Shortcuts
+
+struct OrbitWakePCIntent: AppIntent {
+    static var title: LocalizedStringResource = "Power On PC (Wake-on-LAN)"
+    static var description = IntentDescription("Sends a Wake-on-LAN magic packet to turn on your paired PC.")
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "PC ID")
+    var pcID: String?
+
+    init() {}
+    init(pcID: String?) { self.pcID = pcID }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = try await OrbitWidgetPowerService.wakePC(id: pcID)
+        return .result(dialog: IntentDialog(stringLiteral: result))
+    }
+}
+
+struct OrbitShutdownPCIntent: AppIntent {
+    static var title: LocalizedStringResource = "Shut Down PC"
+    static var description = IntentDescription("Safely shuts down your paired Windows PC over encrypted HTTPS.")
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "PC ID")
+    var pcID: String?
+
+    init() {}
+    init(pcID: String?) { self.pcID = pcID }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = try await OrbitWidgetPowerService.sendPowerAction("shutdown", id: pcID)
+        return .result(dialog: IntentDialog(stringLiteral: result))
+    }
+}
+
+struct OrbitSleepPCIntent: AppIntent {
+    static var title: LocalizedStringResource = "Put PC to Sleep"
+    static var description = IntentDescription("Puts your paired Windows PC into sleep mode.")
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "PC ID")
+    var pcID: String?
+
+    init() {}
+    init(pcID: String?) { self.pcID = pcID }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = try await OrbitWidgetPowerService.sendPowerAction("sleep", id: pcID)
+        return .result(dialog: IntentDialog(stringLiteral: result))
+    }
+}
+
+struct OrbitRestartPCIntent: AppIntent {
+    static var title: LocalizedStringResource = "Restart PC"
+    static var description = IntentDescription("Restarts your paired Windows PC.")
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "PC ID")
+    var pcID: String?
+
+    init() {}
+    init(pcID: String?) { self.pcID = pcID }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = try await OrbitWidgetPowerService.sendPowerAction("restart", id: pcID)
+        return .result(dialog: IntentDialog(stringLiteral: result))
     }
 }

@@ -10,8 +10,8 @@ Orbit are două părți: aplicația iPhone/iPad din `Orbit-iOS` și agentul Wind
 
 ### Pornire
 
-1. Copiază întregul folder `Orbit-Windows-Agent` **4.1.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. Agentul instalează dependențele și păstrează identitatea PC-ului pentru conectările următoare.
-2. Lasă agentul deschis în sesiunea Windows în care ești autentificat, ca să poți vedea codul de asociere. Permite Python în Windows Firewall pe rețeaua **Private**, inclusiv HTTPS **8766** și descoperirea Bonjour/mDNS **UDP 5353**. Pentru prima asociere, telefonul și PC-ul trebuie să fie în aceeași rețea locală.
+1. Copiază întregul folder `Orbit-Windows-Agent` **4.1.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. Agentul instalează dependențele, păstrează identitatea PC-ului și pornește în fundal în **System Tray** (zona **Hidden icons** din dreapta-jos), cu pictograma Orbit și meniu pentru **Run at Windows startup**, detalii de conectare și **Stop Orbit Companion**.
+2. Permite Python în Windows Firewall pe rețeaua **Private**, inclusiv HTTPS **8766** și descoperirea Bonjour/mDNS **UDP 5353**. Pentru prima asociere, telefonul și PC-ul trebuie să fie în aceeași rețea locală.
 3. Deschide `Orbit-iOS/Orbit.xcodeproj` în Xcode. Alege aceeași echipă pentru **Orbit** și **OrbitWidgets** și identificatori proprii dacă Xcode îi cere. Configurează același **App Group** în ambele ținte și `ORBIT_APP_GROUP_IDENTIFIER` pentru asocierea automată a widgeturilor; vezi [pașii de semnare](Orbit-iOS/WIDGETS.md#testare-gratuită).
 4. Rulează Orbit, acordă acces la rețeaua locală și apasă **Find my PC** în onboarding. Alege PC-ul găsit, apoi introdu pe iPhone **codul de șase cifre afișat de agent și în dialogul Windows**. Codul expiră după **120 de secunde** și funcționează o singură dată. Orbit completează automat adresa, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul.
 5. Pentru alt calculator, deschide **Tools → My PCs → Find a PC nearby**. **Explore with sample data** permite explorarea interfeței fără conectare și afișează explicit valori simulate.
@@ -166,8 +166,8 @@ Orbit has two parts: the iPhone/iPad app in `Orbit-iOS` and the Windows agent in
 
 ### Getting started
 
-1. Copy the entire `Orbit-Windows-Agent` **4.1.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The agent installs dependencies and preserves this PC's identity for later connections.
-2. Keep the agent open in your signed-in Windows desktop session so its pairing code is visible. Allow Python through Windows Firewall on **Private** networks, including HTTPS **8766** and Bonjour/mDNS discovery over **UDP 5353**. Use the same local network for initial pairing.
+1. Copy the entire `Orbit-Windows-Agent` **4.1.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The agent installs dependencies, preserves this PC's identity, and runs in the Windows **System Tray** (bottom-right **Hidden icons** area) with the Orbit icon and a menu for **Run at Windows startup**, connection details, and **Stop Orbit Companion**.
+2. Allow Python through Windows Firewall on **Private** networks, including HTTPS **8766** and Bonjour/mDNS discovery over **UDP 5353**. Use the same local network for initial pairing.
 3. Open `Orbit-iOS/Orbit.xcodeproj` in Xcode. Choose the same team for **Orbit** and **OrbitWidgets**, using unique bundle identifiers if required. Configure the same **App Group** on both targets and `ORBIT_APP_GROUP_IDENTIFIER` for automatic widget setup; see the [signing instructions (Romanian)](Orbit-iOS/WIDGETS.md#testare-gratuită).
 4. Run Orbit, grant local network access, and choose **Find my PC** during onboarding. Select your PC and enter the **six-digit code shown by the agent and its Windows dialog**. The code expires after **120 seconds** and works once. Orbit automatically fills in the address, tokens, certificate, and Wake-on-LAN details and saves the profile.
 5. Add another computer through **Tools → My PCs → Find a PC nearby**. **Explore with sample data** lets you try the interface without connecting and clearly marks simulated readings.

@@ -55,8 +55,10 @@ SECURE_PORT = int(os.getenv("ORBIT_TLS_PORT", "8766"))
 PAIRING_MANAGER = None
 ADVERTISEMENT = None
 CERTIFICATE_FINGERPRINT = ""
-TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(Path(__file__).with_name(".orbit-token"))))
-WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(Path(__file__).with_name(".orbit-widget-token"))))
+import sys as _sys
+_RUNTIME_DIR = Path(_sys.executable).resolve().parent if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent
+TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-token")))
+WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-widget-token")))
 SUNSHINE_APPS_PATHS = [
     Path(os.getenv("PROGRAMDATA", "C:/ProgramData")) / "LizardByte/Sunshine/config/apps.json",
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/config/apps.json",
@@ -651,10 +653,118 @@ async def websocket_video_stream(websocket: WebSocket):
             pass
 
 
+@app.get("/api/update/check")
+def api_check_for_updates(authorization: str = Header(None)):
+    verify_token(authorization)
+    from orbit_updater import check_for_updates
+    try:
+        return check_for_updates(AGENT_VERSION)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/update/apply")
+def api_apply_update(authorization: str = Header(None)):
+    verify_token(authorization)
+    from orbit_updater import check_for_updates, download_and_apply_update
+    try:
+        info = check_for_updates(AGENT_VERSION)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    if not info.get("updateAvailable"):
+        return {"status": "up_to_date", "currentVersion": AGENT_VERSION, "latestVersion": info.get("latestVersion")}
+    download_url = info.get("downloadUrl")
+    if not download_url:
+        raise HTTPException(status_code=409, detail="No downloadable update archive is available for this release")
+    try:
+        updated = download_and_apply_update(download_url)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Could not apply update: {error}") from error
+    return {
+        "status": "updated",
+        "currentVersion": AGENT_VERSION,
+        "latestVersion": info.get("latestVersion"),
+        "updatedFiles": updated,
+    }
+
+
+def tray_status_snapshot():
+    network = get_local_network_details()
+    with STATE_LOCK:
+        active_game = STATE.get("activeGame")
+    return {
+        "agentVersion": AGENT_VERSION,
+        "hostname": network.get("hostname") or socket.gethostname(),
+        "ipAddress": network.get("ipAddress") or "",
+        "agentPort": AGENT_PORT,
+        "securePort": SECURE_PORT,
+        "fingerprint": CERTIFICATE_FINGERPRINT,
+        "activeGame": active_game,
+    }
+
+
+def _acquire_single_instance_mutex():
+    if os.name != "nt":
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        name = f"Local\\OrbitPCCompanion_{AGENT_PORT}_{SECURE_PORT}"
+        handle = kernel32.CreateMutexW(None, 1, name)
+        if handle and ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            return False
+        return handle
+    except Exception:
+        return None
+
+
 if __name__ == "__main__":
+    import sys
     from orbit_tls import ensure_tls_identity, serve_both
-    API_TOKEN = load_api_token()
-    certificate, private_key, fingerprint = ensure_tls_identity()
+    from orbit_tray import OrbitTrayIcon, StartupManager, ensure_background_stdio
+
+    os.chdir(_RUNTIME_DIR)
+    args = {arg.strip().lower() for arg in sys.argv[1:]}
+    if "--enable-startup" in args:
+        StartupManager().set_enabled(True)
+        raise SystemExit(0)
+    if "--disable-startup" in args:
+        StartupManager().set_enabled(False)
+        raise SystemExit(0)
+    if "--check-updates" in args:
+        tray = OrbitTrayIcon(status_provider=tray_status_snapshot, on_stop=lambda: None)
+        result = tray.perform_update_check()
+        print(json.dumps(result, indent=2))
+        raise SystemExit(0)
+
+    log_file = ensure_background_stdio()
+    mutex = _acquire_single_instance_mutex()
+    if mutex is False:
+        if os.name == "nt" and "--background" not in args:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "Orbit PC Companion is already running in the system tray (bottom-right notification area).\n\n"
+                "Click the Orbit icon in the taskbar corner to view connection details, check for updates, toggle Windows startup, or stop the companion.",
+                "Orbit PC Companion",
+                0x00040040,
+            )
+        raise SystemExit(0)
+
+    try:
+        API_TOKEN = load_api_token()
+        certificate, private_key, fingerprint = ensure_tls_identity()
+    except Exception as startup_error:
+        if os.name == "nt" and ("--background" in args or "--tray" in args):
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                f"Orbit PC Companion could not start:\n\n{startup_error}",
+                "Orbit PC Companion · Startup Error",
+                0x00040010,
+            )
+        raise
+
     CERTIFICATE_FINGERPRINT = fingerprint
     PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
     ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
@@ -666,7 +776,30 @@ if __name__ == "__main__":
     print(f"Encrypted connection port: {SECURE_PORT}")
     print(f"Certificate SHA-256 (manual setup only): {fingerprint}")
     print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
+
+    STOP_EVENT.clear()
+    tray = OrbitTrayIcon(
+        status_provider=tray_status_snapshot,
+        on_stop=STOP_EVENT.set,
+        token_provider=lambda: API_TOKEN,
+        log_path=log_file,
+        notify_on_start=("--tray" in args),
+    )
+    tray.start()
+    if ("--background" in args or "--tray" in args) and "--console" not in args:
+        tray.set_console_visible(False)
     try:
-        asyncio.run(serve_both(app, os.getenv("ORBIT_HOST", "0.0.0.0"), AGENT_PORT, SECURE_PORT, certificate, private_key))
+        asyncio.run(serve_both(
+            app,
+            os.getenv("ORBIT_HOST", "0.0.0.0"),
+            AGENT_PORT,
+            SECURE_PORT,
+            certificate,
+            private_key,
+            stop_event=STOP_EVENT,
+        ))
     except KeyboardInterrupt:
         pass
+    finally:
+        STOP_EVENT.set()
+        tray.close()

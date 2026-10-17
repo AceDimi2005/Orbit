@@ -23,21 +23,42 @@ struct OrbitWidgetPCQuery: EntityQuery {
         OrbitWidgetConnectionStore.defaultConnection().map { OrbitWidgetPC(id: $0.id, name: $0.name) }
     }
 }
+
+/// Configuration intent for multi-metric panel widgets (Overview, Gaming, Power, Thermal, Cooling, Storage, Network).
+/// Does not ask for a single metric because panel widgets display their full metric group automatically.
+struct OrbitPanelWidgetIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Widget Appearance & PC"
+    static var description = IntentDescription("Choose a paired PC and visual theme.")
+    @Parameter(title: "PC") var pc: OrbitWidgetPC?
+    @Parameter(title: "Theme", default: .ocean) var theme: OrbitWidgetTheme
+    @Parameter(title: "Use one accent colour", default: false) var monochrome: Bool
+    static var parameterSummary: some ParameterSummary {
+        Summary("\(\.$pc)") { \.$theme; \.$monochrome }
+    }
+}
+
+/// Configuration intent for the single-metric widget where the user picks one specific metric to watch.
 struct OrbitPCWidgetIntent: WidgetConfigurationIntent {
-    static var title: LocalizedStringResource = "Choose Your PC"
-    static var description = IntentDescription("Choose a PC paired in Orbit. Secure read-only access is configured automatically.")
+    static var title: LocalizedStringResource = "Choose PC & Metric"
+    static var description = IntentDescription("Choose a paired PC and the specific hardware metric to display.")
     @Parameter(title: "PC") var pc: OrbitWidgetPC?
     @Parameter(title: "Metric", default: .cpuUsage) var metric: OrbitWidgetMetric
     @Parameter(title: "Theme", default: .ocean) var theme: OrbitWidgetTheme
     @Parameter(title: "Use one accent colour", default: false) var monochrome: Bool
     static var parameterSummary: some ParameterSummary {
-        Summary("\(\.$pc)") { \.$metric; \.$theme; \.$monochrome }
+        Summary("\(\.$pc) · \(\.$metric)") { \.$theme; \.$monochrome }
     }
 }
+
 enum OrbitWidgetTheme: String, AppEnum {
     case ocean, aurora, violet, ember, graphite
+    case cyberpunk, solarGold, crimson, matrix, arctic, sakura
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Theme")
-    static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [.ocean: "Ocean", .aurora: "Aurora", .violet: "Violet", .ember: "Ember", .graphite: "Graphite"]
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .ocean: "Ocean", .aurora: "Aurora", .violet: "Violet", .ember: "Ember", .graphite: "Graphite",
+        .cyberpunk: "Cyberpunk (Pro)", .solarGold: "Solar Gold (Pro)", .crimson: "Crimson (Pro)",
+        .matrix: "Matrix (Pro)", .arctic: "Arctic (Pro)", .sakura: "Sakura (Pro)"
+    ]
     var accent: Color {
         switch self {
         case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
@@ -45,6 +66,12 @@ enum OrbitWidgetTheme: String, AppEnum {
         case .violet: Color(red: 0.76, green: 0.66, blue: 1)
         case .ember: Color(red: 1, green: 0.70, blue: 0.43)
         case .graphite: Color(red: 0.82, green: 0.88, blue: 0.97)
+        case .cyberpunk: Color(red: 1.0, green: 0.18, blue: 0.68)
+        case .solarGold: Color(red: 0.98, green: 0.82, blue: 0.34)
+        case .crimson: Color(red: 1.0, green: 0.32, blue: 0.38)
+        case .matrix: Color(red: 0.18, green: 0.98, blue: 0.42)
+        case .arctic: Color(red: 0.62, green: 0.92, blue: 1.0)
+        case .sakura: Color(red: 1.0, green: 0.62, blue: 0.82)
         }
     }
     var background: Color {
@@ -54,6 +81,12 @@ enum OrbitWidgetTheme: String, AppEnum {
         case .violet: Color(red: 0.075, green: 0.05, blue: 0.115)
         case .ember: Color(red: 0.11, green: 0.06, blue: 0.045)
         case .graphite: Color(red: 0.065, green: 0.075, blue: 0.09)
+        case .cyberpunk: Color(red: 0.07, green: 0.025, blue: 0.11)
+        case .solarGold: Color(red: 0.085, green: 0.07, blue: 0.03)
+        case .crimson: Color(red: 0.10, green: 0.03, blue: 0.04)
+        case .matrix: Color(red: 0.02, green: 0.07, blue: 0.03)
+        case .arctic: Color(red: 0.035, green: 0.075, blue: 0.12)
+        case .sakura: Color(red: 0.09, green: 0.045, blue: 0.08)
         }
     }
 }
@@ -91,6 +124,19 @@ enum OrbitWidgetMetric: String, AppEnum {
         case .networkDownload: "Download"
         case .networkUpload: "Upload"
         case .fps: "Game FPS"
+        }
+    }
+    var shortTitle: String {
+        switch self {
+        case .cpuTemperature: "CPU Temp"
+        case .gpuTemperature: "GPU Temp"
+        case .coolantTemperature: "Coolant"
+        case .cpuPower: "CPU Power"
+        case .gpuPower: "GPU Power"
+        case .cpuClock: "Clock"
+        case .networkDownload: "Down"
+        case .networkUpload: "Up"
+        default: title
         }
     }
     var symbol: String {
@@ -206,17 +252,45 @@ private struct OrbitWidgetSnapshot: Decodable {
 
 private struct OrbitPCWidgetEntry: TimelineEntry {
     var date: Date
-    var configuration: OrbitPCWidgetIntent
+    var pc: OrbitWidgetPC?
+    var metric: OrbitWidgetMetric = .cpuUsage
+    var theme: OrbitWidgetTheme = .ocean
+    var monochrome: Bool = false
     var snapshot: OrbitWidgetSnapshot?
     var message: String?
     var isExpired = false
 
     var hasReadings: Bool { snapshot != nil && !isExpired && message == nil }
-    var name: String { snapshot?.pcName ?? "Your PC" }
+    var name: String { snapshot?.pcName ?? pc?.name ?? "Your PC" }
     var measuredAt: Date? { snapshot?.measuredAt }
 
     func formatted(_ metric: OrbitWidgetMetric) -> String {
         hasReadings ? snapshot?.formatted(metric) ?? "—" : "—"
+    }
+
+    func normalizedProgress(_ metric: OrbitWidgetMetric) -> Double? {
+        guard hasReadings, let raw = snapshot?.value(metric) else { return nil }
+        switch metric {
+        case .cpuUsage, .gpuUsage, .ramUsage, .vramUsage, .gpuFan:
+            return min(max(raw / 100.0, 0), 1)
+        case .cpuTemperature, .gpuTemperature:
+            return min(max((raw - 25.0) / 70.0, 0.05), 1)
+        case .coolantTemperature:
+            return min(max((raw - 20.0) / 30.0, 0.05), 1)
+        case .cpuPower:
+            return min(max(raw / 200.0, 0.04), 1)
+        case .gpuPower:
+            return min(max(raw / 400.0, 0.04), 1)
+        case .fps:
+            return min(max(raw / 165.0, 0.05), 1)
+        case .vramUsed:
+            if let total = snapshot?.vramTotal, total > 0 {
+                return min(max(raw / total, 0.04), 1)
+            }
+            return min(max(raw / 16.0, 0.04), 1)
+        default:
+            return nil
+        }
     }
 }
 
@@ -261,26 +335,9 @@ private final class OrbitWidgetSessionDelegate: NSObject, URLSessionDelegate, UR
     }
 }
 
-private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
-    typealias Intent = OrbitPCWidgetIntent
-    typealias Entry = OrbitPCWidgetEntry
-
-    func placeholder(in context: Context) -> Entry {
-        Entry(date: Date(), configuration: Intent(), message: "Pair your PC in Orbit")
-    }
-
-    func snapshot(for configuration: Intent, in context: Context) async -> Entry {
-        if context.isPreview {
-            return Entry(date: Date(), configuration: configuration, message: "Pair your PC in Orbit")
-        }
-        return await load(configuration)
-    }
-
-    func timeline(for configuration: Intent, in context: Context) async -> Timeline<Entry> {
-        let entry = await load(configuration)
+private enum OrbitWidgetLoader {
+    static func timeline(for entry: OrbitPCWidgetEntry) -> Timeline<OrbitPCWidgetEntry> {
         let nextRefresh = Date().addingTimeInterval(15 * 60)
-        // A separate timeline entry clears readings even if iOS delays the next fetch.
-        // No network polling or continuously live readings are implied by the widget.
         var entries = [entry]
         if entry.hasReadings, let sampledAt = entry.measuredAt {
             let expiresAt = sampledAt.addingTimeInterval(15 * 60)
@@ -295,13 +352,15 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
         return Timeline(entries: entries, policy: .after(nextRefresh))
     }
 
-    private func load(_ configuration: Intent) async -> Entry {
+    static func load(pc: OrbitWidgetPC?, metric: OrbitWidgetMetric, theme: OrbitWidgetTheme, monochrome: Bool) async -> OrbitPCWidgetEntry {
         let now = Date()
         do {
             let connection: OrbitWidgetConnection?
-            if let pc = configuration.pc {
+            if let pc {
                 connection = OrbitWidgetConnectionStore.connections().first { $0.id == pc.id }
-            } else { connection = OrbitWidgetConnectionStore.defaultConnection() }
+            } else {
+                connection = OrbitWidgetConnectionStore.defaultConnection()
+            }
             guard let connection else { throw OrbitWidgetRequestError.address }
             let url = try endpoint(connection)
             let token: String
@@ -326,18 +385,28 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
             guard response.statusCode == 200, data.count <= 64 * 1024 else { throw OrbitWidgetRequestError.invalidResponse }
             let snapshot = try JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data)
             guard snapshot.telemetryAvailable == true, let measured = snapshot.measuredAt else {
-                return Entry(date: now, configuration: configuration, snapshot: snapshot, message: "Waiting for PC telemetry")
+                return OrbitPCWidgetEntry(
+                    date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
+                    snapshot: snapshot, message: "Waiting for PC telemetry"
+                )
             }
             let expired = now.timeIntervalSince(measured) > 15 * 60 || measured.timeIntervalSince(now) > 60
-            return Entry(date: now, configuration: configuration, snapshot: snapshot,
-                         message: expired ? "Snapshot expired · open Orbit" : nil, isExpired: expired)
+            return OrbitPCWidgetEntry(
+                date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
+                snapshot: snapshot,
+                message: expired ? "Snapshot expired · open Orbit" : nil,
+                isExpired: expired
+            )
         } catch {
             let problem = error as? OrbitWidgetRequestError ?? .unavailable
-            return Entry(date: now, configuration: configuration, message: problem.message)
+            return OrbitPCWidgetEntry(
+                date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
+                message: problem.message
+            )
         }
     }
 
-    private func endpoint(_ connection: OrbitWidgetConnection) throws -> URL {
+    private static func endpoint(_ connection: OrbitWidgetConnection) throws -> URL {
         guard !connection.host.isEmpty, !connection.host.contains("/"), !connection.host.contains(":"),
               (1...65535).contains(connection.port) else { throw OrbitWidgetRequestError.address }
         var parts = URLComponents()
@@ -348,19 +417,61 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
     }
 }
 
+private struct OrbitPanelWidgetProvider: AppIntentTimelineProvider {
+    typealias Intent = OrbitPanelWidgetIntent
+    typealias Entry = OrbitPCWidgetEntry
+
+    func placeholder(in context: Context) -> Entry {
+        Entry(date: Date(), message: "Pair your PC in Orbit")
+    }
+
+    func snapshot(for configuration: Intent, in context: Context) async -> Entry {
+        if context.isPreview {
+            return Entry(date: Date(), pc: configuration.pc, theme: configuration.theme, monochrome: configuration.monochrome, message: "Pair your PC in Orbit")
+        }
+        return await OrbitWidgetLoader.load(pc: configuration.pc, metric: .cpuUsage, theme: configuration.theme, monochrome: configuration.monochrome)
+    }
+
+    func timeline(for configuration: Intent, in context: Context) async -> Timeline<Entry> {
+        let entry = await OrbitWidgetLoader.load(pc: configuration.pc, metric: .cpuUsage, theme: configuration.theme, monochrome: configuration.monochrome)
+        return OrbitWidgetLoader.timeline(for: entry)
+    }
+}
+
+private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
+    typealias Intent = OrbitPCWidgetIntent
+    typealias Entry = OrbitPCWidgetEntry
+
+    func placeholder(in context: Context) -> Entry {
+        Entry(date: Date(), message: "Pair your PC in Orbit")
+    }
+
+    func snapshot(for configuration: Intent, in context: Context) async -> Entry {
+        if context.isPreview {
+            return Entry(date: Date(), pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome, message: "Pair your PC in Orbit")
+        }
+        return await OrbitWidgetLoader.load(pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome)
+    }
+
+    func timeline(for configuration: Intent, in context: Context) async -> Timeline<Entry> {
+        let entry = await OrbitWidgetLoader.load(pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome)
+        return OrbitWidgetLoader.timeline(for: entry)
+    }
+}
+
 private enum OrbitTelemetryWidgetKind {
     case overview, gaming, power, thermal, cooling, storage, network, metric
 
     var title: String {
         switch self {
-        case .overview: "PC overview"
+        case .overview: "PC Overview"
         case .gaming: "Gaming"
         case .power: "Power"
         case .thermal: "Temperatures"
         case .cooling: "Cooling"
-        case .storage: "Storage activity"
-        case .network: "Network activity"
-        case .metric: "PC metric"
+        case .storage: "Storage"
+        case .network: "Network"
+        case .metric: "PC Metric"
         }
     }
 
@@ -370,8 +481,8 @@ private enum OrbitTelemetryWidgetKind {
         case .gaming: "gamecontroller.fill"
         case .power: "bolt.fill"
         case .thermal: "thermometer.medium"
-        case .cooling: "fanblades"
-        case .storage: "internaldrive"
+        case .cooling: "fanblades.fill"
+        case .storage: "internaldrive.fill"
         case .network: "arrow.up.arrow.down"
         case .metric: "waveform.path.ecg"
         }
@@ -393,77 +504,77 @@ private enum OrbitTelemetryWidgetKind {
 
 struct OrbitOverviewWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitOverview", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitOverview", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .overview)
         }
-        .configurationDisplayName("PC overview")
-        .description("CPU, GPU, RAM, and VRAM at a glance. Choose a PC paired in Orbit; access is configured automatically.")
+        .configurationDisplayName("PC Overview")
+        .description("CPU, GPU, RAM, VRAM, temperatures, and power at a glance.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
 struct OrbitGamingWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitGaming", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitGaming", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .gaming)
         }
-        .configurationDisplayName("Gaming snapshot")
-        .description("Measured game FPS, VRAM, and GPU readings from your last PC snapshot. Refresh timing is managed by iOS.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .configurationDisplayName("Gaming Snapshot")
+        .description("Game FPS, VRAM, GPU load, and temperatures.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
 struct OrbitPowerWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitPower", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitPower", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .power)
         }
-        .configurationDisplayName("CPU & GPU power")
-        .description("Measured CPU package and GPU board power in watts, when your hardware exposes the sensors. This is not total PC power.")
+        .configurationDisplayName("CPU & GPU Power")
+        .description("CPU package and GPU board power in watts.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct OrbitThermalWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitThermal", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitThermal", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .thermal)
         }
-        .configurationDisplayName("CPU & GPU temperatures")
-        .description("A periodic snapshot of the processor and graphics temperature sensors. Missing readings display a dash.")
+        .configurationDisplayName("Temperatures")
+        .description("CPU, GPU, and coolant temperature sensors.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct OrbitCoolingWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitCooling", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitCooling", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .cooling)
         }
-        .configurationDisplayName("PC cooling")
-        .description("CPU and GPU fan speeds plus coolant temperature, when supported by your hardware sensors.")
+        .configurationDisplayName("PC Cooling")
+        .description("CPU and GPU fan speeds plus coolant temperature.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct OrbitStorageWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitStorage", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitStorage", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .storage)
         }
-        .configurationDisplayName("Storage activity")
-        .description("A periodic snapshot of physical drive read and write throughput.")
+        .configurationDisplayName("Storage Activity")
+        .description("Physical drive read and write throughput.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct OrbitNetworkWidget: Widget {
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "OrbitNetwork", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: "OrbitNetwork", intent: OrbitPanelWidgetIntent.self, provider: OrbitPanelWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .network)
         }
-        .configurationDisplayName("Network activity")
-        .description("A periodic snapshot of download and upload throughput across active adapters.")
+        .configurationDisplayName("Network Activity")
+        .description("Download and upload throughput across active adapters.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -473,9 +584,9 @@ struct OrbitMetricWidget: Widget {
         AppIntentConfiguration(kind: "OrbitMetric", intent: OrbitPCWidgetIntent.self, provider: OrbitPCWidgetProvider()) { entry in
             OrbitTelemetryWidgetView(entry: entry, kind: .metric)
         }
-        .configurationDisplayName("Choose a PC metric")
-        .description("Choose load, VRAM, power, temperatures, clocks, fans, network, disk activity, or FPS. Add multiple widgets to watch different metrics or PCs.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular])
+        .configurationDisplayName("Single PC Metric")
+        .description("Pick any single metric (CPU, GPU, RAM, VRAM, FPS, Power, Temps, Fans, Disk, or Network).")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular])
     }
 }
 
@@ -484,8 +595,8 @@ private struct OrbitTelemetryWidgetView: View {
     var entry: OrbitPCWidgetEntry
     var kind: OrbitTelemetryWidgetKind
 
-    private var accent: Color { entry.configuration.theme.accent }
-    private var metrics: [OrbitWidgetMetric] { kind.metrics(entry.configuration.metric) }
+    private var accent: Color { entry.theme.accent }
+    private var metrics: [OrbitWidgetMetric] { kind.metrics(entry.metric) }
 
     var body: some View {
         Group {
@@ -498,21 +609,12 @@ private struct OrbitTelemetryWidgetView: View {
             }
         }
         .widgetURL(URL(string: "orbit://dashboard"))
-        .containerBackground(entry.configuration.theme.background.gradient, for: .widget)
+        .containerBackground(entry.theme.background.gradient, for: .widget)
     }
 
     private var panel: some View {
-        VStack(alignment: .leading, spacing: family == .systemSmall ? 8 : 12) {
-            HStack(spacing: 6) {
-                Label(kind == .metric ? entry.configuration.metric.title : kind.title, systemImage: kind == .metric ? entry.configuration.metric.symbol : kind.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(accent)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if family != .systemSmall {
-                    Text(entry.name).font(.caption2).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
-                }
-            }
+        VStack(alignment: .leading, spacing: family == .systemSmall ? 8 : 10) {
+            headerBar
             if let message = entry.message {
                 unavailable(message)
             } else {
@@ -524,109 +626,373 @@ private struct OrbitTelemetryWidgetView: View {
         .foregroundStyle(.white)
     }
 
+    private var headerBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: kind == .metric ? entry.metric.symbol : kind.symbol)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(accent)
+            Text(kind == .metric ? entry.metric.title : kind.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if family != .systemSmall {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(entry.hasReadings ? Color.green : Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(entry.name)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.white.opacity(0.07), in: Capsule())
+            }
+        }
+    }
+
     @ViewBuilder
     private var readings: some View {
         if kind == .metric {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(entry.formatted(entry.configuration.metric))
-                    .font(.system(size: family == .systemSmall ? 36 : 42, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                    .foregroundStyle(entry.configuration.monochrome ? accent : entry.configuration.metric.color)
-                if entry.configuration.metric == .fps {
-                    Text(entry.snapshot?.gameName ?? "No measured game FPS").font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
-                } else if entry.snapshot?.value(entry.configuration.metric) == nil {
-                    Text("Sensor unavailable").font(.caption2).foregroundStyle(.white.opacity(0.6))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            singleMetricContent
         } else if family == .systemMedium {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(metrics, id: \.self) { metric in metricReading(metric, prominent: true) }
-            }
-            if kind == .gaming {
-                Text(entry.snapshot?.gameName ?? "No measured game FPS")
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
-            }
-        } else {
-            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: family == .systemLarge ? 24 : 10) {
-                ForEach(metrics, id: \.self) { metric in metricReading(metric, prominent: family == .systemLarge) }
-            }
-            if family == .systemLarge {
-                Divider().overlay(.white.opacity(0.1))
-                HStack {
-                    metricReading(.cpuTemperature, prominent: true)
-                    metricReading(.gpuTemperature, prominent: true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(metrics, id: \.self) { metric in
+                        metricTile(metric, prominent: true, showBar: true)
+                    }
                 }
-                HStack {
-                    metricReading(.cpuPower, prominent: true)
-                    metricReading(.gpuPower, prominent: true)
+                if kind == .gaming, let game = entry.snapshot?.gameName {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles.tv")
+                            .font(.system(size: 9))
+                            .foregroundStyle(accent)
+                        Text(game)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(1)
+                    }
+                }
+            }
+        } else if family == .systemLarge {
+            largePanelContent
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(metrics, id: \.self) { metric in
+                    metricReading(metric, prominent: false, showBar: true)
                 }
             }
         }
     }
 
-    private func metricReading(_ metric: OrbitWidgetMetric, prominent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(metric.title.replacingOccurrences(of: " temperature", with: " temp"))
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(1)
-            Text(entry.formatted(metric))
-                .font(.system(size: prominent ? 23 : 20, weight: .semibold, design: .rounded))
-                .foregroundStyle(entry.configuration.monochrome ? accent : metric.color)
+    @ViewBuilder
+    private var singleMetricContent: some View {
+        let color = entry.monochrome ? accent : entry.metric.color
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 14 : 6) {
+            Text(entry.formatted(entry.metric))
+                .font(.system(size: family == .systemSmall ? 34 : (family == .systemLarge ? 48 : 40), weight: .bold, design: .rounded))
                 .monospacedDigit()
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
-                .minimumScaleFactor(0.65)
+                .foregroundStyle(color)
+
+            if let progress = entry.normalizedProgress(entry.metric) {
+                progressBar(value: progress, color: color, height: family == .systemLarge ? 7 : 5)
+            }
+
+            if entry.metric == .fps {
+                Text(entry.snapshot?.gameName ?? "No active game detected")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineLimit(1)
+            } else if entry.snapshot?.value(entry.metric) == nil {
+                Text("Sensor unavailable")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+
+            if family == .systemLarge {
+                Divider().overlay(.white.opacity(0.1))
+                Text("System Context")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .textCase(.uppercase)
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    metricTile(.cpuUsage, prominent: true, showBar: true)
+                    metricTile(.gpuUsage, prominent: true, showBar: true)
+                    metricTile(.cpuTemperature, prominent: true, showBar: false)
+                    metricTile(.gpuTemperature, prominent: true, showBar: false)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
+    private var largePanelContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let game = entry.snapshot?.gameName, !game.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(accent)
+                    Text(game)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                    Spacer()
+                    if entry.snapshot?.fps != nil {
+                        Text("\(entry.formatted(.fps)) FPS")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(accent)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                spacing: 10
+            ) {
+                ForEach(metrics, id: \.self) { metric in
+                    metricTile(metric, prominent: true, showBar: true)
+                }
+            }
+
+            let secondaryMetrics: [OrbitWidgetMetric] = kind == .gaming
+                ? [.cpuUsage, .cpuTemperature, .gpuPower, .ramUsage]
+                : [.cpuTemperature, .gpuTemperature, .cpuPower, .gpuPower]
+
+            HStack(spacing: 8) {
+                ForEach(secondaryMetrics, id: \.self) { metric in
+                    metricTile(metric, prominent: false, showBar: false)
+                }
+            }
+
+            HStack(spacing: 8) {
+                metricTile(.networkDownload, prominent: false, showBar: false)
+                metricTile(.diskRead, prominent: false, showBar: false)
+            }
+        }
+    }
+
+    private func metricTile(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
+        let color = entry.monochrome ? accent : metric.color
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Image(systemName: metric.symbol)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(color.opacity(0.9))
+                Text(metric.shortTitle)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
+            }
+            Text(entry.formatted(metric))
+                .font(.system(size: prominent ? 21 : 16, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            if showBar {
+                progressBar(value: entry.normalizedProgress(metric) ?? 0, color: color, height: 4)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, prominent ? 8 : 7)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(.white.opacity(0.08), lineWidth: 0.7)
+        )
+    }
+
+    private func metricReading(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
+        let color = entry.monochrome ? accent : metric.color
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(metric.shortTitle)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(1)
+            Text(entry.formatted(metric))
+                .font(.system(size: prominent ? 22 : 19, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            if showBar, let progress = entry.normalizedProgress(metric) {
+                progressBar(value: progress, color: color, height: 3.5)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func progressBar(value: Double, color: Color, height: CGFloat) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.10))
+                Capsule()
+                    .fill(color.gradient)
+                    .frame(width: max(height, geo.size.width * min(max(value, 0), 1)))
+            }
+        }
+        .frame(height: height)
+    }
+
     private func unavailable(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: entry.isExpired ? "clock.badge.exclamationmark" : "desktopcomputer.trianglebadge.exclamationmark")
-                .font(.title3).foregroundStyle(accent)
-            Text(message).font(.caption).foregroundStyle(.white.opacity(0.8)).lineLimit(3)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: entry.isExpired ? "clock.badge.exclamationmark" : "desktopcomputer.trianglebadge.exclamationmark")
+                    .font(.headline).foregroundStyle(accent)
+                Text(message).font(.caption).foregroundStyle(.white.opacity(0.82)).lineLimit(2)
+            }
+            if family == .systemMedium || family == .systemLarge || family == .systemSmall {
+                HStack(spacing: 6) {
+                    Button(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
+                        Label("Power On", systemImage: "power")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Color.green.opacity(0.22), in: Capsule())
+                            .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
+                    }
+                    .buttonStyle(.plain)
+                    if family != .systemSmall {
+                        Button(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
+                            Label("Shut Down", systemImage: "power.circle.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .background(Color.red.opacity(0.20), in: Capsule())
+                                .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private var footer: some View {
-        HStack(spacing: 4) {
-            if let measured = entry.measuredAt {
+        HStack(spacing: 6) {
+            if let feedback = OrbitWidgetConnectionStore.recentPowerFeedback() {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(accent)
+                Text(feedback)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .lineLimit(1)
+            } else if let measured = entry.measuredAt {
                 Image(systemName: "clock").font(.system(size: 8))
-                Text("Snapshot").font(.system(size: 9))
-                Text(measured, style: .time).font(.system(size: 9))
+                Text(measured, style: .time).font(.system(size: 9, weight: .medium))
             } else {
-                Text("Open Orbit to set up").font(.system(size: 9))
+                Text(entry.name).font(.system(size: 9, weight: .medium))
             }
-            Spacer(minLength: 0)
-            Image(systemName: "arrow.up.right").font(.system(size: 9))
+            Spacer(minLength: 4)
+            if family == .systemMedium || family == .systemLarge {
+                Button(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "power")
+                        Text("On")
+                    }
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(Color.green.opacity(0.18), in: Capsule())
+                    .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
+                }
+                .buttonStyle(.plain)
+
+                Button(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "power.circle.fill")
+                        Text("Off")
+                    }
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(Color.red.opacity(0.18), in: Capsule())
+                    .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .bold))
+            }
         }
-        .foregroundStyle(.white.opacity(0.5))
+        .foregroundStyle(.white.opacity(0.45))
         .lineLimit(1)
     }
 
+    @ViewBuilder
     private var circular: some View {
-        VStack(spacing: 1) {
-            Image(systemName: entry.configuration.metric.symbol).font(.system(size: 12))
-            Text(entry.formatted(entry.configuration.metric)).font(.system(size: 15, weight: .semibold, design: .rounded))
-                .monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
+        if let progress = entry.normalizedProgress(entry.metric) {
+            Gauge(value: progress) {
+                Image(systemName: entry.metric.symbol)
+                    .font(.system(size: 10))
+            } currentValueLabel: {
+                Text(entry.formatted(entry.metric))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.55)
+            }
+            .gaugeStyle(.accessoryCircular)
+            .accessibilityLabel("\(entry.metric.title): \(entry.formatted(entry.metric))")
+        } else {
+            VStack(spacing: 2) {
+                Image(systemName: entry.metric.symbol).font(.system(size: 11))
+                Text(entry.formatted(entry.metric))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
+            .accessibilityLabel("\(entry.metric.title): \(entry.formatted(entry.metric))")
         }
-        .accessibilityLabel("\(entry.configuration.metric.title): \(entry.formatted(entry.configuration.metric)). Periodic snapshot. Open Orbit for live readings.")
     }
 
     private var rectangular: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label(entry.configuration.metric.title, systemImage: entry.configuration.metric.symbol).font(.caption.weight(.semibold))
-            Text(entry.formatted(entry.configuration.metric)).font(.headline).monospacedDigit()
-            if let measured = entry.measuredAt, entry.message == nil {
-                HStack(spacing: 3) {
-                    Text("Snapshot"); Text(measured, style: .time)
-                }.font(.system(size: 9))
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: entry.metric.symbol)
+                    .font(.caption2.weight(.bold))
+                Text(entry.metric.shortTitle)
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 2)
+                Text(entry.name)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Text(entry.formatted(entry.metric))
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            if let progress = entry.normalizedProgress(entry.metric) {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            } else if let measured = entry.measuredAt, entry.message == nil {
+                Text(measured, style: .time)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
             } else {
-                Text(entry.message ?? "Pair your PC in Orbit").font(.system(size: 9)).lineLimit(1)
+                Text(entry.message ?? "Open Orbit")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
     }

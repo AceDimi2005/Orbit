@@ -276,6 +276,10 @@ final class OrbitViewModel: ObservableObject {
     @Published var lastUpdated: Date?
     @Published var streamError: String?
     @Published var liveActivityError: String?
+    @Published var isCheckingAgentUpdate = false
+    @Published var agentUpdateAvailable = false
+    @Published var agentLatestVersion: String?
+    @Published var agentUpdateMessage: String?
     private let activity = OrbitLiveActivityCoordinator()
     private var activitySubscription: AnyCancellable?
     private var monitoringTask: Task<Void, Never>?
@@ -374,8 +378,10 @@ final class OrbitViewModel: ObservableObject {
     }
     func setDemoMode(_ enabled: Bool) {
         resetConnection(); isDemoMode = enabled; loadOverrides(); loadDashboardConfiguration()
-        if enabled { metrics = .demo; games = Self.demoGames; statusLog = "Preview • simulated data"; lastUpdated = Date() }
-        else { Task { await refreshMetrics() } }
+        if enabled {
+            metrics = .demo; games = Self.demoGames; statusLog = "Preview • simulated data"; lastUpdated = Date()
+            Task { await fetchSpecs() }
+        } else { Task { await refreshMetrics() } }
     }
     func connect() async {
         if isDemoMode { setDemoMode(false) }
@@ -449,7 +455,29 @@ final class OrbitViewModel: ObservableObject {
     }
     func fetchSpecs() async {
         guard !isLoadingSpecs else { return }
-        if isDemoMode { specsError = "Connect to your PC to detect its full specifications."; return }
+        if isDemoMode {
+            specs = PCSpecs(
+                hostname: "Preview PC",
+                osName: "Windows 11 Pro",
+                osVersion: "24H2 (26100)",
+                architecture: "64-bit (AMD64)",
+                cpu: PCSpecs.CPU(name: "AMD Ryzen 7 7800X3D", manufacturer: "AuthenticAMD", physicalCores: 8, logicalCores: 16, maxClockMHz: 5050),
+                motherboard: PCSpecs.Motherboard(manufacturer: "ASUS ROG", model: "STRIX B650E-F GAMING WIFI", biosVersion: "2413"),
+                memory: PCSpecs.Memory(totalGB: 32, modules: [
+                    PCSpecs.MemoryModule(manufacturer: "G.Skill", partNumber: "F5-6000J3038F16G", capacityGB: 16, speedMHz: 6000, slot: "DIMM A2"),
+                    PCSpecs.MemoryModule(manufacturer: "G.Skill", partNumber: "F5-6000J3038F16G", capacityGB: 16, speedMHz: 6000, slot: "DIMM B2")
+                ]),
+                gpus: [PCSpecs.GPU(name: "NVIDIA GeForce RTX 4080 SUPER", driverVersion: "566.14", vramGB: 16)],
+                disks: [PCSpecs.Disk(name: "Samsung SSD 990 PRO 2TB", sizeGB: 1863, interfaceType: "NVMe", mediaType: "SSD")],
+                volumes: [PCSpecs.Volume(mountpoint: "C:\\", fileSystem: "NTFS", totalGB: 1862, usedGB: 680)],
+                networkAdapters: [PCSpecs.NetworkAdapter(name: "Ethernet 2.5GbE", macAddress: "AA:BB:CC:11:22:33", ipv4Addresses: ["192.168.1.50"])],
+                coolerName: "Liquid AIO 360mm",
+                detectedAt: ISO8601DateFormatter().string(from: Date()),
+                source: "Simulated preview"
+            )
+            specsError = nil
+            return
+        }
         isLoadingSpecs = true; specsError = nil; lastSpecsAttempt = Date()
         defer { isLoadingSpecs = false }
         let version = generation
@@ -503,8 +531,20 @@ final class OrbitViewModel: ObservableObject {
             guard hasSecureConnection, let profile = savedPCs.first(where: { $0.id == selectedPCID }) else {
                 throw OrbitError(message: "Pair this PC securely in My PCs to configure widgets automatically.")
             }
-            try OrbitWidgetConnectionStore.save(id: profile.id, name: profile.name, host: cleanHost(), port: securePort,
-                                                readOnlyToken: pairing.token, certificateSHA256: certificateFingerprint)
+            try OrbitWidgetConnectionStore.save(
+                id: profile.id,
+                name: profile.name,
+                host: cleanHost(),
+                port: securePort,
+                readOnlyToken: pairing.token,
+                certificateSHA256: certificateFingerprint,
+                controlToken: apiToken,
+                macAddress: pcMAC,
+                broadcastAddress: wolTargetIP,
+                subnetMask: subnetMask,
+                wolPort: wolPort,
+                lastKnownIPv4: lastKnownPCIPv4
+            )
             try OrbitWidgetConnectionStore.setDefault(id: profile.id)
         } catch {
             if version == generation { widgetSetupError = "Widget access unavailable. Update Orbit Agent and try again. \(error.localizedDescription)" }
@@ -773,6 +813,64 @@ final class OrbitViewModel: ObservableObject {
                               vramUsedGB: metrics.vramUsedGB, vramTotalGB: metrics.vramTotalGB,
                               cpuPowerWatts: metrics.cpuPowerWatts, gpuPowerWatts: metrics.gpuPowerWatts,
                               focus: dashboardConfiguration.activityFocus.rawValue,
-                                     telemetryAvailable: metrics.telemetryAvailable != false)
+                              telemetryAvailable: metrics.telemetryAvailable != false)
+    }
+
+    func checkPCCompanionUpdate() async {
+        guard !isCheckingAgentUpdate else { return }
+        isCheckingAgentUpdate = true
+        agentUpdateMessage = nil
+        defer { isCheckingAgentUpdate = false }
+        struct UpdateCheckResponse: Decodable {
+            let currentVersion: String?
+            let latestVersion: String?
+            let updateAvailable: Bool?
+            let releaseTitle: String?
+        }
+        if isDemoMode {
+            agentLatestVersion = metrics.agentVersion ?? "4.1.0"
+            agentUpdateAvailable = false
+            agentUpdateMessage = "Up to date (\(agentLatestVersion ?? "4.1.0"))"
+            return
+        }
+        guard metrics.isOnline else {
+            agentUpdateMessage = "Connect to your PC first, or check github.com/AceDimi2005/Orbit."
+            return
+        }
+        do {
+            let data = try await request("/api/update/check")
+            let info = try JSONDecoder().decode(UpdateCheckResponse.self, from: data)
+            agentLatestVersion = info.latestVersion
+            agentUpdateAvailable = info.updateAvailable == true
+            if info.updateAvailable == true {
+                agentUpdateMessage = "Update \(info.latestVersion ?? "") available on GitHub!"
+            } else {
+                agentUpdateMessage = "PC Companion is up to date (\(info.currentVersion ?? metrics.agentVersion ?? "4.1.0"))."
+            }
+        } catch {
+            agentUpdateMessage = "Could not check for updates: \(error.localizedDescription)"
+        }
+    }
+
+    func applyPCCompanionUpdate() async {
+        guard !isCheckingAgentUpdate, metrics.isOnline, !isDemoMode else { return }
+        isCheckingAgentUpdate = true
+        defer { isCheckingAgentUpdate = false }
+        struct ApplyResponse: Decodable {
+            let status: String?
+            let latestVersion: String?
+        }
+        do {
+            let data = try await request("/api/update/apply", method: "POST")
+            let result = try JSONDecoder().decode(ApplyResponse.self, from: data)
+            agentUpdateAvailable = false
+            if result.status == "updated" {
+                agentUpdateMessage = "Updated to \(result.latestVersion ?? "latest"). Restart the PC Companion from the Windows tray."
+            } else {
+                agentUpdateMessage = "Already running the latest version."
+            }
+        } catch {
+            agentUpdateMessage = "Update failed: \(error.localizedDescription)"
+        }
     }
 }

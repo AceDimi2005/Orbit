@@ -1,0 +1,60 @@
+{
+  "identifier" : "A1B2C3D4-E5F6-4700-8900-000000000001",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "24.99",
+      "familyShareable" : true,
+      "internalID" : "ORBIT_PRO_LIFETIME_01",
+      "localizations" : [
+        {
+          "description" : "Deblochează toate cele 11 teme vizuale, 5 pictograme exclusive pentru Home Screen, profiluri multiple de PC, widgeturi de Power și grafice avansate.",
+          "displayName" : "Orbit Pro (Lifetime)",
+          "locale" : "ro"
+        },
+        {
+          "description" : "Unlock all 11 visual themes, 5 custom Home Screen app icons, unlimited PC profiles, interactive power widgets, and session telemetry graphs.",
+          "displayName" : "Orbit Pro (Lifetime)",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.dimitrie.orbit.pro",
+      "referenceName" : "Orbit Pro Lifetime Unlock",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6500000001",
+    "_CustomerServiceURL" : "https://github.com/AceDimi2005/Orbit/issues",
+    "_developerTeamID" : "W3Q78RNLD6",
+    "_failTransactionsEnabled" : false,
+    "_locale" : "ro",
+    "_storefront" : "ROU",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      }
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

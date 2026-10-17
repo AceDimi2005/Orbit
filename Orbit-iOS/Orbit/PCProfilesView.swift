@@ -59,8 +59,20 @@ extension OrbitViewModel {
         savePC(profile, token: credentials.apiToken)
         widgetToken = credentials.widgetToken
         do {
-            try OrbitWidgetConnectionStore.save(id: profile.id, name: profile.name, host: profile.address, port: profile.securePort,
-                                                readOnlyToken: credentials.widgetToken, certificateSHA256: fingerprint)
+            try OrbitWidgetConnectionStore.save(
+                id: profile.id,
+                name: profile.name,
+                host: profile.address,
+                port: profile.securePort,
+                readOnlyToken: credentials.widgetToken,
+                certificateSHA256: fingerprint,
+                controlToken: credentials.apiToken,
+                macAddress: profile.macAddress,
+                broadcastAddress: profile.broadcastAddress,
+                subnetMask: profile.subnetMask,
+                wolPort: profile.wolPort,
+                lastKnownIPv4: profile.lastKnownIPv4
+            )
             try OrbitWidgetConnectionStore.setDefault(id: profile.id)
         } catch { widgetSetupError = error.localizedDescription }
     }
@@ -80,9 +92,23 @@ extension OrbitViewModel {
         profile.address = profile.address.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(profile.certificateFingerprint)
-        PCProfileStore.saveToken(token.trimmingCharacters(in: .whitespacesAndNewlines), for: profile.id)
+        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        PCProfileStore.saveToken(cleanToken, for: profile.id)
         if let index = savedPCs.firstIndex(where: { $0.id == profile.id }) { savedPCs[index] = profile } else { savedPCs.append(profile) }
         PCProfileStore.save(savedPCs)
+        OrbitWidgetConnectionStore.syncPowerProfile(
+            id: profile.id,
+            name: profile.name,
+            host: profile.address,
+            port: profile.securePort,
+            certificateSHA256: profile.certificateFingerprint,
+            controlToken: cleanToken,
+            macAddress: profile.macAddress,
+            broadcastAddress: profile.broadcastAddress,
+            subnetMask: profile.subnetMask,
+            wolPort: profile.wolPort,
+            lastKnownIPv4: profile.lastKnownIPv4
+        )
         if select { selectPC(profile, persistCurrent: false) }
     }
     func persistSelectedPC() {
@@ -94,6 +120,20 @@ extension OrbitViewModel {
         savedPCs[index].securePort = securePort; savedPCs[index].certificateFingerprint = certificateFingerprint
         PCProfileStore.save(savedPCs)
         PCProfileStore.saveToken(apiToken, for: savedPCs[index].id)
+        let p = savedPCs[index]
+        OrbitWidgetConnectionStore.syncPowerProfile(
+            id: p.id,
+            name: p.name,
+            host: p.address,
+            port: p.securePort,
+            certificateSHA256: p.certificateFingerprint,
+            controlToken: apiToken,
+            macAddress: p.macAddress,
+            broadcastAddress: p.broadcastAddress,
+            subnetMask: p.subnetMask,
+            wolPort: p.wolPort,
+            lastKnownIPv4: p.lastKnownIPv4
+        )
     }
     func saveCurrentConnection() {
         guard isConfigured, !isDemoMode else { return }

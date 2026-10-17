@@ -2,13 +2,20 @@
 
 Agentul **4.1.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
-## Pornire și conectare
+## Pornire, instalare și conectare
 
 1. Instalează **Python 3.11 sau mai nou** de la [python.org](https://www.python.org/downloads/windows/), cu opțiunea **Add Python to PATH**.
-2. Deschide `start_agent.bat` în sesiunea Windows în care ești autentificat. Creează un mediu Python separat și instalează dependențele, inclusiv descoperirea Bonjour și asocierea prin cod. Lasă fereastra deschisă. Pentru prima asociere ai nevoie de acces la desktopul Windows unde apare codul; un serviciu fără desktop interactiv nu oferă același flux.
-3. La solicitarea Windows Firewall, permite Python în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone.
-4. În onboarding, apasă **Find my PC**, alege PC-ul descoperit și introdu **codul de șase cifre** afișat în fereastra agentului și în dialogul Windows. Codul este valabil **120 de secunde**, pentru o singură încercare de confirmare. După un cod greșit sau expirat, solicită unul nou.
-5. Orbit completează automat IP/hostname, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul. Așteaptă inventarul și prima măsurătoare. Pentru alt PC, folosește **Tools → My PCs → Find a PC nearby**. Tokenul fiecărui profil rămâne separat în Keychain, iar dashboardul și favoritele se păstrează per PC.
+2. **Instalare rapidă (recomandat):** deschide `install_orbit.bat`. Acesta creează mediul Python, instalează dependențele, compilează automat executabilul nativ `OrbitCompanion.exe` (fără fereastră de consolă, cu pictograma `orbit.ico`), creează scurtături pe **Desktop** și în **Start Menu** și pornește companionul în System Tray.
+   - Alternativ, poți rula direct `start_agent.bat` sau poți construi un executabil complet independent (`dist\OrbitCompanion.exe`, fără să necesite Python pe alte PC-uri) rulând `build_exe.bat`.
+3. Apasă click sau click-dreapta pe pictograma Orbit din **System Tray** (dreapta-jos / **Hidden icons**) pentru meniul rapid:
+   - **Run at Windows startup**: activează sau dezactivează pornirea automată în fundal la autentificarea în Windows (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+   - **Check for updates...**: verifică pe GitHub (`https://github.com/AceDimi2005/Orbit`) dacă a apărut o versiune publică nouă a companionului de PC și permite descărcarea și instalarea automată a actualizării (sau deschiderea paginii de release).
+   - **Connection details...** și **Copy manual pairing token**: afișează IP-ul, portul HTTPS, amprenta SHA-256 a certificatului sau copiază tokenul manual în clipboard.
+   - **Show console window** / **Open agent log**: afișează consola (dacă a fost pornit cu `start_agent.bat --console`) sau deschide jurnalul `%LOCALAPPDATA%\Orbit\agent.log`.
+   - **Stop Orbit Companion**: oprește curat serverul, anunțul Bonjour și pictograma din tray.
+4. La solicitarea Windows Firewall, permite Python / `OrbitCompanion.exe` în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone.
+5. În onboarding, apasă **Find my PC**, alege PC-ul descoperit și introdu **codul de șase cifre** afișat în dialogul Windows. Codul este valabil **120 de secunde**, pentru o singură încercare de confirmare. După un cod greșit sau expirat, solicită unul nou.
+6. Orbit completează automat IP/hostname, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul. Așteaptă inventarul și prima măsurătoare. Pentru alt PC, folosește **Tools → My PCs → Find a PC nearby**. Tokenul fiecărui profil rămâne separat în Keychain, iar dashboardul și favoritele se păstrează per PC.
 
 PC-ul este anunțat prin Bonjour ca serviciu `_orbit._tcp.local.`. Asocierea folosește **SRP-6a, SHA-256 și grupul de 2048 de biți**; răspunsul cu credențiale este criptat cu **AES-GCM** sub o cheie derivată din sesiunea SRP și verifică amprenta certificatului. PIN-ul nu este transmis serverului ca text. Sunt permise cel mult un cod activ, cinci cereri acceptate pe adresă și zece în total în zece minute. Codurile ignorate sunt închise automat la expirare.
 
@@ -24,9 +31,14 @@ Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repor
 
 ## Actualizare și diagnosticare
 
-Această versiune a agentului raportează **4.1.0**. Oprește copia veche cu **Ctrl+C**, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește `start_agent.bat`. Toate modulele `orbit_*.py` trebuie actualizate împreună cu `orbit_agent.py`; copierea unui singur fișier lasă funcții vechi sau poate împiedica pornirea. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul. Nu copia `.venv` de pe alt calculator; `start_agent.bat` pregătește mediul local. Actualizează și aplicația iOS. Copia veche nu primește automat Bonjour, PIN, ZIP sau celelalte funcții noi doar pentru că proiectul a fost actualizat.
+Această versiune a agentului raportează **4.1.0**. Poți verifica și aplica actualizări direct din:
+- **System Tray pe PC** → click pe pictograma Orbit → **Check for updates...**
+- **Aplicația iOS** → **Tools → Settings → PC Companion Update → Check for Updates on GitHub**
+- **Linie de comandă:** `OrbitCompanion.exe --check-updates` sau `python orbit_agent.py --check-updates`
 
-În Orbit, **Tools → Monitoring sources** afișează versiunea raportată de agent, sursa senzorilor CPU/GPU, interfețele de rețea și motivul pentru care FPS este indisponibil. Dacă versiunea este veche, actualizează copia de pe PC și verifică IP-ul la care te conectezi.
+Actualizarea automată descarcă ultima versiune publică din `https://github.com/AceDimi2005/Orbit`, actualizează fișierele companionului și păstrează intacte `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul.
+
+În Orbit, **Tools → Monitoring Sources** afișează versiunea raportată de agent, sursa senzorilor CPU/GPU, interfețele de rețea și sursa FPS.
 
 Pe PC, după pregătirea dependențelor prin `start_agent.bat`, rulează `check_monitoring.bat` sau:
 
