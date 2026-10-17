@@ -615,6 +615,15 @@ struct DashboardView: View {
                 if vm.isConfigured {
                     Button("Retry", systemImage: "arrow.clockwise") { Task { await vm.connect() } }
                         .buttonStyle(.bordered)
+                } else {
+                    ShareLink(
+                        item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
+                        subject: Text("Orbit PC Companion for Windows"),
+                        message: Text("Download the Orbit PC Companion for Windows here: https://github.com/AceDimi2005/Orbit")
+                    ) {
+                        Label("Get PC App", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
         }
@@ -1396,8 +1405,22 @@ struct SettingsView: View {
                     .foregroundStyle(vm.agentUpdateAvailable ? .mint : .secondary)
             }
 
-            Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit/releases")!) {
-                Label("Open GitHub Releases", systemImage: "arrow.up.right.square")
+            ShareLink(
+                item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
+                subject: Text("Orbit PC Companion for Windows"),
+                message: Text("Download the Orbit PC Companion for Windows: https://github.com/AceDimi2005/Orbit (Direct ZIP: https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip)")
+            ) {
+                Label("Send PC Companion Link to PC", systemImage: "square.and.arrow.up")
+                    .font(.subheadline)
+            }
+
+            Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip")!) {
+                Label("Download Windows Companion (.zip)", systemImage: "arrow.down.doc.fill")
+                    .font(.subheadline)
+            }
+
+            Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
+                Label("Open GitHub Repository", systemImage: "arrow.up.right.square")
                     .font(.subheadline)
             }
         }
@@ -1640,9 +1663,41 @@ struct OnboardingView: View {
 
     private var connectionForm: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Quick Pair")
-                .font(.headline)
-            Text("Run Orbit PC Companion on Windows and tap Find my PC to pair with a 6-digit code.")
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Step 1 · Install on Windows PC", systemImage: "desktopcomputer.and.arrow.down")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.cyan)
+                Text("Download Orbit PC Companion on your Windows PC and run install_orbit.bat.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    ShareLink(
+                        item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
+                        subject: Text("Orbit PC Companion for Windows"),
+                        message: Text("Download the Orbit PC Companion for Windows: https://github.com/AceDimi2005/Orbit (Direct ZIP: https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip)")
+                    ) {
+                        Label("Send Link to PC", systemImage: "square.and.arrow.up")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
+                        Label("GitHub Page", systemImage: "arrow.up.right.square")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            Divider().overlay(.white.opacity(0.12))
+
+            Label("Step 2 · Pair with 6-Digit Code", systemImage: "lock.shield")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.mint)
+            Text("Keep Orbit Companion running on Windows and tap Find my PC below.")
                 .font(.caption).foregroundStyle(.secondary)
 
             Button { showsDiscovery = true } label: {

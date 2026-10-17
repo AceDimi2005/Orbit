@@ -134,6 +134,23 @@ struct PCDiscoveryView: View {
                         }
                         Button("Search again", systemImage: "arrow.clockwise") { discovery.stop(); discovery.start() }
                     }
+                    Section("Need the Windows PC App?") {
+                        Text("Install Orbit PC Companion on your Windows computer first, then keep it running in the System Tray.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ShareLink(
+                            item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
+                            subject: Text("Orbit PC Companion for Windows"),
+                            message: Text("Download the Orbit PC Companion for Windows: https://github.com/AceDimi2005/Orbit (Direct ZIP: https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip)")
+                        ) {
+                            Label("Send Download Link to PC", systemImage: "square.and.arrow.up")
+                        }
+                        Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip")!) {
+                            Label("Download Windows Companion (.zip)", systemImage: "arrow.down.doc.fill")
+                        }
+                        Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
+                            Label("Open GitHub (AceDimi2005/Orbit)", systemImage: "arrow.up.right.square")
+                        }
+                    }
                     Section {
                         Text("Discovery does not share access tokens. The temporary code verifies the connection before your PC's credentials are saved securely.")
                             .font(.caption).foregroundStyle(.secondary)

@@ -24,16 +24,6 @@
 	<array>
 		<string>_orbit._tcp</string>
 	</array>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Orbit connects to your PC over your local network to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.</string>
-	<key>NSSiriUsageDescription</key>
-	<string>Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>OrbitAppGroupIdentifier</key>
 	<string>$(ORBIT_APP_GROUP_IDENTIFIER)</string>
 	<key>UIApplicationSceneManifest</key>
