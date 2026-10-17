@@ -110,6 +110,7 @@ extension OrbitViewModel {
             lastKnownIPv4: profile.lastKnownIPv4
         )
         if select { selectPC(profile, persistCurrent: false) }
+        OrbitWatchBridge.shared.pushStateToWatch(force: true)
     }
     func persistSelectedPC() {
         guard let index = savedPCs.firstIndex(where: { $0.id == selectedPCID && $0.address == cleanHost() && $0.agentPort == agentPort }) else { return }
@@ -158,6 +159,7 @@ extension OrbitViewModel {
         wolTargetIP = profile.broadcastAddress; wolPort = profile.wolPort; autoCalcBroadcast = profile.autoCalcBroadcast
         lastKnownPCIPv4 = profile.lastKnownIPv4 ?? ""
         resetConnection()
+        OrbitWatchBridge.shared.pushStateToWatch(force: true)
         try? OrbitWidgetConnectionStore.setDefault(id: profile.id)
         Task { await connect() }
     }

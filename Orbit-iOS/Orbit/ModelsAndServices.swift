@@ -315,8 +315,12 @@ final class OrbitViewModel: ObservableObject {
         }
         loadOverrides()
         loadDashboardConfiguration()
-        activitySubscription = activity.$isActive.sink { [weak self] value in self?.isDynamicIslandActive = value }
+        activitySubscription = activity.$isActive.sink { [weak self] value in
+            self?.isDynamicIslandActive = value
+            OrbitWatchBridge.shared.pushStateToWatch(force: true)
+        }
         if isDemoMode { metrics = .demo; games = Self.demoGames }
+        OrbitWatchBridge.shared.attach(to: self)
         startMonitoringLoop()
     }
     private static var demoGames: [SunshineGame] {
@@ -413,6 +417,7 @@ final class OrbitViewModel: ObservableObject {
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
             statusLog = "Connected • \(cleanHost())"
             await updateLiveActivity()
+            OrbitWatchBridge.shared.pushStateToWatch()
             guard generation == version, !Task.isCancelled else { return }
             if !hasSynced {
                 await fetchNetworkConfigFromPC()
@@ -422,6 +427,7 @@ final class OrbitViewModel: ObservableObject {
                 if hasSecureConnection { await prepareWidgetAccess() }
                 guard generation == version, !Task.isCancelled else { return }
                 hasSynced = true
+                OrbitWatchBridge.shared.pushStateToWatch(force: true)
             }
             if specs == nil && Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
         } catch {
@@ -429,6 +435,7 @@ final class OrbitViewModel: ObservableObject {
             metrics.isOnline = false; metrics.fps = nil; pingMs = 0
             statusLog = (error as? OrbitError)?.message ?? "PC unreachable • check Wi-Fi and Orbit Agent"
             await updateLiveActivity()
+            OrbitWatchBridge.shared.pushStateToWatch()
         }
     }
     func fetchNetworkConfigFromPC() async {
@@ -735,6 +742,25 @@ final class OrbitViewModel: ObservableObject {
         catch { if generation == version { statusLog = "Command failed: \(error.localizedDescription)" } }
     }
     func sendMouseInput(dx: Int = 0, dy: Int = 0, click: String = "", scroll: Int = 0) async { await sendInput("/api/input/mouse", values: ["dx": "\(dx)", "dy": "\(dy)", "click": click, "scroll": "\(scroll)"]) }
+    func sendCursorInput(dx: Int = 0, dy: Int = 0, click: String = "", scroll: Int = 0, hscroll: Int = 0, normX: Double? = nil, normY: Double? = nil, drag: String = "") async {
+        guard !isDemoMode, metrics.isOnline else { return }
+        var values: [String: String] = ["dx": "\(dx)", "dy": "\(dy)", "click": click, "scroll": "\(scroll)", "hscroll": "\(hscroll)", "drag": drag]
+        if let normX, let normY {
+            values["normX"] = String(format: "%.4f", normX)
+            values["normY"] = String(format: "%.4f", normY)
+        }
+        let version = generation
+        do {
+            _ = try await request("/api/input/cursor", method: "POST", query: values.map { URLQueryItem(name: $0.key, value: $0.value) })
+        } catch {
+            // Backwards-compatible fallback for older 4.1.0 PC Companion agents
+            if normX == nil && drag.isEmpty {
+                await sendMouseInput(dx: dx, dy: dy, click: click, scroll: scroll)
+            } else if generation == version {
+                statusLog = "Cursor command failed: \(error.localizedDescription)"
+            }
+        }
+    }
     func sendKeyboardInput(text: String = "", key: String = "") async { await sendInput("/api/input/keyboard", values: ["text": text, "key": key]) }
     func sendGamepadButton(_ key: String) async { await sendInput("/api/input/gamepad", values: ["button": key]) }
     func smartLaunch(game: SunshineGame) async {

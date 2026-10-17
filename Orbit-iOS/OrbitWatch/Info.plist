@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.dimitrie.orbit.watchkitapp</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>orbitwatch</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Orbit on Apple Watch connects to your PC over your local network for live telemetry, Wake-on-LAN, power controls, and Wrist Motion Air Mouse.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Orbit uses Apple Watch wrist motion and gyroscope sensors to move the cursor on your PC screen when Air Mouse is enabled.</string>
+	<key>OrbitAppGroupIdentifier</key>
+	<string>$(ORBIT_APP_GROUP_IDENTIFIER)</string>
+	<key>WKApplication</key>
+	<true/>
+	<key>WKCompanionAppBundleIdentifier</key>
+	<string>com.dimitrie.orbit</string>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<true/>
+</dict>
+</plist>

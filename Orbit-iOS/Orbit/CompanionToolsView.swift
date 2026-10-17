@@ -61,8 +61,11 @@ struct CompanionToolsView: View {
                             }
                         }
 
-                        sectionHeader("Personalization & iOS", icon: "sparkles")
+                        sectionHeader("Personalization, Watch & iOS", icon: "sparkles")
                         LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { AppleWatchCompanionHelpView(vm: vm) } label: {
+                                toolTile("Apple Watch", subtitle: "Air Mouse & Smart Stack", icon: "applewatch.radiowaves.left.and.right", tint: .green)
+                            }
                             NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
                                 toolTile(
                                     "Live Activity",
@@ -277,3 +280,146 @@ struct CompanionToolsView: View {
         .liquidGlass(cornerRadius: 18, tint: tint)
     }
 }
+
+struct AppleWatchCompanionHelpView: View {
+    @ObservedObject var vm: OrbitViewModel
+    @ObservedObject private var watchBridge = OrbitWatchBridge.shared
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+
+    var body: some View {
+        ZStack {
+            OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    statusCard
+
+                    featureCard(
+                        title: "Wrist Motion Air Mouse (Gyro Cursor)",
+                        subtitle: "Move the PC cursor with your wrist",
+                        icon: "gyroscope",
+                        tint: .cyan,
+                        points: [
+                            "Open Orbit on Apple Watch and swipe to the Air Mouse page.",
+                            "Tap Start Wrist Cursor and tilt or rotate your wrist to move the Windows cursor in real time.",
+                            "Switch between Gyro Glide (velocity) and Laser Pointer (calibrated screen mapping) modes.",
+                            "Turn the Digital Crown to scroll pages up/down, and tap Left, Right, Double, or Drag Hold."
+                        ]
+                    )
+
+                    featureCard(
+                        title: "Power On, Shut Down & Quick Actions",
+                        subtitle: "Full PC power & desktop shortcuts on your wrist",
+                        icon: "power.circle.fill",
+                        tint: .green,
+                        points: [
+                            "Power On (Wake-on-LAN) works both directly over Watch Wi-Fi and through your iPhone.",
+                            "Trigger Shut Down, Sleep, Restart, or Lock Workstation with confirmation and wrist haptics.",
+                            "Use Desktop Shortcuts on your wrist: Show Desktop, Task View, Alt+Tab, Screenshot, and Toggle HDR."
+                        ]
+                    )
+
+                    featureCard(
+                        title: "Live Activities & Watch Face Complications",
+                        subtitle: "Smart Stack & Watch Face gauges",
+                        icon: "applewatch.watchface",
+                        tint: .purple,
+                        points: [
+                            "When you start an Orbit Live Activity on iPhone, it automatically appears in your Apple Watch Smart Stack with live CPU/GPU/FPS metrics and Power On / Shut Down buttons.",
+                            "Add Orbit Complications (Circular, Corner, Rectangular, Inline) to any Watch Face to see live telemetry or wake your PC with one tap."
+                        ]
+                    )
+                }
+                .padding(18)
+            }
+        }
+        .navigationTitle("Apple Watch")
+    }
+
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.green.opacity(0.18))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "applewatch.radiowaves.left.and.right")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.green)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Orbit for Apple Watch")
+                        .font(.headline.weight(.bold))
+                    Text(watchStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    watchBridge.pushStateToWatch(force: true)
+                } label: {
+                    Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.bold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(theme.accent.opacity(0.18), in: Capsule())
+                        .foregroundStyle(theme.accent)
+                }
+                .buttonStyle(.plain)
+            }
+            if let lastSync = watchBridge.lastWatchSync {
+                Text("Last synced with Watch session at \(lastSync.formatted(date: .omitted, time: .standard))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .liquidGlass(cornerRadius: 20, tint: .green)
+    }
+
+    private var watchStatusText: String {
+        if !watchBridge.isWatchSupported {
+            return "WatchConnectivity ready · automatic LAN & Bluetooth sync"
+        }
+        if watchBridge.isWatchReachable {
+            return "Connected & Reachable · Live relay active"
+        }
+        if watchBridge.isWatchPaired {
+            return "Apple Watch paired · Background context synced"
+        }
+        return "Ready to pair with Apple Watch"
+    }
+
+    private func featureCard(title: String, subtitle: String, icon: String, tint: Color, points: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.bold))
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(points, id: \.self) { point in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(tint)
+                            .frame(width: 5, height: 5)
+                            .padding(.top, 6)
+                        Text(point)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.86))
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlass(cornerRadius: 20, tint: tint)
+    }
+}
+

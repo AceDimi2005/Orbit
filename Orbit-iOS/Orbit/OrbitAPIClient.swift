@@ -42,10 +42,11 @@ final class OrbitAPIClient: @unchecked Sendable {
     deinit { session.invalidateAndCancel() }
 
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
-        guard path.hasPrefix("/api/") || path == "/ws/stream" else { throw OrbitError(message: "Invalid PC request.") }
+        let isWebSocket = (path == "/ws/stream" || path == "/ws/input")
+        guard path.hasPrefix("/api/") || isWebSocket else { throw OrbitError(message: "Invalid PC request.") }
         guard !pairingOnly || path.hasPrefix("/api/pair/") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
         var components = URLComponents()
-        components.scheme = path == "/ws/stream" ? "wss" : "https"
+        components.scheme = isWebSocket ? "wss" : "https"
         components.host = host; components.port = port; components.path = path
         components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw OrbitError(message: "Invalid PC address.") }
@@ -127,6 +128,7 @@ final class OrbitAPIClient: @unchecked Sendable {
         return data
     }
     func webSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/stream")) }
+    func inputWebSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/input")) }
 }
 
 private class OrbitPinnedDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {

@@ -46,7 +46,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.1.0"
+AGENT_VERSION = "4.2.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -471,17 +471,32 @@ def tap_key(vk):
     ctypes.windll.user32.keybd_event(vk, 0, 2, 0)
 
 
-@app.post("/api/input/mouse")
-def mouse_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, authorization: str = Header(None)):
-    verify_token(authorization)
-    require_windows()
-    if click not in {"", "left", "double", "right"} or max(abs(dx), abs(dy)) > 10000 or abs(scroll) > 100:
-        raise HTTPException(status_code=422, detail="Invalid mouse input")
+def _apply_cursor_operation(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0,
+                            hscroll: int = 0, norm_x: float = None, norm_y: float = None, drag: str = ""):
+    if click not in {"", "left", "double", "right", "middle"} or drag not in {"", "down", "up"}:
+        raise HTTPException(status_code=422, detail="Invalid mouse button or drag state")
+    if max(abs(dx), abs(dy)) > 10000 or abs(scroll) > 100 or abs(hscroll) > 100:
+        raise HTTPException(status_code=422, detail="Invalid mouse input range")
     u32 = ctypes.windll.user32
-    if dx or dy:
+    if norm_x is not None and norm_y is not None:
+        if not (math.isfinite(norm_x) and math.isfinite(norm_y)):
+            raise HTTPException(status_code=422, detail="Invalid normalized coordinates")
+        nx = max(0.0, min(1.0, float(norm_x)))
+        ny = max(0.0, min(1.0, float(norm_y)))
+        width = max(1, int(u32.GetSystemMetrics(0)))
+        height = max(1, int(u32.GetSystemMetrics(1)))
+        target_x = int(round(nx * (width - 1)))
+        target_y = int(round(ny * (height - 1)))
+        if not u32.SetCursorPos(target_x, target_y):
+            raise HTTPException(status_code=503, detail="Windows could not position the cursor")
+    elif dx or dy:
         point = POINT()
         if not u32.GetCursorPos(ctypes.byref(point)) or not u32.SetCursorPos(point.x + dx, point.y + dy):
             raise HTTPException(status_code=503, detail="Windows could not move the cursor")
+    if drag == "down":
+        u32.mouse_event(0x0002, 0, 0, 0, 0)
+    elif drag == "up":
+        u32.mouse_event(0x0004, 0, 0, 0, 0)
     for _ in range(2 if click == "double" else 1):
         if click in {"left", "double"}:
             u32.mouse_event(0x0002, 0, 0, 0, 0)
@@ -489,9 +504,103 @@ def mouse_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, auth
         elif click == "right":
             u32.mouse_event(0x0008, 0, 0, 0, 0)
             u32.mouse_event(0x0010, 0, 0, 0, 0)
+        elif click == "middle":
+            u32.mouse_event(0x0020, 0, 0, 0, 0)
+            u32.mouse_event(0x0040, 0, 0, 0, 0)
     if scroll:
         u32.mouse_event(0x0800, 0, 0, scroll * 120, 0)
+    if hscroll:
+        u32.mouse_event(0x01000, 0, 0, hscroll * 120, 0)
+
+
+@app.post("/api/input/mouse")
+def mouse_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    _apply_cursor_operation(dx=dx, dy=dy, click=click, scroll=scroll)
     return {"status": "sent"}
+
+
+@app.post("/api/input/cursor")
+def cursor_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, hscroll: int = 0,
+                 normX: float = None, normY: float = None, drag: str = "", authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    _apply_cursor_operation(dx=dx, dy=dy, click=click, scroll=scroll, hscroll=hscroll,
+                            norm_x=normX, norm_y=normY, drag=drag)
+    return {"status": "sent"}
+
+
+@app.websocket("/ws/input")
+async def websocket_input_stream(websocket: WebSocket):
+    if not authorized(websocket.headers.get("authorization")):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    if os.name != "nt":
+        await websocket.close(code=1011, reason="PC controls require Windows")
+        return
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if len(raw) > 2048:
+                continue
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            dx = int(payload.get("dx") or 0)
+            dy = int(payload.get("dy") or 0)
+            click = str(payload.get("click") or "")
+            scroll = int(payload.get("scroll") or 0)
+            hscroll = int(payload.get("hscroll") or 0)
+            drag = str(payload.get("drag") or "")
+            norm_x = payload.get("normX")
+            norm_y = payload.get("normY")
+            try:
+                _apply_cursor_operation(
+                    dx=dx, dy=dy, click=click, scroll=scroll, hscroll=hscroll,
+                    norm_x=float(norm_x) if norm_x is not None else None,
+                    norm_y=float(norm_y) if norm_y is not None else None,
+                    drag=drag,
+                )
+            except HTTPException:
+                continue
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        LOGGER.exception("WebSocket input stream closed")
+
+
+@app.get("/api/watch/summary")
+def watch_summary(authorization: str = Header(None)):
+    verify_token(authorization)
+    status = status_snapshot()
+    total_ram = status.get("ramTotalGB") or 0
+    ram_pct = round(status["ramUsedGB"] / total_ram * 100, 1) if total_ram > 0 else 0.0
+    return {
+        "hostname": status.get("hostname") or "Your PC",
+        "agentVersion": status.get("agentVersion") or AGENT_VERSION,
+        "isOnline": True,
+        "telemetryAvailable": bool(status.get("telemetryAvailable")),
+        "cpuUsage": status.get("cpuUsage") or 0.0,
+        "cpuTemp": status.get("cpuTemp"),
+        "gpuUsage": status.get("gpuUsage"),
+        "gpuTemp": status.get("gpuTemp"),
+        "ramUsagePercent": ram_pct,
+        "ramUsedGB": status.get("ramUsedGB") or 0.0,
+        "ramTotalGB": total_ram,
+        "cpuPowerWatts": status.get("cpuPowerWatts"),
+        "gpuPowerWatts": status.get("gpuPowerWatts"),
+        "activeGame": status.get("activeGame"),
+        "fps": status.get("fps"),
+        "volume": status.get("volume") or 0.0,
+        "isMuted": bool(status.get("isMuted")),
+        "uptimeSeconds": status.get("uptimeSeconds") or 0,
+        "lastUpdated": status.get("lastUpdated"),
+    }
 
 
 @app.post("/api/input/keyboard")
@@ -533,7 +642,13 @@ def gamepad_input(button: str, authorization: str = Header(None)):
 @app.post("/api/action/{action_name}")
 def execute_action(action_name: str, authorization: str = Header(None)):
     verify_token(authorization)
-    actions = {"lock", "sleep", "restart", "shutdown", "mute", "media_play_pause", "media_next", "media_prev", "toggle_hdr", "restore_display", "kill_game"}
+    actions = {
+        "lock", "sleep", "restart", "shutdown",
+        "mute", "volume_up", "volume_down",
+        "media_play_pause", "media_next", "media_prev",
+        "toggle_hdr", "restore_display", "kill_game",
+        "show_desktop", "task_view", "alt_tab", "screenshot", "fullscreen",
+    }
     if action_name not in actions:
         raise HTTPException(status_code=404, detail="Unknown PC action")
     require_windows()
@@ -549,8 +664,12 @@ def execute_action(action_name: str, authorization: str = Header(None)):
         elif action_name in {"restart", "shutdown"}:
             subprocess.run(["shutdown", "/r" if action_name == "restart" else "/s", "/t", "3"], check=True,
                            timeout=5, capture_output=True, creationflags=0x08000000)
-        elif action_name in {"mute", "media_play_pause", "media_next", "media_prev"}:
-            tap_key({"mute": 0xAD, "media_play_pause": 0xB3, "media_next": 0xB0, "media_prev": 0xB1}[action_name])
+        elif action_name in {"mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev", "fullscreen"}:
+            tap_key({
+                "mute": 0xAD, "volume_up": 0xAF, "volume_down": 0xAE,
+                "media_play_pause": 0xB3, "media_next": 0xB0, "media_prev": 0xB1,
+                "fullscreen": 0x7A,
+            }[action_name])
         elif action_name == "toggle_hdr":
             u32.keybd_event(0x5B, 0, 0, 0)
             u32.keybd_event(0x12, 0, 0, 0)
@@ -558,6 +677,22 @@ def execute_action(action_name: str, authorization: str = Header(None)):
             u32.keybd_event(0x12, 0, 2, 0)
             u32.keybd_event(0x5B, 0, 2, 0)
             # Shortcut delivery cannot verify HDR state; hdrEnabled remains null.
+        elif action_name == "show_desktop":
+            u32.keybd_event(0x5B, 0, 0, 0)
+            tap_key(0x44)  # Win + D
+            u32.keybd_event(0x5B, 0, 2, 0)
+        elif action_name == "task_view":
+            u32.keybd_event(0x5B, 0, 0, 0)
+            tap_key(0x09)  # Win + Tab
+            u32.keybd_event(0x5B, 0, 2, 0)
+        elif action_name == "alt_tab":
+            u32.keybd_event(0x12, 0, 0, 0)
+            tap_key(0x09)  # Alt + Tab
+            u32.keybd_event(0x12, 0, 2, 0)
+        elif action_name == "screenshot":
+            u32.keybd_event(0x5B, 0, 0, 0)
+            tap_key(0x2C)  # Win + PrintScreen
+            u32.keybd_event(0x5B, 0, 2, 0)
         elif action_name == "restore_display":
             subprocess.Popen(["DisplaySwitch.exe", "/extend"], creationflags=0x08000000)
         elif action_name == "kill_game":

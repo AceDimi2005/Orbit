@@ -1144,7 +1144,7 @@ struct QuickRemoteView: View {
     private var mediaControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Media & Display", systemImage: "play.tv.fill")
+                Label("Media & Desktop Shortcuts", systemImage: "play.tv.fill")
                     .font(.subheadline.weight(.bold))
                 Spacer()
                 if vm.metrics.activeGame != nil {
@@ -1165,6 +1165,12 @@ struct QuickRemoteView: View {
                 remoteButton(vm.metrics.isMuted ? "Unmute" : "Mute", icon: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
                     await vm.sendPowerAction("mute")
                 }
+            }
+            HStack(spacing: 8) {
+                remoteButton("Desktop", icon: "menubar.dock.rectangle") { await vm.sendPowerAction("show_desktop") }
+                remoteButton("Task View", icon: "rectangle.3.group") { await vm.sendPowerAction("task_view") }
+                remoteButton("Alt+Tab", icon: "macwindow.on.rectangle") { await vm.sendPowerAction("alt_tab") }
+                remoteButton("Screenshot", icon: "camera.viewfinder") { await vm.sendPowerAction("screenshot") }
             }
         }
         .padding(16)

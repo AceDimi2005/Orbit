@@ -397,10 +397,21 @@ struct OrbitMonitorActivity: Widget {
             .widgetURL(OrbitWidgetStyle.dashboardURL)
             .keylineTint(accent(context))
         }
+        .applyWatchSmartStackSupport()
     }
 
     private func accent(_ context: ActivityViewContext<OrbitActivityAttributes>) -> Color {
         OrbitWidgetTheme(rawValue: context.state.accent ?? "ocean")?.accent ?? OrbitWidgetStyle.accent
+    }
+}
+
+private extension WidgetConfiguration {
+    func applyWatchSmartStackSupport() -> some WidgetConfiguration {
+        if #available(iOSApplicationExtension 18.0, *) {
+            return self.supplementalActivityFamilies([.small])
+        } else {
+            return self
+        }
     }
 }
 
@@ -535,6 +546,18 @@ private struct OrbitLiveActivityPanel: View {
     private var minimal: Bool { context.state.style == "minimal" }
 
     var body: some View {
+        if #available(iOSApplicationExtension 18.0, *), !island {
+            WatchAwareLiveActivityContainer(context: context, watchContent: {
+                watchSmartStackView
+            }, standardContent: {
+                standardBody
+            })
+        } else {
+            standardBody
+        }
+    }
+
+    private var standardBody: some View {
         VStack(alignment: .leading, spacing: island ? 8 : 10) {
             if !island {
                 lockScreenHeader
@@ -552,6 +575,75 @@ private struct OrbitLiveActivityPanel: View {
         .foregroundStyle(.white)
         .padding(.horizontal, island ? 6 : 16)
         .padding(.vertical, island ? 4 : 14)
+    }
+
+    private var watchSmartStackView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(presentation.fresh ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(context.attributes.pcName)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                if let game = context.state.gameName, !game.isEmpty, presentation.fresh {
+                    Text(game)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+                } else {
+                    Text(presentation.shortStatus)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(presentation.metrics, id: \.self) { metric in
+                    let tint = presentation.color(metric, fallback: accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(presentation.title(metric))
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(tint)
+                        Text(presentation.value(metric))
+                            .font(.system(size: 13.5, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+
+            HStack(spacing: 6) {
+                Button(intent: OrbitWakePCIntent()) {
+                    Label("Power On", systemImage: "power")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background(Color.green.opacity(0.22), in: Capsule())
+                        .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
+                }
+                .buttonStyle(.plain)
+
+                Button(intent: OrbitShutdownPCIntent()) {
+                    Label("Shut Down", systemImage: "power.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.22), in: Capsule())
+                        .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var lockScreenHeader: some View {
@@ -728,5 +820,21 @@ private struct OrbitLiveActivityPanel: View {
         }
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(detailed || island ? accent : .white.opacity(0.6))
+    }
+}
+
+@available(iOSApplicationExtension 18.0, *)
+private struct WatchAwareLiveActivityContainer<WatchContent: View, StandardContent: View>: View {
+    var context: ActivityViewContext<OrbitActivityAttributes>
+    @Environment(\.activityFamily) private var activityFamily
+    @ViewBuilder var watchContent: () -> WatchContent
+    @ViewBuilder var standardContent: () -> StandardContent
+
+    var body: some View {
+        if activityFamily == .small {
+            watchContent()
+        } else {
+            standardContent()
+        }
     }
 }
