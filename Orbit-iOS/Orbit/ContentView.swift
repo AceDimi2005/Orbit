@@ -1260,34 +1260,27 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Orbit Pro & Purchases") {
+                Section("Orbit Pro") {
                     Button {
                         isShowingProPaywall = true
                     } label: {
                         HStack {
                             Label(
-                                proStore.isProUnlocked ? "Orbit Pro (Lifetime Unlocked)" : "Upgrade to Orbit Pro · \(proStore.displayPrice)",
-                                systemImage: proStore.isProUnlocked ? "checkmark.seal.fill" : "crown.fill"
+                                "Orbit Pro · Coming Soon",
+                                systemImage: "crown.fill"
                             )
-                            .foregroundStyle(proStore.isProUnlocked ? .mint : .yellow)
+                            .foregroundStyle(.yellow)
                             Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("SOON")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.yellow.opacity(0.2), in: Capsule())
+                                .foregroundStyle(.yellow)
                         }
                     }
-                    Button {
-                        Task { await proStore.restorePurchases() }
-                    } label: {
-                        HStack {
-                            Label("Restore Purchases", systemImage: "arrow.clockwise.circle")
-                            Spacer()
-                            if proStore.isPurchasing { ProgressView() }
-                        }
-                    }
-                    .disabled(proStore.isPurchasing)
                     if let status = proStore.statusMessage {
-                        Text(status).font(.caption).foregroundStyle(.mint)
+                        Text(status).font(.caption).foregroundStyle(.yellow)
                     }
                 }
 

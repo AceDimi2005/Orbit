@@ -170,8 +170,9 @@ enum OrbitAppIcon: String, CaseIterable, Identifiable {
 final class OrbitProStore: ObservableObject {
     static let shared = OrbitProStore()
     static let productID = "com.dimitrie.orbit.pro"
+    static let isComingSoon = true
 
-    @Published private(set) var isProUnlocked: Bool = UserDefaults.standard.bool(forKey: "orbit.pro.unlocked")
+    @Published private(set) var isProUnlocked: Bool = false
     @Published private(set) var product: Product?
     @Published private(set) var isPurchasing = false
     @Published var statusMessage: String?
@@ -180,35 +181,29 @@ final class OrbitProStore: ObservableObject {
     private var updatesTask: Task<Void, Never>?
 
     var displayPrice: String {
-        product?.displayPrice ?? "25,00 lei"
+        if Self.isComingSoon { return "Coming Soon" }
+        return product?.displayPrice ?? "25,00 lei"
     }
 
     private init() {
-        updatesTask = Task { [weak self] in
-            for await result in Transaction.updates {
-                guard let self else { break }
-                if case .verified(let transaction) = result, transaction.productID == Self.productID {
-                    self.unlockPro()
-                    await transaction.finish()
-                }
-            }
-        }
-        Task {
-            await loadProducts()
-            await refreshEntitlements()
+        UserDefaults.standard.set(false, forKey: "orbit.pro.unlocked")
+        if let savedTheme = UserDefaults.standard.string(forKey: "orbit.theme"),
+           let currentTheme = OrbitTheme(rawValue: savedTheme),
+           currentTheme.isPro {
+            UserDefaults.standard.set(OrbitTheme.ocean.rawValue, forKey: "orbit.theme")
         }
     }
 
     func loadProducts() async {
+        guard !Self.isComingSoon else { return }
         do {
             let fetched = try await Product.products(for: [Self.productID])
             product = fetched.first
-        } catch {
-            // StoreKit configuration or network may not be active yet; fallback price is shown
-        }
+        } catch {}
     }
 
     func refreshEntitlements() async {
+        guard !Self.isComingSoon else { return }
         for await result in Transaction.currentEntitlements {
             if case .verified(let transaction) = result,
                transaction.productID == Self.productID,
@@ -217,12 +212,13 @@ final class OrbitProStore: ObservableObject {
                 return
             }
         }
-        if NSUbiquitousKeyValueStore.default.bool(forKey: "orbit.pro.unlocked") {
-            unlockPro()
-        }
     }
 
     func purchase() async {
+        if Self.isComingSoon {
+            statusMessage = "Orbit Pro will be available in an upcoming update!"
+            return
+        }
         guard !isPurchasing else { return }
         isPurchasing = true
         errorMessage = nil
@@ -234,14 +230,8 @@ final class OrbitProStore: ObservableObject {
         }
 
         guard let product else {
-            #if DEBUG || targetEnvironment(simulator)
-            unlockPro()
-            statusMessage = "Orbit Pro unlocked (Development / StoreKit Preview)."
+            statusMessage = "Orbit Pro will be available in an upcoming update!"
             return
-            #else
-            errorMessage = "Orbit Pro is being prepared on the App Store. Please try again shortly."
-            return
-            #endif
         }
 
         do {
@@ -268,6 +258,10 @@ final class OrbitProStore: ObservableObject {
     }
 
     func restorePurchases() async {
+        if Self.isComingSoon {
+            statusMessage = "Orbit Pro purchases are coming soon in an upcoming update."
+            return
+        }
         guard !isPurchasing else { return }
         isPurchasing = true
         errorMessage = nil
@@ -337,17 +331,20 @@ struct AppearanceSettingsView: View {
                                     .foregroundStyle(.yellow)
                             }
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Orbit Pro · \(proStore.displayPrice) One-Time")
+                                Text("Orbit Pro · Coming Soon")
                                     .font(.subheadline.weight(.bold))
                                     .foregroundStyle(.white)
-                                Text("Unlock 6 exclusive themes & 5 custom Home Screen icons")
+                                Text("6 exclusive luxury themes & 5 custom Home Screen icons")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
+                            Text("SOON")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.yellow.opacity(0.2), in: Capsule())
+                                .foregroundStyle(.yellow)
                         }
                         .padding(.vertical, 4)
                     }
@@ -383,7 +380,7 @@ struct AppearanceSettingsView: View {
                 HStack {
                     Text("Orbit Pro Themes")
                     Spacer()
-                    Label(proStore.isProUnlocked ? "Unlocked" : "Pro", systemImage: proStore.isProUnlocked ? "checkmark.seal.fill" : "crown.fill")
+                    Label(proStore.isProUnlocked ? "Unlocked" : "Pro · Coming Soon", systemImage: proStore.isProUnlocked ? "checkmark.seal.fill" : "lock.fill")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.yellow)
                 }
@@ -405,7 +402,7 @@ struct AppearanceSettingsView: View {
                 HStack {
                     Text("Home Screen App Icon")
                     Spacer()
-                    Label(proStore.isProUnlocked ? "All Icons Active" : "Pro", systemImage: "app.badge.sparkles")
+                    Label(proStore.isProUnlocked ? "All Icons Active" : "Pro · Coming Soon", systemImage: "lock.fill")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(theme.accent)
                 }
@@ -602,7 +599,7 @@ struct OrbitProPaywallView: View {
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
 
-                        Text("One-time purchase · Lifetime unlock · Family Sharing included")
+                        Text("Coming Soon · Exclusive themes, icons & advanced packs")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -642,65 +639,36 @@ struct OrbitProPaywallView: View {
                     )
 
                     if let status = store.statusMessage {
-                        Label(status, systemImage: "checkmark.seal.fill")
+                        Label(status, systemImage: "sparkles")
                             .font(.footnote.weight(.medium))
-                            .foregroundStyle(.mint)
-                            .multilineTextAlignment(.center)
-                    }
-                    if let error = store.errorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.yellow)
                             .multilineTextAlignment(.center)
                     }
 
                     VStack(spacing: 12) {
-                        if store.isProUnlocked {
-                            Label("Orbit Pro is Unlocked", systemImage: "checkmark.seal.fill")
-                                .font(.headline)
-                                .foregroundStyle(.mint)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.mint.opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        } else {
-                            Button {
-                                Task { await store.purchase() }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    if store.isPurchasing {
-                                        ProgressView().tint(.black)
-                                    } else {
-                                        Image(systemName: "crown.fill")
-                                        Text("Unlock Orbit Pro — \(store.displayPrice)")
-                                            .font(.headline.weight(.bold))
-                                    }
-                                }
-                                .foregroundStyle(.black)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 15)
-                                .background(
-                                    LinearGradient(
-                                        colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    ),
-                                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                )
+                        Button {
+                            Task { await store.purchase() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "clock.badge.sparkles.fill")
+                                Text("Orbit Pro — Coming Soon")
+                                    .font(.headline.weight(.bold))
                             }
-                            .disabled(store.isPurchasing)
+                            .foregroundStyle(.black)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 15)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            )
                         }
 
-                        HStack(spacing: 18) {
-                            Button("Restore Purchases") {
-                                Task { await store.restorePurchases() }
-                            }
-                            .disabled(store.isPurchasing)
-
-                            Text("·").foregroundStyle(.secondary)
-
-                            Button("Privacy & Terms") {
-                                showPrivacy = true
-                            }
+                        Button("Privacy & Terms") {
+                            showPrivacy = true
                         }
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
