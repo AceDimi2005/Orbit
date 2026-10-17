@@ -72,25 +72,6 @@ struct ContentView: View {
 
 // MARK: - Overview
 
-enum OrbitDuoPane: String, CaseIterable, Identifiable {
-    case remote = "Remote"
-    case processes = "Processes"
-    case audio = "Audio"
-    case graphs = "Graphs"
-    case games = "Games"
-
-    var id: String { rawValue }
-    var icon: String {
-        switch self {
-        case .remote: return "computermouse.fill"
-        case .processes: return "list.bullet.rectangle.portrait.fill"
-        case .audio: return "slider.vertical.3"
-        case .graphs: return "chart.xyaxis.line"
-        case .games: return "gamecontroller.fill"
-        }
-    }
-}
-
 struct DashboardView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var pendingAction: PowerConfirmation?
@@ -98,8 +79,6 @@ struct DashboardView: View {
     @State private var isShowingPCs = false
     @State private var isShowingDiscovery = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
-    @AppStorage("orbit.duoMode") private var isDuoMode = false
-    @State private var duoPane: OrbitDuoPane = .remote
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -124,52 +103,20 @@ struct DashboardView: View {
                 let isWideScreen = geo.size.width >= 700 || horizontalSizeClass == .regular
                 ZStack {
                     OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                    if isDuoMode && isWideScreen {
-                        HStack(alignment: .top, spacing: 18) {
-                            ScrollView(showsIndicators: false) {
-                                overviewColumn(width: (geo.size.width - 54) * 0.52, isWide: false)
-                                    .padding(.vertical, 8)
-                            }
-                            .frame(width: max(320, (geo.size.width - 54) * 0.52))
-                            .refreshable { await vm.refreshMetrics() }
-
-                            duoCompanionDeck
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .padding(.vertical, 8)
-                        }
-                        .frame(maxWidth: 1520)
-                        .padding(.horizontal, 18)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollView(showsIndicators: false) {
-                            VStack(spacing: 16) {
-                                overviewColumn(width: min(geo.size.width - 36, 1400), isWide: isWideScreen)
-                                if isDuoMode {
-                                    duoCompanionDeck
-                                        .frame(minHeight: 470)
-                                }
-                            }
+                    ScrollView(showsIndicators: false) {
+                        overviewColumn(width: min(geo.size.width - 36, 1400), isWide: isWideScreen)
                             .frame(maxWidth: 1400)
                             .padding(.horizontal, 18)
                             .padding(.top, 8)
                             .padding(.bottom, 28)
                             .frame(maxWidth: .infinity)
-                        }
-                        .refreshable { await vm.refreshMetrics() }
                     }
+                    .refreshable { await vm.refreshMetrics() }
                 }
             }
-            .navigationTitle(isDuoMode ? "Orbit Duo" : "Overview")
+            .navigationTitle("Overview")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation(.snappy) { isDuoMode.toggle() }
-                    } label: {
-                        Image(systemName: isDuoMode ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
-                            .foregroundStyle(isDuoMode ? theme.accent : .primary)
-                    }
-                    .accessibilityLabel(isDuoMode ? "Disable Duo Split View" : "Enable Duo Split View")
-
                     Button {
                         vm.toggleDynamicIsland()
                     } label: {
@@ -196,12 +143,7 @@ struct DashboardView: View {
                             }
                         }
 
-                        Section("Dashboard & Duo Layout") {
-                            Button {
-                                withAnimation(.snappy) { isDuoMode.toggle() }
-                            } label: {
-                                Label(isDuoMode ? "Exit Orbit Duo Split View" : "Enter Orbit Duo Split View", systemImage: "rectangle.split.2x1.fill")
-                            }
+                        Section("Dashboard Layout") {
                             Menu("Presets") {
                                 Button("Balanced") { vm.dashboardConfiguration = .balanced }
                                 Button("Gaming") { vm.dashboardConfiguration = .gaming }
@@ -296,54 +238,6 @@ struct DashboardView: View {
                 if vm.dashboardConfiguration.showsSpecifications { specsLink }
             }
         }
-    }
-
-    private var duoCompanionDeck: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Label("Duo Second Screen", systemImage: "rectangle.split.2x1.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(theme.accent)
-                Spacer()
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(OrbitDuoPane.allCases) { item in
-                            Button {
-                                withAnimation(.snappy) { duoPane = item }
-                            } label: {
-                                Label(item.rawValue, systemImage: item.icon)
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(duoPane == item ? theme.accent.opacity(0.22) : .white.opacity(0.05), in: Capsule())
-                                    .foregroundStyle(duoPane == item ? theme.accent : .secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-
-            Group {
-                switch duoPane {
-                case .remote:
-                    QuickRemoteView(vm: vm, isEmbeddedInDuo: true)
-                case .processes:
-                    TaskManagerView(vm: vm)
-                case .audio:
-                    AudioMixerView(vm: vm)
-                case .graphs:
-                    SessionHistoryView(vm: vm)
-                case .games:
-                    GameLibraryView(vm: vm, isEmbeddedInDuo: true)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        }
-        .liquidGlass(cornerRadius: 24, tint: theme.accent)
     }
 
     private var previewNotice: some View {
