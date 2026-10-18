@@ -32,6 +32,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_orbit._tcp</string>
+		<string>_orbit-iphone._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Orbit TV uses your local network to discover your Windows PC, display live 4K hardware telemetry, send Wake-on-LAN and power commands, stream live desktop previews, and control Windows audio from your Apple TV.</string>

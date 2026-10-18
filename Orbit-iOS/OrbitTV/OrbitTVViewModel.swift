@@ -202,6 +202,22 @@ private struct TVAudioRouteReply: Decodable {
     let status: String
 }
 
+struct TVSyncedPCItem: Codable {
+    var id: String
+    var name: String
+    var address: String
+    var agentPort: Int
+    var securePort: Int
+    var certificateFingerprint: String
+    var macAddress: String
+    var subnetMask: String
+    var broadcastAddress: String
+    var wolPort: Int
+    var lastKnownIPv4: String
+    var apiToken: String
+    var isSelected: Bool
+}
+
 @MainActor
 final class OrbitTVViewModel: ObservableObject {
     @Published var selectedTab: Int = 0
@@ -211,7 +227,7 @@ final class OrbitTVViewModel: ObservableObject {
 
     @Published var metrics = TVPCMetrics()
     @Published var pingMs: Int = 0
-    @Published var statusBanner: String = "Select Pair New PC or enable Preview Mode to explore"
+    @Published var statusBanner: String = "Sync your PC from iPhone or pair in the My PCs tab"
     @Published var isWaking: Bool = false
 
     // Rolling sparkline history & session peaks
@@ -236,9 +252,12 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var isLoadingProcesses: Bool = false
     @Published var processStatusMessage: String?
 
-    // Discovery & 6-Digit PIN Pairing
+    // Discovery, iPhone Sync & 6-Digit PIN Pairing
     @Published var discoveredPCs: [TVDiscoveredPC] = []
     @Published var isScanningNetwork: Bool = false
+    @Published var isProbingManualHost: Bool = false
+    @Published var isSyncingFromiPhone: Bool = false
+    @Published var iPhoneSyncStatusMessage: String?
     @Published var activePairingTarget: TVDiscoveredPC?
     @Published var pairingPIN: String = ""
     @Published var isPairingInProgress: Bool = false
@@ -247,6 +266,7 @@ final class OrbitTVViewModel: ObservableObject {
     private var activeHandshake: OrbitPairingHandshake?
     private var pollTask: Task<Void, Never>?
     private var browser: NWBrowser?
+    private var iphoneBrowser: NWBrowser?
     private var appActive: Bool = true
     private var hasSyncedExtras: Bool = false
 
@@ -257,11 +277,22 @@ final class OrbitTVViewModel: ObservableObject {
             selectedTab = UserDefaults.standard.integer(forKey: "tv.initialTab")
         }
         loadSavedPCs()
-        if savedPCs.isEmpty && !isDemoMode {
-            // Enable demo mode initially if no PC is paired yet so the 4K dashboard is immediately interactive
-            setDemoMode(true)
-        } else if isDemoMode {
+        if isDemoMode {
             applyDemoData()
+        } else {
+            clearLiveAndDemoData()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.syncFromiPhone(silent: true)
+            }
+        }
+        Task {
+            await syncFromiPhone(silent: true)
         }
         startPollingLoop()
     }
@@ -273,6 +304,7 @@ final class OrbitTVViewModel: ObservableObject {
     func setAppActive(_ active: Bool) {
         appActive = active
         if active {
+            Task { await syncFromiPhone(silent: true) }
             startPollingLoop()
         } else {
             pollTask?.cancel()
@@ -286,10 +318,31 @@ final class OrbitTVViewModel: ObservableObject {
         if enabled {
             applyDemoData()
         } else {
-            metrics = TVPCMetrics()
-            statusBanner = currentPC != nil ? "Connecting to \(currentPC!.name)…" : "Pair your PC in the My PCs tab"
+            clearLiveAndDemoData()
+            statusBanner = currentPC != nil ? "Connecting to \(currentPC!.name)…" : "Sync from iPhone or pair your PC in the My PCs tab"
             Task { await refreshMetrics() }
         }
+    }
+
+    private func clearLiveAndDemoData() {
+        metrics = TVPCMetrics()
+        if let pc = currentPC {
+            metrics.hostname = pc.name
+        }
+        pingMs = 0
+        cpuHistory = Array(repeating: 0, count: 24)
+        gpuHistory = Array(repeating: 0, count: 24)
+        fpsHistory = Array(repeating: 0, count: 24)
+        peakCPUTemp = 0
+        peakGPUTemp = 0
+        peakFPS = 0
+        peakPowerWatts = 0
+        games = []
+        audioSessions = []
+        audioOutputs = []
+        audioRoutingAvailable = false
+        processes = []
+        hasSyncedExtras = false
     }
 
     private func applyDemoData() {
@@ -313,14 +366,21 @@ final class OrbitTVViewModel: ObservableObject {
         ]
         audioSessions = [
             TVAudioSession(id: "demo-1", pid: 4100, name: "Cyberpunk2077.exe", volume: 85, isMuted: false, processCreateTime: 1, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)"),
-            TVAudioSession(id: "demo-2", pid: 5210, name: "Discord.exe", volume: 70, isMuted: false, processCreateTime: 2, outputDeviceID: "tv-2", outputDeviceName: "Wireless Gaming Headset"),
-            TVAudioSession(id: "demo-3", pid: 6320, name: "Spotify.exe", volume: 40, isMuted: false, processCreateTime: 3, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)"),
+            TVAudioSession(id: "demo-2", pid: 5210, name: "Discord.exe", volume: 70, isMuted: false, processCreateTime: 2, outputDeviceID: "tv-2", outputDeviceName: "SteelSeries Arctis Nova Pro Wireless"),
+            TVAudioSession(id: "demo-3", pid: 6320, name: "Spotify.exe", volume: 40, isMuted: false, processCreateTime: 3, outputDeviceID: "tv-3", outputDeviceName: "Realtek Digital Output (Optical S/PDIF)"),
             TVAudioSession(id: "demo-4", pid: 7110, name: "Chrome.exe", volume: 50, isMuted: true, processCreateTime: 4, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)")
         ]
         audioOutputs = [
             TVAudioOutputDevice(id: "tv-1", name: "LG OLED TV (NVIDIA High Definition Audio)"),
-            TVAudioOutputDevice(id: "tv-2", name: "Wireless Gaming Headset"),
-            TVAudioOutputDevice(id: "tv-3", name: "Desktop Studio Monitors")
+            TVAudioOutputDevice(id: "tv-2", name: "SteelSeries Arctis Nova Pro Wireless"),
+            TVAudioOutputDevice(id: "tv-3", name: "Realtek Digital Output (Optical S/PDIF)"),
+            TVAudioOutputDevice(id: "tv-4", name: "Speakers (Realtek USB2.0 Audio)"),
+            TVAudioOutputDevice(id: "tv-5", name: "Elgato Wave:3 — Game Channel"),
+            TVAudioOutputDevice(id: "tv-6", name: "Elgato Wave:3 — Voice Chat Channel"),
+            TVAudioOutputDevice(id: "tv-7", name: "Sonar Gaming Virtual Audio Device"),
+            TVAudioOutputDevice(id: "tv-8", name: "Sonar Media Virtual Audio Device"),
+            TVAudioOutputDevice(id: "tv-9", name: "ASUS ROG PG32UCDM (DisplayPort Audio)"),
+            TVAudioOutputDevice(id: "tv-10", name: "Steam Streaming Speakers")
         ]
         audioRoutingAvailable = true
         processes = [
@@ -370,7 +430,12 @@ final class OrbitTVViewModel: ObservableObject {
         }
         guard let pc = currentPC else {
             metrics.isOnline = false
-            statusBanner = "Pair your PC with a 6-digit PIN in the My PCs tab"
+            games = []
+            audioSessions = []
+            audioOutputs = []
+            processes = []
+            hasSyncedExtras = false
+            statusBanner = "Sync your PC from iPhone or pair in the My PCs tab"
             return
         }
         let start = Date()
@@ -389,7 +454,14 @@ final class OrbitTVViewModel: ObservableObject {
             }
         } catch {
             metrics.isOnline = false
+            metrics.activeGame = nil
+            metrics.fps = nil
             pingMs = 0
+            games = []
+            audioSessions = []
+            audioOutputs = []
+            processes = []
+            hasSyncedExtras = false
             statusBanner = (error as? OrbitError)?.message ?? "\(pc.name) is offline · Press Power On to send Wake-on-LAN"
         }
     }
@@ -622,6 +694,145 @@ final class OrbitTVViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Automatic & 1-Click Sync from iPhone (iCloud + LAN Bonjour _orbit-iphone._tcp)
+
+    func syncFromiPhone(silent: Bool = false) async {
+        if !silent {
+            isSyncingFromiPhone = true
+            iPhoneSyncStatusMessage = "Searching for your paired PC on iPhone (iCloud & Local Wi-Fi)…"
+        }
+
+        // 1. Check iCloud Key-Value Store
+        NSUbiquitousKeyValueStore.default.synchronize()
+        if let icloudData = NSUbiquitousKeyValueStore.default.data(forKey: "orbit.syncedPCs.v1"),
+           let items = try? JSONDecoder().decode([TVSyncedPCItem].self, from: icloudData),
+           !items.isEmpty {
+            importSyncedPCItems(items, source: "iCloud / iPhone")
+            isSyncingFromiPhone = false
+            return
+        }
+
+        // 2. Check Shared App Group
+        if let groupData = UserDefaults(suiteName: "group.com.dimitrie.orbit")?.data(forKey: "orbit.syncedPCs.v1"),
+           let items = try? JSONDecoder().decode([TVSyncedPCItem].self, from: groupData),
+           !items.isEmpty {
+            importSyncedPCItems(items, source: "iPhone App Group")
+            isSyncingFromiPhone = false
+            return
+        }
+
+        // 3. Check Simulator host bridge if testing on same Mac
+        #if targetEnvironment(simulator)
+        if let simData = try? Data(contentsOf: URL(fileURLWithPath: "/tmp/orbit_synced_pcs.json")),
+           let items = try? JSONDecoder().decode([TVSyncedPCItem].self, from: simData),
+           !items.isEmpty {
+            importSyncedPCItems(items, source: "iPhone")
+            isSyncingFromiPhone = false
+            return
+        }
+        #endif
+
+        // 4. Browse local Wi-Fi network for iPhone running Orbit (_orbit-iphone._tcp)
+        startiPhoneBonjourSync(silent: silent)
+    }
+
+    private func startiPhoneBonjourSync(silent: Bool) {
+        iphoneBrowser?.cancel()
+        let params = NWParameters()
+        params.includePeerToPeer = true
+        let nw = NWBrowser(for: .bonjour(type: "_orbit-iphone._tcp", domain: nil), using: params)
+        iphoneBrowser = nw
+
+        nw.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self else { return }
+            for res in results {
+                self.fetchSyncedPCsFromiPhoneEndpoint(res.endpoint)
+            }
+        }
+        nw.start(queue: .main)
+
+        if !silent {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, self.isSyncingFromiPhone else { return }
+                self.isSyncingFromiPhone = false
+                if self.savedPCs.isEmpty {
+                    self.iPhoneSyncStatusMessage = "Open the Orbit app on your iPhone (on the same Wi-Fi) and press 'Sync PC from iPhone' again."
+                }
+            }
+        }
+    }
+
+    nonisolated private func fetchSyncedPCsFromiPhoneEndpoint(_ endpoint: NWEndpoint) {
+        let conn = NWConnection(to: endpoint, using: .tcp)
+        conn.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                conn.receive(minimumIncompleteLength: 2, maximumLength: 65536) { [weak self] data, _, _, _ in
+                    conn.cancel()
+                    guard let data,
+                          let items = try? JSONDecoder().decode([TVSyncedPCItem].self, from: data),
+                          !items.isEmpty else { return }
+                    Task { @MainActor [weak self] in
+                        self?.importSyncedPCItems(items, source: "iPhone on Local Wi-Fi")
+                        self?.isSyncingFromiPhone = false
+                    }
+                }
+            } else if case .failed = state {
+                conn.cancel()
+            }
+        }
+        conn.start(queue: .global())
+    }
+
+    private func importSyncedPCItems(_ items: [TVSyncedPCItem], source: String) {
+        var importedCount = 0
+        var preferredSelectedID: String?
+
+        for item in items where !item.address.isEmpty {
+            let profile = TVSavedPC(
+                id: item.id,
+                name: item.name.isEmpty ? "Gaming PC" : item.name,
+                address: item.address,
+                agentPort: item.agentPort,
+                securePort: item.securePort,
+                certificateFingerprint: OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint),
+                macAddress: item.macAddress,
+                subnetMask: item.subnetMask,
+                broadcastAddress: item.broadcastAddress,
+                wolPort: item.wolPort,
+                lastKnownIPv4: item.lastKnownIPv4
+            )
+            if !item.apiToken.isEmpty {
+                saveToken(item.apiToken, for: profile.id)
+            }
+            if let idx = savedPCs.firstIndex(where: { $0.id == profile.id || ($0.address == profile.address && !profile.address.isEmpty) }) {
+                savedPCs[idx] = profile
+            } else {
+                savedPCs.append(profile)
+            }
+            if item.isSelected {
+                preferredSelectedID = profile.id
+            }
+            importedCount += 1
+        }
+
+        guard importedCount > 0 else { return }
+        persistSavedPCs()
+
+        if let sel = preferredSelectedID ?? savedPCs.first?.id {
+            selectedPCID = sel
+            UserDefaults.standard.set(sel, forKey: "tv.selectedPCID")
+        }
+        if isDemoMode {
+            setDemoMode(false)
+        }
+        let pcName = currentPC?.name ?? "PC"
+        iPhoneSyncStatusMessage = "Synced \(pcName) from \(source)!"
+        statusBanner = "Synced \(pcName) from \(source) · Connecting…"
+        hasSyncedExtras = false
+        Task { await refreshMetrics() }
+    }
+
     // MARK: - Bonjour Discovery & 6-Digit PIN Pairing
 
     func startDiscovery() {
@@ -656,8 +867,8 @@ final class OrbitTVViewModel: ObservableObject {
                case .hostPort(let host, _) = inner {
                 let rawHost = "\(host)".split(separator: "%").first.map(String.init) ?? "\(host)"
                 conn.cancel()
-                Task { @MainActor in
-                    await self?.probeHost(rawHost, port: 8765)
+                Task { @MainActor [weak self] in
+                    _ = await self?.probeHost(rawHost, port: 8765)
                 }
             } else if case .failed = state {
                 conn.cancel()
@@ -667,23 +878,35 @@ final class OrbitTVViewModel: ObservableObject {
     }
 
     func probeManualHost(_ hostInput: String, discoveryPort: Int = 8765) async {
-        let clean = hostInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return }
-        isScanningNetwork = true
-        defer { isScanningNetwork = false }
-        await probeHost(clean, port: discoveryPort)
+        let clean = hostInput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+        guard !clean.isEmpty else {
+            pairingErrorMessage = "Enter your PC's IPv4 address first (for example 192.168.1.50)."
+            return
+        }
+        pairingErrorMessage = nil
+        isProbingManualHost = true
+        defer { isProbingManualHost = false }
+        if let found = await probeHost(clean, port: discoveryPort) {
+            await beginPINPairing(with: found)
+        } else {
+            pairingErrorMessage = "Could not reach Orbit Agent at \(clean):\(discoveryPort). Make sure your PC is on and Orbit Agent is running."
+        }
     }
 
-    private func probeHost(_ host: String, port: Int) async {
-        guard let url = URL(string: "http://\(host):\(port)/api/discover") else { return }
+    @discardableResult
+    private func probeHost(_ host: String, port: Int) async -> TVDiscoveredPC? {
+        guard let url = URL(string: "http://\(host):\(port)/api/discover") else { return nil }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 2.0
+        req.timeoutInterval = 2.5
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               json["service"] as? String == "orbit-agent",
               let fp = json["fingerprint"] as? String,
-              OrbitAPIClient.validFingerprint(fp) else { return }
+              OrbitAPIClient.validFingerprint(fp) else { return nil }
 
         let item = TVDiscoveredPC(
             name: (json["name"] as? String) ?? host,
@@ -696,6 +919,7 @@ final class OrbitTVViewModel: ObservableObject {
         if !discoveredPCs.contains(where: { $0.id == item.id }) {
             discoveredPCs.append(item)
         }
+        return item
     }
 
     func beginPINPairing(with target: TVDiscoveredPC) async {

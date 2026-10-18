@@ -732,6 +732,7 @@ struct TVControlsAndGamesTab: View {
                             Task { await vm.sendAction("screenshot") }
                         }
                     }
+                    .focusSection()
                 }
 
                 // Section 2: Sunshine Couch Game Launcher
@@ -763,49 +764,106 @@ struct TVControlsAndGamesTab: View {
                             .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
                         }
                     }
+                    .focusSection()
 
-                    LazyVGrid(columns: gameColumns, spacing: 22) {
-                        ForEach(vm.games) { game in
-                            Button {
-                                Task { await vm.launchGame(game) }
-                            } label: {
-                                HStack(spacing: 18) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: [.purple.opacity(0.55), .cyan.opacity(0.35)],
-                                                    startPoint: .topLeading,
-                                                    endPoint: .bottomTrailing
-                                                )
-                                            )
-                                            .frame(width: 64, height: 64)
-                                        Image(systemName: game.iconSymbol)
-                                            .font(.system(size: 26, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                    }
-
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(game.title)
-                                            .font(.system(size: 20, weight: .bold, design: .rounded))
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                        Text(game.genre)
-                                            .font(.system(size: 14, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                        Text("Press to Launch on PC")
-                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            .foregroundStyle(.cyan)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(20)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                    if vm.games.isEmpty {
+                        HStack(spacing: 22) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.purple.opacity(0.18))
+                                    .frame(width: 68, height: 68)
+                                Image(systemName: "gamecontroller.fill")
+                                    .font(.system(size: 28, weight: .semibold))
+                                    .foregroundStyle(.purple)
                             }
-                            .buttonStyle(TVSurfaceCardStyle(accent: .purple))
+
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(vm.metrics.isOnline ? "No Sunshine or Steam Games Found" : "PC Offline — Game Library Unavailable")
+                                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(vm.metrics.isOnline
+                                     ? "Add applications in Sunshine on your PC and press 'Refresh Library' to display them here."
+                                     : "Power on or connect to your PC to load your real Sunshine & Steam library.")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+
+                            Spacer()
+
+                            if !vm.metrics.isOnline {
+                                Button {
+                                    Task { await vm.wakePC() }
+                                } label: {
+                                    Label("Power On PC (WoL)", systemImage: "power.circle.fill")
+                                }
+                                .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
+
+                                Button {
+                                    vm.selectedTab = 4
+                                } label: {
+                                    Label("My PCs", systemImage: "desktopcomputer")
+                                }
+                                .buttonStyle(TVActionPillStyle(tint: .cyan))
+                            }
                         }
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color.white.opacity(0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                                )
+                        )
+                        .focusSection()
+                    } else {
+                        LazyVGrid(columns: gameColumns, spacing: 22) {
+                            ForEach(vm.games) { game in
+                                Button {
+                                    Task { await vm.launchGame(game) }
+                                } label: {
+                                    HStack(spacing: 18) {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                .fill(
+                                                    LinearGradient(
+                                                        colors: [.purple.opacity(0.55), .cyan.opacity(0.35)],
+                                                        startPoint: .topLeading,
+                                                        endPoint: .bottomTrailing
+                                                    )
+                                                )
+                                                .frame(width: 64, height: 64)
+                                            Image(systemName: game.iconSymbol)
+                                                .font(.system(size: 26, weight: .semibold))
+                                                .foregroundStyle(.white)
+                                        }
+
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(game.title)
+                                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                            Text(game.genre)
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                            Text("Press to Launch on PC")
+                                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(.cyan)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(20)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(TVSurfaceCardStyle(accent: .purple))
+                            }
+                        }
+                        .focusSection()
                     }
                 }
 
@@ -859,6 +917,9 @@ struct TVControlsAndGamesTab: View {
             .padding(.top, 18)
             .padding(.bottom, 36)
         }
+        .onAppear {
+            Task { await vm.refreshGames() }
+        }
     }
 }
 
@@ -866,6 +927,7 @@ struct TVControlsAndGamesTab: View {
 
 struct TVAudioAndMediaTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
+    @State private var sessionForOutputPicker: TVAudioSession?
 
     var body: some View {
         ScrollView {
@@ -880,7 +942,7 @@ struct TVAudioAndMediaTab: View {
                                 .tracking(1.3)
                                 .foregroundStyle(.cyan)
                             Spacer()
-                            Text(vm.metrics.isMuted ? "MUTED" : "\(Int(vm.metrics.volume))%")
+                            Text(vm.metrics.isMuted ? "MUTED" : (vm.metrics.isOnline || vm.isDemoMode ? "\(Int(vm.metrics.volume))%" : "OFFLINE"))
                                 .font(.system(size: 20, weight: .bold, design: .rounded))
                                 .foregroundStyle(vm.metrics.isMuted ? .orange : .white)
                         }
@@ -932,6 +994,7 @@ struct TVAudioAndMediaTab: View {
                                     .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                             )
                     )
+                    .focusSection()
 
                     // Now Playing Transport Deck
                     VStack(alignment: .leading, spacing: 16) {
@@ -978,6 +1041,7 @@ struct TVAudioAndMediaTab: View {
                                     .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                             )
                     )
+                    .focusSection()
                 }
 
                 // Per-App Windows Core Audio Mixer
@@ -988,7 +1052,7 @@ struct TVAudioAndMediaTab: View {
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
                                 .tracking(1.4)
                                 .foregroundStyle(.purple)
-                            Text("Adjust individual game, voice chat, or browser volume and route audio to TV HDMI or Headset")
+                            Text("Adjust individual app volume or open the Output Source menu to route audio across any of your PC's audio devices")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
@@ -1000,95 +1064,153 @@ struct TVAudioAndMediaTab: View {
                         }
                         .buttonStyle(TVActionPillStyle(tint: .purple))
                     }
+                    .focusSection()
 
-                    ForEach(vm.audioSessions) { session in
-                        HStack(spacing: 20) {
-                            Image(systemName: session.isMuted ? "speaker.slash.circle.fill" : "speaker.wave.2.circle.fill")
-                                .font(.system(size: 30))
-                                .foregroundStyle(session.isMuted ? .orange : .cyan)
+                    if vm.audioSessions.isEmpty {
+                        HStack(spacing: 22) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.purple.opacity(0.18))
+                                    .frame(width: 68, height: 68)
+                                Image(systemName: "speaker.wave.3.fill")
+                                    .font(.system(size: 28, weight: .semibold))
+                                    .foregroundStyle(.purple)
+                            }
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(session.name)
-                                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(vm.metrics.isOnline ? "No Active Audio Streams on PC" : "PC Offline — Audio Mixer Unavailable")
+                                    .font(.system(size: 20, weight: .bold, design: .rounded))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
-                                Text("PID \(session.pid) • \(session.outputDeviceName ?? "Default Output")")
-                                    .font(.system(size: 14, weight: .medium))
+                                Text(vm.metrics.isOnline
+                                     ? "Start a game, browser, or media app on your PC and press 'Refresh Mixer'."
+                                     : "Connect or Power On your PC to control per-application volume and select audio output sources.")
+                                    .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            .frame(width: 340, alignment: .leading)
-
-                            // Fixed-width volume bar so it never crushes sibling buttons
-                            HStack(spacing: 14) {
-                                ZStack(alignment: .leading) {
-                                    Capsule()
-                                        .fill(Color.white.opacity(0.12))
-                                        .frame(width: 220, height: 12)
-                                    Capsule()
-                                        .fill(session.isMuted ? Color.orange : Color.cyan)
-                                        .frame(
-                                            width: max(10, 220.0 * CGFloat(min(100, max(0, session.volume)) / 100.0)),
-                                            height: 12
-                                        )
-                                }
-
-                                Text("\(Int(session.volume))%")
-                                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                                    .foregroundStyle(session.isMuted ? .orange : .white)
-                                    .frame(width: 58, alignment: .trailing)
-                                    .lineLimit(1)
+                                    .lineLimit(2)
                             }
 
-                            Spacer(minLength: 10)
+                            Spacer()
 
-                            HStack(spacing: 12) {
+                            if !vm.metrics.isOnline {
                                 Button {
-                                    Task { await vm.adjustAppVolume(session, by: -10) }
+                                    Task { await vm.wakePC() }
                                 } label: {
-                                    Text("-10%")
+                                    Label("Power On PC (WoL)", systemImage: "power.circle.fill")
+                                }
+                                .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
+
+                                Button {
+                                    vm.selectedTab = 4
+                                } label: {
+                                    Label("My PCs", systemImage: "desktopcomputer")
                                 }
                                 .buttonStyle(TVActionPillStyle(tint: .cyan))
-
-                                Button {
-                                    Task { await vm.toggleAppMute(session) }
-                                } label: {
-                                    Label(session.isMuted ? "Unmute" : "Mute", systemImage: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: .orange, isProminent: session.isMuted))
-
-                                Button {
-                                    Task { await vm.adjustAppVolume(session, by: 10) }
-                                } label: {
-                                    Text("+10%")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: .cyan))
-
-                                ForEach(vm.audioOutputs.prefix(2)) { device in
-                                    Button {
-                                        Task { await vm.routeAppAudio(session, to: device.id) }
-                                    } label: {
-                                        Label(shortDeviceLabel(device.name), systemImage: "hifispeaker.fill")
-                                    }
-                                    .buttonStyle(
-                                        TVActionPillStyle(
-                                            tint: .purple,
-                                            isProminent: session.outputDeviceID == device.id
-                                        )
-                                    )
-                                }
                             }
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 18)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color.white.opacity(0.05))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
                                         .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                                 )
                         )
+                        .focusSection()
+                    } else {
+                        ForEach(vm.audioSessions) { session in
+                            HStack(spacing: 20) {
+                                Image(systemName: session.isMuted ? "speaker.slash.circle.fill" : "speaker.wave.2.circle.fill")
+                                    .font(.system(size: 30))
+                                    .foregroundStyle(session.isMuted ? .orange : .cyan)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(session.name)
+                                        .font(.system(size: 21, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                    Text("PID \(session.pid) • \(session.outputDeviceName ?? "Windows Default Output")")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 340, alignment: .leading)
+
+                                // Fixed-width volume bar so it never crushes sibling buttons
+                                HStack(spacing: 14) {
+                                    ZStack(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.white.opacity(0.12))
+                                            .frame(width: 220, height: 12)
+                                        Capsule()
+                                            .fill(session.isMuted ? Color.orange : Color.cyan)
+                                            .frame(
+                                                width: max(10, 220.0 * CGFloat(min(100, max(0, session.volume)) / 100.0)),
+                                                height: 12
+                                            )
+                                    }
+
+                                    Text("\(Int(session.volume))%")
+                                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                                        .foregroundStyle(session.isMuted ? .orange : .white)
+                                        .frame(width: 58, alignment: .trailing)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 10)
+
+                                HStack(spacing: 12) {
+                                    Button {
+                                        Task { await vm.adjustAppVolume(session, by: -10) }
+                                    } label: {
+                                        Text("-10%")
+                                    }
+                                    .buttonStyle(TVActionPillStyle(tint: .cyan))
+
+                                    Button {
+                                        Task { await vm.toggleAppMute(session) }
+                                    } label: {
+                                        Label(session.isMuted ? "Unmute" : "Mute", systemImage: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    }
+                                    .buttonStyle(TVActionPillStyle(tint: .orange, isProminent: session.isMuted))
+
+                                    Button {
+                                        Task { await vm.adjustAppVolume(session, by: 10) }
+                                    } label: {
+                                        Text("+10%")
+                                    }
+                                    .buttonStyle(TVActionPillStyle(tint: .cyan))
+
+                                    // Separate Output Source Dropdown / Modal Menu Button supporting 10+ PC audio outputs
+                                    Button {
+                                        sessionForOutputPicker = session
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "hifispeaker.2.fill")
+                                            Text("Output: \(shortDeviceLabel(session.outputDeviceName ?? "Default"))")
+                                                .lineLimit(1)
+                                            Image(systemName: "chevron.up.chevron.down")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .buttonStyle(TVActionPillStyle(tint: .purple, isProminent: true))
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 18)
+                            .background(
+                                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                    .fill(Color.white.opacity(0.06))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                                    )
+                            )
+                            .focusSection()
+                        }
                     }
                 }
             }
@@ -1099,21 +1221,140 @@ struct TVAudioAndMediaTab: View {
         .onAppear {
             Task { await vm.refreshAudioMixer() }
         }
+        .sheet(item: $sessionForOutputPicker) { targetSession in
+            TVAudioOutputPickerSheet(session: targetSession)
+                .environmentObject(vm)
+        }
     }
 
     private func shortDeviceLabel(_ fullName: String) -> String {
-        let lower = fullName.lowercased()
-        if lower.contains("tv") || lower.contains("oled") || lower.contains("hdmi") {
-            return "TV HDMI"
+        let trimmed = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Default" }
+        if trimmed.count <= 22 { return trimmed }
+        return String(trimmed.prefix(20)) + "…"
+    }
+}
+
+struct TVAudioOutputPickerSheet: View {
+    @EnvironmentObject var vm: OrbitTVViewModel
+    @Environment(\.dismiss) private var dismiss
+    let session: TVAudioSession
+
+    var currentSession: TVAudioSession {
+        vm.audioSessions.first(where: { $0.id == session.id }) ?? session
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.06, blue: 0.12),
+                    Color(red: 0.09, green: 0.06, blue: 0.17)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 24) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("SELECT AUDIO OUTPUT SOURCE")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .tracking(1.4)
+                            .foregroundStyle(.purple)
+                        Text("Route \(currentSession.name) (PID \(currentSession.pid)) to any audio output device on your PC (\(vm.audioOutputs.count) available)")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("Close", systemImage: "xmark.circle.fill")
+                    }
+                    .buttonStyle(TVActionPillStyle(tint: .cyan))
+                }
+
+                if vm.audioOutputs.isEmpty {
+                    Text("No Windows audio output devices reported by the PC Companion yet.")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(28)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
+                } else {
+                    ScrollView {
+                        VStack(spacing: 14) {
+                            ForEach(vm.audioOutputs) { device in
+                                let isSelected = (currentSession.outputDeviceID == device.id) || (currentSession.outputDeviceName == device.name)
+                                Button {
+                                    Task {
+                                        await vm.routeAppAudio(currentSession, to: device.id)
+                                        dismiss()
+                                    }
+                                } label: {
+                                    HStack(spacing: 18) {
+                                        Image(systemName: iconForDevice(device.name))
+                                            .font(.system(size: 24, weight: .semibold))
+                                            .foregroundStyle(isSelected ? .green : .purple)
+                                            .frame(width: 40)
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(device.name)
+                                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                            Text(isSelected ? "Current Active Output for \(currentSession.name)" : "Press Select on Siri Remote to route audio here")
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(isSelected ? Color.green : Color.secondary)
+                                                .lineLimit(1)
+                                        }
+
+                                        Spacer()
+
+                                        if isSelected {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                Text("ACTIVE")
+                                            }
+                                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                                            .foregroundStyle(.green)
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 7)
+                                            .background(Color.green.opacity(0.18), in: Capsule())
+                                        }
+                                    }
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 18)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(TVSurfaceCardStyle(accent: isSelected ? .green : .purple))
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    }
+                }
+            }
+            .padding(52)
         }
-        if lower.contains("headset") || lower.contains("headphone") {
-            return "Headset"
+    }
+
+    private func iconForDevice(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("tv") || lower.contains("oled") || lower.contains("hdmi") || lower.contains("displayport") {
+            return "tv.and.hifispeaker.fill"
         }
-        if lower.contains("speaker") || lower.contains("monitor") {
-            return "Speakers"
+        if lower.contains("headset") || lower.contains("arctis") || lower.contains("headphone") {
+            return "headphones"
         }
-        let words = fullName.split(separator: " ").prefix(2).joined(separator: " ")
-        return words.isEmpty ? "Output" : words
+        if lower.contains("optical") || lower.contains("digital") || lower.contains("s/pdif") {
+            return "cable.coaxial"
+        }
+        if lower.contains("wave") || lower.contains("sonar") || lower.contains("virtual") {
+            return "slider.horizontal.3"
+        }
+        return "hifispeaker.2.fill"
     }
 }
 
@@ -1151,46 +1392,104 @@ struct TVTaskManagerTab: View {
                     }
                     .buttonStyle(TVActionPillStyle(tint: .cyan))
                 }
+                .focusSection()
 
-                ForEach(vm.processes) { proc in
+                if vm.processes.isEmpty {
                     HStack(spacing: 22) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(proc.name)
-                                .font(.system(size: 21, weight: .bold, design: .rounded))
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.cyan.opacity(0.18))
+                                .frame(width: 68, height: 68)
+                            Image(systemName: "list.bullet.rectangle.portrait")
+                                .symbolVariant(.fill)
+                                .font(.system(size: 28, weight: .semibold))
+                                .foregroundStyle(.cyan)
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(vm.metrics.isOnline ? "Loading Windows Processes…" : "PC Offline — Process List Unavailable")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
-                            Text("PID \(proc.pid) • \(proc.status.capitalized)")
-                                .font(.system(size: 14, weight: .medium))
+                            Text(vm.metrics.isOnline
+                                 ? "Press 'Refresh Processes' to fetch running applications from your PC."
+                                 : "Connect or Power On your PC to monitor live CPU, GPU, RAM, and VRAM usage per process.")
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                                .lineLimit(2)
                         }
-                        .frame(width: 340, alignment: .leading)
 
-                        TVMetricPill(label: "CPU", value: String(format: "%.1f%%", proc.cpuPercent ?? 0), tint: .cyan)
-                        TVMetricPill(label: "GPU", value: String(format: "%.1f%%", proc.gpuPercent ?? 0), tint: .purple)
-                        TVMetricPill(label: "RAM", value: String(format: "%.0f MB", proc.memoryMB ?? 0), tint: .mint)
-                        TVMetricPill(label: "VRAM", value: String(format: "%.0f MB", proc.vramMB ?? 0), tint: .indigo)
+                        Spacer()
 
-                        Spacer(minLength: 12)
+                        if !vm.metrics.isOnline {
+                            Button {
+                                Task { await vm.wakePC() }
+                            } label: {
+                                Label("Power On PC (WoL)", systemImage: "power.circle.fill")
+                            }
+                            .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
 
-                        Button {
-                            processToKill = proc
-                        } label: {
-                            Label("End Task", systemImage: "xmark.circle.fill")
+                            Button {
+                                vm.selectedTab = 4
+                            } label: {
+                                Label("My PCs", systemImage: "desktopcomputer")
+                            }
+                            .buttonStyle(TVActionPillStyle(tint: .cyan))
                         }
-                        .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
-                        .disabled(!proc.canTerminate)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 18)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(Color.white.opacity(0.05))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
                                     .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                             )
                     )
+                    .focusSection()
+                } else {
+                    ForEach(vm.processes) { proc in
+                        HStack(spacing: 22) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(proc.name)
+                                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text("PID \(proc.pid) • \(proc.status.capitalized)")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(width: 340, alignment: .leading)
+
+                            TVMetricPill(label: "CPU", value: String(format: "%.1f%%", proc.cpuPercent ?? 0), tint: .cyan)
+                            TVMetricPill(label: "GPU", value: String(format: "%.1f%%", proc.gpuPercent ?? 0), tint: .purple)
+                            TVMetricPill(label: "RAM", value: String(format: "%.0f MB", proc.memoryMB ?? 0), tint: .mint)
+                            TVMetricPill(label: "VRAM", value: String(format: "%.0f MB", proc.vramMB ?? 0), tint: .indigo)
+
+                            Spacer(minLength: 12)
+
+                            Button {
+                                processToKill = proc
+                            } label: {
+                                Label("End Task", systemImage: "xmark.circle.fill")
+                            }
+                            .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
+                            .disabled(!proc.canTerminate)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                                )
+                        )
+                        .focusSection()
+                    }
                 }
             }
             .padding(.horizontal, 52)
@@ -1244,193 +1543,23 @@ struct TVMetricPill: View {
     }
 }
 
-// MARK: - Tab 5: My PCs, Bonjour Discovery & 6-Digit SRP PIN Pairing
+// MARK: - Tab 5: My PCs, iPhone Sync, Bonjour Discovery & 6-Digit SRP PIN Pairing
 
 struct TVPCsAndPairingTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
     @State private var manualHost: String = ""
     @State private var manualPort: String = "8765"
+    @State private var showIPAlert: Bool = false
+    @State private var showPortAlert: Bool = false
+    @State private var showPINAlert: Bool = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                // Saved PCs Section
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("SAVED WORKSTATIONS")
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .tracking(1.4)
-                            .foregroundStyle(.cyan)
-                        Spacer()
-                        Button {
-                            vm.setDemoMode(!vm.isDemoMode)
-                        } label: {
-                            Label(
-                                vm.isDemoMode ? "Disable Demo Mode" : "Enable Demo Mode",
-                                systemImage: "sparkles.tv"
-                            )
-                        }
-                        .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: vm.isDemoMode))
-                    }
-
-                    if vm.savedPCs.isEmpty {
-                        Text("No saved PCs yet. Select a discovered PC below or enter an IP address to pair with a 6-digit PIN.")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(22)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.05)))
-                    } else {
-                        ForEach(vm.savedPCs) { pc in
-                            HStack(spacing: 20) {
-                                Image(systemName: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
-                                    .font(.system(size: 26))
-                                    .foregroundStyle(vm.selectedPCID == pc.id ? .green : .cyan)
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(pc.name)
-                                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(1)
-                                    Text("\(pc.address):\(pc.securePort) • MAC: \(pc.macAddress.isEmpty ? "Auto" : pc.macAddress)")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-
-                                Spacer()
-
-                                Button {
-                                    vm.selectPC(pc)
-                                } label: {
-                                    Text(vm.selectedPCID == pc.id ? "Active PC" : "Connect")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: vm.selectedPCID == pc.id ? .green : .cyan, isProminent: vm.selectedPCID == pc.id))
-
-                                Button {
-                                    vm.selectPC(pc)
-                                    Task { await vm.wakePC() }
-                                } label: {
-                                    Label("Wake (WoL)", systemImage: "power")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: .green))
-
-                                Button {
-                                    vm.deletePC(pc)
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
-                            }
-                            .padding(22)
-                            .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
-                        }
-                    }
-                }
-
-                // Automatic Bonjour Discovery on Local LAN
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("DISCOVERED ON LOCAL NETWORK (BONJOUR)")
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .tracking(1.4)
-                            .foregroundStyle(.purple)
-                        Spacer()
-                        Button {
-                            vm.startDiscovery()
-                        } label: {
-                            Label(vm.isScanningNetwork ? "Scanning..." : "Scan Network", systemImage: "dot.radiowaves.left.and.right")
-                        }
-                        .buttonStyle(TVActionPillStyle(tint: .purple))
-                    }
-
-                    if vm.discoveredPCs.isEmpty {
-                        Text("Press 'Scan Network' or enter your PC IP below to discover Orbit Windows Companion (_orbit._tcp)...")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(22)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.05)))
-                    } else {
-                        ForEach(vm.discoveredPCs) { pc in
-                            HStack(spacing: 20) {
-                                Image(systemName: "wifi.circle.fill")
-                                    .font(.system(size: 26))
-                                    .foregroundStyle(.purple)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(pc.name)
-                                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(1)
-                                    Text("\(pc.host):\(pc.securePort) • Companion v\(pc.agentVersion)")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                Button {
-                                    Task { await vm.beginPINPairing(with: pc) }
-                                } label: {
-                                    Label("Pair with 6-Digit PIN", systemImage: "lock.shield.fill")
-                                }
-                                .buttonStyle(TVActionPillStyle(tint: .purple, isProminent: true))
-                            }
-                            .padding(22)
-                            .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
-                        }
-                    }
-                }
-
-                // Manual IP + 6-Digit SRP PIN Pairing Box
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("PAIR BY IP & 6-DIGIT PIN (SRP ZERO-KNOWLEDGE)")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .tracking(1.4)
-                        .foregroundStyle(.green)
-
-                    HStack(spacing: 18) {
-                        TextField("PC IP Address (e.g. 192.168.1.50)", text: $manualHost)
-                            .font(.system(size: 18))
-                            .frame(width: 440)
-
-                        TextField("Port", text: $manualPort)
-                            .font(.system(size: 18))
-                            .frame(width: 140)
-
-                        Button {
-                            let port = Int(manualPort) ?? 8765
-                            Task { await vm.probeManualHost(manualHost, discoveryPort: port) }
-                        } label: {
-                            Label("Probe PC", systemImage: "magnifyingglass.circle.fill")
-                        }
-                        .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: true))
-                    }
-
-                    if let target = vm.activePairingTarget {
-                        HStack(spacing: 18) {
-                            TextField("Enter 6-Digit PIN shown on \(target.name)", text: $vm.pairingPIN)
-                                .font(.system(size: 18))
-                                .frame(width: 440)
-
-                            Button {
-                                Task { await vm.finishPINPairing() }
-                            } label: {
-                                Label(vm.isPairingInProgress ? "Pairing..." : "Verify PIN & Pair", systemImage: "checkmark.shield.fill")
-                            }
-                            .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
-                            .disabled(vm.isPairingInProgress || vm.pairingPIN.trimmingCharacters(in: .whitespaces).count < 4)
-                        }
-                    }
-
-                    if let error = vm.pairingErrorMessage {
-                        Text(error)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.red)
-                    }
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 22).fill(Color.white.opacity(0.06)))
+            VStack(alignment: .leading, spacing: 26) {
+                iphoneSyncSection
+                savedPCsSection
+                bonjourDiscoverySection
+                manualPairingSection
             }
             .padding(.horizontal, 52)
             .padding(.top, 18)
@@ -1438,9 +1567,403 @@ struct TVPCsAndPairingTab: View {
         }
         .onAppear {
             vm.startDiscovery()
+            Task { await vm.syncFromiPhone(silent: true) }
         }
         .onDisappear {
             vm.stopDiscovery()
         }
+        .alert("Enter PC IPv4 Address", isPresented: $showIPAlert) {
+            TextField("e.g. 192.168.1.50", text: $manualHost)
+            Button("Probe & Pair PC") {
+                let port = Int(manualPort) ?? 8765
+                Task {
+                    await vm.probeManualHost(manualHost, discoveryPort: port)
+                    if vm.activePairingTarget != nil {
+                        showPINAlert = true
+                    }
+                }
+            }
+            Button("Save IP Only") {}
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter the local IPv4 address shown in the Orbit Companion tray app on your Windows PC.")
+        }
+        .alert("Enter Discovery Port", isPresented: $showPortAlert) {
+            TextField("8765", text: $manualPort)
+            Button("Done") {}
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Default Orbit Windows Companion discovery port is 8765.")
+        }
+        .alert("Enter 6-Digit Pairing PIN", isPresented: $showPINAlert) {
+            TextField("6-Digit PIN", text: $vm.pairingPIN)
+            Button("Verify PIN & Pair") {
+                Task { await vm.finishPINPairing() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter the 6-digit PIN currently displayed on \(vm.activePairingTarget?.name ?? "your PC").")
+        }
+    }
+
+    @ViewBuilder
+    private var iphoneSyncSection: some View {
+        HStack(spacing: 22) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.cyan.opacity(0.18))
+                    .frame(width: 68, height: 68)
+                Image(systemName: "iphone.and.arrow.forward")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.cyan)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("IMPORT PAIRED PC FROM IPHONE")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .tracking(1.3)
+                    .foregroundStyle(.cyan)
+                Text(vm.iPhoneSyncStatusMessage ?? "Already paired your PC on your iPhone? Open Orbit on your iPhone (or use iCloud) to import its IP, certificate, MAC address & token automatically.")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 16)
+
+            Button {
+                Task { await vm.syncFromiPhone(silent: false) }
+            } label: {
+                Label(
+                    vm.isSyncingFromiPhone ? "Syncing from iPhone..." : "Sync PC from iPhone",
+                    systemImage: "arrow.triangle.2.circlepath.iphone"
+                )
+            }
+            .buttonStyle(TVActionPillStyle(tint: .cyan, isProminent: true))
+
+            Button {
+                vm.setDemoMode(!vm.isDemoMode)
+            } label: {
+                Label(
+                    vm.isDemoMode ? "Disable Demo Mode" : "Enable Demo Mode",
+                    systemImage: "sparkles.tv"
+                )
+            }
+            .buttonStyle(TVActionPillStyle(tint: .purple, isProminent: vm.isDemoMode))
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Color.cyan.opacity(0.28), lineWidth: 1)
+                )
+        )
+        .focusSection()
+    }
+
+    @ViewBuilder
+    private var savedPCsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("SAVED WORKSTATIONS")
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .tracking(1.4)
+                .foregroundStyle(.cyan)
+
+            if vm.savedPCs.isEmpty {
+                Button {
+                    Task { await vm.syncFromiPhone(silent: false) }
+                } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.secondary)
+                        Text("No saved PCs yet. Press here to sync from your iPhone, select a discovered PC below, or enter your PC's IP address.")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(TVSurfaceCardStyle(accent: .cyan))
+            } else {
+                ForEach(vm.savedPCs) { pc in
+                    HStack(spacing: 20) {
+                        Image(systemName: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
+                            .font(.system(size: 26))
+                            .foregroundStyle(vm.selectedPCID == pc.id ? .green : .cyan)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(pc.name)
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text("\(pc.address):\(pc.securePort) • MAC: \(pc.macAddress.isEmpty ? "Auto" : pc.macAddress)")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            vm.selectPC(pc)
+                        } label: {
+                            Text(vm.selectedPCID == pc.id ? "Active PC" : "Connect")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: vm.selectedPCID == pc.id ? .green : .cyan, isProminent: vm.selectedPCID == pc.id))
+
+                        Button {
+                            vm.selectPC(pc)
+                            Task { await vm.wakePC() }
+                        } label: {
+                            Label("Wake (WoL)", systemImage: "power")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: .green))
+
+                        Button {
+                            vm.deletePC(pc)
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: .red, isDestructive: true))
+                    }
+                    .padding(22)
+                    .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
+                    .focusSection()
+                }
+            }
+        }
+        .focusSection()
+    }
+
+    @ViewBuilder
+    private var bonjourDiscoverySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("DISCOVERED ON LOCAL NETWORK (BONJOUR)")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(.purple)
+                Spacer()
+                Button {
+                    vm.startDiscovery()
+                } label: {
+                    Label(vm.isScanningNetwork ? "Re-Scan Network" : "Scan Network", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .buttonStyle(TVActionPillStyle(tint: .purple))
+            }
+            .focusSection()
+
+            if vm.discoveredPCs.isEmpty {
+                Button {
+                    vm.startDiscovery()
+                } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.purple)
+                        Text(vm.isScanningNetwork
+                             ? "Scanning local network for Orbit Windows Companion (_orbit._tcp)... Press Down for Manual IP Pairing."
+                             : "No PCs discovered via Bonjour yet. Press here to re-scan or move down for Manual IP Pairing.")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(TVSurfaceCardStyle(accent: .purple))
+            } else {
+                ForEach(vm.discoveredPCs) { pc in
+                    HStack(spacing: 20) {
+                        Image(systemName: "wifi.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.purple)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(pc.name)
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text("\(pc.host):\(pc.securePort) • Companion v\(pc.agentVersion)")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button {
+                            Task {
+                                await vm.beginPINPairing(with: pc)
+                                if vm.activePairingTarget != nil {
+                                    showPINAlert = true
+                                }
+                            }
+                        } label: {
+                            Label("Pair with 6-Digit PIN", systemImage: "lock.shield.fill")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: .purple, isProminent: true))
+                    }
+                    .padding(22)
+                    .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.06)))
+                    .focusSection()
+                }
+            }
+        }
+        .focusSection()
+    }
+
+    @ViewBuilder
+    private var manualPairingSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("MANUAL PAIR BY IP & 6-DIGIT PIN (SRP ZERO-KNOWLEDGE)")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(.green)
+                Text("Select 'PC IPv4 Address' with the Siri Remote to open the keyboard, then select 'Probe & Pair PC'")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 20) {
+                Button {
+                    showIPAlert = true
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "network")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.cyan)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("PC IPv4 ADDRESS")
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .foregroundStyle(.cyan)
+                            Text(manualHost.isEmpty ? "Click to Enter PC IP (e.g. 192.168.1.50)" : manualHost)
+                                .font(.system(size: 19, weight: .bold, design: .monospaced))
+                                .foregroundStyle(manualHost.isEmpty ? Color.secondary : Color.white)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: "keyboard.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(TVSurfaceCardStyle(accent: .cyan))
+
+                Button {
+                    showPortAlert = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("PORT")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(.cyan)
+                        Text(manualPort.isEmpty ? "8765" : manualPort)
+                            .font(.system(size: 19, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                    .frame(width: 190, alignment: .leading)
+                }
+                .buttonStyle(TVSurfaceCardStyle(accent: .cyan))
+
+                Button {
+                    if manualHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        showIPAlert = true
+                    } else {
+                        let port = Int(manualPort) ?? 8765
+                        Task {
+                            await vm.probeManualHost(manualHost, discoveryPort: port)
+                            if vm.activePairingTarget != nil {
+                                showPINAlert = true
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass.circle.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("CONNECT & PAIR")
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .foregroundStyle(.green)
+                            Text(vm.isProbingManualHost ? "Probing PC..." : "Probe & Pair PC")
+                                .font(.system(size: 19, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 26)
+                    .padding(.vertical, 16)
+                }
+                .buttonStyle(TVSurfaceCardStyle(accent: .green))
+            }
+            .focusSection()
+
+            if let target = vm.activePairingTarget {
+                HStack(spacing: 20) {
+                    Button {
+                        showPINAlert = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("6-DIGIT PIN SHOWN ON \(target.name.uppercased())")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.green)
+                                Text(vm.pairingPIN.isEmpty ? "Click to Enter 6-Digit PIN" : vm.pairingPIN)
+                                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(vm.pairingPIN.isEmpty ? Color.secondary : Color.white)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(TVSurfaceCardStyle(accent: .green))
+
+                    Button {
+                        Task { await vm.finishPINPairing() }
+                    } label: {
+                        Label(vm.isPairingInProgress ? "Verifying PIN..." : "Verify PIN & Save PC", systemImage: "checkmark.shield.fill")
+                    }
+                    .buttonStyle(TVActionPillStyle(tint: .green, isProminent: true))
+                    .disabled(vm.isPairingInProgress || vm.pairingPIN.trimmingCharacters(in: .whitespaces).count < 4)
+                }
+                .padding(.top, 6)
+                .focusSection()
+            }
+
+            if let error = vm.pairingErrorMessage {
+                Text(error)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Color.green.opacity(0.28), lineWidth: 1)
+                )
+        )
+        .focusSection()
     }
 }

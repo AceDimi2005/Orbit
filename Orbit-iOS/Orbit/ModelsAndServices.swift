@@ -321,6 +321,7 @@ final class OrbitViewModel: ObservableObject {
         }
         if isDemoMode { metrics = .demo; games = Self.demoGames }
         OrbitWatchBridge.shared.attach(to: self)
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
         startMonitoringLoop()
     }
     private static var demoGames: [SunshineGame] {

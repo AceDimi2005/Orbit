@@ -1,5 +1,6 @@
 import SwiftUI
 import Security
+import Network
 
 struct SavedPC: Codable, Identifiable, Equatable {
     var id = UUID().uuidString
@@ -16,6 +17,85 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var lastKnownIPv4: String? = nil
 }
 
+struct OrbitSyncedPCItem: Codable {
+    var id: String
+    var name: String
+    var address: String
+    var agentPort: Int
+    var securePort: Int
+    var certificateFingerprint: String
+    var macAddress: String
+    var subnetMask: String
+    var broadcastAddress: String
+    var wolPort: Int
+    var lastKnownIPv4: String
+    var apiToken: String
+    var isSelected: Bool
+}
+
+final class OrbitAppleTVSyncBroadcaster: @unchecked Sendable {
+    static let shared = OrbitAppleTVSyncBroadcaster()
+    private var listener: NWListener?
+    private let queue = DispatchQueue(label: "com.dimitrie.orbit.tvsync")
+    private var latestPayloadData = Data("[]".utf8)
+
+    func publishCurrentProfiles() {
+        let profiles = PCProfileStore.load()
+        let selectedID = UserDefaults.standard.string(forKey: "selectedPCID") ?? ""
+        let items: [OrbitSyncedPCItem] = profiles.map { p in
+            OrbitSyncedPCItem(
+                id: p.id,
+                name: p.name,
+                address: p.address,
+                agentPort: p.agentPort,
+                securePort: p.securePort,
+                certificateFingerprint: p.certificateFingerprint,
+                macAddress: p.macAddress,
+                subnetMask: p.subnetMask,
+                broadcastAddress: p.broadcastAddress,
+                wolPort: p.wolPort,
+                lastKnownIPv4: p.lastKnownIPv4 ?? "",
+                apiToken: PCProfileStore.token(p.id),
+                isSelected: p.id == selectedID
+            )
+        }
+        guard let encoded = try? JSONEncoder().encode(items) else { return }
+        queue.async {
+            self.latestPayloadData = encoded
+        }
+        // 1. iCloud Key-Value Store (syncs across iPhone & Apple TV on same Apple ID)
+        NSUbiquitousKeyValueStore.default.set(encoded, forKey: "orbit.syncedPCs.v1")
+        NSUbiquitousKeyValueStore.default.synchronize()
+        // 2. Shared App Group UserDefaults
+        UserDefaults(suiteName: "group.com.dimitrie.orbit")?.set(encoded, forKey: "orbit.syncedPCs.v1")
+        // 3. Simulator host bridge for testing iPhone + Apple TV simulators on the same Mac
+        #if targetEnvironment(simulator)
+        try? encoded.write(to: URL(fileURLWithPath: "/tmp/orbit_synced_pcs.json"), options: .atomic)
+        #endif
+        startBonjourServerIfNeeded()
+    }
+
+    func startBonjourServerIfNeeded() {
+        queue.async {
+            guard self.listener == nil else { return }
+            let params = NWParameters.tcp
+            params.includePeerToPeer = true
+            guard let nwListener = try? NWListener(using: params) else { return }
+            nwListener.service = NWListener.Service(name: "Orbit-iPhone-Sync", type: "_orbit-iphone._tcp")
+            nwListener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                connection.start(queue: self.queue)
+                let data = self.latestPayloadData
+                connection.send(content: data, isComplete: true, completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+            }
+            nwListener.start(queue: self.queue)
+            self.listener = nwListener
+        }
+    }
+}
+
 enum PCProfileStore {
     static func load() -> [SavedPC] {
         guard let data = UserDefaults.standard.data(forKey: "savedPCs.v1"), let profiles = try? JSONDecoder().decode([SavedPC].self, from: data) else { return [] }
@@ -23,6 +103,7 @@ enum PCProfileStore {
     }
     static func save(_ profiles: [SavedPC]) {
         if let data = try? JSONEncoder().encode(profiles) { UserDefaults.standard.set(data, forKey: "savedPCs.v1") }
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
     }
     private static func query(_ id: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "OrbitSavedPC", kSecAttrAccount as String: id]
@@ -40,8 +121,12 @@ enum PCProfileStore {
             item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             SecItemAdd(item as CFDictionary, nil)
         }
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
     }
-    static func removeToken(_ id: String) { SecItemDelete(query(id) as CFDictionary) }
+    static func removeToken(_ id: String) {
+        SecItemDelete(query(id) as CFDictionary)
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+    }
 }
 
 @MainActor
