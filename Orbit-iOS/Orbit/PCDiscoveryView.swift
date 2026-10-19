@@ -160,6 +160,7 @@ struct PCDiscoveryView: View {
     @State private var handshake: OrbitPairingHandshake?
     @State private var pin = ""
     @State private var expiresAt: Date?
+    @State private var codeLifetime: Double = 120
     @State private var busy = false
     @State private var error: String?
     @State private var task: Task<Void, Never>?
@@ -323,6 +324,12 @@ struct PCDiscoveryView: View {
                 }
                 .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 12))
             }
+            Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
+                Label("Open GitHub (AceDimi2005/Orbit)", systemImage: "arrow.up.right.square")
+                    .font(.caption.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 12))
         }
         .padding(16)
         .liquidGlass(cornerRadius: 22)
@@ -346,7 +353,6 @@ struct PCDiscoveryView: View {
                 Button("Change") { resetAttempt() }
                     .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 20))
                     .font(.caption.weight(.bold))
-                    .disabled(busy)
             }
 
             if paired {
@@ -440,9 +446,8 @@ struct PCDiscoveryView: View {
     }
 
     private func remainingFraction(at date: Date) -> Double {
-        guard let expiresAt else { return 0 }
-        let total = 120.0
-        return max(0, min(1, expiresAt.timeIntervalSince(date) / total))
+        guard let expiresAt, codeLifetime > 0 else { return 0 }
+        return max(0, min(1, expiresAt.timeIntervalSince(date) / codeLifetime))
     }
 
     private func begin(_ pc: DiscoveredOrbitPC) {
@@ -453,7 +458,7 @@ struct PCDiscoveryView: View {
                 let connection = try OrbitPairingHandshake(host: pc.host, port: pc.port, fingerprint: pc.fingerprint)
                 let seconds = try await connection.begin(name: "Orbit on \(UIDevice.current.model)")
                 guard identifier == attempt, !Task.isCancelled else { return }
-                handshake = connection; expiresAt = Date().addingTimeInterval(Double(seconds)); pinFocused = true
+                handshake = connection; codeLifetime = Double(seconds); expiresAt = Date().addingTimeInterval(Double(seconds)); pinFocused = true
             } catch {
                 if identifier == attempt, !Task.isCancelled {
                     self.error = error.localizedDescription

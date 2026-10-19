@@ -482,10 +482,13 @@ private struct OrbitHistoryDetailView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .opacity(available ? 1 : 0.5)
+                                .accessibilityLabel("\(metric.title)\(available ? "" : ", no readings")")
+                                .accessibilityAddTraits(selectedMetric == metric ? [.isSelected] : [])
                             }
                         }
                         .padding(.horizontal, 2)
                     }
+                    .accessibilityLabel("Show graph")
                     .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 6, trailing: 12))
                     if isLoading && detail == nil {
                         HStack(spacing: 12) { ProgressView(); Text("Loading readings…") }

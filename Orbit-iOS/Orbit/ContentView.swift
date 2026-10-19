@@ -33,8 +33,6 @@ struct ContentView: View {
                 .tabItem { Label("Tools", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
         }
-        .orbitAppearance()
-        .preferredColorScheme(.dark)
         .onChange(of: selectedTab) { _, _ in OrbitHaptics.selection() }
         .overlay {
             if vm.smartLaunchStep != .idle {
@@ -80,6 +78,9 @@ struct ContentView: View {
             default: selectedTab = 0
             }
         }
+        // Applied last so presented sheets, covers and overlays inherit the theme environment.
+        .orbitAppearance()
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -336,7 +337,8 @@ struct DashboardView: View {
                                 .foregroundStyle(.white.opacity(0.5))
                         }
                     }
-                    .accessibilityLabel("Switch PC")
+                    .accessibilityLabel(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
+                    .accessibilityHint("Switches the connected PC")
 
                     HStack(spacing: 6) {
                         OrbitStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
@@ -353,7 +355,7 @@ struct DashboardView: View {
 
                 VStack(spacing: 8) {
                     heroIconButton(
-                        icon: vm.isDynamicIslandActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait.tophalf",
+                        icon: vm.isDynamicIslandActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait",
                         tint: vm.isDynamicIslandActive ? .mint : theme.accent,
                         active: vm.isDynamicIslandActive,
                         label: vm.isDynamicIslandActive ? "Stop Live Activity" : "Start Live Activity"
@@ -372,7 +374,7 @@ struct DashboardView: View {
 
             if vm.metrics.isOnline && !vm.isDemoMode {
                 HStack(spacing: 8) {
-                    OrbitStatChip(label: "Link", value: vm.hasSecureConnection ? "TLS 1.3" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open")
+                    OrbitStatChip(label: "Link", value: vm.hasSecureConnection ? "Encrypted" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open")
                     if let version = vm.metrics.agentVersion {
                         OrbitStatChip(label: "Agent", value: version)
                     }
@@ -1207,7 +1209,7 @@ struct OrbitTrackpadSurface: UIViewRepresentable {
 
         let hold = UILongPressGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleHold(_:)))
         hold.minimumPressDuration = 0.38
-        hold.allowableMovement = 14
+        hold.allowableMovement = 8
         hold.delegate = coordinator
 
         [move, scroll, tap, secondaryTap, hold].forEach { view.addGestureRecognizer($0) }
@@ -1230,17 +1232,22 @@ struct OrbitTrackpadSurface: UIViewRepresentable {
         private var scrollRemainderY = 0.0
         private var scrollRemainderX = 0.0
         private var isHolding = false
+        private var isPanning = false
 
         init(parent: OrbitTrackpadSurface) { self.parent = parent }
 
+        /// Only the trackpad's own recognisers run together; the enclosing
+        /// ScrollView keeps UIKit's default exclusivity so the page does not
+        /// scroll while the cursor is being moved.
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+            otherGestureRecognizer.view === gestureRecognizer.view
         }
 
         @objc func handleMove(_ recognizer: UIPanGestureRecognizer) {
             guard let view = recognizer.view else { return }
             switch recognizer.state {
             case .began:
+                isPanning = true
                 lastTranslation = .zero
                 pendingX = 0; pendingY = 0
                 parent.onTouch(recognizer.location(in: view))
@@ -1253,6 +1260,7 @@ struct OrbitTrackpadSurface: UIViewRepresentable {
                 if Date().timeIntervalSince(lastFlush) >= 0.024 { flush() }
             case .ended, .cancelled, .failed:
                 flush()
+                isPanning = false
                 lastTranslation = .zero
                 parent.onTouch(nil)
             default:
@@ -1308,6 +1316,8 @@ struct OrbitTrackpadSurface: UIViewRepresentable {
         @objc func handleHold(_ recognizer: UILongPressGestureRecognizer) {
             switch recognizer.state {
             case .began:
+                // A slow, precise nudge must stay a plain cursor move.
+                guard !isPanning else { return }
                 isHolding = true
                 parent.onDrag(true)
             case .ended, .cancelled, .failed:
@@ -1522,6 +1532,15 @@ struct QuickRemoteView: View {
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .accessibilityLabel("PC trackpad")
             .accessibilityHint("Drag to move the cursor, tap to click, use two fingers to scroll, hold to drag")
+            .accessibilityAction(named: "Scroll up") { Task { await vm.sendCursorInput(scroll: 3) } }
+            .accessibilityAction(named: "Scroll down") { Task { await vm.sendCursorInput(scroll: -3) } }
+            .accessibilityAction(named: "Left click") { Task { await vm.sendCursorInput(click: "left") } }
+            .accessibilityAction(named: "Right click") { Task { await vm.sendCursorInput(click: "right") } }
+            .accessibilityAction(named: isDragging ? "Drop" : "Start drag") {
+                let next = !isDragging
+                isDragging = next
+                Task { await vm.sendCursorInput(drag: next ? "down" : "up") }
+            }
 
             HStack(spacing: 8) {
                 remoteButton("Left", icon: "computermouse") { await vm.sendCursorInput(click: "left") }
@@ -1752,7 +1771,7 @@ struct QuickRemoteView: View {
                     .foregroundStyle(tint ?? .white)
                     .frame(height: 18)
                 Text(title)
-                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .font(.system(.caption2, design: .rounded, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                     .foregroundStyle(.white.opacity(0.85))

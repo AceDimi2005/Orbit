@@ -198,7 +198,7 @@ struct CompanionToolsView: View {
     private var pcSwitcherCard: some View {
         HStack(spacing: 14) {
             ZStack {
-                OrbitRingGauge(progress: vm.metrics.isOnline ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 4, tint: theme.accent)
+                OrbitRingGauge(progress: vm.metrics.isOnline && vm.metrics.telemetryAvailable != false ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 4, tint: theme.accent)
                     .frame(width: 48, height: 48)
                 OrbitMark(size: 30)
             }

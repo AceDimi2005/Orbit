@@ -337,6 +337,8 @@ struct AppearanceSettingsView: View {
                 livePreview
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
                     .listRowBackground(Color.clear)
+            } header: {
+                Text("Preview · example data")
             }
 
             Section {
@@ -345,7 +347,7 @@ struct AppearanceSettingsView: View {
             } header: {
                 Text("Themes")
             } footer: {
-                Text("Themes recolour the app, widgets, Live Activity and your Apple Watch.")
+                Text("Themes recolour the app and your Apple Watch. Widgets and the Live Activity have their own colour pickers.")
             }
             .orbitRow()
 
@@ -464,10 +466,10 @@ struct AppearanceSettingsView: View {
                         .foregroundStyle(theme.heroGradient)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Gaming PC")
+                    Text("Example PC")
                         .font(.headline.weight(.bold))
                     HStack(spacing: 6) {
-                        OrbitStatusPill(text: "Online", tint: .mint, pulsing: true)
+                        OrbitStatusPill(text: "Preview", tint: theme.accent, pulsing: false)
                         OrbitStatChip(label: "Ping", value: "4 ms")
                     }
                 }
@@ -856,6 +858,8 @@ struct LiveActivitySettingsView: View {
                 islandPreview
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
                     .listRowBackground(Color.clear)
+            } header: {
+                Text("Preview · example data")
             }
 
             Section {
@@ -985,7 +989,7 @@ struct LiveActivitySettingsView: View {
             HStack(spacing: 12) {
                 OrbitRingGauge(progress: 0.24, lineWidth: 4, tint: tint).frame(width: 38, height: 38)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(vm.selectedPCName.isEmpty ? "Gaming PC" : vm.selectedPCName)
+                    Text("Example PC")
                         .font(.subheadline.weight(.bold))
                     Text(showGame ? "Playing Example game · \(style.capitalized)" : "Monitoring · \(style.capitalized)")
                         .font(.caption)

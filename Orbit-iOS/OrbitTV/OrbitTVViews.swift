@@ -437,8 +437,8 @@ struct TVDashboardTab: View {
 
                     TVTelemetryCard(
                         title: "Live FPS",
-                        primaryValue: (vm.metrics.fps ?? 0) > 0 ? tvValue(vm.metrics.fps, "%.0f") : (vm.metrics.activeGame == nil ? "Idle" : "—"),
-                        secondaryBadge: vm.metrics.fpsSource ?? "No FPS source",
+                        primaryValue: (vm.metrics.fps ?? 0) > 0 ? tvValue(vm.metrics.fps, "%.0f") : (hasTelemetry && vm.metrics.activeGame == nil ? "Idle" : "—"),
+                        secondaryBadge: hasTelemetry ? (vm.metrics.fpsSource ?? "No FPS source") : "—",
                         subtitle: vm.metrics.activeGame ?? "No game detected",
                         footerLeft: (vm.metrics.fps ?? 0) > 0 ? String(format: "%.1f ms frametime", 1000.0 / max(1.0, vm.metrics.fps ?? 60)) : "Standby",
                         footerRight: vm.peakFPS > 0 ? String(format: "Peak %.0f FPS", vm.peakFPS) : "",
@@ -500,8 +500,8 @@ struct TVDashboardTab: View {
                     TVTelemetryCard(
                         title: "Thermal & Power",
                         primaryValue: hasPower && hasTelemetry ? String(format: "%.0f W", totalWatts) : "—",
-                        secondaryBadge: vm.metrics.liquidTemp.map { String(format: "Liquid %.1f°C", $0) } ?? "No coolant sensor",
-                        subtitle: hasPower ? "CPU package + GPU board" : "No power sensor reported",
+                        secondaryBadge: hasTelemetry ? (vm.metrics.liquidTemp.map { String(format: "Liquid %.1f°C", $0) } ?? "No coolant sensor") : "—",
+                        subtitle: hasTelemetry ? (hasPower ? "CPU package + GPU board" : "No power sensor reported") : "—",
                         footerLeft: vm.peakPowerWatts > 0 ? String(format: "Peak %.0f W", vm.peakPowerWatts) : "—",
                         footerRight: vm.metrics.uptimeSeconds > 0 ? "Up \(vm.metrics.formattedUptime)" : "",
                         accent: .pink,
@@ -614,7 +614,6 @@ struct TVHeroPowerDeck: View {
                     Label(vm.isWaking ? "Waking…" : "Power On", systemImage: "power.circle.fill")
                 }
                 .buttonStyle(TVActionPillStyle(tint: TVPalette.mint, isProminent: true))
-                .disabled(vm.isWaking)
 
                 Button {
                     showShutdownConfirm = true
@@ -1466,7 +1465,6 @@ struct TVTaskManagerTab: View {
                         Label(vm.isLoadingProcesses ? "Refreshing…" : "Refresh Processes", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
-                    .disabled(vm.isLoadingProcesses)
                 }
                 .focusSection()
 
@@ -1685,7 +1683,6 @@ struct TVPCsAndPairingTab: View {
                 )
             }
             .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
-            .disabled(vm.isSyncingFromiPhone)
 
             Button {
                 vm.setDemoMode(!vm.isDemoMode)
@@ -1729,13 +1726,14 @@ struct TVPCsAndPairingTab: View {
             } else {
                 ForEach(vm.savedPCs) { pc in
                     let selected = vm.selectedPCID == pc.id
+                    let live = selected && vm.metrics.isOnline && !vm.isDemoMode
                     HStack(spacing: 20) {
                         ZStack {
-                            TVRing(progress: selected && vm.metrics.isOnline ? vm.metrics.cpuUsage / 100 : nil, tint: selected ? TVPalette.mint : TVPalette.accent, lineWidth: 5)
+                            TVRing(progress: live && vm.metrics.telemetryAvailable != false ? vm.metrics.cpuUsage / 100 : nil, tint: live ? TVPalette.mint : TVPalette.accent, lineWidth: 5)
                                 .frame(width: 58, height: 58)
                             Image(systemName: "desktopcomputer")
                                 .font(.system(size: 22, weight: .semibold))
-                                .foregroundStyle(selected ? TVPalette.mint : TVPalette.accent)
+                                .foregroundStyle(live ? TVPalette.mint : TVPalette.accent)
                         }
 
                         VStack(alignment: .leading, spacing: 5) {
@@ -1745,7 +1743,7 @@ struct TVPCsAndPairingTab: View {
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                 if selected {
-                                    TVStatusPill(text: vm.metrics.isOnline ? "ONLINE" : "ACTIVE", tint: vm.metrics.isOnline ? TVPalette.mint : TVPalette.accent)
+                                    TVStatusPill(text: live ? "ONLINE" : "ACTIVE", tint: live ? TVPalette.mint : TVPalette.accent)
                                 }
                             }
                             Text("\(pc.address):\(pc.securePort) • MAC \(pc.macAddress.isEmpty ? "not saved" : pc.macAddress) • \(pc.certificateFingerprint.isEmpty ? "no certificate" : "TLS pinned")")
@@ -1779,7 +1777,7 @@ struct TVPCsAndPairingTab: View {
                         .buttonStyle(TVActionPillStyle(tint: TVPalette.coral, isDestructive: true))
                     }
                     .padding(22)
-                    .tvGlass(tint: selected ? TVPalette.mint : .white, cornerRadius: 22)
+                    .tvGlass(tint: live ? TVPalette.mint : .white, cornerRadius: 22)
                     .focusSection()
                 }
             }

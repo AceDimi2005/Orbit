@@ -38,15 +38,19 @@ struct TaskManagerView: View {
                 HStack(spacing: 12) {
                     OrbitIconBadge(systemName: "list.bullet.rectangle.portrait.fill", tint: .orange, size: 40, filled: true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(vm.processes.count) processes")
+                        Text(vm.lastProcessesUpdated == nil ? "Processes" : "\(vm.processes.count) processes")
                             .font(.headline.weight(.bold))
                             .contentTransition(.numericText())
+                        if let updated = vm.lastProcessesUpdated {
+                            Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(vm.metrics.isOnline ? "Reading the process list…" : "Connect to your PC to list processes")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let top = topConsumer, let cpu = top.cpuPercent, cpu.isFinite {
                             Text("Busiest: \(top.name) · \(String(format: "%.0f%% CPU", cpu))")
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        } else if let updated = vm.lastProcessesUpdated {
-                            Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
-                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     Spacer()

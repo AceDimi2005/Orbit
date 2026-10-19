@@ -53,23 +53,30 @@ struct LiquidGlassCard: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .background {
-                if style == .improved || reduceTransparency {
-                    shape
-                        .fill(theme.surface)
-                        .overlay {
-                            shape.fill(
-                                LinearGradient(
-                                    colors: [tint.opacity(elevated ? 0.12 : 0.07), tint.opacity(0.015), .clear],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+                // Shadows are cast by the card silhouette only, never by the
+                // glyphs inside it (important for the translucent Glass style).
+                ZStack {
+                    if style == .improved || reduceTransparency {
+                        shape
+                            .fill(theme.surface)
+                            .overlay {
+                                shape.fill(
+                                    LinearGradient(
+                                        colors: [tint.opacity(elevated ? 0.12 : 0.07), tint.opacity(0.015), .clear],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 )
-                            )
-                        }
-                } else {
-                    shape
-                        .fill(.ultraThinMaterial)
-                        .overlay { shape.fill(tint.opacity(elevated ? 0.09 : 0.05)) }
+                            }
+                    } else {
+                        shape
+                            .fill(.ultraThinMaterial)
+                            .overlay { shape.fill(tint.opacity(elevated ? 0.09 : 0.05)) }
+                    }
                 }
+                .compositingGroup()
+                .shadow(color: .black.opacity(style == .improved ? 0.28 : 0.18), radius: elevated ? 22 : 12, y: elevated ? 10 : 5)
+                .shadow(color: elevated && !reduceGlow ? tint.opacity(0.12) : .clear, radius: 30, y: 8)
             }
             .overlay {
                 // Specular top edge + soft outer hairline.
@@ -82,8 +89,6 @@ struct LiquidGlassCard: ViewModifier {
                     lineWidth: 1
                 )
             }
-            .shadow(color: .black.opacity(style == .improved ? 0.28 : 0.18), radius: elevated ? 22 : 12, y: elevated ? 10 : 5)
-            .shadow(color: (reduceGlow ? Color.clear : tint).opacity(elevated ? 0.12 : 0.0), radius: 30, y: 8)
     }
 }
 
@@ -222,7 +227,7 @@ struct OrbitSectionHeader<Trailing: View>: View {
                     .foregroundStyle(tint ?? accent)
             }
             Text(title.uppercased())
-                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .font(.system(.caption2, design: .rounded, weight: .bold))
                 .tracking(1.1)
                 .foregroundStyle(.white.opacity(0.62))
             Spacer(minLength: 0)
@@ -265,7 +270,7 @@ struct OrbitStatusPill: View {
                 .frame(width: 10, height: 10)
             }
             Text(text)
-                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .font(.system(.caption2, design: .rounded, weight: .bold))
                 .lineLimit(1)
         }
         .foregroundStyle(tint)
@@ -379,11 +384,12 @@ struct OrbitSparkline: View {
 struct OrbitPressableStyle: ButtonStyle {
     var scale: CGFloat = 0.96
     var haptic: Bool = true
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1)
-            .opacity(configuration.isPressed ? 0.86 : 1)
+            .opacity(!isEnabled ? 0.45 : (configuration.isPressed ? 0.86 : 1))
             .animation(.spring(response: 0.26, dampingFraction: 0.72), value: configuration.isPressed)
             .onChange(of: configuration.isPressed) { _, pressed in
                 if pressed && haptic { OrbitHaptics.tap() }
@@ -400,6 +406,7 @@ struct OrbitProminentButtonStyle: ButtonStyle {
     var colors: [Color]
     var foreground: Color = .black
     var cornerRadius: CGFloat = 16
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -417,6 +424,7 @@ struct OrbitProminentButtonStyle: ButtonStyle {
             )
             .shadow(color: (colors.first ?? .clear).opacity(configuration.isPressed ? 0.15 : 0.35), radius: 16, y: 8)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(isEnabled ? 1 : 0.5)
             .animation(.spring(response: 0.28, dampingFraction: 0.75), value: configuration.isPressed)
     }
 }
@@ -425,6 +433,7 @@ struct OrbitProminentButtonStyle: ButtonStyle {
 struct OrbitGlassButtonStyle: ButtonStyle {
     var tint: Color = .white
     var cornerRadius: CGFloat = 14
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -435,7 +444,7 @@ struct OrbitGlassButtonStyle: ButtonStyle {
             .background(tint.opacity(tint == .white ? 0.08 : 0.14), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(tint.opacity(0.18), lineWidth: 1))
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .opacity(!isEnabled ? 0.45 : (configuration.isPressed ? 0.85 : 1))
             .animation(.spring(response: 0.26, dampingFraction: 0.72), value: configuration.isPressed)
     }
 }
@@ -457,7 +466,7 @@ struct OrbitActionTile: View {
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : tint)
                     .frame(height: 20)
                 Text(title)
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -504,7 +513,7 @@ struct HardwareMetricCard: View {
             HStack(spacing: 8) {
                 OrbitIconBadge(systemName: icon, tint: metricAccent, size: 28)
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(style == .improved ? Color.white.opacity(0.88) : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -524,7 +533,7 @@ struct HardwareMetricCard: View {
                         .opacity(0.75)
                 }
                 Text(valueText)
-                    .font(.system(size: 27, weight: .bold, design: .rounded))
+                    .font(.system(.title, design: .rounded, weight: .bold))
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
@@ -694,11 +703,11 @@ struct OrbitStatChip: View {
                 Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(tint.opacity(0.9))
             }
             Text(label.uppercased())
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .font(.system(.caption2, design: .rounded, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(.white.opacity(0.5))
             Text(value)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.system(.caption, design: .rounded, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())

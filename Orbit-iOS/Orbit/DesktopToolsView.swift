@@ -434,7 +434,7 @@ struct AudioMixerView: View {
                 HStack(spacing: 12) {
                     OrbitIconBadge(systemName: "slider.vertical.3", tint: .purple, size: 40, filled: true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(mixer.sessions.count) audio session\(mixer.sessions.count == 1 ? "" : "s")")
+                        Text(mixer.updated == nil ? "Audio Mixer" : "\(mixer.sessions.count) audio session\(mixer.sessions.count == 1 ? "" : "s")")
                             .font(.headline.weight(.bold))
                             .contentTransition(.numericText())
                         if let updated = mixer.updated {

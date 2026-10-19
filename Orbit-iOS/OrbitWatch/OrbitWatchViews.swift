@@ -260,7 +260,7 @@ private struct WatchCockpitPage: View {
                     Button {
                         vm.togglePhoneLiveActivity()
                     } label: {
-                        Image(systemName: vm.isLiveActivityActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait.tophalf")
+                        Image(systemName: vm.isLiveActivityActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait")
                             .font(.system(size: 13, weight: .bold))
                             .frame(width: 36, height: 32)
                             .background(
@@ -677,7 +677,6 @@ private struct WatchMotionCursorPage: View {
                 )
                 .simultaneousGesture(
                     TapGesture().onEnded {
-                        WKInterfaceDevice.current().play(.click)
                         vm.sendCursorPacket(click: "left")
                     }
                 )
@@ -813,10 +812,7 @@ private struct WatchMotionCursorPage: View {
     }
 
     private func clickButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button {
-            WKInterfaceDevice.current().play(.click)
-            action()
-        } label: {
+        Button(action: action) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .bold))
@@ -842,9 +838,9 @@ private struct WatchMediaAndGamesPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 // Digital Crown Volume Ring
-                HStack(spacing: 12) {
+                HStack(spacing: 8) {
                     ZStack {
-                        WatchRing(progress: crownVolume / 100.0, tint: vm.isMuted ? OrbitWatchPalette.coral : vm.accent, lineWidth: 6)
+                        WatchRing(progress: crownVolume / 100.0, tint: vm.isMuted ? OrbitWatchPalette.coral : vm.accent, lineWidth: 5)
                         VStack(spacing: 0) {
                             Image(systemName: vm.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                 .font(.system(size: 11, weight: .bold))
@@ -855,13 +851,17 @@ private struct WatchMediaAndGamesPage: View {
                                 .contentTransition(.numericText())
                         }
                     }
-                    .frame(width: 64, height: 64)
+                    .frame(width: 54, height: 54)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Crown Volume")
                             .font(.system(size: 11, weight: .bold))
-                        Text(vm.isOnline ? "Turn the Digital Crown" : "PC offline")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text(vm.isOnline ? "Turn the Crown" : "PC offline")
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                         Button {
                             Task { await vm.sendPowerAction("mute") }
                         } label: {
@@ -966,7 +966,6 @@ private struct WatchMediaAndGamesPage: View {
 
     private func mediaButton(_ icon: String, tint: Color = .white, prominent: Bool = false, action: @escaping () async -> Void) -> some View {
         Button {
-            WKInterfaceDevice.current().play(.click)
             Task { await action() }
         } label: {
             Image(systemName: icon)

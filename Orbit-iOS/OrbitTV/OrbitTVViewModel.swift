@@ -231,9 +231,10 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var isWaking: Bool = false
 
     // Rolling sparkline history & session peaks
-    @Published var cpuHistory: [Double] = Array(repeating: 0, count: 24)
-    @Published var gpuHistory: [Double] = Array(repeating: 0, count: 24)
-    @Published var fpsHistory: [Double] = Array(repeating: 0, count: 24)
+    // Empty until real readings arrive; a missing sensor leaves a gap instead of a 0.
+    @Published var cpuHistory: [Double] = []
+    @Published var gpuHistory: [Double] = []
+    @Published var fpsHistory: [Double] = []
     @Published var peakCPUTemp: Double = 0
     @Published var peakGPUTemp: Double = 0
     @Published var peakFPS: Double = 0
@@ -330,9 +331,9 @@ final class OrbitTVViewModel: ObservableObject {
             metrics.hostname = pc.name
         }
         pingMs = 0
-        cpuHistory = Array(repeating: 0, count: 24)
-        gpuHistory = Array(repeating: 0, count: 24)
-        fpsHistory = Array(repeating: 0, count: 24)
+        cpuHistory = []
+        gpuHistory = []
+        fpsHistory = []
         peakCPUTemp = 0
         peakGPUTemp = 0
         peakFPS = 0
@@ -467,12 +468,21 @@ final class OrbitTVViewModel: ObservableObject {
     }
 
     private func appendHistorySample() {
+        guard metrics.telemetryAvailable != false else { return }
         cpuHistory.append(metrics.cpuUsage)
         if cpuHistory.count > 24 { cpuHistory.removeFirst() }
-        gpuHistory.append(metrics.gpuUsage ?? 0)
-        if gpuHistory.count > 24 { gpuHistory.removeFirst() }
-        fpsHistory.append(metrics.fps ?? 0)
-        if fpsHistory.count > 24 { fpsHistory.removeFirst() }
+        if let gpu = metrics.gpuUsage {
+            gpuHistory.append(gpu)
+            if gpuHistory.count > 24 { gpuHistory.removeFirst() }
+        } else {
+            gpuHistory = []
+        }
+        if let fps = metrics.fps, fps > 0 {
+            fpsHistory.append(fps)
+            if fpsHistory.count > 24 { fpsHistory.removeFirst() }
+        } else {
+            fpsHistory = []
+        }
 
         if let ct = metrics.cpuTemp, ct > peakCPUTemp { peakCPUTemp = ct }
         if let gt = metrics.gpuTemp, gt > peakGPUTemp { peakGPUTemp = gt }

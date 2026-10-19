@@ -341,7 +341,7 @@ struct PCProfilesView: View {
             } label: {
                 HStack(spacing: 12) {
                     ZStack {
-                        OrbitRingGauge(progress: online ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 3, tint: selected ? theme.accent : .secondary)
+                        OrbitRingGauge(progress: online && vm.metrics.telemetryAvailable != false ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 3, tint: selected ? theme.accent : .secondary)
                             .frame(width: 42, height: 42)
                         Image(systemName: "desktopcomputer")
                             .font(.system(size: 15, weight: .semibold))
