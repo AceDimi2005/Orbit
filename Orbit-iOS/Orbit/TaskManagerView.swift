@@ -169,7 +169,7 @@ struct TaskManagerView: View {
                 Text(label)
                     .font(.system(size: 9.5, weight: .bold, design: .rounded))
                     .foregroundStyle(tint)
-                Text(value.flatMap { $0.isFinite ? String(format: "%.\(digits)f%@", $0, unit) : nil } ?? "—")
+                Text(value.flatMap { $0.isFinite ? String(format: "%.\(digits)f", $0) + unit : nil } ?? "—")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.88))

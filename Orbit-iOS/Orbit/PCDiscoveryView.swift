@@ -87,12 +87,12 @@ private struct OrbitRadarView: View {
                 AngularGradient(colors: [tint.opacity(0), tint.opacity(0.55)], center: .center, startAngle: .degrees(0), endAngle: .degrees(360))
                     .clipShape(Circle())
                     .frame(width: 148, height: 148)
-                    .mask(
+                    .mask {
                         Circle()
                             .trim(from: 0.62, to: 1)
                             .stroke(style: StrokeStyle(lineWidth: 74))
                             .frame(width: 74, height: 74)
-                    )
+                    }
                     .rotationEffect(.degrees(sweep ? 360 : 0))
             }
             Circle()
