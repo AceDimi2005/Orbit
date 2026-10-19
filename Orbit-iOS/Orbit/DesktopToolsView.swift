@@ -22,12 +22,15 @@ struct ClipboardView: View {
     private var fitsLimit: Bool { text.utf16.count * 2 + 2 <= 1_048_576 && !text.contains("\0") }
     private var canUsePC: Bool { !vm.isDemoMode && vm.metrics.isOnline && !isBusy }
 
+    @Environment(\.orbitTheme) private var theme
+
     var body: some View {
         List {
             Section("Clipboard Text") {
                 TextEditor(text: $text)
                     .frame(minHeight: 170, maxHeight: 280)
                     .font(.body)
+                    .scrollContentBackground(.hidden)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .accessibilityLabel("Clipboard text")
@@ -42,17 +45,22 @@ struct ClipboardView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            .orbitRow()
 
-            Section("Quick Transfer") {
-                Button { readPC() } label: {
-                    Label("Pull from PC Clipboard", systemImage: "arrow.down.doc.fill")
+            Section {
+                HStack(spacing: 10) {
+                    transferButton("Pull from PC", icon: "arrow.down.doc.fill", tint: theme.accent, enabled: canUsePC) { readPC() }
+                    transferButton(text.isEmpty ? "Clear PC" : "Push to PC", icon: "arrow.up.doc.fill", tint: .mint, enabled: canUsePC && fitsLimit) { sendToPC() }
                 }
-                .disabled(!canUsePC)
+                .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+            } header: {
+                Text("Quick Transfer")
+            } footer: {
+                Text("Clipboard access always follows a tap. Orbit never reads or syncs the clipboard in the background.")
+            }
+            .orbitRow()
 
-                Button { sendToPC() } label: {
-                    Label(text.isEmpty ? "Clear PC Clipboard" : "Push to PC Clipboard", systemImage: "arrow.up.doc.fill")
-                }
-                .disabled(!canUsePC || !fitsLimit)
+            Section("iPhone Clipboard") {
 
                 HStack {
                     Label("Paste from iPhone", systemImage: "iphone")
@@ -75,11 +83,13 @@ struct ClipboardView: View {
                 }
                 .disabled(text.isEmpty || !fitsLimit || isBusy)
             }
+            .orbitRow()
 
-            if isBusy { Section { HStack { ProgressView(); Text("Syncing…").font(.subheadline) } } }
-            if let status { Section { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) } }
-            if let error { Section { Label(error, systemImage: "exclamationmark.circle.fill").font(.caption).foregroundStyle(.orange) } }
+            if isBusy { Section { HStack { ProgressView(); Text("Syncing…").font(.subheadline) } }.orbitRow() }
+            if let status { Section { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) }.orbitRow(tint: .mint) }
+            if let error { Section { Label(error, systemImage: "exclamationmark.circle.fill").font(.caption).foregroundStyle(.orange) }.orbitRow(tint: .orange) }
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Clipboard")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -106,6 +116,28 @@ struct ClipboardView: View {
         }
         .onChange(of: vm.connectionID) { _, _ in clearScreen() }
         .onDisappear { clearScreen() }
+    }
+
+    private func transferButton(_ title: String, icon: String, tint: Color, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            action()
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(maxWidth: .infinity, minHeight: 68)
+            .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(tint.opacity(0.22), lineWidth: 1))
+        }
+        .buttonStyle(.orbitPressable)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
     }
 
     private func readPC() {
@@ -394,20 +426,30 @@ struct AudioMixerView: View {
     @StateObject private var mixer = AudioMixerModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    @Environment(\.orbitTheme) private var theme
+
     var body: some View {
         List {
             Section {
-                HStack {
-                    Label("App Volume & Routing", systemImage: "slider.horizontal.3")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    if let updated = mixer.updated {
-                        Text("\(mixer.sessions.count) sessions · ")
-                            .font(.caption).foregroundStyle(.secondary)
-                        + Text(updated, style: .time)
-                            .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    OrbitIconBadge(systemName: "slider.vertical.3", tint: .purple, size: 40, filled: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(mixer.sessions.count) audio session\(mixer.sessions.count == 1 ? "" : "s")")
+                            .font(.headline.weight(.bold))
+                            .contentTransition(.numericText())
+                        if let updated = mixer.updated {
+                            Text("Updated \(updated.formatted(date: .omitted, time: .standard)) · \(mixer.routingAvailable ? "output routing ready" : "volume & mute")")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        } else {
+                            Text("Per-app volume, mute and output device")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
+                    Spacer()
+                    if mixer.isLoading { ProgressView().tint(theme.accent) }
                 }
+                .padding(.vertical, 2)
+                masterVolumeRow
                 if let reason = mixer.routingReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
@@ -416,23 +458,28 @@ struct AudioMixerView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
+            .orbitRow(tint: .purple)
             if let error = mixer.error {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
+                    .orbitRow(tint: .orange)
             }
             if let status = mixer.routingStatus {
                 Section { Label(status, systemImage: "speaker.wave.2").font(.caption).foregroundStyle(.mint) }
+                    .orbitRow(tint: .mint)
             }
             Section("Applications") {
                 if mixer.isLoading && mixer.sessions.isEmpty {
                     HStack { ProgressView(); Text("Reading audio sessions…").padding(.leading, 8) }
                 } else if mixer.sessions.isEmpty {
-                    ContentUnavailableView("No active audio sessions", systemImage: "speaker.wave.2",
-                                           description: Text("Play audio in any PC app to control its volume here."))
+                    OrbitEmptyState(icon: "speaker.wave.2", title: "No active audio sessions",
+                                    message: "Play audio in any PC app to control its volume here.", tint: .purple)
                 } else {
                     ForEach(mixer.sessions) { session in sessionRow(session) }
                 }
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Audio Mixer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -455,35 +502,73 @@ struct AudioMixerView: View {
         .onDisappear { mixer.reset() }
     }
 
+    private var masterVolumeRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                OrbitHaptics.tap()
+                Task { await vm.sendPowerAction("mute") }
+            } label: {
+                OrbitIconBadge(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.3.fill", tint: vm.metrics.isMuted ? .orange : theme.accent, size: 32)
+            }
+            .buttonStyle(.orbitPressable)
+            .accessibilityLabel(vm.metrics.isMuted ? "Unmute PC" : "Mute PC")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Master").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.8))
+                    Spacer()
+                    Text(vm.metrics.volumeAvailable == false ? "—" : (vm.metrics.isMuted ? "Muted" : "\(Int(vm.metrics.volume))%"))
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(vm.metrics.isMuted ? .orange : .white)
+                        .contentTransition(.numericText())
+                }
+                Slider(value: Binding(get: { vm.metrics.volume }, set: { vm.setVolume($0) }), in: 0...100, step: 1) { editing in
+                    vm.isDraggingVolume = editing
+                }
+                .tint(vm.metrics.isMuted ? .orange : theme.accent)
+                .accessibilityLabel("PC master volume")
+            }
+        }
+        .disabled(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false)
+        .opacity(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false ? 0.5 : 1)
+    }
+
     private func sessionRow(_ session: AudioMixerSession) -> some View {
-        VStack(spacing: 10) {
+        let tint: Color = session.isMuted ? .orange : .purple
+        return VStack(spacing: 10) {
             HStack(spacing: 12) {
-                Image(systemName: "app.fill").foregroundStyle(.cyan)
+                OrbitIconBadge(systemName: session.pid == 0 ? "speaker.wave.2.bubble.fill" : "app.fill", tint: tint, size: 36)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.name).font(.subheadline.weight(.medium)).lineLimit(2)
+                    Text(session.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text(session.pid == 0 ? "Windows system sounds" : "PID \(session.pid)")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if mixer.sendingIDs.contains(session.id) { ProgressView().controlSize(.mini) }
-                Button { mixer.toggleMute(vm, id: session.id) } label: {
+                Text(session.isMuted ? "Muted" : "\(Int(session.volume))%")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(session.isMuted ? .orange : .white)
+                    .contentTransition(.numericText())
+                    .frame(minWidth: 48, alignment: .trailing)
+                Button {
+                    OrbitHaptics.tap()
+                    mixer.toggleMute(vm, id: session.id)
+                } label: {
                     Image(systemName: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .frame(width: 30, height: 30)
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .background(tint.opacity(0.16), in: Circle())
+                        .foregroundStyle(tint)
                 }
-                .buttonStyle(.bordered)
-                .tint(session.isMuted ? .orange : .cyan)
+                .buttonStyle(.orbitPressable)
                 .accessibilityLabel("\(session.isMuted ? "Unmute" : "Mute") \(session.name)")
             }
-            HStack {
-                Slider(value: Binding(get: {
-                    mixer.sessions.first(where: { $0.id == session.id })?.volume ?? session.volume
-                }, set: { mixer.setVolume(vm, id: session.id, volume: $0) }), in: 0...100, step: 1,
-                       onEditingChanged: { mixer.setDragging(session.id, $0) })
-                    .tint(.cyan)
-                    .accessibilityLabel("Volume for \(session.name)")
-                Text("\(Int(session.volume))%")
-                    .font(.caption.monospacedDigit()).frame(width: 42, alignment: .trailing)
-            }
+            Slider(value: Binding(get: {
+                mixer.sessions.first(where: { $0.id == session.id })?.volume ?? session.volume
+            }, set: { mixer.setVolume(vm, id: session.id, volume: $0) }), in: 0...100, step: 1,
+                   onEditingChanged: { mixer.setDragging(session.id, $0) })
+                .tint(tint)
+                .accessibilityLabel("Volume for \(session.name)")
             HStack {
                 Label(session.outputDeviceName ?? "Current output", systemImage: "hifispeaker")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -496,7 +581,14 @@ struct AudioMixerView: View {
                         ForEach(mixer.outputs) { output in
                             Button(output.name) { mixer.route(vm, session: session, outputID: output.id) }
                         }
-                    } label: { Label("Output", systemImage: "arrow.triangle.branch").font(.caption) }
+                    } label: {
+                        Label("Output", systemImage: "arrow.triangle.branch")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(theme.accent.opacity(0.14), in: Capsule())
+                            .foregroundStyle(theme.accent)
+                    }
                     .disabled(!mixer.routingAvailable || mixer.routingSessionID != nil || session.pid == 0 || session.processCreateTime == nil)
                     .accessibilityLabel("Choose output for \(session.name)")
                 }

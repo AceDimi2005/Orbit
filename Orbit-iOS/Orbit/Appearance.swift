@@ -5,8 +5,8 @@ import UIKit
 enum OrbitVisualStyle: String, CaseIterable, Identifiable {
     case improved, classic
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
-    var detail: String { self == .improved ? "Crisp surfaces with high contrast." : "Translucent glass cards with ambient glow." }
+    var title: String { self == .improved ? "Crisp" : "Glass" }
+    var detail: String { self == .improved ? "Opaque surfaces with high contrast and a soft specular edge." : "Translucent cards that let the ambient glow bleed through." }
 }
 
 enum OrbitTheme: String, CaseIterable, Identifiable {
@@ -89,6 +89,19 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
         case .arctic: Color(red: 0.065, green: 0.115, blue: 0.17)
         case .sakura: Color(red: 0.135, green: 0.075, blue: 0.12)
         }
+    }
+
+    /// sRGB hex (without #) of the accent, shared with Apple Watch so the wrist
+    /// app can follow the iPhone theme.
+    var accentHex: String { Self.hex(accent) }
+    var secondaryHex: String { Self.hex(secondary) }
+
+    private static func hex(_ color: Color) -> String {
+        let components = UIColor(color).cgColor.components ?? [0, 0, 0, 1]
+        let r = Int((components.count > 0 ? components[0] : 0) * 255)
+        let g = Int((components.count > 1 ? components[1] : 0) * 255)
+        let b = Int((components.count > 2 ? components[2] : 0) * 255)
+        return String(format: "%02X%02X%02X", max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
     }
 }
 
@@ -283,28 +296,36 @@ final class OrbitProStore: ObservableObject {
     }
 }
 
+// MARK: - Appearance environment
+
 struct OrbitAppearanceModifier: ViewModifier {
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     func body(content: Content) -> some View {
         content.tint(theme.accent).preferredColorScheme(.dark)
             .environment(\.orbitAccent, theme.accent)
+            .environment(\.orbitTheme, theme)
             .environment(\.orbitImprovedStyle, style == .improved)
     }
 }
 private struct OrbitAccentKey: EnvironmentKey { static let defaultValue = OrbitTheme.ocean.accent }
+private struct OrbitThemeKey: EnvironmentKey { static let defaultValue = OrbitTheme.ocean }
 private struct OrbitImprovedKey: EnvironmentKey { static let defaultValue = true }
 extension EnvironmentValues {
     var orbitAccent: Color { get { self[OrbitAccentKey.self] } set { self[OrbitAccentKey.self] = newValue } }
+    var orbitTheme: OrbitTheme { get { self[OrbitThemeKey.self] } set { self[OrbitThemeKey.self] = newValue } }
     var orbitImprovedStyle: Bool { get { self[OrbitImprovedKey.self] } set { self[OrbitImprovedKey.self] = newValue } }
 }
 extension View { func orbitAppearance() -> some View { modifier(OrbitAppearanceModifier()) } }
+
+// MARK: - Appearance settings
 
 struct AppearanceSettingsView: View {
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     @AppStorage("orbit.monochromeMetrics") private var monochromeMetrics = false
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+    @AppStorage("orbit.haptics") private var hapticsEnabled = true
     @AppStorage("orbit.appIcon") private var selectedIcon: OrbitAppIcon = .classic
     @ObservedObject private var proStore = OrbitProStore.shared
     @State private var showPaywall = false
@@ -313,17 +334,89 @@ struct AppearanceSettingsView: View {
     var body: some View {
         Form {
             Section {
+                livePreview
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
+                    .listRowBackground(Color.clear)
+            }
+
+            Section {
+                themeStrip(OrbitTheme.freeThemes)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8))
+            } header: {
+                Text("Themes")
+            } footer: {
+                Text("Themes recolour the app, widgets, Live Activity and your Apple Watch.")
+            }
+            .orbitRow()
+
+            Section {
+                themeStrip(OrbitTheme.proThemes)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8))
+            } header: {
+                HStack {
+                    Text("Orbit Pro Themes")
+                    Spacer()
+                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.mint)
+                }
+            }
+            .orbitRow(tint: .yellow)
+
+            Section {
+                Picker("Surface", selection: $style) {
+                    ForEach(OrbitVisualStyle.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: style) { _, _ in OrbitHaptics.selection() }
+                Text(style.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Surface Style")
+            }
+            .orbitRow()
+
+            Section {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 10)], spacing: 10) {
+                    ForEach(OrbitAppIcon.allCases) { icon in
+                        appIconTile(icon)
+                    }
+                }
+                .padding(.vertical, 4)
+                if let iconError {
+                    Text(iconError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } header: {
+                HStack {
+                    Text("Home Screen Icon")
+                    Spacer()
+                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.mint)
+                }
+            }
+            .orbitRow()
+
+            Section {
+                settingToggle("Single Accent Colour", icon: "paintbrush.pointed.fill", tint: theme.accent, isOn: $monochromeMetrics)
+                settingToggle("Ambient Background Glow", icon: "sun.haze.fill", tint: .orange, isOn: Binding(get: { !reduceGlow }, set: { reduceGlow = !$0 }))
+                settingToggle("Haptic Feedback", icon: "hand.tap.fill", tint: .mint, isOn: $hapticsEnabled)
+            } header: {
+                Text("Display & Feel")
+            } footer: {
+                Text("Single accent colours every metric with the theme tint instead of per-component colours.")
+            }
+            .orbitRow()
+
+            Section {
                 Button {
                     showPaywall = true
                 } label: {
                     HStack(spacing: 12) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.yellow.opacity(0.18))
-                                .frame(width: 38, height: 38)
-                            Image(systemName: "crown.fill")
-                                .foregroundStyle(.yellow)
-                        }
+                        OrbitIconBadge(systemName: "crown.fill", tint: .yellow, size: 36)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Orbit Pro · Coming Soon")
                                 .font(.subheadline.weight(.bold))
@@ -340,86 +433,12 @@ struct AppearanceSettingsView: View {
                             .background(Color.yellow.opacity(0.2), in: Capsule())
                             .foregroundStyle(.yellow)
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
                 }
             }
-
-            Section("Surface Style") {
-                Picker("Interface", selection: $style) {
-                    ForEach(OrbitVisualStyle.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Text(style.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Standard Themes") {
-                HStack(spacing: 10) {
-                    ForEach(OrbitTheme.freeThemes) { item in
-                        themeSwatch(item)
-                    }
-                }
-            }
-
-            Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 10)], spacing: 12) {
-                    ForEach(OrbitTheme.proThemes) { item in
-                        themeSwatch(item)
-                    }
-                }
-                .padding(.vertical, 4)
-            } header: {
-                HStack {
-                    Text("Orbit Pro Themes")
-                    Spacer()
-                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.mint)
-                }
-            }
-
-            Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 95), spacing: 10)], spacing: 10) {
-                    ForEach(OrbitAppIcon.allCases) { icon in
-                        appIconTile(icon)
-                    }
-                }
-                .padding(.vertical, 4)
-                if let iconError {
-                    Text(iconError)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            } header: {
-                HStack {
-                    Text("Home Screen App Icon")
-                    Spacer()
-                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.mint)
-                }
-            }
-
-            Section("Display Options") {
-                Toggle("Single Accent Color", isOn: $monochromeMetrics)
-                Toggle("Subtle Background Glow", isOn: Binding(get: { !reduceGlow }, set: { reduceGlow = !$0 }))
-            }
-
-            Section("Card Preview") {
-                HardwareMetricCard(
-                    title: "Processor",
-                    subtitle: "AMD Ryzen 7 · 48°C",
-                    valueText: "24%",
-                    progress: 0.24,
-                    icon: "cpu",
-                    accent: theme.accent,
-                    detail: "4.85 GHz"
-                )
-                .padding(.vertical, 4)
-                .listRowBackground(theme.background)
-            }
+            .orbitRow(tint: .yellow)
         }
+        .orbitListChrome()
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showPaywall) {
@@ -434,44 +453,121 @@ struct AppearanceSettingsView: View {
         .orbitAppearance()
     }
 
+    private var livePreview: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                ZStack {
+                    OrbitRingGauge(progress: 0.68, lineWidth: 5, tint: theme.accent)
+                        .frame(width: 48, height: 48)
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(theme.heroGradient)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Gaming PC")
+                        .font(.headline.weight(.bold))
+                    HStack(spacing: 6) {
+                        OrbitStatusPill(text: "Online", tint: .mint, pulsing: true)
+                        OrbitStatChip(label: "Ping", value: "4 ms")
+                    }
+                }
+                Spacer()
+            }
+            .padding(14)
+            .liquidGlass(cornerRadius: 20, tint: theme.accent, elevated: true)
+
+            HStack(spacing: 10) {
+                HardwareMetricCard(
+                    title: "Processor", subtitle: "Ryzen 7 7800X3D", valueText: "24%", progress: 0.24,
+                    icon: "cpu", accent: .cyan, detail: "48°C · 4.85 GHz",
+                    history: [18, 22, 31, 27, 24, 29, 35, 26, 22, 24]
+                )
+                HardwareMetricCard(
+                    title: "Graphics", subtitle: "RTX 4080 SUPER", valueText: "71%", progress: 0.71,
+                    icon: "square.stack.3d.up", accent: .mint, detail: "63°C · 245 W",
+                    history: [55, 62, 70, 74, 69, 72, 78, 75, 70, 71]
+                )
+            }
+        }
+        .padding(.horizontal, 2)
+        .animation(.snappy, value: theme)
+        .animation(.snappy, value: style)
+        .animation(.snappy, value: monochromeMetrics)
+    }
+
+    private func themeStrip(_ themes: [OrbitTheme]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(themes) { item in themeSwatch(item) }
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+
+    private func settingToggle(_ title: String, icon: String, tint: Color, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 12) {
+                OrbitIconBadge(systemName: icon, tint: tint, size: 30)
+                Text(title)
+            }
+        }
+        .onChange(of: isOn.wrappedValue) { _, _ in OrbitHaptics.selection() }
+    }
+
     private func themeSwatch(_ item: OrbitTheme) -> some View {
         let locked = item.isPro && !proStore.isProUnlocked
+        let selected = theme == item
         return Button {
             if locked {
                 showPaywall = true
             } else {
+                OrbitHaptics.selection()
                 withAnimation(.snappy) { theme = item }
                 NSUbiquitousKeyValueStore.default.set(item.rawValue, forKey: "orbit.theme")
             }
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 7) {
                 ZStack(alignment: .topTrailing) {
-                    Circle()
-                        .fill(item.accent.gradient)
-                        .frame(width: 36, height: 36)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(theme == item ? .white : .white.opacity(0.18), lineWidth: theme == item ? 2.5 : 1)
-                        )
+                    ZStack {
+                        Circle()
+                            .fill(item.background)
+                            .frame(width: 50, height: 50)
+                        Circle()
+                            .fill(LinearGradient(colors: [item.accent, item.secondary], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 32, height: 32)
+                            .shadow(color: item.accent.opacity(0.5), radius: selected ? 10 : 4)
+                        Circle()
+                            .strokeBorder(selected ? item.accent : .white.opacity(0.14), lineWidth: selected ? 2.5 : 1)
+                            .frame(width: 50, height: 50)
+                    }
                     if locked {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.black)
                             .padding(3.5)
                             .background(Color.yellow, in: Circle())
-                            .offset(x: 4, y: -3)
+                            .offset(x: 2, y: -2)
+                    } else if selected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(.black)
+                            .padding(4)
+                            .background(item.accent, in: Circle())
+                            .offset(x: 2, y: -2)
                     }
                 }
                 Text(item.title)
-                    .font(.caption2.weight(theme == item ? .bold : .medium))
-                    .foregroundStyle(theme == item ? .white : .secondary)
+                    .font(.caption2.weight(selected ? .bold : .medium))
+                    .foregroundStyle(selected ? .white : .secondary)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .frame(width: 66)
+            .scaleEffect(selected ? 1.04 : 1)
+            .animation(.snappy, value: selected)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(theme == item ? .isSelected : [])
+        .accessibilityLabel("\(item.title) theme")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func appIconTile(_ icon: OrbitAppIcon) -> some View {
@@ -508,6 +604,7 @@ struct AppearanceSettingsView: View {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(isSelected ? icon.primaryColor : .white.opacity(0.14), lineWidth: isSelected ? 2.2 : 1)
                         )
+                        .shadow(color: isSelected ? icon.primaryColor.opacity(0.45) : .clear, radius: 10)
                     if locked {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 9, weight: .bold))
@@ -527,6 +624,7 @@ struct AppearanceSettingsView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
@@ -546,6 +644,7 @@ struct AppearanceSettingsView: View {
                 if let error {
                     iconError = error.localizedDescription
                 } else {
+                    OrbitHaptics.success()
                     selectedIcon = icon
                 }
             }
@@ -563,113 +662,104 @@ struct OrbitProPaywallView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    VStack(spacing: 10) {
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color.yellow.opacity(0.32), accent.opacity(0.24)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
+            ZStack {
+                OrbitAmbientBackground(isOnline: true)
+                ScrollView {
+                    VStack(spacing: 22) {
+                        VStack(spacing: 10) {
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color.yellow.opacity(0.32), accent.opacity(0.24)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
                                     )
-                                )
-                                .frame(width: 76, height: 76)
-                            Image(systemName: "crown.fill")
-                                .font(.system(size: 32, weight: .bold))
-                                .foregroundStyle(
-                                    LinearGradient(
-                                        colors: [.yellow, Color(red: 1.0, green: 0.72, blue: 0.25)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
+                                    .frame(width: 84, height: 84)
+                                Circle()
+                                    .strokeBorder(Color.yellow.opacity(0.35), lineWidth: 1)
+                                    .frame(width: 84, height: 84)
+                                Image(systemName: "crown.fill")
+                                    .font(.system(size: 34, weight: .bold))
+                                    .foregroundStyle(
+                                        LinearGradient(
+                                            colors: [.yellow, Color(red: 1.0, green: 0.72, blue: 0.25)],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
                                     )
-                                )
-                        }
-                        .padding(.top, 8)
-
-                        Text("Orbit Pro")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-
-                        Text("Coming Soon · Exclusive themes, icons & advanced packs")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    VStack(alignment: .leading, spacing: 14) {
-                        proFeatureRow(
-                            icon: "paintpalette.fill",
-                            tint: Color(red: 1.0, green: 0.22, blue: 0.70),
-                            title: "6 Exclusive Luxury Themes",
-                            subtitle: "Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, and Sakura across app & widgets."
-                        )
-                        proFeatureRow(
-                            icon: "app.badge.sparkles",
-                            tint: Color(red: 0.99, green: 0.82, blue: 0.32),
-                            title: "5 Custom Home Screen App Icons",
-                            subtitle: "Switch your iPhone Home Screen icon between Neon, Gold, Crimson, Matrix, and Titanium."
-                        )
-                        proFeatureRow(
-                            icon: "power.circle.fill",
-                            tint: Color(red: 0.38, green: 0.96, blue: 0.68),
-                            title: "Interactive Power & Control Center Widgets",
-                            subtitle: "Power On (Wake-on-LAN), Sleep, and Shut Down directly from Home Screen, Control Center, and Siri."
-                        )
-                        proFeatureRow(
-                            icon: "chart.xyaxis.line",
-                            tint: accent,
-                            title: "Multi-PC Profiles & Session Graphs",
-                            subtitle: "Save unlimited PCs and inspect historical FPS, temperature, and power telemetry graphs."
-                        )
-                    }
-                    .padding(18)
-                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)
-                    )
-
-                    if let status = store.statusMessage {
-                        Label(status, systemImage: "sparkles")
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(.yellow)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    VStack(spacing: 12) {
-                        Button {
-                            Task { await store.purchase() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "clock.badge.sparkles.fill")
-                                Text("Orbit Pro — Coming Soon")
-                                    .font(.headline.weight(.bold))
+                                    .shadow(color: .yellow.opacity(0.5), radius: 14)
                             }
-                            .foregroundStyle(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 15)
-                            .background(
-                                LinearGradient(
-                                    colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                ),
-                                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .padding(.top, 8)
+
+                            Text("Orbit Pro")
+                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+
+                            Text("Coming Soon · Exclusive themes, icons & advanced packs")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            proFeatureRow(
+                                icon: "paintpalette.fill",
+                                tint: Color(red: 1.0, green: 0.22, blue: 0.70),
+                                title: "6 Exclusive Luxury Themes",
+                                subtitle: "Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, and Sakura across app, widgets & Apple Watch."
+                            )
+                            proFeatureRow(
+                                icon: "app.badge.sparkles",
+                                tint: Color(red: 0.99, green: 0.82, blue: 0.32),
+                                title: "5 Custom Home Screen App Icons",
+                                subtitle: "Switch your iPhone Home Screen icon between Neon, Gold, Crimson, Matrix, and Titanium."
+                            )
+                            proFeatureRow(
+                                icon: "power.circle.fill",
+                                tint: Color(red: 0.38, green: 0.96, blue: 0.68),
+                                title: "Interactive Power & Control Center Widgets",
+                                subtitle: "Power On (Wake-on-LAN), Sleep, and Shut Down directly from Home Screen, Control Center, and Siri."
+                            )
+                            proFeatureRow(
+                                icon: "chart.xyaxis.line",
+                                tint: accent,
+                                title: "Multi-PC Profiles & Session Graphs",
+                                subtitle: "Save unlimited PCs and inspect historical FPS, temperature, and power telemetry graphs."
                             )
                         }
+                        .padding(18)
+                        .liquidGlass(cornerRadius: 22, tint: .yellow)
 
-                        Button("Privacy & Terms") {
-                            showPrivacy = true
+                        if let status = store.statusMessage {
+                            Label(status, systemImage: "sparkles")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.yellow)
+                                .multilineTextAlignment(.center)
                         }
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
+
+                        VStack(spacing: 12) {
+                            Button {
+                                OrbitHaptics.press()
+                                Task { await store.purchase() }
+                            } label: {
+                                Label("Orbit Pro — Coming Soon", systemImage: "clock.badge.sparkles.fill")
+                            }
+                            .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
+
+                            Button("Privacy & Terms") {
+                                showPrivacy = true
+                            }
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        }
                     }
+                    .frame(maxWidth: 560)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(20)
             }
-            .background(Color(red: 0.03, green: 0.045, blue: 0.075).ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -680,19 +770,12 @@ struct OrbitProPaywallView: View {
                 OrbitPrivacyPolicyView()
             }
         }
-        .preferredColorScheme(.dark)
+        .orbitAppearance()
     }
 
     private func proFeatureRow(icon: String, tint: Color, title: String, subtitle: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(tint.opacity(0.18))
-                    .frame(width: 38, height: 38)
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(tint)
-            }
+            OrbitIconBadge(systemName: icon, tint: tint, size: 38)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.subheadline.weight(.bold))
@@ -718,6 +801,7 @@ struct OrbitPrivacyPolicyView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .orbitRow()
                 Section("Credentials & Keychain Security") {
                     Label("Encrypted iOS Keychain Storage", systemImage: "lock.shield.fill")
                         .font(.subheadline.weight(.semibold))
@@ -725,6 +809,7 @@ struct OrbitPrivacyPolicyView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .orbitRow()
                 Section("Purchases & Family Sharing") {
                     Label("One-Time Non-Consumable Purchase", systemImage: "crown.fill")
                         .font(.subheadline.weight(.semibold))
@@ -732,10 +817,13 @@ struct OrbitPrivacyPolicyView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .orbitRow()
                 Section("Support & Open Source Companion") {
                     Link("GitHub Repository & Support", destination: URL(string: "https://github.com/AceDimi2005/Orbit")!)
                 }
+                .orbitRow()
             }
+            .orbitListChrome()
             .navigationTitle("Privacy & Terms")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -744,9 +832,11 @@ struct OrbitPrivacyPolicyView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .orbitAppearance()
     }
 }
+
+// MARK: - Live Activity settings
 
 struct LiveActivitySettingsView: View {
     @ObservedObject var vm: OrbitViewModel
@@ -756,17 +846,25 @@ struct LiveActivitySettingsView: View {
     @AppStorage("orbit.activity.interval") private var interval = 5
     @AppStorage("orbit.activity.showGame") private var showGame = true
     @AppStorage("orbit.activity.showTimestamp") private var showTimestamp = true
+    @Environment(\.orbitTheme) private var theme
+
+    private var activityTheme: OrbitTheme { OrbitTheme(rawValue: accent) ?? .ocean }
 
     var body: some View {
         Form {
             Section {
+                islandPreview
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+            }
+
+            Section {
                 HStack(spacing: 14) {
                     ZStack {
-                        Circle()
-                            .fill((vm.isDynamicIslandActive ? Color.mint : Color.secondary).opacity(0.16))
-                            .frame(width: 42, height: 42)
+                        OrbitRingGauge(progress: vm.isDynamicIslandActive ? 1 : 0, lineWidth: 4, tint: .mint)
+                            .frame(width: 44, height: 44)
                         Image(systemName: vm.isDynamicIslandActive ? "capsule.portrait.tophalf.filled" : "pause.circle")
-                            .font(.system(size: 18, weight: .semibold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(vm.isDynamicIslandActive ? .mint : .secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
@@ -778,16 +876,12 @@ struct LiveActivitySettingsView: View {
                     }
                     Spacer()
                     Button {
+                        OrbitHaptics.press()
                         vm.toggleDynamicIsland()
                     } label: {
                         Text(vm.isDynamicIslandActive ? "Stop" : "Start")
-                            .font(.subheadline.weight(.bold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background((vm.isDynamicIslandActive ? Color.red : Color.mint).opacity(0.2), in: Capsule())
-                            .foregroundStyle(vm.isDynamicIslandActive ? .red : .mint)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(OrbitGlassButtonStyle(tint: vm.isDynamicIslandActive ? .red : .mint, cornerRadius: 20))
                     .disabled(!vm.isDynamicIslandActive && !vm.metrics.isOnline)
                 }
                 .padding(.vertical, 4)
@@ -796,6 +890,7 @@ struct LiveActivitySettingsView: View {
                     Text(error).font(.caption).foregroundStyle(.orange)
                 }
             }
+            .orbitRow(tint: .mint)
 
             Section("Appearance & Metrics") {
                 Picker("Layout Style", selection: $style) {
@@ -821,9 +916,22 @@ struct LiveActivitySettingsView: View {
                 }
 
                 Picker("Theme Accent", selection: $accent) {
-                    ForEach(OrbitTheme.allCases) { Text($0.title).tag($0.rawValue) }
+                    ForEach(OrbitTheme.allCases) { item in
+                        HStack {
+                            Circle().fill(item.accent).frame(width: 10, height: 10)
+                            Text(item.title)
+                        }
+                        .tag(item.rawValue)
+                    }
                 }
+                Button("Match App Theme (\(theme.title))") {
+                    OrbitHaptics.selection()
+                    accent = theme.rawValue
+                }
+                .font(.subheadline)
+                .disabled(accent == theme.rawValue)
             }
+            .orbitRow()
 
             Section("Details & Refresh") {
                 Toggle("Show Active Game", isOn: $showGame)
@@ -835,9 +943,67 @@ struct LiveActivitySettingsView: View {
                 }
                 .pickerStyle(.segmented)
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Live Activity")
         .navigationBarTitleDisplayMode(.inline)
         .orbitAppearance()
+    }
+
+    /// A static mock of the Dynamic Island so the chosen accent and badge are
+    /// visible without starting an activity.
+    private var islandPreview: some View {
+        let tint = activityTheme.accent
+        let badge: String = {
+            switch primaryMetric {
+            case "gpu": return "GPU 71%"
+            case "ram": return "RAM 46%"
+            case "fps": return "118 FPS"
+            case "cpuPower": return "58 W"
+            case "gpuPower": return "245 W"
+            case "vram": return "4.0 GB"
+            default: return "CPU 24%"
+            }
+        }()
+        return VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(tint)
+                Capsule().fill(.black).frame(width: 70, height: 22)
+                Text(badge)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.black, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+
+            HStack(spacing: 12) {
+                OrbitRingGauge(progress: 0.24, lineWidth: 4, tint: tint).frame(width: 38, height: 38)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(vm.selectedPCName.isEmpty ? "Gaming PC" : vm.selectedPCName)
+                        .font(.subheadline.weight(.bold))
+                    Text(showGame ? "Playing Example game · \(style.capitalized)" : "Monitoring · \(style.capitalized)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if showTimestamp {
+                    Text("5s")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(activityTheme.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(tint.opacity(0.28), lineWidth: 1))
+        }
+        .padding(.horizontal, 2)
+        .animation(.snappy, value: accent)
+        .animation(.snappy, value: primaryMetric)
     }
 }

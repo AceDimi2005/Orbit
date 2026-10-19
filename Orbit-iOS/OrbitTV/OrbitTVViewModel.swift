@@ -537,8 +537,17 @@ final class OrbitTVViewModel: ObservableObject {
         statusBanner = sent ? "Wake-on-LAN Magic Packet sent to \(pc.name) · waiting for PC to boot…" : "Could not send Wake packet"
     }
 
-    func sendAction(_ action: String) async {
-        let label = action.replacingOccurrences(of: "_", with: " ").capitalized
+    /// The agent only knows the canonical identifiers; older TV builds used
+    /// shorter media names that returned 404 on the PC.
+    private static let actionAliases: [String: String] = [
+        "play_pause": "media_play_pause",
+        "next_track": "media_next",
+        "prev_track": "media_prev"
+    ]
+
+    func sendAction(_ rawAction: String) async {
+        let action = Self.actionAliases[rawAction] ?? rawAction
+        let label = action.replacingOccurrences(of: "media_", with: "").replacingOccurrences(of: "_", with: " ").capitalized
         if isDemoMode {
             if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false

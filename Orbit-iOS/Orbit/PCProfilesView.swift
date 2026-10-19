@@ -265,48 +265,121 @@ struct PCProfilesView: View {
     @State private var editing: SavedPC?
     @State private var removing: SavedPC?
     @State private var showsDiscovery = false
+    @Environment(\.orbitTheme) private var theme
+
     var body: some View {
         List {
             Section {
-                Text("Save each PC once. Switching keeps its address, token, Wake-on-LAN settings and certificate separate.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            Section("Your computers") {
-                ForEach(vm.savedPCs) { profile in
-                    HStack(spacing: 14) {
-                        Button { vm.selectPC(profile) } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: profile.id == vm.selectedPCID ? "desktopcomputer.and.arrow.down" : "desktopcomputer").foregroundStyle(.cyan)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(profile.name).foregroundStyle(.primary)
-                                    Text(profile.address).font(.caption).foregroundStyle(.secondary)
-                                    Label(OrbitAPIClient.validFingerprint(profile.certificateFingerprint) ? "Encrypted connection ready" : "Secure setup needed", systemImage: OrbitAPIClient.validFingerprint(profile.certificateFingerprint) ? "lock.fill" : "lock.open")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                if profile.id == vm.selectedPCID { Spacer(); Image(systemName: "checkmark").foregroundStyle(.mint) }
-                            }
-                        }.buttonStyle(.plain)
-                        Button { editing = profile } label: { Image(systemName: "pencil") }.buttonStyle(.borderless)
-                            .accessibilityLabel("Edit \(profile.name)")
+                HStack(spacing: 12) {
+                    OrbitIconBadge(systemName: "desktopcomputer.and.arrow.down", tint: theme.accent, size: 40, filled: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(vm.savedPCs.count) saved PC\(vm.savedPCs.count == 1 ? "" : "s")")
+                            .font(.headline.weight(.bold))
+                        Text("Each PC keeps its own address, token, certificate and Wake-on-LAN settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .swipeActions { Button("Remove", role: .destructive) { removing = profile } }
                 }
-                Button("Find a PC nearby", systemImage: "dot.radiowaves.left.and.right") { showsDiscovery = true }
-                Button("Add manually", systemImage: "plus") { editing = SavedPC(name: "", address: "") }
+                .padding(.vertical, 2)
+                Button {
+                    OrbitHaptics.tap()
+                    showsDiscovery = true
+                } label: {
+                    Label("Find a PC nearby", systemImage: "dot.radiowaves.left.and.right")
+                        .fontWeight(.semibold)
+                }
+                Button {
+                    editing = SavedPC(name: "", address: "")
+                } label: {
+                    Label("Add manually", systemImage: "plus")
+                }
             }
-            Section("Encrypted connection") {
-                Text("Orbit Agent 4.1.0 appears automatically on your local network. Select it and enter the temporary code shown on your PC. Addresses, access tokens, the certificate and Wake-on-LAN details are filled in automatically.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("The existing pairing token is still required. Compare the fingerprint with the PC; a different certificate is rejected before sending your token or files.")
-                    .font(.caption).foregroundStyle(.secondary)
+            .orbitRow(tint: theme.accent)
+
+            Section("Your computers") {
+                if vm.savedPCs.isEmpty {
+                    OrbitEmptyState(icon: "desktopcomputer", title: "No saved PCs", message: "Pair a PC with the 6-digit code shown by Orbit Agent, or add one manually.", tint: theme.accent)
+                }
+                ForEach(vm.savedPCs) { profile in
+                    profileRow(profile)
+                        .swipeActions {
+                            Button("Remove", systemImage: "trash", role: .destructive) { removing = profile }
+                            Button("Edit", systemImage: "pencil") { editing = profile }
+                                .tint(theme.accent)
+                        }
+                }
             }
+            .orbitRow()
+
+            Section {
+                Text("Orbit Agent appears automatically on your local network. Select it and enter the temporary code shown on your PC; addresses, tokens, the certificate and Wake-on-LAN details are filled in automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("A different certificate is rejected before any token or file is sent, so compare the fingerprint with the PC if you ever set one up by hand.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Encrypted connection")
+            }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("My PCs")
         .sheet(item: $editing) { profile in PCProfileEditor(vm: vm, profile: profile) }
         .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
         .confirmationDialog("Remove \(removing?.name ?? "this PC")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             if let profile = removing { Button("Remove saved PC", role: .destructive) { vm.removePC(profile); removing = nil } }
         } message: { Text("This removes its saved connection from this phone. It does not change files on the PC.") }
+    }
+
+    private func profileRow(_ profile: SavedPC) -> some View {
+        let selected = profile.id == vm.selectedPCID
+        let secure = OrbitAPIClient.validFingerprint(profile.certificateFingerprint)
+        let online = selected && vm.metrics.isOnline && !vm.isDemoMode
+        return HStack(spacing: 12) {
+            Button {
+                OrbitHaptics.selection()
+                vm.selectPC(profile)
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        OrbitRingGauge(progress: online ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 3, tint: selected ? theme.accent : .secondary)
+                            .frame(width: 42, height: 42)
+                        Image(systemName: "desktopcomputer")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(selected ? theme.accent : .secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(profile.name).font(.subheadline.weight(.bold)).foregroundStyle(.white)
+                            if selected {
+                                OrbitStatusPill(text: online ? "Online" : "Selected", tint: online ? .mint : theme.accent, pulsing: online)
+                            }
+                        }
+                        Text(profile.address + (profile.lastKnownIPv4.map { $0.isEmpty || $0 == profile.address ? "" : " · \($0)" } ?? ""))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        HStack(spacing: 8) {
+                            Label(secure ? "TLS pinned" : "Secure setup needed", systemImage: secure ? "lock.fill" : "lock.open")
+                                .foregroundStyle(secure ? Color.mint : Color.orange)
+                            if !profile.macAddress.isEmpty {
+                                Label("Wake-on-LAN", systemImage: "power").foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.caption2.weight(.medium))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button { editing = profile } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 32, height: 32)
+                    .background(.white.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Edit \(profile.name)")
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -315,6 +388,7 @@ private struct PCProfileEditor: View {
     @State var profile: SavedPC
     @State private var token = ""
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.orbitTheme) private var theme
     private var valid: Bool {
         !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !profile.address.isEmpty && !profile.address.contains("/") && !profile.address.contains(":") &&
         (1...65535).contains(profile.agentPort) && (1...65535).contains(profile.securePort) && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -328,6 +402,7 @@ private struct PCProfileEditor: View {
                     TextField("PC address", text: $profile.address).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Pairing token", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
+                .orbitRow()
                 Section("Encrypted connection") {
                     TextField("Secure port", value: $profile.securePort, format: .number.grouping(.never)).keyboardType(.numberPad)
                     TextField("Certificate SHA-256 fingerprint", text: $profile.certificateFingerprint, axis: .vertical)
@@ -335,6 +410,7 @@ private struct PCProfileEditor: View {
                     Text("Copy the certificate fingerprint shown in the Orbit Agent window on this PC. Keep it when updating the agent.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                .orbitRow()
                 Section {
                     DisclosureGroup("Wake-on-LAN and legacy settings") {
                         TextField("Legacy agent port", value: $profile.agentPort, format: .number.grouping(.never)).keyboardType(.numberPad)
@@ -345,17 +421,21 @@ private struct PCProfileEditor: View {
                         Toggle("Calculate broadcast automatically", isOn: $profile.autoCalcBroadcast)
                     }
                 }
+                .orbitRow()
                 if !profile.certificateFingerprint.isEmpty && !OrbitAPIClient.validFingerprint(profile.certificateFingerprint) {
                     Text("The fingerprint must contain 64 hexadecimal characters; colons and spaces are accepted.").font(.caption).foregroundStyle(.orange)
+                        .orbitRow()
                 }
             }
+            .orbitListChrome()
             .navigationTitle("PC connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") { vm.savePC(profile, token: token); dismiss() }.disabled(!valid) }
+                ToolbarItem(placement: .confirmationAction) { Button("Save") { OrbitHaptics.success(); vm.savePC(profile, token: token); dismiss() }.disabled(!valid).fontWeight(.semibold) }
             }
             .onAppear { token = PCProfileStore.token(profile.id) }
         }
+        .orbitAppearance()
     }
 }

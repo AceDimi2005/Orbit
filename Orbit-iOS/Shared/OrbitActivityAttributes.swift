@@ -46,7 +46,8 @@ struct OrbitActivityPreferences: Equatable {
         let metric = defaults.string(forKey: "orbit.activity.primaryMetric") ?? "automatic"
         primaryMetric = ["automatic", "cpu", "gpu", "ram", "fps", "cpuPower", "gpuPower", "vram"].contains(metric) ? metric : "automatic"
         let accent = defaults.string(forKey: "orbit.activity.accent") ?? "ocean"
-        self.accent = ["ocean", "aurora", "violet", "ember", "graphite"].contains(accent) ? accent : "ocean"
+        let knownAccents = ["ocean", "aurora", "violet", "ember", "graphite", "cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
+        self.accent = knownAccents.contains(accent) ? accent : "ocean"
         showGame = defaults.object(forKey: "orbit.activity.showGame") as? Bool ?? true
         showTimestamp = defaults.object(forKey: "orbit.activity.showTimestamp") as? Bool ?? true
         let interval = defaults.integer(forKey: "orbit.activity.interval")

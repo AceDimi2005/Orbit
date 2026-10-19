@@ -68,7 +68,16 @@ Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descresc
 
 ### Aspect
 
-**Tools → Appearance** oferă **Improved**, cu suprafețe mai clare și contrast mai puternic, și **Classic**, cu cardurile translucide originale. Alege Ocean, Aurora, Violet, Ember sau Graphite, o singură culoare pentru cardurile de metrici și reducerea luminii de fundal. Setările de accesibilitate ale telefonului sunt respectate; textul mare folosește automat o coloană pe dashboard.
+**Tools → Appearance** oferă stilul **Crisp**, cu suprafețe opace, contrast puternic și o margine speculară fină, și **Glass**, cu cardurile translucide originale. Alege dintre cele 11 teme (Ocean, Aurora, Violet, Ember, Graphite și temele Pro Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), o singură culoare pentru cardurile de metrici, lumina ambientală de fundal și feedbackul haptic. Previzualizarea live din partea de sus arată imediat tema aleasă. Tema se propagă în widgeturi, Live Activity și pe Apple Watch. Setările de accesibilitate ale telefonului (Reduce Motion, Reduce Transparency, text mare) sunt respectate.
+
+**Ce aduce noul UI** (iPhone/iPad, Apple Watch, Apple TV):
+
+- Dashboard cu un card „hero” (gauge inelar pentru CPU, stare pulsând, ping, uptime, versiune agent, TLS) și carduri de metrici cu **sparkline** din ultimele 40 de citiri reale; senzorii lipsă rămân **—**.
+- Remote cu trackpad nativ multitouch: un deget mută cursorul, două degete derulează (vertical și orizontal), atingere cu două degete = click dreapta, apăsare lungă = drag; viteză reglabilă, taste rapide, gamepad mapat pe tastatură.
+- Pairing cu radar animat, câmp PIN din 6 celule și cronometru de expirare; profiluri PC cu stare TLS și Wake-on-LAN.
+- Task Manager, Audio Mixer, Clipboard, Fișiere și Sesiuni cu același limbaj vizual (carduri glass, bare de utilizare, grafice cu zonă umplută).
+- Apple Watch: gauge-uri inelare, butoane gradient pentru Power On / Shut Down, volum pe coroană ca inel; ceasul preia automat culoarea temei de pe iPhone.
+- Apple TV: fundal ambient, hero cu gauge, secțiuni unitare și valori reale (fără „0°C” sau etichete inventate când senzorul lipsește); acțiunile media folosesc identificatorii corecți ai agentului.
 
 ### Senzori și FPS
 
@@ -224,7 +233,16 @@ Open **Tools → Task Manager**, search by name/PID, and sort descending by **CP
 
 ### Appearance
 
-**Tools → Appearance** offers **Improved**, with clearer surfaces and stronger contrast, and **Classic**, with the original translucent cards. Choose Ocean, Aurora, Violet, Ember, or Graphite, one accent for metric cards, and reduced background glow. Phone accessibility settings are respected; larger accessibility text automatically uses one dashboard column.
+**Tools → Appearance** offers the **Crisp** style, with opaque surfaces, strong contrast and a subtle specular edge, and **Glass**, with the original translucent cards. Pick one of 11 themes (Ocean, Aurora, Violet, Ember, Graphite plus the Pro themes Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), a single accent for metric cards, the ambient background glow and haptic feedback. The live preview at the top reflects the theme instantly. The theme carries over to widgets, the Live Activity and Apple Watch. Phone accessibility settings (Reduce Motion, Reduce Transparency, larger text) are respected.
+
+**What the UI refresh brings** (iPhone/iPad, Apple Watch, Apple TV):
+
+- A dashboard hero card (CPU ring gauge, pulsing status, ping, uptime, agent version, TLS) and metric cards with **sparklines** built from the last 40 real readings; missing sensors still show **—**.
+- A native multitouch trackpad in Remote: one finger moves, two fingers scroll (vertical and horizontal), two-finger tap right-clicks, long press drags; adjustable speed, quick keys and a keyboard-mapped gamepad.
+- Pairing with an animated radar, a six-cell PIN field and an expiry countdown; PC profiles show TLS and Wake-on-LAN status.
+- Task Manager, Audio Mixer, Clipboard, Files and Sessions share the same visual language (glass cards, usage bars, area charts).
+- Apple Watch: ring gauges, gradient Power On / Shut Down buttons, Crown volume as a ring; the watch adopts the iPhone theme colour automatically.
+- Apple TV: ambient background, hero with ring gauge, unified sections and honest values (no “0°C” or invented labels when a sensor is missing); media actions use the agent’s real identifiers.
 
 ### Sensors and FPS
 
