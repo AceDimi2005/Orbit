@@ -55,6 +55,28 @@
 		A50000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000005 /* Assets.xcassets */; };
 		A50000000000000000000007 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000007 /* PrivacyInfo.xcprivacy */; };
 		A50000000000000000000008 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000002 /* SRP */; };
+		A60000000000000000000001 /* OrbitMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000002 /* OrbitMacApp.swift */; };
+		A60000000000000000000002 /* OrbitMacModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000003 /* OrbitMacModels.swift */; };
+		A60000000000000000000003 /* OrbitMacDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* OrbitMacDesign.swift */; };
+		A60000000000000000000004 /* OrbitMacViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000005 /* OrbitMacViewModel.swift */; };
+		A60000000000000000000005 /* OrbitMacViewModel+Services.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000006 /* OrbitMacViewModel+Services.swift */; };
+		A60000000000000000000006 /* OrbitMacRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000007 /* OrbitMacRootView.swift */; };
+		A60000000000000000000007 /* OrbitMacMenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000008 /* OrbitMacMenuBarView.swift */; };
+		A60000000000000000000008 /* OrbitMacOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000009 /* OrbitMacOverviewView.swift */; };
+		A60000000000000000000009 /* OrbitMacRemoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000A /* OrbitMacRemoteView.swift */; };
+		A6000000000000000000000A /* OrbitMacPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000B /* OrbitMacPreviewView.swift */; };
+		A6000000000000000000000B /* OrbitMacFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000C /* OrbitMacFilesView.swift */; };
+		A6000000000000000000000C /* OrbitMacProcessesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000D /* OrbitMacProcessesView.swift */; };
+		A6000000000000000000000D /* OrbitMacAudioClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000E /* OrbitMacAudioClipboardView.swift */; };
+		A6000000000000000000000E /* OrbitMacSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000F /* OrbitMacSessionsView.swift */; };
+		A6000000000000000000000F /* OrbitMacLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000010 /* OrbitMacLibraryView.swift */; };
+		A60000000000000000000010 /* OrbitMacPCsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000011 /* OrbitMacPCsView.swift */; };
+		A60000000000000000000011 /* OrbitMacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000012 /* OrbitMacSettingsView.swift */; };
+		A60000000000000000000012 /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
+		A60000000000000000000013 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
+		A60000000000000000000014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000013 /* Assets.xcassets */; };
+		A60000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000015 /* PrivacyInfo.xcprivacy */; };
+		A60000000000000000000016 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* SRP */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -165,6 +187,28 @@
 		B50000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B50000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B50000000000000000000007 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B60000000000000000000001 /* OrbitMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B60000000000000000000002 /* OrbitMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacApp.swift; sourceTree = "<group>"; };
+		B60000000000000000000003 /* OrbitMacModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacModels.swift; sourceTree = "<group>"; };
+		B60000000000000000000004 /* OrbitMacDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacDesign.swift; sourceTree = "<group>"; };
+		B60000000000000000000005 /* OrbitMacViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacViewModel.swift; sourceTree = "<group>"; };
+		B60000000000000000000006 /* OrbitMacViewModel+Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OrbitMacViewModel+Services.swift"; sourceTree = "<group>"; };
+		B60000000000000000000007 /* OrbitMacRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacRootView.swift; sourceTree = "<group>"; };
+		B60000000000000000000008 /* OrbitMacMenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacMenuBarView.swift; sourceTree = "<group>"; };
+		B60000000000000000000009 /* OrbitMacOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacOverviewView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000A /* OrbitMacRemoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacRemoteView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000B /* OrbitMacPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacPreviewView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000C /* OrbitMacFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacFilesView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000D /* OrbitMacProcessesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacProcessesView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000E /* OrbitMacAudioClipboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacAudioClipboardView.swift; sourceTree = "<group>"; };
+		B6000000000000000000000F /* OrbitMacSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacSessionsView.swift; sourceTree = "<group>"; };
+		B60000000000000000000010 /* OrbitMacLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacLibraryView.swift; sourceTree = "<group>"; };
+		B60000000000000000000011 /* OrbitMacPCsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacPCsView.swift; sourceTree = "<group>"; };
+		B60000000000000000000012 /* OrbitMacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacSettingsView.swift; sourceTree = "<group>"; };
+		B60000000000000000000013 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B60000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B60000000000000000000015 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B60000000000000000000016 /* OrbitMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OrbitMac.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,6 +249,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D60000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A60000000000000000000016 /* SRP in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -216,6 +268,7 @@
 				C30000000000000000000001 /* OrbitWatch */,
 				C40000000000000000000001 /* OrbitWatchWidgets */,
 				C50000000000000000000001 /* OrbitTV */,
+				C60000000000000000000001 /* OrbitMac */,
 				C20000000000000000000002 /* Shared */,
 				C10000000000000000000003 /* Products */,
 			);
@@ -257,6 +310,7 @@
 				B30000000000000000000001 /* OrbitWatch.app */,
 				B40000000000000000000001 /* OrbitWatchWidgets.appex */,
 				B50000000000000000000001 /* OrbitTV.app */,
+				B60000000000000000000001 /* OrbitMac.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -315,6 +369,34 @@
 				B50000000000000000000007 /* PrivacyInfo.xcprivacy */,
 			);
 			path = OrbitTV;
+			sourceTree = "<group>";
+		};
+		C60000000000000000000001 /* OrbitMac */ = {
+			isa = PBXGroup;
+			children = (
+				B60000000000000000000002 /* OrbitMacApp.swift */,
+				B60000000000000000000003 /* OrbitMacModels.swift */,
+				B60000000000000000000004 /* OrbitMacDesign.swift */,
+				B60000000000000000000005 /* OrbitMacViewModel.swift */,
+				B60000000000000000000006 /* OrbitMacViewModel+Services.swift */,
+				B60000000000000000000007 /* OrbitMacRootView.swift */,
+				B60000000000000000000008 /* OrbitMacMenuBarView.swift */,
+				B60000000000000000000009 /* OrbitMacOverviewView.swift */,
+				B6000000000000000000000A /* OrbitMacRemoteView.swift */,
+				B6000000000000000000000B /* OrbitMacPreviewView.swift */,
+				B6000000000000000000000C /* OrbitMacFilesView.swift */,
+				B6000000000000000000000D /* OrbitMacProcessesView.swift */,
+				B6000000000000000000000E /* OrbitMacAudioClipboardView.swift */,
+				B6000000000000000000000F /* OrbitMacSessionsView.swift */,
+				B60000000000000000000010 /* OrbitMacLibraryView.swift */,
+				B60000000000000000000011 /* OrbitMacPCsView.swift */,
+				B60000000000000000000012 /* OrbitMacSettingsView.swift */,
+				B60000000000000000000013 /* Assets.xcassets */,
+				B60000000000000000000014 /* Info.plist */,
+				B60000000000000000000016 /* OrbitMac.entitlements */,
+				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
+			);
+			path = OrbitMac;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -417,6 +499,26 @@
 			productReference = B50000000000000000000001 /* OrbitTV.app */;
 			productType = "com.apple.product-type.application";
 		};
+		D60000000000000000000001 /* OrbitMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E60000000000000000000001 /* Build configuration list for PBXNativeTarget "OrbitMac" */;
+			buildPhases = (
+				D60000000000000000000002 /* Sources */,
+				D60000000000000000000003 /* Frameworks */,
+				D60000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OrbitMac;
+			packageProductDependencies = (
+				F20000000000000000000003 /* SRP */,
+			);
+			productName = OrbitMac;
+			productReference = B60000000000000000000001 /* OrbitMac.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -448,6 +550,7 @@
 				D30000000000000000000001 /* OrbitWatch */,
 				D40000000000000000000001 /* OrbitWatchWidgets */,
 				D50000000000000000000001 /* OrbitTV */,
+				D60000000000000000000001 /* OrbitMac */,
 			);
 		};
 /* End PBXProject section */
@@ -493,6 +596,15 @@
 			files = (
 				A50000000000000000000006 /* Assets.xcassets in Resources */,
 				A50000000000000000000007 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A60000000000000000000014 /* Assets.xcassets in Resources */,
+				A60000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -566,6 +678,32 @@
 				A50000000000000000000003 /* OrbitTVViews.swift in Sources */,
 				A50000000000000000000004 /* OrbitAPIClient.swift in Sources */,
 				A50000000000000000000005 /* OrbitPairing.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A60000000000000000000001 /* OrbitMacApp.swift in Sources */,
+				A60000000000000000000002 /* OrbitMacModels.swift in Sources */,
+				A60000000000000000000003 /* OrbitMacDesign.swift in Sources */,
+				A60000000000000000000004 /* OrbitMacViewModel.swift in Sources */,
+				A60000000000000000000005 /* OrbitMacViewModel+Services.swift in Sources */,
+				A60000000000000000000006 /* OrbitMacRootView.swift in Sources */,
+				A60000000000000000000007 /* OrbitMacMenuBarView.swift in Sources */,
+				A60000000000000000000008 /* OrbitMacOverviewView.swift in Sources */,
+				A60000000000000000000009 /* OrbitMacRemoteView.swift in Sources */,
+				A6000000000000000000000A /* OrbitMacPreviewView.swift in Sources */,
+				A6000000000000000000000B /* OrbitMacFilesView.swift in Sources */,
+				A6000000000000000000000C /* OrbitMacProcessesView.swift in Sources */,
+				A6000000000000000000000D /* OrbitMacAudioClipboardView.swift in Sources */,
+				A6000000000000000000000E /* OrbitMacSessionsView.swift in Sources */,
+				A6000000000000000000000F /* OrbitMacLibraryView.swift in Sources */,
+				A60000000000000000000010 /* OrbitMacPCsView.swift in Sources */,
+				A60000000000000000000011 /* OrbitMacSettingsView.swift in Sources */,
+				A60000000000000000000012 /* OrbitAPIClient.swift in Sources */,
+				A60000000000000000000013 /* OrbitPairing.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -958,6 +1096,76 @@
 			};
 			name = Release;
 		};
+		E60000000000000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OrbitMac/OrbitMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 9;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = W3Q78RNLD6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitMac/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Orbit;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, show live hardware telemetry, send Wake-on-LAN and power commands, stream the desktop preview, control audio and transfer files.";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrie.orbit.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E60000000000000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OrbitMac/OrbitMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 9;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = W3Q78RNLD6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitMac/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Orbit;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, show live hardware telemetry, send Wake-on-LAN and power commands, stream the desktop preview, control audio and transfer files.";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrie.orbit.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1015,6 +1223,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E60000000000000000000001 /* Build configuration list for PBXNativeTarget "OrbitMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E60000000000000000000002 /* Debug */,
+				E60000000000000000000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1035,6 +1252,11 @@
 			productName = SRP;
 		};
 		F20000000000000000000002 /* SRP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */;
+			productName = SRP;
+		};
+		F20000000000000000000003 /* SRP */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */;
 			productName = SRP;

@@ -6,7 +6,7 @@
 
 ## Română
 
-Orbit are două părți: aplicația iPhone/iPad din `Orbit-iOS` și agentul Windows din `Orbit-Windows-Agent`. Actualizează-le împreună.
+Orbit are două părți: aplicațiile Apple din `Orbit-iOS` (iPhone/iPad, Apple Watch, Apple TV și Mac) și agentul Windows din `Orbit-Windows-Agent`. Actualizează-le împreună.
 
 ### Pornire
 
@@ -79,6 +79,23 @@ Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descresc
 - Apple Watch: gauge-uri inelare, butoane gradient pentru Power On / Shut Down, volum pe coroană ca inel; ceasul preia automat culoarea temei de pe iPhone.
 - Apple TV: fundal ambient, hero cu gauge, secțiuni unitare și valori reale (fără „0°C” sau etichete inventate când senzorul lipsește); acțiunile media folosesc identificatorii corecți ai agentului.
 
+### Aplicația pentru Mac
+
+`Orbit-iOS/OrbitMac` este o aplicație **nativă macOS 14+** (SwiftUI + AppKit), ținta **OrbitMac** din același `Orbit.xcodeproj`. Nu este un port Catalyst: are fereastră cu bară laterală, meniuri, scurtături, element în bara de meniu și panou de Setări. Se conectează **doar** prin canalul HTTPS criptat cu amprenta PC-ului (fără HTTP vechi).
+
+- **Prima conectare:** deschide **My PCs** (⌘0). PC-urile din rețea apar prin Bonjour; apasă **Pair** și introdu PIN-ul de șase cifre afișat de agent. Alternativ, **Import from iPhone** preia PC-urile deja asociate pe telefon prin iCloud sau prin rețeaua locală, iar **Manual** acceptă o adresă IP. Tokenul fiecărui PC stă în Keychain-ul Mac-ului.
+- **Overview (⌘1):** hero cu gauge CPU, ping și uptime; grilă de metrici cu sparkline (CPU, GPU, RAM, VRAM, putere, temperaturi, rețea, disc, FPS), card pentru jocul activ, controale rapide (Lock, Sleep, Restart, Shut Down cu confirmare, HDR, screenshot) și specificațiile complete. Dashboardul se personalizează din butonul **Customize**.
+- **Remote (⌘2):** pad de mouse cu captură a cursorului (⎋ eliberează), clickuri, scroll precis, drag, tastatură cu taste speciale, media, acțiuni rapide (Show desktop, Task view, Alt-Tab, Fullscreen) și gamepad.
+- **Preview (⌘3):** previzualizarea desktopului în fereastra principală sau într-o fereastră separată (⌥⌘D) care poate sta deasupra celorlalte; modul **Control** trimite clickuri, drag, scroll și tastatură în coordonate normalizate; **Snapshot** copiază sau salvează cadrul curent.
+- **Files (⌘4):** browser cu tabel sortabil, breadcrumb, căutare, favorite, descărcare în Finder, upload prin **drag & drop** din Finder, folder nou, redenumire, mutare și coș de reciclare, cu bară de progres pentru transferuri.
+- **Processes (⌘5):** Task Manager cu sortare pe coloane, filtrare și **End Task** cu confirmare; auto-refresh configurabil.
+- **Audio (⌘6) și Clipboard (⌘7):** mixer pe aplicații cu rutare pe ieșiri (când agentul o permite) și clipboard bidirecțional (Pull / Push / Copy to Mac / Paste from Mac).
+- **Sessions (⌘8):** înregistrări de telemetrie cu grafice Swift Charts, statistici min/medie/max și export CSV. **Library (⌘9):** aplicațiile Sunshine, lansare și deschiderea Moonlight.
+- **Bara de meniu:** CPU/GPU/RAM/FPS/temperatură la alegere lângă pictogramă; fereastra rapidă arată gauge-urile, volumul, Lock/Sleep/Screenshot sau **Power On** când PC-ul e oprit.
+- **Setări (⌘,):** pornire la login, element în bara de meniu, interval de actualizare, notificări când PC-ul revine online, cele 11 teme comune cu iPhone-ul, Wake-on-LAN și verificarea actualizării agentului.
+
+Cerințe: macOS 14 Sonoma sau mai nou; aceeași rețea locală pentru asociere; permisiunea **Local Network** la prima pornire. Dacă senzorul lipsește, aplicația afișează **—**, niciodată valori inventate.
+
 ### Senzori și FPS
 
 Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` rămâne sursa prioritară pentru încărcare, temperatură, VRAM, consum și ventilator GPU, când sunt suportate. Pentru ceilalți senzori, agentul detectează **MSI Afterburner**, apoi LibreHardwareMonitor ca alternativă. Citirile mai multor plăci nu se amestecă, iar un senzor lipsă rămâne indisponibil. Modelul coolerului sau al sursei poate necesita completare manuală.
@@ -132,6 +149,12 @@ Build pentru simulator:
 xcodebuild -project Orbit-iOS/Orbit.xcodeproj -scheme Orbit -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
+Build pentru Mac:
+
+```sh
+xcodebuild -project Orbit-iOS/Orbit.xcodeproj -scheme OrbitMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+```
+
 Testele pentru livrarea fluidă a volumului:
 
 ```sh
@@ -171,7 +194,7 @@ Comanda include regresii pentru asocierea SRP și credențialele criptate, arhiv
 
 ## English
 
-Orbit has two parts: the iPhone/iPad app in `Orbit-iOS` and the Windows agent in `Orbit-Windows-Agent`. Update both together.
+Orbit has two parts: the Apple apps in `Orbit-iOS` (iPhone/iPad, Apple Watch, Apple TV and Mac) and the Windows agent in `Orbit-Windows-Agent`. Update both together.
 
 ### Getting started
 
@@ -244,6 +267,23 @@ Open **Tools → Task Manager**, search by name/PID, and sort descending by **CP
 - Apple Watch: ring gauges, gradient Power On / Shut Down buttons, Crown volume as a ring; the watch adopts the iPhone theme colour automatically.
 - Apple TV: ambient background, hero with ring gauge, unified sections and honest values (no “0°C” or invented labels when a sensor is missing); media actions use the agent’s real identifiers.
 
+### Mac app
+
+`Orbit-iOS/OrbitMac` is a **native macOS 14+** app (SwiftUI + AppKit), the **OrbitMac** target in the same `Orbit.xcodeproj`. It is not a Catalyst port: it has a sidebar window, menus, keyboard shortcuts, a menu bar item and a Settings panel. It connects **only** over the encrypted, fingerprint-pinned HTTPS channel (no legacy HTTP).
+
+- **First connection:** open **My PCs** (⌘0). PCs on the network appear via Bonjour; press **Pair** and enter the six-digit PIN shown by the agent. Alternatively, **Import from iPhone** fetches the PCs already paired on your phone over iCloud or the local network, and **Manual** accepts an IP address. Each PC's token lives in the Mac Keychain.
+- **Overview (⌘1):** hero with CPU ring, ping and uptime; a metric grid with sparklines (CPU, GPU, RAM, VRAM, power, temperatures, network, disk, FPS), an active-game card, quick controls (Lock, Sleep, Restart, Shut Down with confirmation, HDR, screenshot) and full specifications. Customize the dashboard with the **Customize** button.
+- **Remote (⌘2):** a mouse pad with pointer capture (⎋ releases), clicks, precise scrolling, drag, keyboard with special keys, media, quick actions (Show desktop, Task view, Alt-Tab, Fullscreen) and a gamepad.
+- **Preview (⌘3):** the desktop preview in the main window or in a separate window (⌥⌘D) that can float above others; **Control** mode sends clicks, drags, scrolling and typing in normalized coordinates; **Snapshot** copies or saves the current frame.
+- **Files (⌘4):** a browser with a sortable table, breadcrumbs, search, favorites, download to Finder, upload by **drag & drop** from Finder, new folder, rename, move and recycle bin, with a transfer progress bar.
+- **Processes (⌘5):** Task Manager with column sorting, filtering and **End Task** with confirmation; configurable auto-refresh.
+- **Audio (⌘6) and Clipboard (⌘7):** per-app mixer with output routing (when the agent allows it) and a two-way clipboard (Pull / Push / Copy to Mac / Paste from Mac).
+- **Sessions (⌘8):** telemetry recordings with Swift Charts graphs, min/average/max statistics and CSV export. **Library (⌘9):** Sunshine apps, launch and Moonlight hand-off.
+- **Menu bar:** your choice of CPU/GPU/RAM/FPS/temperature next to the icon; the quick panel shows the gauges, volume, Lock/Sleep/Screenshot or **Power On** when the PC is off.
+- **Settings (⌘,):** launch at login, menu bar item, refresh interval, notifications when the PC comes back online, the same 11 themes as the iPhone app, Wake-on-LAN and agent update checks.
+
+Requirements: macOS 14 Sonoma or later; the same local network for pairing; the **Local Network** permission on first launch. When a sensor is missing the app shows **—**, never invented values.
+
 ### Sensors and FPS
 
 Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains the preferred GPU source for load, temperature, VRAM, power and fan readings where supported. For other sensors, the agent detects **MSI Afterburner**, with LibreHardwareMonitor as a fallback. Readings from different adapters are kept separate and missing sensors stay unavailable. Cooler and power supply names may require manual entry.
@@ -295,6 +335,12 @@ Build for the simulator:
 
 ```sh
 xcodebuild -project Orbit-iOS/Orbit.xcodeproj -scheme Orbit -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
+
+Build for Mac:
+
+```sh
+xcodebuild -project Orbit-iOS/Orbit.xcodeproj -scheme OrbitMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
 Test smooth volume command delivery:
