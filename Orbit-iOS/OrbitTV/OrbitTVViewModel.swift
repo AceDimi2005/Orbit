@@ -145,6 +145,9 @@ struct TVSunshineInfo: Codable, Equatable {
     var webUIPort: Int
     var name: String
     var appCount: Int
+    /// Agent 4.3+: it can type pairing PINs into Sunshine (saved web UI login) and start Sunshine.
+    var canSubmitPin: Bool? = nil
+    var canStart: Bool? = nil
 }
 
 struct TVAudioSession: Codable, Identifiable, Equatable {

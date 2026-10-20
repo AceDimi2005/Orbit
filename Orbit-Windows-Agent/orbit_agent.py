@@ -1,5 +1,6 @@
 """Orbit PC Companion: authenticated local-network monitoring and controls."""
 import asyncio
+import base64
 import copy
 import ctypes
 import hmac
@@ -11,9 +12,12 @@ import math
 import os
 import secrets
 import socket
+import ssl
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +25,7 @@ from pathlib import Path
 import psutil
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from orbit_processes import collect_processes, terminate_process
 from orbit_files import create_files_router
@@ -46,7 +51,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.2.0"
+AGENT_VERSION = "4.3.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -69,6 +74,12 @@ if os.getenv("ORBIT_SUNSHINE_APPS"):
 SUNSHINE_CONF_PATHS = [path.with_name("sunshine.conf") for path in SUNSHINE_APPS_PATHS]
 if os.getenv("ORBIT_SUNSHINE_CONF"):
     SUNSHINE_CONF_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_CONF"]))
+# Sunshine's web UI login, saved from the app so Orbit can enter pairing PINs itself.
+SUNSHINE_CREDENTIALS_PATH = Path(os.getenv("ORBIT_SUNSHINE_LOGIN_FILE", str(_RUNTIME_DIR / ".orbit-sunshine-login")))
+SUNSHINE_EXECUTABLE_PATHS = [
+    Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
+    Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
+]
 
 STATE_LOCK = threading.Lock()
 STOP_EVENT = threading.Event()
@@ -756,28 +767,144 @@ def sunshine_running():
         return False
 
 
+def sunshine_base_port():
+    """Sunshine's base `port` (default 47989); every other port is derived from it."""
+    try:
+        base = int(sunshine_config().get("port", "47989"))
+    except ValueError:
+        base = 47989
+    return base if 6 <= base <= 65534 else 47989
+
+
+def sunshine_credentials():
+    """Web UI login saved through `POST /api/sunshine/credentials`; None until the user saves one."""
+    try:
+        data = json.loads(SUNSHINE_CREDENTIALS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    username, password = data.get("username"), data.get("password")
+    if not isinstance(username, str) or not isinstance(password, str) or not username or not password:
+        return None
+    return username, password
+
+
+def sunshine_executable():
+    return next((path for path in SUNSHINE_EXECUTABLE_PATHS if path.is_file()), None)
+
+
 @app.get("/api/sunshine/info")
 def get_sunshine_info(authorization: str = Header(None)):
     """Where Orbit's Moonlight-protocol client should talk to Sunshine on this PC.
 
     Sunshine derives every port from its base `port` (default 47989): HTTPS is base - 5,
-    the Web UI (where the pairing PIN is entered) is base + 1.
+    the Web UI (where the pairing PIN is entered) is base + 1. `canSubmitPin` says whether
+    the agent can type the PIN itself and `canStart` whether it can launch Sunshine.
     """
     verify_token(authorization)
     config = sunshine_config()
-    try:
-        base = int(config.get("port", "47989"))
-    except ValueError:
-        base = 47989
-    if not 6 <= base <= 65534:
-        base = 47989
+    base = sunshine_base_port()
     try:
         app_count = len(sunshine_entries())
         installed = any(path.is_file() for path in SUNSHINE_APPS_PATHS) or bool(config)
     except HTTPException:
         app_count, installed = 0, True
     return {"installed": installed, "running": sunshine_running(), "httpPort": base, "httpsPort": base - 5,
-            "webUIPort": base + 1, "name": config.get("sunshine_name") or socket.gethostname(), "appCount": app_count}
+            "webUIPort": base + 1, "name": config.get("sunshine_name") or socket.gethostname(), "appCount": app_count,
+            "canSubmitPin": sunshine_credentials() is not None, "canStart": sunshine_executable() is not None}
+
+
+class SunshineLogin(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/sunshine/credentials")
+def save_sunshine_credentials(login: SunshineLogin, authorization: str = Header(None)):
+    """Stores the Sunshine web UI login next to the agent token so `/api/sunshine/pin` can use it."""
+    verify_token(authorization)
+    username = login.username.strip()
+    if not username or not login.password or len(username) > 128 or len(login.password) > 512:
+        raise HTTPException(status_code=422, detail="Enter the Sunshine web UI username and password.")
+    try:
+        SUNSHINE_CREDENTIALS_PATH.write_text(json.dumps({"username": username, "password": login.password}), encoding="utf-8")
+        try:
+            os.chmod(SUNSHINE_CREDENTIALS_PATH, 0o600)
+        except OSError:
+            pass
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Could not save the Sunshine login on this PC") from error
+    return {"status": "saved", "canSubmitPin": True}
+
+
+@app.delete("/api/sunshine/credentials")
+def delete_sunshine_credentials(authorization: str = Header(None)):
+    verify_token(authorization)
+    try:
+        SUNSHINE_CREDENTIALS_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Could not remove the Sunshine login") from error
+    return {"status": "removed", "canSubmitPin": False}
+
+
+def post_sunshine_pin(credentials, pin, name, timeout=10.0):
+    """Enters a pairing PIN through Sunshine's local web API, the same call its PIN page makes.
+
+    Sunshine listens on loopback with a self-signed certificate, so verification is skipped
+    for this one localhost request. Returns normally when Sunshine accepted the PIN.
+    """
+    url = f"https://127.0.0.1:{sunshine_base_port() + 1}/api/pin"
+    payload = json.dumps({"pin": pin, "name": name}).encode("utf-8")
+    token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode("utf-8")).decode("ascii")
+    request = urllib.request.Request(url, data=payload, method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": f"Basic {token}"})
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            body = json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            raise HTTPException(status_code=401, detail="Sunshine rejected the saved web UI login. Save it again in Orbit.") from error
+        raise HTTPException(status_code=502, detail=f"Sunshine answered HTTP {error.code} to the PIN request.") from error
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="Could not reach Sunshine's web UI on this PC. Is Sunshine running?") from error
+    status = body.get("status") if isinstance(body, dict) else None
+    if status not in (True, "true", "True"):
+        raise HTTPException(status_code=409, detail="Sunshine did not accept the PIN. Start pairing in Orbit first, then try again.")
+
+
+@app.post("/api/sunshine/pin")
+def submit_sunshine_pin(pin: str = Query(..., min_length=4, max_length=4, pattern=r"^[0-9]{4}$"),
+                        name: str = Query("Orbit", min_length=1, max_length=40), authorization: str = Header(None)):
+    """Types the pairing PIN into Sunshine for the user (needs the saved web UI login)."""
+    verify_token(authorization)
+    credentials = sunshine_credentials()
+    if credentials is None:
+        raise HTTPException(status_code=428, detail="Save the Sunshine web UI login on the PC first.")
+    if not sunshine_running():
+        raise HTTPException(status_code=503, detail="Sunshine is not running on the PC.")
+    post_sunshine_pin(credentials, pin, name)
+    return {"status": "accepted"}
+
+
+@app.post("/api/sunshine/start")
+def start_sunshine(authorization: str = Header(None)):
+    """Launches Sunshine when it is installed but not running."""
+    verify_token(authorization)
+    require_windows()
+    if sunshine_running():
+        return {"status": "running"}
+    executable = sunshine_executable()
+    if executable is None:
+        raise HTTPException(status_code=404, detail="Sunshine is not installed in Program Files.")
+    try:
+        subprocess.Popen([str(executable)], cwd=str(executable.parent), creationflags=0x08000000 | 0x00000008)
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Could not start Sunshine") from error
+    return {"status": "starting"}
 
 
 @app.get("/api/sunshine/apps")

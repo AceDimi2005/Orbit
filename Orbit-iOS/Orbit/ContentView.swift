@@ -1,8 +1,11 @@
+import MoonlightCore
 import SwiftUI
 import UIKit
 
 struct ContentView: View {
     @StateObject private var vm = OrbitViewModel()
+    @ObservedObject private var stream = MoonlightStreamController.shared
+    @AppStorage("orbit.theme") private var rootTheme: OrbitTheme = .noir
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
 
@@ -21,7 +24,7 @@ struct ContentView: View {
                 .tabItem { Label("Overview", systemImage: "square.grid.2x2.fill") }
                 .tag(0)
             GameLibraryView(vm: vm)
-                .tabItem { Label("Library", systemImage: "gamecontroller.fill") }
+                .tabItem { Label("Stream", systemImage: "play.rectangle.fill") }
                 .tag(1)
             NavigationStack { PCFilesView(vm: vm) }
                 .tabItem { Label("Files", systemImage: "folder.fill") }
@@ -43,6 +46,9 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.25), value: vm.smartLaunchStep)
         .fullScreenCover(isPresented: $vm.isShowingStreamView) {
             MoonlightStreamView(vm: vm)
+        }
+        .fullScreenCover(isPresented: $stream.isPresented) {
+            MoonlightStreamScreen(controller: stream, accent: rootTheme.accent)
         }
         .sheet(isPresented: $vm.showOnboarding) {
             OnboardingView(vm: vm)
@@ -992,7 +998,10 @@ struct GameLibraryView: View {
     var isEmbeddedInDuo = false
     @State private var searchText = ""
     @StateObject private var sunshine = MoonlightHostCoordinator()
+    @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
+    @ObservedObject private var stream = MoonlightStreamController.shared
     @State private var showsPairing = false
+    @State private var showsStreamSettings = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.orbitTheme) private var theme
 
@@ -1005,6 +1014,14 @@ struct GameLibraryView: View {
         searchText.isEmpty ? libraryGames : libraryGames.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
     private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)" }
+    private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
+
+    /// The agent on the PC can type the pairing PIN and start Sunshine (agent 4.3+).
+    private var pairingAutomation: MoonlightPairingAutomation? {
+        guard vm.metrics.isOnline, !vm.isDemoMode else { return nil }
+        return MoonlightPairingAutomation(canSubmitPIN: vm.sunshineInfo?.canSubmitPin ?? false, canStartSunshine: vm.sunshineInfo?.canStart ?? false,
+                                          sunshineRunning: vm.sunshineInfo?.running ?? true, client: { try vm.companionClient() })
+    }
 
     private func syncSunshine() async {
         guard !vm.isDemoMode else { return }
@@ -1030,7 +1047,7 @@ struct GameLibraryView: View {
                         OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
                         libraryContent
                     }
-                    .navigationTitle("Library")
+                    .navigationTitle("Stream")
                     .searchable(text: $searchText, prompt: "Search games & apps")
                     .toolbar {
                         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -1044,10 +1061,12 @@ struct GameLibraryView: View {
                             .accessibilityLabel("Refresh library")
 
                             Menu {
+                                Button("Stream Settings…", systemImage: "slider.horizontal.3") { showsStreamSettings = true }
                                 Button("Desktop Preview", systemImage: "display") {
                                     vm.openDesktopPreview()
                                 }
                                 .disabled(!vm.metrics.isOnline)
+                                Divider()
                                 if sunshine.isPaired {
                                     Button("Quit Sunshine Session", systemImage: "stop.circle") { Task { await sunshine.quitRunningApp() } }
                                         .disabled(!sunshine.isBusy)
@@ -1059,7 +1078,7 @@ struct GameLibraryView: View {
                             } label: {
                                 Image(systemName: "ellipsis.circle")
                             }
-                            .accessibilityLabel("Library Menu")
+                            .accessibilityLabel("Stream Menu")
                         }
                     }
                 }
@@ -1067,8 +1086,12 @@ struct GameLibraryView: View {
         }
         .task(id: sunshineKey) { await syncSunshine() }
         .sheet(isPresented: $showsPairing) {
-            MoonlightPairingView(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent) { showsPairing = false }
+            MoonlightPairingView(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent, automation: pairingAutomation) { showsPairing = false }
                 .presentationDetents([.large])
+                .presentationBackground(theme.background)
+        }
+        .sheet(isPresented: $showsStreamSettings) {
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
                 .presentationBackground(theme.background)
         }
     }
@@ -1077,9 +1100,9 @@ struct GameLibraryView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 if !vm.metrics.isOnline {
-                    OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
+                    OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to stream or launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
                 } else if !vm.isDemoMode {
-                    sunshineCard
+                    streamHero
                 }
                 if filteredGames.isEmpty {
                     OrbitEmptyState(
@@ -1092,13 +1115,24 @@ struct GameLibraryView: View {
                     )
                     .padding(.vertical, 24)
                 } else {
+                    OrbitSectionHeader("Apps", icon: "square.grid.2x2") {
+                        Text(canStream ? "Tap to stream · hold for more" : "Tap to launch on the PC")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     LazyVGrid(columns: adaptiveGameColumns, spacing: 14) {
                         ForEach(filteredGames) { game in
                             let app = sunshine.app(titled: game.title)
-                            GameCoverCard(game: game, artwork: app.flatMap { sunshine.artwork[$0.id] }, isRunning: app != nil && app?.id == sunshine.info?.currentGame) {
-                                OrbitHaptics.press()
-                                Task { await vm.smartLaunch(game: game) }
-                            }
+                            GameCoverCard(
+                                game: game,
+                                artwork: app.flatMap { sunshine.artwork[$0.id] },
+                                isRunning: app != nil && app?.id == sunshine.info?.currentGame,
+                                streamsHere: canStream && app != nil,
+                                onLaunch: { play(game) },
+                                onStream: canStream ? app.map { app in { startStream(app) } } : nil,
+                                onLaunchOnPC: { OrbitHaptics.press(); Task { await vm.smartLaunch(game: game) } },
+                                onSettings: { showsStreamSettings = true }
+                            )
                             .disabled(!vm.metrics.isOnline)
                             .opacity(vm.metrics.isOnline ? 1 : 0.55)
                             .onAppear { if let app { sunshine.loadArtwork(for: app) } }
@@ -1122,56 +1156,118 @@ struct GameLibraryView: View {
         }
     }
 
-    /// Sunshine host card: pairing state, running session and the Moonlight hand-off.
-    private var sunshineCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private var settingsSummary: String {
+        let settings = streamSettings.settings
+        let size = settings.pixelSize
+        var parts = ["\(size.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
+        parts.append(settings.codec == .h264 ? "H.264" : (MoonlightDeviceCapabilities.supportsHEVC ? "HEVC" : "H.264"))
+        if settings.requestsHDR { parts.append("HDR") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The Stream PC card: pairing state, the running session and the one-tap desktop stream.
+    private var streamHero: some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                OrbitIconBadge(systemName: "sun.max.fill", tint: theme.accent, size: 40, filled: sunshine.isPaired)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Sunshine · \(vm.selectedPCName)")
-                        .font(.subheadline.weight(.bold))
+                OrbitIconBadge(systemName: "play.rectangle.fill", tint: theme.accent, size: 44, filled: sunshine.isPaired)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Stream \(vm.selectedPCName)")
+                        .font(.title3.weight(.bold))
                         .lineLimit(1)
                     HStack(spacing: 6) {
                         OrbitStatusPill(text: sunshine.statusText, tint: sunshineTint, pulsing: sunshine.isBusy)
-                        if !sunshine.isPaired, sunshine.reachable, let info = sunshine.info, !info.appVersion.isEmpty {
-                            OrbitStatChip(label: "Host", value: info.hostname.isEmpty ? sunshine.address : info.hostname)
+                        if sunshine.isPaired {
+                            OrbitStatChip(label: "Apps", value: "\(sunshine.apps.count)")
+                        } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
+                            OrbitStatChip(label: "Host", value: info.hostname)
                         }
                     }
                 }
                 Spacer(minLength: 6)
-                if sunshine.isPaired {
+                if sunshine.isRefreshing { ProgressView().tint(theme.accent) }
+            }
+
+            Text(sunshine.summary(pcName: vm.selectedPCName))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = sunshine.lastError, !sunshine.isPairing {
+                Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+
+            if sunshine.isPaired {
+                HStack(spacing: 10) {
+                    Button {
+                        OrbitHaptics.press()
+                        if let app = sunshine.desktopApp { startStream(app) }
+                    } label: {
+                        Label(sunshine.isBusy ? "Resume Stream" : "Stream Desktop", systemImage: "play.fill")
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
+                    .disabled(!canStream || sunshine.desktopApp == nil)
+
+                    Button {
+                        OrbitHaptics.tap()
+                        showsStreamSettings = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.subheadline.weight(.bold))
+                            .frame(width: 46)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
+                    .accessibilityLabel("Stream settings")
+
                     if sunshine.isBusy {
                         Button {
                             OrbitHaptics.warning()
                             Task { await sunshine.quitRunningApp() }
                         } label: {
-                            Label("Quit", systemImage: "stop.fill").font(.caption.weight(.bold))
+                            Image(systemName: "stop.fill")
+                                .font(.subheadline.weight(.bold))
+                                .frame(width: 46)
+                                .padding(.vertical, 12)
                         }
-                        .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 20))
-                    } else if sunshine.isRefreshing {
-                        ProgressView().tint(theme.accent)
+                        .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 16))
+                        .accessibilityLabel("Quit the running app")
                     }
-                } else {
-                    Button {
-                        OrbitHaptics.tap()
-                        showsPairing = true
-                    } label: {
-                        Label("Pair", systemImage: "link").font(.caption.weight(.bold))
-                    }
-                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
-                    .disabled(!sunshine.reachable)
                 }
-            }
-            Text(sunshine.summary(pcName: vm.selectedPCName))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let error = sunshine.lastError, !sunshine.isPairing {
-                Text(error).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(settingsSummary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Button {
+                    OrbitHaptics.tap()
+                    showsPairing = true
+                } label: {
+                    Label("Pair with Sunshine", systemImage: "link")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
+                .disabled(!sunshine.reachable)
             }
         }
-        .padding(14)
-        .liquidGlass(cornerRadius: 20, tint: theme.accent)
+        .padding(16)
+        .liquidGlass(cornerRadius: 24, tint: theme.accent, elevated: true)
+    }
+
+    /// Tap on a card: stream here when possible, otherwise launch on the PC.
+    private func play(_ game: SunshineGame) {
+        OrbitHaptics.press()
+        if canStream, let app = sunshine.app(titled: game.title) {
+            startStream(app)
+        } else {
+            Task { await vm.smartLaunch(game: game) }
+        }
+    }
+
+    private func startStream(_ app: MoonlightApp) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings))
     }
 }
 
@@ -1179,7 +1275,11 @@ struct GameCoverCard: View {
     let game: SunshineGame
     var artwork: Data? = nil
     var isRunning = false
+    var streamsHere = false
     let onLaunch: () -> Void
+    var onStream: (() -> Void)? = nil
+    var onLaunchOnPC: (() -> Void)? = nil
+    var onSettings: (() -> Void)? = nil
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @Environment(\.orbitTheme) private var theme
 
@@ -1222,7 +1322,7 @@ struct GameCoverCard: View {
                             .padding(10)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
-                    Image(systemName: "play.fill")
+                    Image(systemName: streamsHere ? "play.rectangle.fill" : "play.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.black.opacity(0.85))
                         .frame(width: 28, height: 28)
@@ -1237,7 +1337,7 @@ struct GameCoverCard: View {
                     Text(game.title)
                         .font(.subheadline.weight(.bold))
                         .lineLimit(1)
-                    Text(game.genre.isEmpty ? "Sunshine app" : game.genre)
+                    Text(streamsHere ? "Tap to stream" : (game.genre.isEmpty ? "Sunshine app" : game.genre))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1248,7 +1348,12 @@ struct GameCoverCard: View {
             .liquidGlass(cornerRadius: 22, tint: accent)
         }
         .buttonStyle(.orbitPressable)
-        .accessibilityLabel("Launch \(game.title) on PC")
+        .contextMenu {
+            if let onStream { Button("Stream Here", systemImage: "play.rectangle.fill", action: onStream) }
+            if let onLaunchOnPC { Button("Launch on PC Only", systemImage: "desktopcomputer", action: onLaunchOnPC) }
+            if let onSettings { Button("Stream Settings…", systemImage: "slider.horizontal.3", action: onSettings) }
+        }
+        .accessibilityLabel(streamsHere ? "Stream \(game.title)" : "Launch \(game.title) on PC")
     }
 }
 

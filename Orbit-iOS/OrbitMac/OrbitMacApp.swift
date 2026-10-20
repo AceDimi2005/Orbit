@@ -105,6 +105,15 @@ struct OrbitMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 760)
 
+        Window("Stream", id: "stream") {
+            MacStreamWindowView()
+                .environmentObject(viewModel)
+                .macAppearance()
+                .frame(minWidth: 960, minHeight: 540)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1600, height: 900)
+
         Settings {
             MacSettingsView()
                 .environmentObject(viewModel)

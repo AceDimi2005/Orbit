@@ -47,8 +47,11 @@ class APITests(unittest.TestCase):
         for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps", "/api/sunshine/info"):
             self.assertEqual(self.client.get(path).status_code, 401)
             self.assertEqual(self.client.get(path, headers={"Authorization": "Bearer wrong"}).status_code, 401)
-        for path in ("/api/action/shutdown", "/api/volume?level=55", "/api/input/mouse", "/api/sunshine/launch?app=Example"):
+        for path in ("/api/action/shutdown", "/api/volume?level=55", "/api/input/mouse", "/api/sunshine/launch?app=Example",
+                     "/api/sunshine/pin?pin=1234", "/api/sunshine/start"):
             self.assertEqual(self.client.post(path).status_code, 401)
+        self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": "a", "password": "b"}).status_code, 401)
+        self.assertEqual(self.client.delete("/api/sunshine/credentials").status_code, 401)
 
     def test_stale_status_clears_sensitive_measurements(self):
         state = copy.deepcopy(agent.STATE)
@@ -196,18 +199,102 @@ class APITests(unittest.TestCase):
             conf = Path(directory) / "sunshine.conf"
             conf.write_text("# comment\nsunshine_name = Living Room PC\nport = 48989\nbroken line\n", encoding="utf-8")
             with patch.object(agent, "SUNSHINE_CONF_PATHS", [conf]), patch.object(agent, "SUNSHINE_APPS_PATHS", [Path(directory) / "apps.json"]), \
+                 patch.object(agent, "SUNSHINE_CREDENTIALS_PATH", Path(directory) / "login.json"), \
+                 patch.object(agent, "SUNSHINE_EXECUTABLE_PATHS", [Path(directory) / "sunshine.exe"]), \
                  patch.object(agent, "sunshine_running", return_value=True):
                 info = self.client.get("/api/sunshine/info", headers=AUTH).json()
         self.assertEqual(info, {"installed": True, "running": True, "httpPort": 48989, "httpsPort": 48984, "webUIPort": 48990,
-                                "name": "Living Room PC", "appCount": 0})
+                                "name": "Living Room PC", "appCount": 0, "canSubmitPin": False, "canStart": False})
+
+    def test_sunshine_login_round_trip_enables_pin_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            login = Path(directory) / "login.json"
+            with patch.object(agent, "SUNSHINE_CREDENTIALS_PATH", login), patch.object(agent, "SUNSHINE_CONF_PATHS", []), \
+                 patch.object(agent, "SUNSHINE_APPS_PATHS", []), patch.object(agent, "SUNSHINE_EXECUTABLE_PATHS", []), \
+                 patch.object(agent, "sunshine_running", return_value=True):
+                self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": " admin ", "password": ""}, headers=AUTH).status_code, 422)
+                self.assertEqual(self.client.post("/api/sunshine/pin?pin=1234", headers=AUTH).status_code, 428)
+                saved = self.client.post("/api/sunshine/credentials", json={"username": " admin ", "password": "s3cret"}, headers=AUTH)
+                self.assertEqual(saved.status_code, 200)
+                self.assertEqual(agent.sunshine_credentials(), ("admin", "s3cret"))
+                self.assertTrue(self.client.get("/api/sunshine/info", headers=AUTH).json()["canSubmitPin"])
+                self.assertEqual(self.client.post("/api/sunshine/pin?pin=12ab", headers=AUTH).status_code, 422)
+                with patch.object(agent, "post_sunshine_pin") as forward:
+                    response = self.client.post("/api/sunshine/pin?pin=1234&name=Orbit%20on%20iPhone", headers=AUTH)
+                    self.assertEqual(response.json(), {"status": "accepted"})
+                    forward.assert_called_once_with(("admin", "s3cret"), "1234", "Orbit on iPhone")
+                self.assertEqual(self.client.delete("/api/sunshine/credentials", headers=AUTH).json(), {"status": "removed", "canSubmitPin": False})
+                self.assertFalse(login.exists())
+                self.assertEqual(self.client.post("/api/sunshine/pin?pin=1234", headers=AUTH).status_code, 428)
+
+    def test_pin_forwarding_uses_basic_auth_and_reports_rejections(self):
+        captured = {}
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout, context):
+            captured["url"] = request.full_url
+            captured["auth"] = request.get_header("Authorization")
+            captured["body"] = request.data
+            return FakeResponse(b'{"status": true}')
+
+        with patch.object(agent, "sunshine_config", return_value={"port": "48989"}), patch.object(agent.urllib.request, "urlopen", fake_urlopen):
+            agent.post_sunshine_pin(("admin", "pa:ss"), "0420", "Orbit on Mac")
+        self.assertEqual(captured["url"], "https://127.0.0.1:48990/api/pin")
+        self.assertEqual(captured["auth"], "Basic " + __import__("base64").b64encode(b"admin:pa:ss").decode())
+        self.assertEqual(__import__("json").loads(captured["body"]), {"pin": "0420", "name": "Orbit on Mac"})
+
+        def rejected(request, timeout, context):
+            return FakeResponse(b'{"status": false, "error": "no pending pair request"}')
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", rejected):
+            with self.assertRaises(agent.HTTPException) as refused:
+                agent.post_sunshine_pin(("admin", "x"), "1111", "Orbit")
+            self.assertEqual(refused.exception.status_code, 409)
+
+        def unauthorized(request, timeout, context):
+            raise agent.urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", unauthorized):
+            with self.assertRaises(agent.HTTPException) as denied:
+                agent.post_sunshine_pin(("admin", "x"), "1111", "Orbit")
+            self.assertEqual(denied.exception.status_code, 401)
+
+    def test_start_sunshine_launches_installed_binary_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "sunshine.exe"
+            with patch.object(agent, "require_windows"), patch.object(agent, "SUNSHINE_EXECUTABLE_PATHS", [missing]), \
+                 patch.object(agent, "sunshine_running", return_value=False), patch.object(agent.subprocess, "Popen") as launch:
+                self.assertEqual(self.client.post("/api/sunshine/start", headers=AUTH).status_code, 404)
+                launch.assert_not_called()
+                missing.write_bytes(b"")
+                self.assertEqual(self.client.post("/api/sunshine/start", headers=AUTH).json(), {"status": "starting"})
+                launch.assert_called_once()
+                self.assertEqual(launch.call_args.args[0], [str(missing)])
+            with patch.object(agent, "require_windows"), patch.object(agent, "sunshine_running", return_value=True), \
+                 patch.object(agent.subprocess, "Popen") as launch:
+                self.assertEqual(self.client.post("/api/sunshine/start", headers=AUTH).json(), {"status": "running"})
+                launch.assert_not_called()
 
     def test_sunshine_info_defaults_without_config(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(agent, "SUNSHINE_CONF_PATHS", [Path(directory) / "missing.conf"]), \
                  patch.object(agent, "SUNSHINE_APPS_PATHS", [Path(directory) / "missing.json"]), \
+                 patch.object(agent, "SUNSHINE_CREDENTIALS_PATH", Path(directory) / "login.json"), \
+                 patch.object(agent, "SUNSHINE_EXECUTABLE_PATHS", [Path(directory) / "sunshine.exe"]), \
                  patch.object(agent, "sunshine_running", return_value=False):
                 info = self.client.get("/api/sunshine/info", headers=AUTH).json()
         self.assertEqual((info["installed"], info["running"], info["httpPort"], info["httpsPort"], info["webUIPort"]), (False, False, 47989, 47984, 47990))
+        self.assertEqual((info["canSubmitPin"], info["canStart"]), (False, False))
         self.assertNotIn(TOKEN, str(info))
 
     def test_desktop_entry_requires_moonlight(self):

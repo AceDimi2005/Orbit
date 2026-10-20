@@ -1,3 +1,4 @@
+import MoonlightCore
 import SwiftUI
 import UIKit
 
@@ -252,6 +253,7 @@ struct TVSurfaceCardStyle: ButtonStyle {
 
 struct OrbitTVRootView: View {
     @EnvironmentObject var vm: OrbitTVViewModel
+    @ObservedObject private var stream = MoonlightStreamController.shared
     @State private var showShutdownConfirm = false
     @State private var showRestartConfirm = false
 
@@ -296,6 +298,9 @@ struct OrbitTVRootView: View {
         }
         .onPlayPauseCommand {
             Task { await vm.sendAction("media_play_pause") }
+        }
+        .fullScreenCover(isPresented: $stream.isPresented) {
+            MoonlightStreamScreen(controller: stream, accent: TVPalette.accent)
         }
         .confirmationDialog(
             "Shut Down \(vm.metrics.hostname)?",
@@ -855,6 +860,31 @@ struct TVEmptyBanner: View {
 struct TVControlsAndGamesTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
     @StateObject private var sunshine = MoonlightHostCoordinator()
+    @ObservedObject private var stream = MoonlightStreamController.shared
+    @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
+    @State private var showsStreamSettings = false
+
+    private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
+
+    private func startStream(_ app: MoonlightApp) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings))
+    }
+
+    /// Generates the PIN and has the Orbit agent type it into Sunshine (login saved from iPhone or Mac).
+    private func pairAutomatically() {
+        sunshine.beginPairing()
+        guard let pin = sunshine.pairingPIN else { return }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard sunshine.isPairing, sunshine.pairingPIN == pin else { return }
+            do {
+                _ = try await vm.client().data("/api/sunshine/pin", method: "POST",
+                                               query: [URLQueryItem(name: "pin", value: pin), URLQueryItem(name: "name", value: MoonlightHostCoordinator.deviceName)])
+            } catch {
+                vm.statusBanner = "Automatic PIN entry failed: \(error.localizedDescription)"
+            }
+        }
+    }
 
     private let desktopColumns = Array(repeating: GridItem(.flexible(), spacing: 20), count: 4)
     private let gameColumns = Array(repeating: GridItem(.flexible(), spacing: 22), count: 3)
@@ -865,6 +895,15 @@ struct TVControlsAndGamesTab: View {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return }
         sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
+    }
+
+    private var streamSettingsSummary: String {
+        let settings = streamSettings.settings
+        let size = settings.pixelSize
+        var parts = ["\(size.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
+        parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
+        if settings.requestsHDR { parts.append("HDR") }
+        return parts.joined(separator: " · ")
     }
 
     private var sunshineTint: Color {
@@ -918,8 +957,13 @@ struct TVControlsAndGamesTab: View {
                     Button { sunshine.forgetPairing() } label: { Label("Forget", systemImage: "link.badge.minus") }
                         .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
                 } else {
-                    Button { sunshine.beginPairing() } label: { Label("Pair with Sunshine", systemImage: "link") }
-                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
+                    if vm.sunshineInfo?.canSubmitPin == true {
+                        Button { pairAutomatically() } label: { Label("Pair automatically", systemImage: "wand.and.stars") }
+                            .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
+                            .disabled(!sunshine.reachable)
+                    }
+                    Button { sunshine.beginPairing() } label: { Label(vm.sunshineInfo?.canSubmitPin == true ? "Pair with PIN" : "Pair with Sunshine", systemImage: "link") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: vm.sunshineInfo?.canSubmitPin != true))
                         .disabled(!sunshine.reachable)
                 }
             }
@@ -993,7 +1037,7 @@ struct TVControlsAndGamesTab: View {
                 }
 
                 VStack(alignment: .leading, spacing: 16) {
-                    TVSectionHeader("Couch Game Launcher", subtitle: "Wakes your PC via Wake-on-LAN and starts the selected Sunshine app", tint: TVPalette.purple) {
+                    TVSectionHeader("Stream & Launch", subtitle: canStream ? "Press an app to stream it to this Apple TV" : "Pair with Sunshine to stream here; apps launch on the PC meanwhile", tint: TVPalette.purple) {
                         Button {
                             Task { await vm.refreshGames(); await sunshine.refresh() }
                         } label: {
@@ -1020,7 +1064,7 @@ struct TVControlsAndGamesTab: View {
                                 let app = sunshine.app(titled: game.title)
                                 let isRunning = app != nil && app?.id == sunshine.info?.currentGame
                                 Button {
-                                    Task { await vm.launchGame(game) }
+                                    if canStream, let app { startStream(app) } else { Task { await vm.launchGame(game) } }
                                 } label: {
                                     HStack(spacing: 18) {
                                         ZStack {
@@ -1050,7 +1094,7 @@ struct TVControlsAndGamesTab: View {
                                                 .lineLimit(1)
                                             HStack(spacing: 6) {
                                                 Image(systemName: "play.fill")
-                                                Text(isRunning || vm.metrics.activeGame == game.title ? "Running on PC" : "Press to launch")
+                                                Text(isRunning ? (canStream ? "Running · press to resume" : "Running on PC") : (canStream && app != nil ? "Press to stream" : "Press to launch"))
                                             }
                                             .font(.system(size: 13, weight: .semibold))
                                             .foregroundStyle(isRunning || vm.metrics.activeGame == game.title ? TVPalette.mint : TVPalette.accent)
@@ -1071,28 +1115,45 @@ struct TVControlsAndGamesTab: View {
                 HStack(spacing: 24) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(Color.white.opacity(0.08))
+                            .fill(canStream ? TVPalette.accent : Color.white.opacity(0.08))
                             .frame(width: 76, height: 76)
-                        Image(systemName: "play.tv.fill")
+                        Image(systemName: "play.rectangle.fill")
                             .font(.system(size: 32, weight: .semibold))
-                            .foregroundStyle(TVPalette.accent)
+                            .foregroundStyle(canStream ? Color.black.opacity(0.85) : TVPalette.accent)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Game video runs in Moonlight for Apple TV")
+                        Text(canStream ? "Stream \(vm.metrics.hostname) to this Apple TV" : "Stream your PC on the big screen")
                             .font(.system(size: 22, weight: .bold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text("Install Moonlight from the App Store and pair it with \(vm.metrics.hostname) once. Launch an app here, then open Moonlight and choose Resume. Orbit shows Sunshine's status and can end the session.")
+                        Text(canStream
+                             ? "\(streamSettingsSummary). Game controllers paired with the Apple TV are forwarded; the Siri Remote works as a trackpad."
+                             : "Pair Orbit with Sunshine above. Video, audio and controller input then run right here, no Moonlight app needed.")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
 
                     Spacer()
+
+                    Button {
+                        if let app = sunshine.desktopApp { startStream(app) }
+                    } label: {
+                        Label(sunshine.isBusy ? "Resume Stream" : "Stream Desktop", systemImage: "play.fill")
+                    }
+                    .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
+                    .disabled(!canStream || sunshine.desktopApp == nil)
+
+                    Button { showsStreamSettings = true } label: { Label("Stream Settings", systemImage: "slider.horizontal.3") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
                 }
                 .padding(24)
                 .tvGlass(tint: TVPalette.accent)
+                .focusSection()
+            }
+            .sheet(isPresented: $showsStreamSettings) {
+                MoonlightStreamSettingsView(store: streamSettings, accent: TVPalette.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
             }
             .task(id: sunshineKey) { await syncSunshine() }
             .padding(.horizontal, 52)

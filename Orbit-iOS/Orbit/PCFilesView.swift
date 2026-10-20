@@ -152,9 +152,9 @@ struct PCFilesView: View {
         List {
             if !enabled {
                 Section {
-                    OrbitEmptyState(icon: "folder.badge.questionmark", title: "Your PC files",
+                    OrbitEmptyState(icon: "folder.badge.questionmark", title: "Files on your PC",
                                     message: vm.isDemoMode ? "Connect to your own PC to browse and transfer files." : "Keep your PC and Orbit Agent running, then connect to it.",
-                                    tint: .blue)
+                                    tint: theme.accent)
                 }
                 .orbitRow()
             }
@@ -163,12 +163,25 @@ struct PCFilesView: View {
                     .orbitRow(tint: .orange)
             }
             if let notice { Section { Label(notice, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) }.orbitRow(tint: .mint) }
-            Section { navigationControls }.orbitRow()
-            if transferTitle != nil { transferSection.orbitRow(tint: theme.accent) }
-            if let currentPath { folderSection(currentPath) } else { locationsSection }
+            if let currentPath {
+                Section { folderHeader(currentPath) }.orbitRow(tint: theme.accent)
+                folderRows
+            } else {
+                locationsBody
+            }
         }
         .orbitListChrome(isOnline: vm.metrics.isOnline)
-        .navigationTitle("Files")
+        .safeAreaInset(edge: .bottom) {
+            if transferTitle != nil {
+                transferCard
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 1), value: transferTitle != nil)
+        .animation(.spring(response: 0.3, dampingFraction: 1), value: selecting)
+        .navigationTitle(currentPath.map(folderName) ?? "Files")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Search this folder")
         .toolbar { fileToolbar }
@@ -199,22 +212,24 @@ struct PCFilesView: View {
         } message: { Text("The selected items will be moved to the Windows Recycle Bin. Orbit never permanently deletes them.") }
     }
 
-    private var navigationControls: some View {
-        HStack(spacing: 8) {
-            navButton("arrow.left", label: "Back", enabled: !backHistory.isEmpty) { goBack() }
-            navButton("arrow.right", label: "Forward", enabled: !forwardHistory.isEmpty) { goForward() }
-            navButton("arrow.up", label: "Parent folder", enabled: parentPath != nil) { if let parentPath { open(parentPath) } }
-            Spacer(minLength: 4)
-            Text(currentPath.map { ($0 as NSString).lastPathComponent.isEmpty ? $0 : ($0 as NSString).lastPathComponent } ?? "All locations")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 4)
-            navButton("house.fill", label: "All locations", enabled: currentPath != nil) { open(nil) }
-        }
-        .frame(minHeight: 30)
+    // MARK: Path helpers
+
+    private func folderName(_ path: String) -> String {
+        let components = pathComponents(path)
+        return components.last ?? path
     }
+
+    /// `C:\Users\Dimi` → ["C:", "Users", "Dimi"]; network paths keep their server as the first part.
+    private func pathComponents(_ path: String) -> [String] {
+        path.replacingOccurrences(of: "/", with: "\\").split(separator: "\\", omittingEmptySubsequences: true).map(String.init)
+    }
+
+    private func path(forComponents components: ArraySlice<String>) -> String {
+        let joined = components.joined(separator: "\\")
+        return components.count == 1 && joined.hasSuffix(":") ? joined + "\\" : joined
+    }
+
+    // MARK: Navigation header
 
     private func navButton(_ icon: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button {
@@ -222,44 +237,195 @@ struct PCFilesView: View {
             action()
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: .bold))
                 .frame(width: 32, height: 32)
                 .background(.white.opacity(0.06), in: Circle())
+                .overlay(Circle().strokeBorder(theme.hairline, lineWidth: 1))
         }
         .buttonStyle(.borderless)
         .disabled(!enabled || !self.enabled || transferTitle != nil)
         .accessibilityLabel(label)
     }
 
-    @ViewBuilder private var locationsSection: some View {
-        if !favorites.isEmpty {
-            Section("Favorites") {
-                ForEach(favorites) { favorite in
-                    Button { open(favorite.path) } label: {
-                        locationLabel(favorite.name, detail: favorite.path, icon: "star.fill", tint: .yellow)
+    private func breadcrumb(_ path: String) -> some View {
+        let components = pathComponents(path)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    Button { open(nil) } label: {
+                        Image(systemName: "house.fill").font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 9).padding(.vertical, 6)
+                            .background(.white.opacity(0.06), in: Capsule())
                     }
-                    .contextMenu { Button("Remove favorite", role: .destructive) { favorites.removeAll { $0.id == favorite.id }; saveFavorites() } }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("All locations")
+                    ForEach(Array(components.enumerated()), id: \.offset) { index, component in
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
+                        let isLast = index == components.count - 1
+                        Button { open(self.path(forComponents: components[0...index])) } label: {
+                            Text(component)
+                                .font(.caption.weight(isLast ? .bold : .semibold))
+                                .lineLimit(1)
+                                .foregroundStyle(isLast ? Color.primary : Color.secondary)
+                                .padding(.horizontal, 9).padding(.vertical, 6)
+                                .background(isLast ? AnyShapeStyle(theme.accent.opacity(0.18)) : AnyShapeStyle(Color.white.opacity(0.06)), in: Capsule())
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isLast)
+                        .id(index)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .onAppear { proxy.scrollTo(components.count - 1, anchor: .trailing) }
+            .onChange(of: components.count) { _, count in withAnimation(.spring(response: 0.3, dampingFraction: 1)) { proxy.scrollTo(count - 1, anchor: .trailing) } }
+        }
+        .frame(height: 30)
+    }
+
+    private var sortSummary: String {
+        switch sort {
+        case .name: return "by name"
+        case .size: return "by size"
+        case .modified: return "by date"
+        }
+    }
+
+    private func folderHeader(_ path: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                navButton("chevron.left", label: "Back", enabled: !backHistory.isEmpty) { goBack() }
+                navButton("chevron.right", label: "Forward", enabled: !forwardHistory.isEmpty) { goForward() }
+                breadcrumb(path)
+            }
+            HStack(alignment: .center, spacing: 10) {
+                OrbitIconBadge(systemName: "folder.fill", tint: theme.accent, size: 40, filled: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(folderName(path)).font(.title3.weight(.bold)).lineLimit(1)
+                    Text(loading && entries.isEmpty ? "Reading folder…" : "\(total) item\(total == 1 ? "" : "s") · \(sortSummary)")
+                        .font(.caption).foregroundStyle(.secondary).contentTransition(.numericText())
+                }
+                Spacer(minLength: 4)
+                Button {
+                    OrbitHaptics.selection()
+                    toggleFavorite(path)
+                } label: {
+                    Image(systemName: favorites.contains { $0.path == path } ? "star.fill" : "star")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(favorites.contains { $0.path == path } ? .yellow : .secondary)
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.06), in: Circle())
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Favorite folder")
+                Menu {
+                    Picker("Sort by", selection: $sort) { ForEach(PCFileSort.allCases, id: \.self) { Text($0.title).tag($0) } }
+                    Divider()
+                    Button("Download this folder as ZIP", systemImage: "arrow.down.doc") { download([folderEntry(path)], preview: false) }
+                    Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = path }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 34, height: 34)
+                        .background(.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(!enabled || transferTitle != nil)
+                .accessibilityLabel("Sort and folder actions")
+            }
+            if selecting {
+                HStack(spacing: 10) {
+                    Text("\(selected.count) selected").font(.caption.weight(.semibold)).contentTransition(.numericText())
+                    Spacer()
+                    Button("Select loaded") { selected = Set(entries.map(\.path)) }
+                    Button("Clear") { selected = [] }
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: Locations
+
+    @ViewBuilder private var locationsBody: some View {
+        if !backHistory.isEmpty || !forwardHistory.isEmpty {
+            Section {
+                HStack(spacing: 8) {
+                    navButton("chevron.left", label: "Back", enabled: !backHistory.isEmpty) { goBack() }
+                    navButton("chevron.right", label: "Forward", enabled: !forwardHistory.isEmpty) { goForward() }
+                    Text("All locations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
                 }
             }
-            .orbitRow(tint: .yellow)
+            .orbitRow()
         }
         if let roots {
             if !roots.shortcuts.isEmpty {
-                Section("Quick access") {
-                    ForEach(roots.shortcuts) { location in locationButton(location) }
-                }
-                .orbitRow()
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 10)], spacing: 10) {
+                        ForEach(roots.shortcuts) { location in
+                            Button { open(location.path) } label: { locationTile(location.name, icon: folderIcon(for: location.name)) }
+                                .buttonStyle(.orbitPressable)
+                                .disabled(!enabled)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: { sectionTitle("Quick access", icon: "sparkles") }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
-            Section("Drives") { ForEach(roots.roots) { location in locationButton(location) } }
-                .orbitRow()
+            if !favorites.isEmpty {
+                Section {
+                    ForEach(favorites) { favorite in
+                        Button { open(favorite.path) } label: {
+                            locationLabel(favorite.name, detail: favorite.path, icon: "star.fill", tint: .yellow)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { favorites.removeAll { $0.id == favorite.id }; saveFavorites() } label: { Label("Remove", systemImage: "star.slash") }
+                        }
+                        .contextMenu { Button("Remove favorite", role: .destructive) { favorites.removeAll { $0.id == favorite.id }; saveFavorites() } }
+                    }
+                } header: { sectionTitle("Favorites", icon: "star.fill") }
+                .orbitRow(tint: .yellow)
+            }
+            Section {
+                ForEach(roots.roots) { location in driveRow(location) }
+            } header: { sectionTitle("Drives", icon: "internaldrive.fill") }
+            .orbitRow()
             Section {
                 Label("Files stay on your PC until you open or download them. Transfers use your trusted encrypted connection.", systemImage: "lock.shield")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .orbitRow()
         } else if loading {
-            Section { HStack { ProgressView(); Text("Reading PC locations…") } }.orbitRow()
+            Section { HStack { ProgressView().tint(theme.accent); Text("Reading PC locations…").foregroundStyle(.secondary) } }.orbitRow()
         }
+    }
+
+    private func sectionTitle(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.caption.weight(.bold))
+            .tracking(0.6)
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+    }
+
+    private func locationTile(_ name: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            OrbitIconBadge(systemName: icon, tint: theme.accent, size: 36)
+            Text(name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlass(cornerRadius: 18, tint: theme.accent)
     }
 
     private func locationLabel(_ name: String, detail: String?, icon: String, tint: Color) -> some View {
@@ -277,12 +443,29 @@ struct PCFilesView: View {
         .padding(.vertical, 2)
     }
 
-    private func locationButton(_ location: PCFileLocation) -> some View {
-        let icon = location.kind == "shortcut" ? folderIcon(for: location.name) : location.kind == "external" ? "externaldrive.fill" : "internaldrive.fill"
-        let tint: Color = location.kind == "shortcut" ? theme.accent : location.kind == "external" ? .orange : .blue
+    private func driveRow(_ location: PCFileLocation) -> some View {
+        let letter = String(location.path.replacingOccurrences(of: "\\", with: "").replacingOccurrences(of: ":", with: "").prefix(1)).uppercased()
+        let external = location.kind == "external"
         return Button { open(location.path) } label: {
-            locationLabel(location.name, detail: location.path, icon: icon, tint: tint)
-        }.disabled(!enabled)
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(external ? Color.orange.opacity(0.18) : theme.accent.opacity(0.16))
+                        .frame(width: 36, height: 36)
+                    Text(letter.isEmpty ? "?" : letter)
+                        .font(.system(size: 15, weight: .heavy, design: .rounded))
+                        .foregroundStyle(external ? Color.orange : theme.accent)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(location.name).foregroundStyle(.primary).lineLimit(1)
+                    Text(external ? "Removable drive" : "Local drive").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: external ? "externaldrive.fill" : "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 2)
+        }
+        .disabled(!enabled)
     }
 
     private func folderIcon(for name: String) -> String {
@@ -296,71 +479,74 @@ struct PCFilesView: View {
         return "folder.fill"
     }
 
-    @ViewBuilder private func folderSection(_ path: String) -> some View {
+    // MARK: Folder contents
+
+    @ViewBuilder private var folderRows: some View {
         Section {
-            HStack(spacing: 10) {
-                OrbitIconBadge(systemName: "folder.fill", tint: theme.accent, size: 30)
-                Text(path).font(.caption.monospaced()).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
-                Spacer(minLength: 0)
-                Button {
-                    OrbitHaptics.selection()
-                    toggleFavorite(path)
-                } label: {
-                    Image(systemName: favorites.contains { $0.path == path } ? "star.fill" : "star")
-                        .foregroundStyle(favorites.contains { $0.path == path } ? .yellow : .secondary)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .accessibilityLabel("Favorite folder")
-            }.buttonStyle(.borderless)
-            if !selecting {
-                Button { download([folderEntry(path)], preview: false) } label: {
-                    Label("Download this folder as ZIP", systemImage: "arrow.down.doc")
-                }.font(.subheadline).disabled(!enabled || transferTitle != nil)
+            ForEach(entries) { entry in
+                fileRow(entry)
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        Button { download([entry], preview: false) } label: {
+                            Label(entry.isDirectory ? "ZIP" : "Save", systemImage: entry.isDirectory ? "arrow.down.doc" : "arrow.down.circle")
+                        }
+                        .tint(theme.accent)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) { actionEntries = [entry]; confirmTrash = true } label: { Label("Recycle", systemImage: "trash") }
+                        Button { actionEntries = [entry]; promptValue = ""; prompt = .move } label: { Label("Move", systemImage: "folder") }
+                            .tint(.indigo)
+                        Button { actionEntries = [entry]; promptValue = entry.name; prompt = .rename } label: { Label("Rename", systemImage: "pencil") }
+                            .tint(.gray)
+                    }
             }
-            if selecting {
-                HStack {
-                    Text("\(selected.count) selected").font(.caption)
-                    Spacer()
-                    Button("Select loaded") { selected = Set(entries.map(\.path)) }
-                    Button("Clear") { selected = [] }
-                }.font(.caption)
-            }
-        }
-        .orbitRow(tint: theme.accent)
-        Section {
-            ForEach(entries) { entry in fileRow(entry) }
-            if loading { HStack { Spacer(); ProgressView(); Spacer() } }
+            if loading { HStack { Spacer(); ProgressView().tint(theme.accent); Spacer() } }
             if !loading && entries.isEmpty {
                 ContentUnavailableView(search.isEmpty ? "Empty folder" : "No matching files", systemImage: search.isEmpty ? "folder" : "magnifyingglass")
             }
             if entries.count < total {
-                Button("Load more · \(entries.count) of \(total)") { Task { await loadMore() } }.disabled(loading)
+                Button {
+                    Task { await loadMore() }
+                } label: {
+                    Label("Load more · \(entries.count) of \(total)", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
+                }
+                .disabled(loading)
             }
         } footer: {
-            Text(truncated ? "This folder has more than 100,000 entries. Narrow your search or open a subfolder." : "\(total) item\(total == 1 ? "" : "s") · Windows account permissions apply")
+            Text(truncated ? "This folder has more than 100,000 entries. Narrow your search or open a subfolder." : "Swipe right to save, left for more · Windows account permissions apply")
         }
         .orbitRow()
     }
 
     private func fileRow(_ entry: PCFileEntry) -> some View {
-        HStack(spacing: 8) {
+        let isSelected = selected.contains(entry.path)
+        return HStack(spacing: 8) {
             Button {
                 if selecting {
-                    if selected.contains(entry.path) { selected.remove(entry.path) } else { selected.insert(entry.path) }
+                    OrbitHaptics.selection()
+                    if isSelected { selected.remove(entry.path) } else { selected.insert(entry.path) }
                 } else if entry.isDirectory { open(entry.path) } else { download([entry], preview: entry.canPreview) }
             } label: {
                 HStack(spacing: 12) {
-                    if selecting { Image(systemName: selected.contains(entry.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(theme.accent) }
-                    OrbitIconBadge(systemName: entry.symbol, tint: entry.isDirectory ? theme.accent : entry.tint, size: 32)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(entry.name).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
-                        if !entry.detail.isEmpty { Text(entry.detail).font(.caption2).foregroundStyle(.secondary) }
+                    if selecting {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(isSelected ? theme.accent : Color.secondary)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    OrbitIconBadge(systemName: entry.symbol, tint: entry.isDirectory ? theme.accent : (theme.isFlat ? Color.white.opacity(0.85) : entry.tint), size: 34, filled: entry.isDirectory)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                        if !entry.detail.isEmpty { Text(entry.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: entry.isDirectory ? "chevron.right" : entry.canPreview ? "eye" : "arrow.down.circle")
-                        .font(.caption).foregroundStyle(.tertiary)
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain)
+                    if !selecting {
+                        Image(systemName: entry.isDirectory ? "chevron.right" : entry.canPreview ? "eye" : "arrow.down.circle")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             if !selecting {
                 Menu { fileActions(entry) } label: {
                     Image(systemName: "ellipsis.circle").font(.title3).frame(minWidth: 32, minHeight: 36)
@@ -370,6 +556,7 @@ struct PCFilesView: View {
             }
         }
         .padding(.vertical, 3)
+        .listRowBackground(isSelected ? theme.accent.opacity(0.12) : nil)
         .disabled(!enabled || transferTitle != nil)
         .contextMenu { fileActions(entry) }
     }
@@ -389,23 +576,30 @@ struct PCFilesView: View {
 
     @ToolbarContentBuilder private var fileToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            if currentPath != nil {
-                Button(selecting ? "Done" : "Select") { selecting.toggle(); selected = [] }.disabled(!enabled)
-            }
-            Menu {
-                Picker("Sort by", selection: $sort) { ForEach(PCFileSort.allCases, id: \.self) { Text($0.title).tag($0) } }
-                if currentPath != nil {
-                    Button("Download this folder as ZIP", systemImage: "arrow.down.doc") {
-                        if let currentPath { download([folderEntry(currentPath)], preview: false) }
-                    }
-                    Button("New folder", systemImage: "folder.badge.plus") { actionEntries = []; promptValue = ""; prompt = .folder }
-                    Button("Upload from Files", systemImage: "square.and.arrow.up") { showImporter = true }
-                    PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
-                        Label("Upload photos or videos", systemImage: "photo")
-                    }
+            if let currentPath {
+                Button(selecting ? "Done" : "Select") {
+                    OrbitHaptics.tap()
+                    selecting.toggle()
+                    selected = []
                 }
-                Button("Refresh", systemImage: "arrow.clockwise") { refreshID = UUID() }
-            } label: { Image(systemName: "ellipsis.circle") }.disabled(!enabled || transferTitle != nil)
+                .disabled(!enabled)
+                Menu {
+                    Section("Add to \(folderName(currentPath))") {
+                        Button("New folder", systemImage: "folder.badge.plus") { actionEntries = []; promptValue = ""; prompt = .folder }
+                        Button("Upload from Files", systemImage: "square.and.arrow.up") { showImporter = true }
+                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
+                            Label("Upload photos or videos", systemImage: "photo")
+                        }
+                    }
+                    Button("Refresh", systemImage: "arrow.clockwise") { refreshID = UUID() }
+                } label: { Image(systemName: "plus.circle") }
+                .disabled(!enabled || transferTitle != nil)
+                .accessibilityLabel("Add or upload")
+            } else {
+                Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(!enabled || transferTitle != nil)
+                    .accessibilityLabel("Refresh locations")
+            }
         }
         if selecting && !selected.isEmpty {
             ToolbarItemGroup(placement: .bottomBar) {
@@ -421,46 +615,45 @@ struct PCFilesView: View {
         }
     }
 
-    private var transferSection: some View {
-        Section {
-            HStack(spacing: 12) {
-                ZStack {
-                    OrbitRingGauge(progress: transferIndeterminate ? nil : transferProgress, lineWidth: 4, tint: theme.accent)
-                        .frame(width: 44, height: 44)
-                    if transferIndeterminate {
-                        ProgressView().controlSize(.small).tint(theme.accent)
-                    } else {
-                        Text("\(Int(transferProgress * 100))")
-                            .font(.system(size: 11, weight: .bold))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                    }
+    private var transferCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                OrbitRingGauge(progress: transferIndeterminate ? nil : transferProgress, lineWidth: 4, tint: theme.accent)
+                    .frame(width: 44, height: 44)
+                if transferIndeterminate {
+                    ProgressView().controlSize(.small).tint(theme.accent)
+                } else {
+                    Text("\(Int(transferProgress * 100))")
+                        .font(.system(size: 11, weight: .bold))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(transferTitle ?? "Transfer").font(.subheadline.weight(.semibold)).lineLimit(2)
-                    HStack {
-                        Text(transferIndeterminate ? transferPhase : "\(Int(transferProgress * 100))% · \(transferPhase)")
-                        Spacer()
-                        if transferSpeed > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(transferSpeed), countStyle: .file))/s").monospacedDigit() }
-                    }.font(.caption).foregroundStyle(.secondary)
-                    if !transferIndeterminate {
-                        ProgressView(value: transferProgress).tint(theme.accent)
-                    }
-                }
-                Button {
-                    OrbitHaptics.warning()
-                    cancelTransfer()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(width: 30, height: 30)
-                        .background(.white.opacity(0.07), in: Circle())
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Cancel transfer")
             }
-            .padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(transferTitle ?? "Transfer").font(.subheadline.weight(.semibold)).lineLimit(2)
+                HStack {
+                    Text(transferIndeterminate ? transferPhase : "\(Int(transferProgress * 100))% · \(transferPhase)")
+                    Spacer()
+                    if transferSpeed > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(transferSpeed), countStyle: .file))/s").monospacedDigit() }
+                }.font(.caption).foregroundStyle(.secondary)
+                if !transferIndeterminate {
+                    ProgressView(value: transferProgress).tint(theme.accent)
+                }
+            }
+            Button {
+                OrbitHaptics.warning()
+                cancelTransfer()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 30, height: 30)
+                    .background(.white.opacity(0.07), in: Circle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Cancel transfer")
         }
+        .padding(14)
+        .liquidGlass(cornerRadius: 20, tint: theme.accent, elevated: true)
     }
 
     private func promptSheet(_ kind: PCFilePrompt) -> some View {

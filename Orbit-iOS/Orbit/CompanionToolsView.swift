@@ -1,3 +1,4 @@
+import MoonlightCore
 import SwiftUI
 
 struct CompanionToolsView: View {
@@ -7,6 +8,8 @@ struct CompanionToolsView: View {
     @State private var showsSettings = false
     @State private var showsDiscovery = false
     @State private var showsProPaywall = false
+    @State private var showsStreamSettings = false
+    @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
 
     private var columns: [GridItem] {
@@ -32,8 +35,10 @@ struct CompanionToolsView: View {
                             NavigationLink { TaskManagerView(vm: vm) } label: {
                                 toolTile("Task Manager", subtitle: "Processes & end task", icon: "list.bullet.rectangle.portrait.fill", tint: .orange)
                             }
-                            NavigationLink { PCFilesView(vm: vm) } label: {
-                                toolTile("PC Files", subtitle: "Browse, upload & download", icon: "folder.fill", tint: .blue)
+                            Button {
+                                showsStreamSettings = true
+                            } label: {
+                                toolTile("Stream Settings", subtitle: "Resolution, bitrate, codec & HDR", icon: "play.rectangle.fill", tint: theme.accent)
                             }
                         }
 
@@ -142,6 +147,10 @@ struct CompanionToolsView: View {
             .sheet(isPresented: $showsSettings) { SettingsView(vm: vm, isPresentedAsSheet: true) }
             .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
             .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
+            .sheet(isPresented: $showsStreamSettings) {
+                MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent) { showsStreamSettings = false }
+                    .presentationBackground(theme.background)
+            }
         }
         .orbitAppearance()
     }

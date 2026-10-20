@@ -16,7 +16,7 @@ import orbit_agent
 from orbit_hardware import basic_specs
 
 source = (ROOT / "Orbit-iOS/Orbit/ModelsAndServices.swift").read_text()
-models = "import Foundation\n" + source.split("struct PCMetrics: Codable", 1)[1].split("final class WakeOnLANService", 1)[0]
+models = "import Foundation\n" + source.split("struct PCMetrics: Codable", 1)[1].split("enum OrbitBackgroundRefresh", 1)[0]
 models = models.replace("import Foundation\n", "import Foundation\nstruct PCMetrics: Codable", 1)
 models = "import Darwin\n" + models
 wake = source[source.index("final class WakeOnLANService"):source.index("private enum TokenStore")]

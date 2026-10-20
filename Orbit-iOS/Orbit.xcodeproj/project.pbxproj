@@ -36,13 +36,13 @@
 		A20000000000000000000016 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000016 /* PrivacyInfo.xcprivacy */; };
 		A20000000000000000000017 /* OrbitWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000017 /* OrbitWatchBridge.swift */; };
 		A20000000000000000000030 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000001 /* SRP */; };
+		A20000000000000000000031 /* MoonlightCore in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000004 /* MoonlightCore */; };
 		A20000000000000000000071 /* OrbitCursorPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000071 /* OrbitCursorPipeline.swift */; };
 		A20000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
-		A50000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
-		A60000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
 		A20000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
-		A50000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
-		A60000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
+		A20000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
+		A20000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
+		A20000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000084 /* MoonlightStreamSettingsView.swift */; };
 		A30000000000000000000001 /* OrbitWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002 /* OrbitWatchApp.swift */; };
 		A30000000000000000000002 /* OrbitWatchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000003 /* OrbitWatchViewModel.swift */; };
 		A30000000000000000000003 /* OrbitWatchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000004 /* OrbitWatchViews.swift */; };
@@ -65,6 +65,12 @@
 		A50000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000005 /* Assets.xcassets */; };
 		A50000000000000000000007 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000007 /* PrivacyInfo.xcprivacy */; };
 		A50000000000000000000008 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000002 /* SRP */; };
+		A50000000000000000000009 /* MoonlightCore in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000005 /* MoonlightCore */; };
+		A50000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
+		A50000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
+		A50000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
+		A50000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
+		A50000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000084 /* MoonlightStreamSettingsView.swift */; };
 		A60000000000000000000001 /* OrbitMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000002 /* OrbitMacApp.swift */; };
 		A60000000000000000000002 /* OrbitMacModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000003 /* OrbitMacModels.swift */; };
 		A60000000000000000000003 /* OrbitMacDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* OrbitMacDesign.swift */; };
@@ -87,6 +93,12 @@
 		A60000000000000000000014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000013 /* Assets.xcassets */; };
 		A60000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000015 /* PrivacyInfo.xcprivacy */; };
 		A60000000000000000000016 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* SRP */; };
+		A60000000000000000000017 /* MoonlightCore in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000006 /* MoonlightCore */; };
+		A60000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
+		A60000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
+		A60000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
+		A60000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
+		A60000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000084 /* MoonlightStreamSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -183,6 +195,9 @@
 		B20000000000000000000072 /* OrbitWatchHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchHTTPClient.swift; sourceTree = "<group>"; };
 		B20000000000000000000080 /* MoonlightClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightClient.swift; sourceTree = "<group>"; };
 		B20000000000000000000081 /* MoonlightViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightViews.swift; sourceTree = "<group>"; };
+		B20000000000000000000082 /* MoonlightStreamLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamLauncher.swift; sourceTree = "<group>"; };
+		B20000000000000000000083 /* MoonlightStreamScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamScreen.swift; sourceTree = "<group>"; };
+		B20000000000000000000084 /* MoonlightStreamSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamSettingsView.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* OrbitWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B30000000000000000000002 /* OrbitWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchApp.swift; sourceTree = "<group>"; };
 		B30000000000000000000003 /* OrbitWatchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchViewModel.swift; sourceTree = "<group>"; };
@@ -231,6 +246,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A20000000000000000000030 /* SRP in Frameworks */,
+				A20000000000000000000031 /* MoonlightCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -260,6 +276,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A50000000000000000000008 /* SRP in Frameworks */,
+				A50000000000000000000009 /* MoonlightCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -268,6 +285,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A60000000000000000000016 /* SRP in Frameworks */,
+				A60000000000000000000017 /* MoonlightCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -349,8 +367,19 @@
 				B20000000000000000000002 /* OrbitActivityAttributes.swift */,
 				B20000000000000000000080 /* MoonlightClient.swift */,
 				B20000000000000000000081 /* MoonlightViews.swift */,
+				C20000000000000000000003 /* Streaming */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		C20000000000000000000003 /* Streaming */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000082 /* MoonlightStreamLauncher.swift */,
+				B20000000000000000000083 /* MoonlightStreamScreen.swift */,
+				B20000000000000000000084 /* MoonlightStreamSettingsView.swift */,
+			);
+			path = Streaming;
 			sourceTree = "<group>";
 		};
 		C30000000000000000000001 /* OrbitWatch */ = {
@@ -439,6 +468,7 @@
 			name = Orbit;
 			packageProductDependencies = (
 				F20000000000000000000001 /* SRP */,
+				F20000000000000000000004 /* MoonlightCore */,
 			);
 			productName = Orbit;
 			productReference = B10000000000000000000001 /* Orbit.app */;
@@ -512,6 +542,7 @@
 			name = OrbitTV;
 			packageProductDependencies = (
 				F20000000000000000000002 /* SRP */,
+				F20000000000000000000005 /* MoonlightCore */,
 			);
 			productName = OrbitTV;
 			productReference = B50000000000000000000001 /* OrbitTV.app */;
@@ -532,6 +563,7 @@
 			name = OrbitMac;
 			packageProductDependencies = (
 				F20000000000000000000003 /* SRP */,
+				F20000000000000000000006 /* MoonlightCore */,
 			);
 			productName = OrbitMac;
 			productReference = B60000000000000000000001 /* OrbitMac.app */;
@@ -558,6 +590,7 @@
 			mainGroup = C10000000000000000000001;
 			packageReferences = (
 				F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */,
+				F10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/MoonlightCore" */,
 			);
 			productRefGroup = C10000000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -636,6 +669,9 @@
 				A20000000000000000000071 /* OrbitCursorPipeline.swift in Sources */,
 				A20000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A20000000000000000000081 /* MoonlightViews.swift in Sources */,
+				A20000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
+				A20000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
+				A20000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */,
 				A20000000000000000000010 /* OrbitPairing.swift in Sources */,
 				A20000000000000000000011 /* PCDiscoveryView.swift in Sources */,
 				A20000000000000000000012 /* Appearance.swift in Sources */,
@@ -704,6 +740,9 @@
 				A50000000000000000000005 /* OrbitPairing.swift in Sources */,
 				A50000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A50000000000000000000081 /* MoonlightViews.swift in Sources */,
+				A50000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
+				A50000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
+				A50000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -732,6 +771,9 @@
 				A60000000000000000000013 /* OrbitPairing.swift in Sources */,
 				A60000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A60000000000000000000081 /* MoonlightViews.swift in Sources */,
+				A60000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
+				A60000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
+				A60000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -813,11 +855,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit connects to your PC over your local network to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -850,11 +893,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit connects to your PC over your local network to monitor hardware, control Windows, transfer files, share clipboard text and adjust application audio.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1268,6 +1312,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		F10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/MoonlightCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/MoonlightCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1294,6 +1345,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F10000000000000000000001 /* XCRemoteSwiftPackageReference "swift-srp" */;
 			productName = SRP;
+		};
+		F20000000000000000000004 /* MoonlightCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/MoonlightCore" */;
+			productName = MoonlightCore;
+		};
+		F20000000000000000000005 /* MoonlightCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/MoonlightCore" */;
+			productName = MoonlightCore;
+		};
+		F20000000000000000000006 /* MoonlightCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/MoonlightCore" */;
+			productName = MoonlightCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

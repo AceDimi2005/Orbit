@@ -715,6 +715,12 @@ final class MoonlightHostCoordinator: ObservableObject {
         if var stored = record { stored.httpPort = http; stored.httpsPort = https; MoonlightHostStore.save(stored); record = stored }
     }
 
+    /// Transport with the stored pairing, for launching and controlling streams.
+    func streamingTransport() async throws -> MoonlightTransport {
+        guard isPaired else { throw MoonlightError(message: "Pair Orbit with Sunshine on this PC first.") }
+        return try makeTransport(identity: try await Self.loadIdentity())
+    }
+
     private func makeTransport(identity: MoonlightClientIdentity?) throws -> MoonlightTransport {
         let endpoints = try MoonlightEndpoints.standard(host: address, httpPort: httpPort, httpsPort: httpsPort)
         return MoonlightTransport(endpoints: endpoints, uniqueID: MoonlightHostStore.uniqueID(), deviceName: Self.deviceName,

@@ -234,7 +234,7 @@ Activează Wake-on-LAN în BIOS/UEFI și opțiunea **Wake on Magic Packet** a ad
 
 Comenzile Windows raportează erori când nu se pot executa. HDR trimite scurtătura Win+Alt+B, dar starea HDR nu poate fi verificată de această versiune și rămâne necunoscută. „Close game” trimite o cerere de închidere numai jocului detectat și aflat în prim-plan. Butoanele gamepad sunt mapări de tastatură, nu un controller XInput virtual. Tastatura suportă caracterele din layout-ul Windows activ; caracterele nereprezentabile sunt respinse explicit.
 
-Biblioteca Sunshine este citită din fișierele locale de configurare. Orbit poate solicita pornirea comenzii definite într-o intrare, dar nu execută întregul ciclu Sunshine de pregătire/undo. Pentru intrări fără comandă (de exemplu Desktop), streaming de jocuri, audio, HDR sau rate mari de cadre, folosește Moonlight/Sunshine. Fluxul `/ws/stream` din Orbit este o **previzualizare JPEG a ecranului**, fără audio.
+Biblioteca Sunshine este citită din fișierele locale de configurare. Streaming-ul propriu-zis (video, audio, controller) se face direct între aplicație și Sunshine, prin protocolul Moonlight; agentul ajută doar la asociere și la pornire: `GET /api/sunshine/info` raportează porturile, dacă Sunshine rulează, `canSubmitPin` și `canStart`; `POST /api/sunshine/credentials` (JSON `username`/`password`) salvează login-ul web UI al Sunshine în `.orbit-sunshine-login`, lângă token, iar `DELETE` îl șterge; `POST /api/sunshine/pin?pin=1234&name=…` introduce PIN-ul de asociere prin API-ul local al Sunshine (`https://127.0.0.1:<port+1>/api/pin`, Basic auth cu login-ul salvat); `POST /api/sunshine/start` pornește `sunshine.exe` din Program Files când nu rulează. `POST /api/sunshine/launch` rămâne pentru pornirea comenzii unei intrări fără stream. Fluxul `/ws/stream` din Orbit este o **previzualizare JPEG a ecranului**, fără audio.
 
 ## Configurare avansată
 
@@ -254,6 +254,8 @@ Variabilele de mediu trebuie setate înainte de pornirea agentului:
 | `ORBIT_NETWORK_INTERFACE` | Numele exact al adaptorului de trafic; implicit selecție automată |
 | `ORBIT_GAME_PROCESSES` | Executabilele de jocuri suplimentare, separate prin `;` |
 | `ORBIT_SUNSHINE_APPS` | Calea explicită spre Sunshine `apps.json` |
+| `ORBIT_SUNSHINE_CONF` | Calea explicită spre `sunshine.conf` (porturi, nume) |
+| `ORBIT_SUNSHINE_LOGIN_FILE` | Altă locație pentru login-ul web UI Sunshine salvat (`.orbit-sunshine-login`) |
 
 API-ul de status include `agentVersion`, `sensorSource`, `sensorStatus`, `gpuSource` și `networkInterface`, păstrează câmpurile istorice și include `fps`, `fpsSource`, `fpsUnavailableReason`, `activeGameProcess`, `lastUpdated`, `volumeAvailable` și `telemetryAvailable`. Metricile extinse includ `cpuPowerWatts`, `gpuPowerWatts`, `vramUsedGB`, `vramTotalGB`, `cpuClockMHz`, `cpuClockSource`, `cpuFanRPM`, `gpuFanPercent`, `networkUploadMBps`, `networkDownloadMBps`, `diskReadMBps` și `diskWriteMBps`. Senzorii necunoscuți sunt `null`; clienții trebuie să respecte indicatorii de disponibilitate pentru câmpurile numerice păstrate pentru compatibilitate. `/api/specs` oferă inventarul structurat separat de măsurătorile live.
 
