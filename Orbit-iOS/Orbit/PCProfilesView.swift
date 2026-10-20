@@ -17,22 +17,34 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var lastKnownIPv4: String? = nil
     /// Bonjour `.local` name of the agent, used to find the PC again if its IPv4 changes.
     var bonjourHost: String? = nil
-}
+    /// Seconds since 1970 of the last edit; newer copies win when devices sync through iCloud.
+    var updatedAt: Double? = nil
 
-struct OrbitSyncedPCItem: Codable {
-    var id: String
-    var name: String
-    var address: String
-    var agentPort: Int
-    var securePort: Int
-    var certificateFingerprint: String
-    var macAddress: String
-    var subnetMask: String
-    var broadcastAddress: String
-    var wolPort: Int
-    var lastKnownIPv4: String
-    var apiToken: String
-    var isSelected: Bool
+    var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
+
+    func syncedItem(token: String, selected: Bool) -> OrbitSyncedPCItem {
+        OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
+                          certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
+                          broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4 ?? "",
+                          apiToken: token, isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast,
+                          updatedAt: updatedAt, origin: "iPhone")
+    }
+
+    init(from item: OrbitSyncedPCItem) {
+        id = item.id; name = item.name; address = item.address; agentPort = item.agentPort; securePort = item.securePort
+        certificateFingerprint = item.certificateFingerprint; macAddress = item.macAddress; subnetMask = item.subnetMask
+        broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
+        lastKnownIPv4 = item.lastKnownIPv4.isEmpty ? nil : item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
+    }
+
+    init(name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "", macAddress: String = "",
+         subnetMask: String = "255.255.255.0", broadcastAddress: String = "", wolPort: Int = 9, autoCalcBroadcast: Bool = true,
+         lastKnownIPv4: String? = nil, bonjourHost: String? = nil) {
+        self.name = name; self.address = address; self.agentPort = agentPort; self.securePort = securePort
+        self.certificateFingerprint = certificateFingerprint; self.macAddress = macAddress; self.subnetMask = subnetMask
+        self.broadcastAddress = broadcastAddress; self.wolPort = wolPort; self.autoCalcBroadcast = autoCalcBroadcast
+        self.lastKnownIPv4 = lastKnownIPv4; self.bonjourHost = bonjourHost
+    }
 }
 
 final class OrbitAppleTVSyncBroadcaster: @unchecked Sendable {
@@ -41,33 +53,17 @@ final class OrbitAppleTVSyncBroadcaster: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.dimitrie.orbit.tvsync")
     private var latestPayloadData = Data("[]".utf8)
 
-    func publishCurrentProfiles() {
+    /// `removing` lists the sync identities of PCs the user just deleted here, so other devices drop them too.
+    func publishCurrentProfiles(removing: [String] = []) {
         let profiles = PCProfileStore.load()
         let selectedID = UserDefaults.standard.string(forKey: "selectedPCID") ?? ""
-        let items: [OrbitSyncedPCItem] = profiles.map { p in
-            OrbitSyncedPCItem(
-                id: p.id,
-                name: p.name,
-                address: p.address,
-                agentPort: p.agentPort,
-                securePort: p.securePort,
-                certificateFingerprint: p.certificateFingerprint,
-                macAddress: p.macAddress,
-                subnetMask: p.subnetMask,
-                broadcastAddress: p.broadcastAddress,
-                wolPort: p.wolPort,
-                lastKnownIPv4: p.lastKnownIPv4 ?? "",
-                apiToken: PCProfileStore.token(p.id),
-                isSelected: p.id == selectedID
-            )
-        }
+        let items = profiles.map { $0.syncedItem(token: PCProfileStore.token($0.id), selected: $0.id == selectedID) }
         guard let encoded = try? JSONEncoder().encode(items) else { return }
         queue.async {
             self.latestPayloadData = encoded
         }
-        // 1. iCloud Key-Value Store (syncs across iPhone & Apple TV on same Apple ID)
-        NSUbiquitousKeyValueStore.default.set(encoded, forKey: "orbit.syncedPCs.v1")
-        NSUbiquitousKeyValueStore.default.synchronize()
+        // 1. iCloud Key-Value Store: merged with what the Mac and Apple TV published, written only on change.
+        OrbitPCCloudSync.publish(local: items, removing: removing)
         // 2. Shared App Group UserDefaults
         UserDefaults(suiteName: "group.com.dimitrie.orbit")?.set(encoded, forKey: "orbit.syncedPCs.v1")
         // 3. Simulator host bridge for testing iPhone + Apple TV simulators on the same Mac
@@ -101,7 +97,47 @@ final class OrbitAppleTVSyncBroadcaster: @unchecked Sendable {
 enum PCProfileStore {
     static func load() -> [SavedPC] {
         guard let data = UserDefaults.standard.data(forKey: "savedPCs.v1"), let profiles = try? JSONDecoder().decode([SavedPC].self, from: data) else { return [] }
-        return profiles
+        let cleaned = normalized(profiles)
+        if cleaned != profiles, let data = try? JSONEncoder().encode(cleaned) { UserDefaults.standard.set(data, forKey: "savedPCs.v1") }
+        return cleaned
+    }
+
+    /// Numeric addresses first, and one profile per PC: a `.local` Bonjour name becomes the
+    /// fallback once an IPv4 is known, and duplicates created for the same agent (same
+    /// certificate, or the same address without a certificate) collapse into the copy that
+    /// still has a token. Tokens of dropped copies move to the survivor.
+    static func normalized(_ profiles: [SavedPC]) -> [SavedPC] {
+        var result: [SavedPC] = []
+        for var profile in profiles {
+            let resolved = OrbitPCCloudSync.normalizedAddress(address: profile.address, lastKnownIPv4: profile.lastKnownIPv4 ?? "", bonjourHost: profile.bonjourHost)
+            profile.address = resolved.address
+            profile.bonjourHost = resolved.bonjourHost
+            let fingerprint = OrbitPCCloudSync.normalizedFingerprint(profile.certificateFingerprint)
+            let addresses = Set([profile.address, profile.lastKnownIPv4 ?? "", profile.bonjourHost ?? ""].filter { !$0.isEmpty })
+            let twin = result.firstIndex { other in
+                let otherFingerprint = OrbitPCCloudSync.normalizedFingerprint(other.certificateFingerprint)
+                if !fingerprint.isEmpty, !otherFingerprint.isEmpty { return fingerprint == otherFingerprint }
+                let otherAddresses = Set([other.address, other.lastKnownIPv4 ?? "", other.bonjourHost ?? ""].filter { !$0.isEmpty })
+                return other.agentPort == profile.agentPort && !addresses.isDisjoint(with: otherAddresses)
+            }
+            guard let index = twin else { result.append(profile); continue }
+            let existing = result[index]
+            let existingToken = token(existing.id), newToken = token(profile.id)
+            // Keep the copy with a token, else the one with a certificate, else the older entry.
+            let keepNew = (existingToken.isEmpty && !newToken.isEmpty)
+                || (existingToken.isEmpty == newToken.isEmpty && OrbitPCCloudSync.normalizedFingerprint(existing.certificateFingerprint).isEmpty && !fingerprint.isEmpty)
+            var survivor = keepNew ? profile : existing
+            let dropped = keepNew ? existing : profile
+            if token(survivor.id).isEmpty, !token(dropped.id).isEmpty { saveToken(token(dropped.id), for: survivor.id, publish: false) }
+            if OrbitPCCloudSync.normalizedFingerprint(survivor.certificateFingerprint).isEmpty { survivor.certificateFingerprint = dropped.certificateFingerprint }
+            if survivor.macAddress.isEmpty { survivor.macAddress = dropped.macAddress }
+            if survivor.bonjourHost == nil { survivor.bonjourHost = dropped.bonjourHost }
+            if survivor.lastKnownIPv4 == nil { survivor.lastKnownIPv4 = dropped.lastKnownIPv4 }
+            if survivor.name == "My PC", dropped.name != "My PC" { survivor.name = dropped.name }
+            if UserDefaults.standard.string(forKey: "selectedPCID") == dropped.id { UserDefaults.standard.set(survivor.id, forKey: "selectedPCID") }
+            result[index] = survivor
+        }
+        return result
     }
     static func save(_ profiles: [SavedPC]) {
         if let data = try? JSONEncoder().encode(profiles) { UserDefaults.standard.set(data, forKey: "savedPCs.v1") }
@@ -116,14 +152,14 @@ enum PCProfileStore {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
-    static func saveToken(_ value: String, for id: String) {
+    static func saveToken(_ value: String, for id: String, publish: Bool = true) {
         let query = query(id), data = Data(value.utf8)
         if SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
             var item = query; item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             SecItemAdd(item as CFDictionary, nil)
         }
-        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+        if publish { OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles() }
     }
     static func removeToken(_ id: String) {
         SecItemDelete(query(id) as CFDictionary)
@@ -138,9 +174,10 @@ extension OrbitViewModel {
         guard OrbitAPIClient.validFingerprint(fingerprint), !discoveredHost.isEmpty else { throw OrbitError(message: "Invalid PC pairing response.") }
         // Store the plain IPv4 address. The agent reports the adapter address the phone
         // actually connected through, which beats a `.local` name for Wake-on-LAN and VPNs.
-        let address = IPv4Address(discoveredHost) != nil ? discoveredHost : (IPv4Address(credentials.ipAddress) != nil ? credentials.ipAddress : discoveredHost)
-        var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }) ?? SavedPC(name: credentials.hostname, address: address)
+        var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }) ?? SavedPC(name: credentials.hostname, address: discoveredHost)
+        let address = [credentials.ipAddress, discoveredHost, profile.lastKnownIPv4 ?? ""].first { IPv4Address($0) != nil } ?? discoveredHost
         profile.name = credentials.hostname; profile.address = address
+        profile.updatedAt = Date().timeIntervalSince1970
         let fallbackName = bonjourHost.isEmpty ? (discoveredHost.hasSuffix(".local") ? discoveredHost : "") : bonjourHost
         if !fallbackName.isEmpty { profile.bonjourHost = fallbackName }
         profile.agentPort = credentials.agentPort; profile.securePort = credentials.securePort
@@ -168,6 +205,55 @@ extension OrbitViewModel {
             try OrbitWidgetConnectionStore.setDefault(id: profile.id)
         } catch { widgetSetupError = error.localizedDescription }
     }
+    /// Applies what the Mac and Apple TV published to iCloud: new PCs appear with their token,
+    /// newer edits replace older local copies, and PCs removed elsewhere disappear. Returns the
+    /// number of profiles that changed.
+    @discardableResult
+    func importCloudProfiles() -> Int {
+        guard !isDemoMode || savedPCs.isEmpty else { return 0 }
+        let removed = OrbitPCCloudSync.removed()
+        var changed = 0
+        var profiles = savedPCs
+        var cloudSelected: String?
+        for item in OrbitPCCloudSync.importableItems() {
+            let key = OrbitPCCloudSync.identity(of: item)
+            if item.isSelected { cloudSelected = item.id }
+            if let index = profiles.firstIndex(where: { $0.syncIdentity == key }) {
+                let local = profiles[index]
+                guard (item.updatedAt ?? 0) > (local.updatedAt ?? 0) else { continue }
+                var updated = SavedPC(from: item)
+                updated.id = local.id
+                if OrbitPCCloudSync.normalizedFingerprint(updated.certificateFingerprint).isEmpty { updated.certificateFingerprint = local.certificateFingerprint }
+                if updated.macAddress.isEmpty { updated.macAddress = local.macAddress }
+                if !item.apiToken.isEmpty { PCProfileStore.saveToken(item.apiToken, for: local.id, publish: false) }
+                guard updated != local else { continue }
+                profiles[index] = updated
+                changed += 1
+            } else {
+                guard !item.apiToken.isEmpty, !item.address.isEmpty else { continue }
+                let profile = SavedPC(from: item)
+                PCProfileStore.saveToken(item.apiToken, for: profile.id, publish: false)
+                profiles.append(profile)
+                changed += 1
+            }
+        }
+        for profile in profiles where (removed[profile.syncIdentity] ?? 0) > (profile.updatedAt ?? 0) {
+            profiles.removeAll { $0.id == profile.id }
+            PCProfileStore.removeToken(profile.id)
+            try? OrbitWidgetConnectionStore.remove(id: profile.id)
+            changed += 1
+        }
+        guard changed > 0 else { return 0 }
+        savedPCs = PCProfileStore.normalized(profiles)
+        PCProfileStore.save(savedPCs)
+        if let current = savedPCs.first(where: { $0.id == selectedPCID }) {
+            if current.address != cleanHost() || current.agentPort != agentPort || current.securePort != securePort { selectPC(current, persistCurrent: false) }
+        } else if let next = savedPCs.first(where: { $0.id == cloudSelected }) ?? savedPCs.first {
+            selectPC(next, persistCurrent: false)
+        }
+        statusLog = "Synced \(changed) PC\(changed == 1 ? "" : "s") from iCloud"
+        return changed
+    }
     var selectedPCStorageKey: String {
         if let profile = savedPCs.first(where: { $0.id == selectedPCID && $0.address == cleanHost() && $0.agentPort == agentPort }) { return profile.id }
         return "\(cleanHost().lowercased()):\(agentPort)"
@@ -185,7 +271,9 @@ extension OrbitViewModel {
         profile.name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(profile.certificateFingerprint)
         let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        PCProfileStore.saveToken(cleanToken, for: profile.id)
+        if let previous = savedPCs.first(where: { $0.id == profile.id }), previous != profile { profile.updatedAt = Date().timeIntervalSince1970 }
+        if profile.updatedAt == nil { profile.updatedAt = Date().timeIntervalSince1970 }
+        PCProfileStore.saveToken(cleanToken, for: profile.id, publish: false)
         if let index = savedPCs.firstIndex(where: { $0.id == profile.id }) { savedPCs[index] = profile } else { savedPCs.append(profile) }
         PCProfileStore.save(savedPCs)
         OrbitWidgetConnectionStore.syncPowerProfile(
@@ -211,8 +299,9 @@ extension OrbitViewModel {
         savedPCs[index].autoCalcBroadcast = autoCalcBroadcast
         savedPCs[index].lastKnownIPv4 = lastKnownPCIPv4
         savedPCs[index].securePort = securePort; savedPCs[index].certificateFingerprint = certificateFingerprint
+        savedPCs[index].updatedAt = Date().timeIntervalSince1970
+        PCProfileStore.saveToken(apiToken, for: savedPCs[index].id, publish: false)
         PCProfileStore.save(savedPCs)
-        PCProfileStore.saveToken(apiToken, for: savedPCs[index].id)
         let p = savedPCs[index]
         OrbitWidgetConnectionStore.syncPowerProfile(
             id: p.id,
@@ -230,7 +319,12 @@ extension OrbitViewModel {
     }
     func saveCurrentConnection() {
         guard isConfigured, !isDemoMode else { return }
-        var profile = savedPCs.first(where: { $0.id == selectedPCID }) ?? SavedPC(name: metrics.isOnline ? metrics.hostname : "My PC", address: cleanHost())
+        let host = cleanHost()
+        let fingerprint = OrbitAPIClient.normalizedFingerprint(certificateFingerprint)
+        var profile = savedPCs.first(where: { $0.id == selectedPCID })
+            ?? savedPCs.first(where: { !fingerprint.isEmpty && OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint })
+            ?? savedPCs.first(where: { $0.agentPort == agentPort && ($0.address == host || $0.lastKnownIPv4 == host || $0.bonjourHost == host) })
+            ?? SavedPC(name: metrics.isOnline && !metrics.hostname.isEmpty ? metrics.hostname : "PC \(host)", address: host)
         profile.address = cleanHost(); profile.agentPort = agentPort; profile.securePort = securePort
         profile.certificateFingerprint = certificateFingerprint
         profile.macAddress = pcMAC; profile.subnetMask = subnetMask; profile.broadcastAddress = wolTargetIP
@@ -259,6 +353,7 @@ extension OrbitViewModel {
         try? OrbitWidgetConnectionStore.remove(id: profile.id)
         PCProfileStore.removeToken(profile.id)
         savedPCs.removeAll { $0.id == profile.id }; PCProfileStore.save(savedPCs)
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles(removing: [profile.syncIdentity])
         if selectedPCID == profile.id {
             selectedPCID = ""; UserDefaults.standard.removeObject(forKey: "selectedPCID")
             pcIP = ""; apiToken = ""; certificateFingerprint = ""; pcMAC = ""; wolTargetIP = ""

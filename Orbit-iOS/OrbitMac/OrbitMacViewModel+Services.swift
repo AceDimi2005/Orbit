@@ -855,7 +855,9 @@ extension OrbitMacViewModel {
             var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint })
                 ?? MacSavedPC(name: credentials.hostname, address: target.host)
             profile.name = credentials.hostname
-            profile.address = target.host
+            profile.address = OrbitPCCloudSync.isIPv4(credentials.ipAddress) ? credentials.ipAddress : target.host
+            if target.host.lowercased().hasSuffix(".local") { profile.bonjourHost = target.host }
+            profile.updatedAt = Date().timeIntervalSince1970
             profile.agentPort = credentials.agentPort
             profile.securePort = credentials.securePort
             profile.certificateFingerprint = fingerprint
@@ -943,35 +945,46 @@ extension OrbitMacViewModel {
     }
 
     private func importSyncedItems(_ items: [MacSyncedPCItem], source: String) {
+        let removed = OrbitPCCloudSync.removed()
         var imported = 0
         var preferred: String?
-        for item in items where !item.address.isEmpty {
-            let profile = MacSavedPC(
-                id: item.id,
-                name: item.name.isEmpty ? "My PC" : item.name,
-                address: item.address,
-                agentPort: item.agentPort,
-                securePort: item.securePort,
-                certificateFingerprint: OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint),
-                macAddress: item.macAddress,
-                subnetMask: item.subnetMask,
-                broadcastAddress: item.broadcastAddress,
-                wolPort: item.wolPort,
-                lastKnownIPv4: item.lastKnownIPv4
-            )
-            if !item.apiToken.isEmpty { MacTokenStore.save(item.apiToken, for: profile.id) }
-            if let index = savedPCs.firstIndex(where: { $0.id == profile.id || (!profile.address.isEmpty && $0.address == profile.address) }) {
+        for raw in items where !raw.address.isEmpty {
+            let item = OrbitPCCloudSync.normalized(raw)
+            let key = OrbitPCCloudSync.identity(of: item)
+            if (removed[key] ?? 0) > (item.updatedAt ?? 0) { continue }
+            if let index = savedPCs.firstIndex(where: { $0.syncIdentity == key }) {
+                let local = savedPCs[index]
+                guard (item.updatedAt ?? 0) > (local.updatedAt ?? 0) || MacTokenStore.token(for: local.id).isEmpty else { continue }
+                var profile = MacSavedPC(from: item)
+                profile.id = local.id
+                profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint)
+                if profile.certificateFingerprint.isEmpty { profile.certificateFingerprint = local.certificateFingerprint }
+                if profile.name.isEmpty { profile.name = local.name }
+                if !item.apiToken.isEmpty { MacTokenStore.save(item.apiToken, for: local.id) }
+                guard profile != local else { continue }
                 savedPCs[index] = profile
             } else {
+                guard !item.apiToken.isEmpty else { continue }
+                var profile = MacSavedPC(from: item)
+                profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint)
+                if profile.name.isEmpty { profile.name = "PC \(profile.address)" }
+                MacTokenStore.save(item.apiToken, for: profile.id)
                 savedPCs.append(profile)
             }
-            if item.isSelected { preferred = profile.id }
+            if item.isSelected { preferred = savedPCs.first(where: { $0.syncIdentity == key })?.id }
+            imported += 1
+        }
+        for profile in savedPCs where (removed[profile.syncIdentity] ?? 0) > (profile.updatedAt ?? 0) {
+            MacTokenStore.remove(profile.id)
+            savedPCs.removeAll { $0.id == profile.id }
             imported += 1
         }
         guard imported > 0 else { return }
         persistSavedPCs()
         iPhoneSyncMessage = "Imported \(imported) PC\(imported == 1 ? "" : "s") from \(source)."
-        if let id = preferred ?? savedPCs.first?.id, let profile = savedPCs.first(where: { $0.id == id }), id != selectedPCID || !metrics.isOnline {
+        if let current = savedPCs.first(where: { $0.id == selectedPCID }) {
+            if !metrics.isOnline { selectPC(current) }
+        } else if let id = preferred ?? savedPCs.first?.id, let profile = savedPCs.first(where: { $0.id == id }) {
             selectPC(profile)
         }
     }

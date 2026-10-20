@@ -1,6 +1,214 @@
 import MoonlightCore
 import SwiftUI
 
+#if os(tvOS)
+/// tvOS version of the stream settings: every choice is a focusable row that opens a list of
+/// options (the Form pickers used on iOS render as an empty panel on tvOS 26), toggles stay inline,
+/// and the bitrate is picked from Moonlight's presets or kept at the recommended value.
+struct MoonlightStreamSettingsView: View {
+    @ObservedObject var store: MoonlightStreamSettingsStore
+    var accent: Color
+    var hostSupportsHEVC: Bool? = nil
+    var onDone: () -> Void
+
+    private static let bitratePresetsKbps = [2_000, 5_000, 8_000, 10_000, 15_000, 20_000, 25_000, 30_000, 40_000, 50_000, 60_000, 80_000, 100_000, 120_000, 150_000]
+
+    enum Setting: String, Hashable, CaseIterable {
+        case resolution, frameRate, bitrate, codec, audio, packetSize
+    }
+    @State private var path: [Setting] = []
+
+    private var settings: Binding<MoonlightStreamSettings> { $store.settings }
+    private var pixelSize: (width: Int, height: Int) { store.settings.pixelSize }
+
+    /// 0 stands for "recommended"; any other value is a manual bitrate in kbps.
+    private var bitrateSelection: Binding<Int> {
+        Binding(get: { store.settings.usesRecommendedBitrate ? 0 : store.settings.customBitrateKbps },
+                set: { value in
+                    if value == 0 { store.settings.usesRecommendedBitrate = true } else { store.settings.usesRecommendedBitrate = false; store.settings.customBitrateKbps = value }
+                })
+    }
+
+    private var bitrateOptions: [TVStreamOption<Int>] {
+        var options = [TVStreamOption(value: 0, title: "Recommended", detail: "\(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps")]
+        var presets = Self.bitratePresetsKbps
+        if !store.settings.usesRecommendedBitrate, !presets.contains(store.settings.customBitrateKbps) { presets.append(store.settings.customBitrateKbps); presets.sort() }
+        options += presets.map { TVStreamOption(value: $0, title: bitrateText($0), detail: nil) }
+        return options
+    }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            List {
+                Section {
+                    optionRow("Resolution", value: resolutionText(store.settings.resolution), setting: .resolution)
+                    optionRow("Frame rate", value: "\(store.settings.frameRate) fps", setting: .frameRate)
+                    optionRow("Bitrate", value: store.settings.usesRecommendedBitrate ? "Recommended · \(bitrateText(store.settings.recommendedBitrateKbps))" : bitrateText(store.settings.customBitrateKbps),
+                              setting: .bitrate)
+                } header: {
+                    Text("Video")
+                } footer: {
+                    Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or over Tailscale if the picture breaks up.")
+                }
+
+                Section {
+                    optionRow("Codec", value: store.settings.codec.title, setting: .codec)
+                    Toggle("HDR (HEVC Main 10)", isOn: settings.hdr)
+                        .disabled(!MoonlightDeviceCapabilities.supportsHDR || store.settings.codec == .h264)
+                    Toggle("Frame pacing", isOn: settings.framePacing)
+                } header: {
+                    Text("Codec & presentation")
+                } footer: {
+                    Text(codecFootnote)
+                }
+
+                Section {
+                    optionRow("Layout", value: store.settings.audio.title, setting: .audio)
+                    Toggle("Keep playing audio on the PC", isOn: settings.playAudioOnHost)
+                } header: {
+                    Text("Audio")
+                }
+
+                Section {
+                    Toggle("Optimize game settings", isOn: settings.optimizeGameSettings)
+                    Toggle("Quit app when the stream ends", isOn: settings.quitAppOnDisconnect)
+                } header: {
+                    Text("Host")
+                } footer: {
+                    Text("Optimize asks Sunshine to switch the PC to the stream resolution while streaming. Quitting on disconnect closes the app on the PC instead of leaving it running for a later resume.")
+                }
+
+                Section {
+                    Toggle("Show statistics overlay", isOn: settings.showStatistics)
+                } header: {
+                    Text("Overlay")
+                } footer: {
+                    Text("Game controllers paired with Apple TV are forwarded; the Siri Remote acts as a trackpad. Press Menu during a stream to show the controls.")
+                }
+
+                Section {
+                    optionRow("Packet size", value: store.settings.packetSize.title, setting: .packetSize)
+                } header: {
+                    Text("Network")
+                } footer: {
+                    Text("Choose the VPN size when streaming through Tailscale or another tunnel; smaller packets avoid fragmentation.")
+                }
+
+                Section {
+                    Button("Reset to Moonlight defaults", role: .destructive) { store.resetToDefaults() }
+                    Button("Done") { onDone() }
+                }
+            }
+            .navigationTitle("Stream Settings")
+            .navigationDestination(for: Setting.self) { setting in optionList(for: setting) }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone() } }
+            }
+        }
+        .tint(accent)
+        .onAppear {
+            #if DEBUG
+            // `xcrun simctl launch <udid> com.dimitrie.orbit -orbitStreamSettings resolution` opens a list straight away (screenshots).
+            if path.isEmpty, let raw = UserDefaults.standard.string(forKey: "orbitStreamSettings"), let setting = Setting(rawValue: raw) { path = [setting] }
+            #endif
+        }
+    }
+
+    private func optionRow(_ title: String, value: String, setting: Setting) -> some View {
+        NavigationLink(value: setting) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func optionList(for setting: Setting) -> some View {
+        switch setting {
+        case .resolution:
+            TVStreamOptionList(title: "Resolution", options: MoonlightStreamSettings.Resolution.allCases.map { TVStreamOption(value: $0, title: $0.title, detail: resolutionText($0)) },
+                               selection: settings.resolution, accent: accent)
+        case .frameRate:
+            TVStreamOptionList(title: "Frame rate", options: MoonlightDeviceCapabilities.frameRateOptions.map { TVStreamOption(value: $0, title: fps($0), detail: nil) },
+                               selection: settings.frameRate, accent: accent)
+        case .bitrate:
+            TVStreamOptionList(title: "Bitrate", options: bitrateOptions, selection: bitrateSelection, accent: accent)
+        case .codec:
+            TVStreamOptionList(title: "Codec", options: MoonlightStreamSettings.Codec.allCases.map { TVStreamOption(value: $0, title: $0.title, detail: nil) },
+                               selection: settings.codec, accent: accent)
+        case .audio:
+            TVStreamOptionList(title: "Audio layout", options: MoonlightStreamSettings.AudioLayout.allCases.map { TVStreamOption(value: $0, title: $0.title, detail: nil) },
+                               selection: settings.audio, accent: accent)
+        case .packetSize:
+            TVStreamOptionList(title: "Packet size", options: MoonlightStreamSettings.PacketSize.allCases.map { TVStreamOption(value: $0, title: $0.title, detail: nil) },
+                               selection: settings.packetSize, accent: accent)
+        }
+    }
+
+    private var codecFootnote: String {
+        var notes: [String] = []
+        notes.append(MoonlightDeviceCapabilities.supportsHEVC ? "This Apple TV decodes HEVC in hardware; Automatic prefers it and falls back to H.264." : "This Apple TV has no HEVC hardware decoder, so H.264 is used.")
+        if let hostSupportsHEVC, !hostSupportsHEVC { notes.append("The PC's encoder reports no HEVC support.") }
+        notes.append(MoonlightDeviceCapabilities.supportsHDR ? "HDR needs an HDR-capable PC display and Sunshine's HDR option." : "This TV cannot show HDR.")
+        notes.append("Frame pacing holds one frame to smooth jitter at the cost of a little latency. AV1 is not available in Orbit yet.")
+        return notes.joined(separator: " ")
+    }
+
+    private func resolutionText(_ resolution: MoonlightStreamSettings.Resolution) -> String {
+        let size = resolution.pixelSize(native: MoonlightDeviceCapabilities.nativePixelSize)
+        return resolution == .native ? "Native · \(size.width) × \(size.height)" : "\(resolution.title) · \(size.width) × \(size.height)"
+    }
+
+    private func fps(_ value: Int) -> String { "\(value) fps" }
+
+    private func bitrateText(_ kbps: Int) -> String {
+        kbps % 1000 == 0 ? "\(kbps / 1000) Mbps" : String(format: "%.1f Mbps", Double(kbps) / 1000)
+    }
+}
+
+struct TVStreamOption<Value: Hashable>: Identifiable {
+    var value: Value
+    var title: String
+    var detail: String?
+    var id: Value { value }
+}
+
+/// One choice per row, the current one ticked; selecting returns to the settings list.
+struct TVStreamOptionList<Value: Hashable>: View {
+    let title: String
+    let options: [TVStreamOption<Value>]
+    @Binding var selection: Value
+    var accent: Color
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            ForEach(options) { option in
+                Button {
+                    selection = option.value
+                    dismiss()
+                } label: {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(option.title)
+                            if let detail = option.detail {
+                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if option.value == selection {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(title)
+    }
+}
+#else
 /// Every Moonlight stream setting: resolution, frame rate, bitrate, codec, HDR, audio, host and input.
 struct MoonlightStreamSettingsView: View {
     @ObservedObject var store: MoonlightStreamSettingsStore
@@ -178,3 +386,5 @@ struct MoonlightStreamSettingsView: View {
         kbps % 1000 == 0 ? "\(kbps / 1000) Mbps" : String(format: "%.1f Mbps", Double(kbps) / 1000)
     }
 }
+
+#endif

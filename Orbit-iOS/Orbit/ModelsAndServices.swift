@@ -394,6 +394,7 @@ final class OrbitViewModel: ObservableObject {
     private var lastVolumeChangeTime: Date = .distantPast
     private var lastSpecsAttempt: Date = .distantPast
     private var lastBonjourRediscovery: Date = .distantPast
+    private var cloudObserver: NSObjectProtocol?
     private var hasSynced = false
     private var isRefreshing = false
     private var appActive = true
@@ -423,6 +424,19 @@ final class OrbitViewModel: ObservableObject {
         }
         if isDemoMode { metrics = .demo; games = Self.demoGames }
         OrbitWatchBridge.shared.attach(to: self)
+        // A duplicate profile may have been folded into another one while loading; follow it.
+        if !selectedPCID.isEmpty, !savedPCs.contains(where: { $0.id == selectedPCID }) {
+            let host = cleanHost()
+            if let match = savedPCs.first(where: { $0.address == host || $0.lastKnownIPv4 == host || $0.bonjourHost == host }) ?? savedPCs.first {
+                selectedPCID = match.id; UserDefaults.standard.set(match.id, forKey: "selectedPCID")
+            }
+        }
+        NSUbiquitousKeyValueStore.default.synchronize()
+        cloudObserver = NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+                                                               object: NSUbiquitousKeyValueStore.default, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.importCloudProfiles() }
+        }
+        importCloudProfiles()
         OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
         OrbitBackgroundRefresh.handler = { [weak self] in await self?.backgroundRefresh() ?? false }
         startMonitoringLoop()

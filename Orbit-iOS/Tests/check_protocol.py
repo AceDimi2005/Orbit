@@ -21,7 +21,7 @@ models = models.replace("import Foundation\n", "import Foundation\nstruct PCMetr
 models = "import Darwin\n" + models
 wake = source[source.index("final class WakeOnLANService"):source.index("private enum TokenStore")]
 profiles = (ROOT / "Orbit-iOS/Orbit/PCProfilesView.swift").read_text()
-saved_pc = profiles[profiles.index("struct SavedPC:"):profiles.index("struct OrbitSyncedPCItem:")]
+saved_pc = profiles[profiles.index("struct SavedPC:"):profiles.index("final class OrbitAppleTVSyncBroadcaster")]
 models += wake + saved_pc
 
 with tempfile.TemporaryDirectory(prefix="orbit-protocol-") as directory:
@@ -106,5 +106,5 @@ precondition(history.series(for: .cpuLoad).isEmpty)
 print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address, legacy PC profiles and bounded telemetry history with missing/invalid/offline readings")
 ''')
     binary = temporary / "protocol-check"
-    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
+    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPCSync.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary), str(temporary)], check=True)

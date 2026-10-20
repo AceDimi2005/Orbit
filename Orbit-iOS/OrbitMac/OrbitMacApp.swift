@@ -8,6 +8,39 @@ struct OrbitMacApp: App {
     @Environment(\.openWindow) private var openWindow
 
     init() {
+        #if DEBUG
+        // `ORBIT_IDENTITY_SELFTEST=1 OrbitMac.app/Contents/MacOS/OrbitMac` prints the Keychain state of the
+        // Sunshine client identity from inside the sandboxed, signed app and exits.
+        let environment = ProcessInfo.processInfo.environment
+        switch environment["ORBIT_IDENTITY_SELFTEST"] {
+        case "1":
+            print(MoonlightIdentityStore.diagnostics())
+            exit(0)
+        case "reset":
+            MoonlightIdentityStore.reset()
+            print(MoonlightIdentityStore.diagnostics())
+            exit(0)
+        case "export":
+            print((try? MoonlightIdentityStore.currentCertificatePEM()) ?? "no identity")
+            exit(0)
+        case "tls":
+            // ORBIT_TLS_URL=https://127.0.0.1:47984/serverinfo ORBIT_TLS_SERVER_CERT=/path/server.der
+            // The sandbox cannot read files outside the container, so the server certificate comes in base64.
+            guard let url = environment["ORBIT_TLS_URL"].flatMap(URL.init(string:)),
+                  let der = environment["ORBIT_TLS_SERVER_CERT_B64"].flatMap({ Data(base64Encoded: $0) }) else {
+                print("ORBIT_TLS_URL and ORBIT_TLS_SERVER_CERT_B64 are required"); exit(2)
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            Task.detached {
+                print(await MoonlightIdentityStore.probeTLS(url: url, serverCertificateDER: der))
+                semaphore.signal()
+            }
+            semaphore.wait()
+            exit(0)
+        default:
+            break
+        }
+        #endif
         // Ocean used to be the implicit default; installs that never chose another theme move to Noir once.
         let defaults = UserDefaults.standard
         if !defaults.bool(forKey: "mac.theme.noirMigrated") {

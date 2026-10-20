@@ -592,8 +592,35 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
     var wolPort: Int = 9
     var autoCalcBroadcast: Bool = true
     var lastKnownIPv4: String = ""
+    var bonjourHost: String? = nil
+    /// Seconds since 1970 of the last edit; newer copies win when devices sync through iCloud.
+    var updatedAt: Double? = nil
 
     var isSecure: Bool { OrbitAPIClient.validFingerprint(certificateFingerprint) }
+    var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
+
+    func syncedItem(token: String, selected: Bool) -> OrbitSyncedPCItem {
+        OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
+                          certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
+                          broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4, apiToken: token,
+                          isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast, updatedAt: updatedAt, origin: "Mac")
+    }
+
+    init(from item: OrbitSyncedPCItem) {
+        id = item.id; name = item.name; address = item.address; agentPort = item.agentPort; securePort = item.securePort
+        certificateFingerprint = item.certificateFingerprint; macAddress = item.macAddress; subnetMask = item.subnetMask
+        broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
+        lastKnownIPv4 = item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
+    }
+
+    init(id: String = UUID().uuidString, name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "",
+         macAddress: String = "", subnetMask: String = "255.255.255.0", broadcastAddress: String = "", wolPort: Int = 9, autoCalcBroadcast: Bool = true,
+         lastKnownIPv4: String = "", bonjourHost: String? = nil, updatedAt: Double? = nil) {
+        self.id = id; self.name = name; self.address = address; self.agentPort = agentPort; self.securePort = securePort
+        self.certificateFingerprint = certificateFingerprint; self.macAddress = macAddress; self.subnetMask = subnetMask
+        self.broadcastAddress = broadcastAddress; self.wolPort = wolPort; self.autoCalcBroadcast = autoCalcBroadcast
+        self.lastKnownIPv4 = lastKnownIPv4; self.bonjourHost = bonjourHost; self.updatedAt = updatedAt
+    }
 }
 
 struct MacDiscoveredPC: Identifiable, Equatable, Hashable {
@@ -607,21 +634,8 @@ struct MacDiscoveredPC: Identifiable, Equatable, Hashable {
 }
 
 /// Payload published by the iPhone app over iCloud KVS, the App Group and `_orbit-iphone._tcp`.
-struct MacSyncedPCItem: Codable {
-    var id: String
-    var name: String
-    var address: String
-    var agentPort: Int
-    var securePort: Int
-    var certificateFingerprint: String
-    var macAddress: String
-    var subnetMask: String
-    var broadcastAddress: String
-    var wolPort: Int
-    var lastKnownIPv4: String
-    var apiToken: String
-    var isSelected: Bool
-}
+/// Shared with iPhone and Apple TV through iCloud; see Shared/OrbitPCSync.swift.
+typealias MacSyncedPCItem = OrbitSyncedPCItem
 
 // MARK: - Navigation
 

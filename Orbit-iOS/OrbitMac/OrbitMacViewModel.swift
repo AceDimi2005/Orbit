@@ -210,12 +210,21 @@ final class OrbitMacViewModel: ObservableObject {
     func loadSavedPCs() {
         guard let data = UserDefaults.standard.data(forKey: Self.savedPCsKey),
               let decoded = try? JSONDecoder().decode([MacSavedPC].self, from: data) else { return }
-        savedPCs = decoded
+        savedPCs = decoded.map { profile in
+            var copy = profile
+            let resolved = OrbitPCCloudSync.normalizedAddress(address: profile.address, lastKnownIPv4: profile.lastKnownIPv4, bonjourHost: profile.bonjourHost)
+            copy.address = resolved.address
+            copy.bonjourHost = resolved.bonjourHost
+            return copy
+        }
         if selectedPCID.isEmpty, let first = decoded.first { selectedPCID = first.id }
     }
 
-    func persistSavedPCs() {
+    /// Saves locally and publishes the result to iCloud (merged with the iPhone's and the Apple TV's copies).
+    func persistSavedPCs(removing: [String] = []) {
         if let data = try? JSONEncoder().encode(savedPCs) { UserDefaults.standard.set(data, forKey: Self.savedPCsKey) }
+        let items = savedPCs.map { $0.syncedItem(token: MacTokenStore.token(for: $0.id), selected: $0.id == selectedPCID) }
+        OrbitPCCloudSync.publish(local: items, removing: removing)
     }
 
     func savePC(_ profile: MacSavedPC, token: String?, select: Bool = true) {
@@ -224,6 +233,8 @@ final class OrbitMacViewModel: ObservableObject {
         cleaned.address = cleaned.address.trimmingCharacters(in: .whitespacesAndNewlines)
         cleaned.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(cleaned.certificateFingerprint)
         if let token, !token.isEmpty { MacTokenStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines), for: cleaned.id) }
+        if let previous = savedPCs.first(where: { $0.id == cleaned.id }), previous != cleaned { cleaned.updatedAt = Date().timeIntervalSince1970 }
+        if cleaned.updatedAt == nil { cleaned.updatedAt = Date().timeIntervalSince1970 }
         if let index = savedPCs.firstIndex(where: { $0.id == cleaned.id }) { savedPCs[index] = cleaned } else { savedPCs.append(cleaned) }
         persistSavedPCs()
         if select { selectPC(cleaned) }
@@ -241,7 +252,7 @@ final class OrbitMacViewModel: ObservableObject {
     func removePC(_ profile: MacSavedPC) {
         MacTokenStore.remove(profile.id)
         savedPCs.removeAll { $0.id == profile.id }
-        persistSavedPCs()
+        persistSavedPCs(removing: [profile.syncIdentity])
         if selectedPCID == profile.id {
             selectedPCID = savedPCs.first?.id ?? ""
             UserDefaults.standard.set(selectedPCID, forKey: "mac.selectedPCID")

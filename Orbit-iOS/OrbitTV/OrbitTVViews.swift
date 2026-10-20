@@ -1155,6 +1155,11 @@ struct TVControlsAndGamesTab: View {
             .sheet(isPresented: $showsStreamSettings) {
                 MoonlightStreamSettingsView(store: streamSettings, accent: TVPalette.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
             }
+            .onAppear {
+                #if DEBUG
+                if UserDefaults.standard.string(forKey: "orbitStreamSettings") != nil { showsStreamSettings = true }
+                #endif
+            }
             .task(id: sunshineKey) { await syncSunshine() }
             .padding(.horizontal, 52)
             .padding(.top, 18)

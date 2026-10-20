@@ -220,6 +220,14 @@ struct MoonlightClientIdentity {
 
 /// Persistent identity in the Keychain. One identity per device; Sunshine shows it under the
 /// device name given while pairing.
+///
+/// iOS and tvOS: the data-protection keychain pairs a permanent key and its certificate into an
+/// identity that a `kSecClassIdentity` query finds by label. macOS is different in two ways found
+/// the hard way: the data-protection keychain there never reports identities at all, and the
+/// login keychain ignores the label filter on identity queries (it returned the developer's
+/// "Apple Development" signing identity, which Sunshine then rejected as "client not authorized").
+/// On macOS the key is therefore generated permanently in the login keychain and the identity is
+/// built from our own certificate with `SecIdentityCreateWithCertificate`.
 enum MoonlightIdentityStore {
     private static let keyTag = Data("com.dimitrie.orbit.moonlight.clientkey".utf8)
     private static let certificateLabel = "Orbit Moonlight Client"
@@ -229,7 +237,7 @@ enum MoonlightIdentityStore {
     static func loadOrCreate() throws -> MoonlightClientIdentity {
         lock.lock(); defer { lock.unlock() }
         if let cached { return cached }
-        if let existing = try? loadExisting() { cached = existing; return existing }
+        if let existing = loadExisting() { cached = existing; return existing }
         let created = try create()
         cached = created
         return created
@@ -238,10 +246,23 @@ enum MoonlightIdentityStore {
     static func reset() {
         lock.lock(); defer { lock.unlock() }
         cached = nil
-        for protected in [true, false] {
+        deleteStored()
+    }
+
+    private static func deleteStored() {
+        for protected in keychains {
             SecItemDelete(withKeychain([kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: certificateLabel], protected: protected) as CFDictionary)
             SecItemDelete(withKeychain([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: keyTag], protected: protected) as CFDictionary)
         }
+    }
+
+    /// Keychains to clean up: on macOS both, so leftovers of earlier versions disappear too.
+    private static var keychains: [Bool] {
+        #if os(macOS)
+        return [true, false]
+        #else
+        return [true]
+        #endif
     }
 
     private static func withKeychain(_ query: [String: Any], protected: Bool) -> [String: Any] {
@@ -252,66 +273,171 @@ enum MoonlightIdentityStore {
         return result
     }
 
-    private static func loadExisting() throws -> MoonlightClientIdentity {
-        var lastError = MoonlightError(message: "No stored Moonlight identity.")
-        for protected in [true, false] {
-            let query = withKeychain([
-                kSecClass as String: kSecClassIdentity,
-                kSecAttrLabel as String: certificateLabel,
-                kSecReturnRef as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne
-            ], protected: protected)
-            var item: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &item)
-            guard status == errSecSuccess, let item else { lastError = MoonlightError(message: "Identity lookup failed (\(status))."); continue }
-            let identity = item as! SecIdentity
-            var certificate: SecCertificate?
+    /// Self-signed, subject "Orbit Moonlight Client", with the signature layout our DER builder emits.
+    private static func isOurs(_ certificate: SecCertificate) -> Bool {
+        guard let summary = SecCertificateCopySubjectSummary(certificate) as String?, summary == certificateLabel else { return false }
+        return (try? MoonlightDER.certificateSignature(SecCertificateCopyData(certificate) as Data)) != nil
+    }
+
+    private static func identity(privateKey: SecKey, certificate: SecCertificate, identity: SecIdentity) -> MoonlightClientIdentity {
+        MoonlightClientIdentity(privateKey: privateKey, certificateDER: SecCertificateCopyData(certificate) as Data, secIdentity: identity)
+    }
+
+    #if os(macOS)
+    /// Our certificates in the login keychain, newest first is not guaranteed; any one with a usable key will do.
+    private static func storedCertificates() -> [SecCertificate] {
+        var found: CFTypeRef?
+        let query: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: certificateLabel,
+                                    kSecReturnRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let found else { return [] }
+        let items: [AnyObject] = CFGetTypeID(found) == CFArrayGetTypeID() ? (found as! [AnyObject]) : [found]
+        return items.compactMap { CFGetTypeID($0) == SecCertificateGetTypeID() ? ($0 as! SecCertificate) : nil }.filter(isOurs)
+    }
+
+    private static func loadExisting() -> MoonlightClientIdentity? {
+        for certificate in storedCertificates() {
+            var secIdentity: SecIdentity?
+            guard SecIdentityCreateWithCertificate(nil, certificate, &secIdentity) == errSecSuccess, let secIdentity else { continue }
             var key: SecKey?
-            guard SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess, let certificate,
-                  SecIdentityCopyPrivateKey(identity, &key) == errSecSuccess, let key else { continue }
-            return MoonlightClientIdentity(privateKey: key, certificateDER: SecCertificateCopyData(certificate) as Data, secIdentity: identity)
+            guard SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { continue }
+            return identity(privateKey: key, certificate: certificate, identity: secIdentity)
         }
-        throw lastError
+        return nil
     }
 
     private static func create() throws -> MoonlightClientIdentity {
-        var lastError: MoonlightError?
-        for protected in [true, false] {
-            let privateAttributes: [String: Any] = [
+        deleteStored()
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeySizeInBits as String: 2048,
+            kSecAttrLabel as String: certificateLabel,
+            kSecPrivateKeyAttrs as String: [kSecAttrIsPermanent as String: true, kSecAttrApplicationTag as String: keyTag, kSecAttrLabel as String: certificateLabel]
+        ]
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+            throw MoonlightError(message: "Could not create the Moonlight client key in the login keychain: \((error?.takeRetainedValue()).map { String(describing: $0) } ?? "unknown error")")
+        }
+        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: certificateLabel)
+        guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
+            throw MoonlightError(message: "The generated client certificate is invalid.")
+        }
+        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: certificateLabel] as CFDictionary, nil)
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            deleteStored()
+            throw MoonlightError(message: "Could not store the Moonlight client certificate in the login keychain (\(status)).")
+        }
+        var secIdentity: SecIdentity?
+        let identityStatus = SecIdentityCreateWithCertificate(nil, certificate, &secIdentity)
+        guard identityStatus == errSecSuccess, let secIdentity else {
+            deleteStored()
+            throw MoonlightError(message: "The Keychain could not pair the Moonlight client certificate with its key (\(identityStatus)).")
+        }
+        return identity(privateKey: key, certificate: certificate, identity: secIdentity)
+    }
+    #else
+    private static func loadExisting() -> MoonlightClientIdentity? {
+        let query: [String: Any] = [kSecClass as String: kSecClassIdentity, kSecAttrLabel as String: certificateLabel,
+                                    kSecReturnRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        var found: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let found else { return nil }
+        let items: [AnyObject] = CFGetTypeID(found) == CFArrayGetTypeID() ? (found as! [AnyObject]) : [found]
+        for item in items where CFGetTypeID(item) == SecIdentityGetTypeID() {
+            let secIdentity = item as! SecIdentity
+            var certificate: SecCertificate?
+            var key: SecKey?
+            guard SecIdentityCopyCertificate(secIdentity, &certificate) == errSecSuccess, let certificate, isOurs(certificate),
+                  SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { continue }
+            return identity(privateKey: key, certificate: certificate, identity: secIdentity)
+        }
+        return nil
+    }
+
+    /// Permanent key straight into the data-protection keychain, then the certificate; the
+    /// identity is what the Keychain reports for the pair.
+    private static func create() throws -> MoonlightClientIdentity {
+        deleteStored()
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeySizeInBits as String: 2048,
+            kSecPrivateKeyAttrs as String: [
                 kSecAttrIsPermanent as String: true,
                 kSecAttrApplicationTag as String: keyTag,
-                kSecAttrLabel as String: certificateLabel
+                kSecAttrLabel as String: certificateLabel,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             ]
-            let attributes = withKeychain([
-                kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-                kSecAttrKeySizeInBits as String: 2048,
-                kSecPrivateKeyAttrs as String: privateAttributes
-            ], protected: protected)
-            var error: Unmanaged<CFError>?
-            guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
-                lastError = MoonlightError(message: "Could not create the Moonlight client key: \((error?.takeRetainedValue()).map { String(describing: $0) } ?? "unknown error")")
-                continue
-            }
-            let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: certificateLabel)
-            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
-                throw MoonlightError(message: "The generated client certificate is invalid.")
-            }
-            let addStatus = SecItemAdd(withKeychain([
-                kSecClass as String: kSecClassCertificate,
-                kSecValueRef as String: certificate,
-                kSecAttrLabel as String: certificateLabel
-            ], protected: protected) as CFDictionary, nil)
-            guard addStatus == errSecSuccess || addStatus == errSecDuplicateItem else {
-                SecItemDelete(withKeychain([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: keyTag], protected: protected) as CFDictionary)
-                lastError = MoonlightError(message: "Could not store the Moonlight client certificate (\(addStatus)).")
-                continue
-            }
-            if let stored = try? loadExisting() { return stored }
-            // The identity may not be queryable yet on some systems; signing still works
-            // and the certificate is in the Keychain, so fall back to the raw pair.
-            return MoonlightClientIdentity(privateKey: key, certificateDER: der, secIdentity: nil)
+        ]
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+            throw MoonlightError(message: "Could not create the Moonlight client key: \((error?.takeRetainedValue()).map { String(describing: $0) } ?? "unknown error")")
         }
-        throw lastError ?? MoonlightError(message: "Could not create a Moonlight identity.")
+        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: certificateLabel)
+        guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
+            throw MoonlightError(message: "The generated client certificate is invalid.")
+        }
+        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: certificateLabel,
+                                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary, nil)
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            deleteStored()
+            throw MoonlightError(message: "Could not store the Moonlight client certificate (\(status)).")
+        }
+        guard let stored = loadExisting(), stored.certificateDER == der else {
+            deleteStored()
+            throw MoonlightError(message: "The Keychain stored the Moonlight client certificate but reports no identity for it.")
+        }
+        return stored
+    }
+    #endif
+
+    /// Human-readable state of the stored identity, for support and the Mac self-test.
+    static func diagnostics() -> String {
+        var lines: [String] = []
+        for protected in keychains {
+            let name = protected ? "data-protection keychain" : "login keychain"
+            func count(_ query: [String: Any]) -> String {
+                var items: CFTypeRef?
+                var full = query
+                full[kSecMatchLimit as String] = kSecMatchLimitAll
+                full[kSecReturnAttributes as String] = true
+                let status = SecItemCopyMatching(withKeychain(full, protected: protected) as CFDictionary, &items)
+                return status == errSecSuccess ? "\((items as? [Any])?.count ?? 0)" : "none (\(status))"
+            }
+            let certificates = count([kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: certificateLabel])
+            let keys = count([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: keyTag])
+            lines.append("\(name): certificates \(certificates), keys \(keys)")
+        }
+        lines.append("stored identity: \(loadExisting() != nil ? "yes" : "no")")
+        do {
+            let identity = try loadOrCreate()
+            let subject = SecCertificateCreateWithData(nil, identity.certificateDER as CFData).flatMap { SecCertificateCopySubjectSummary($0) as String? } ?? "?"
+            lines.append("loadOrCreate: ok, TLS identity \(identity.secIdentity != nil ? "available" : "MISSING"), certificate \(identity.certificateDER.count) bytes, subject \"\(subject)\"")
+            do {
+                let signature = try identity.sign(Data("probe".utf8))
+                lines.append("private key signs: yes (\(signature.count) bytes)")
+            } catch {
+                lines.append("private key signs: NO (\(error))")
+            }
+        } catch {
+            lines.append("loadOrCreate failed: \(error)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Client certificate of the current identity, PEM encoded (self-test helper).
+    static func currentCertificatePEM() throws -> String { try loadOrCreate().certificatePEM }
+
+    /// Performs one HTTPS GET with the stored identity as the TLS client certificate, against a
+    /// server whose DER certificate is given, and reports the outcome (self-test helper).
+    static func probeTLS(url: URL, serverCertificateDER: Data) async -> String {
+        do {
+            let identity = try loadOrCreate()
+            let endpoints = try MoonlightEndpoints.standard(host: url.host ?? "127.0.0.1", httpPort: url.port ?? 47989, httpsPort: url.port ?? 47984)
+            let transport = MoonlightTransport(endpoints: endpoints, uniqueID: "selftest0000beef", deviceName: "Orbit self-test",
+                                               serverCertificate: serverCertificateDER, identity: identity.secIdentity)
+            let data = try await transport.request(secure: true, path: url.path.isEmpty ? "/serverinfo" : url.path, query: [], timeout: 10)
+            return "TLS probe: HTTP 200, \(data.count) bytes: \(String(decoding: data.prefix(160), as: UTF8.self))"
+        } catch {
+            return "TLS probe failed: \(error)"
+        }
     }
 }
 
