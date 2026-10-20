@@ -228,7 +228,7 @@ struct FPSSetupView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Automatic FPS & Sensor Reading").font(.subheadline.weight(.semibold))
                         Text(vm.metrics.fps.map { String(format: "Live: %.0f FPS", $0) } ?? "No FPS reading yet")
-                            .font(.caption).foregroundStyle(vm.metrics.fps == nil ? .secondary : .mint)
+                            .font(.caption).foregroundStyle(vm.metrics.fps == nil ? Color.secondary : Color.mint)
                     }
                 }
                 Text("Install MSI Afterburner with RivaTuner Statistics Server (RTSS) included, and keep both open on your PC.")

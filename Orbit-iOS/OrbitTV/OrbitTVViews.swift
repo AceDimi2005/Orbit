@@ -1565,7 +1565,7 @@ struct TVMetricPill: View {
             Text(value)
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(value == "—" ? .secondary : .white)
+                .foregroundStyle(value == "—" ? Color.secondary : Color.white)
                 .lineLimit(1)
                 .contentTransition(.numericText())
             GeometryReader { geo in
