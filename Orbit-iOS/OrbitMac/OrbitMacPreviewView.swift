@@ -315,8 +315,8 @@ fileprivate struct MacPreviewCanvas: View {
                 surface.aspectRatio(aspect, contentMode: .fit)
             }
         }
-        .onAppear(perform: attach)
-        .onDisappear(perform: detach)
+        .onAppear { attach() }
+        .onDisappear { detach() }
         .onChange(of: vm.metrics.isOnline) { _, online in handleOnlineChange(online) }
         .onChange(of: vm.selectedPCID) { _, _ in
             controlEnabled = false
@@ -475,7 +475,9 @@ fileprivate struct MacPreviewCanvas: View {
 
     @ViewBuilder
     private var hudButtons: some View {
-        Button(action: copySnapshot) {
+        Button {
+            copySnapshot()
+        } label: {
             Image(systemName: "camera.on.rectangle")
         }
         .buttonStyle(MacIconButtonStyle(size: 28))
@@ -484,7 +486,9 @@ fileprivate struct MacPreviewCanvas: View {
         .help("Copy snapshot to the clipboard (⌘⇧C)")
         .accessibilityLabel("Copy snapshot")
 
-        Button(action: saveSnapshot) {
+        Button {
+            saveSnapshot()
+        } label: {
             Image(systemName: "square.and.arrow.down")
         }
         .buttonStyle(MacIconButtonStyle(size: 28))
@@ -681,6 +685,12 @@ fileprivate struct MacPreviewPlayButton: View {
     @State private var hovered = false
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
 
+    private var glowColor: Color {
+        if reduceGlow { return .clear }
+        return tint.opacity(hovered ? 0.6 : 0.35)
+    }
+    private var glowRadius: CGFloat { hovered ? 26 : 16 }
+
     var body: some View {
         Button(action: action) {
             ZStack {
@@ -692,7 +702,7 @@ fileprivate struct MacPreviewPlayButton: View {
                     .offset(x: 3)
             }
             .frame(width: 84, height: 84)
-            .shadow(color: reduceGlow ? .clear : tint.opacity(hovered ? 0.6 : 0.35), radius: hovered ? 26 : 16, y: 6)
+            .shadow(color: glowColor, radius: glowRadius, y: 6)
             .scaleEffect(hovered ? 1.06 : 1)
             .contentShape(Circle())
         }
@@ -845,22 +855,33 @@ fileprivate struct MacPreviewControlOverlay: NSViewRepresentable {
         let coordinator = context.coordinator
         view.onEvent = { [weak coordinator] event in coordinator?.enqueue(event) }
         view.onFocusChange = { [weak coordinator] focused in coordinator?.onFocus?(focused) }
+        // Installed before the view joins the window, so the first-responder grab in
+        // viewDidMoveToWindow is reflected in the HUD chip straight away.
+        installFocusHandler(on: coordinator)
         return view
     }
 
     func updateNSView(_ nsView: MacPreviewInputView, context: Context) {
+        installFocusHandler(on: context.coordinator)
+    }
+
+    private func installFocusHandler(on coordinator: Coordinator) {
         let binding = $keyboardCaptured
-        context.coordinator.onFocus = { focused in
+        coordinator.onFocus = { focused in
             // Focus can change while SwiftUI is mid-update (the view just got attached); defer the state write.
             Task { @MainActor in binding.wrappedValue = focused }
         }
     }
 
     static func dismantleNSView(_ nsView: MacPreviewInputView, coordinator: Coordinator) {
-        nsView.onEvent = nil
-        nsView.onFocusChange = nil
-        coordinator.onFocus = nil
-        coordinator.cancel()
+        // SwiftUI tears representables down on the main thread; assumeIsolated keeps the
+        // main-actor property writes legal even on SDKs where this requirement is nonisolated.
+        MainActor.assumeIsolated {
+            nsView.onEvent = nil
+            nsView.onFocusChange = nil
+            coordinator.onFocus = nil
+            coordinator.cancel()
+        }
     }
 
     /// Serialises input so a drag "up" can never overtake the moves before it.

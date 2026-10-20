@@ -21,7 +21,9 @@ struct MacRemoteView: View {
     private var isLive: Bool { vm.metrics.isOnline && !vm.isDemoMode }
     private var isConnecting: Bool { !isReady && !isUnpaired && vm.lastUpdated == nil && vm.connectionError == nil }
     private var hasActiveGame: Bool { !(vm.metrics.activeGame ?? "").isEmpty }
-    private var canSendText: Bool { !typedText.isEmpty && typedText.count <= 1000 }
+    /// The agent limits `len(text)` (code points), not grapheme clusters.
+    private var typedLength: Int { typedText.unicodeScalars.count }
+    private var canSendText: Bool { !typedText.isEmpty && typedLength <= 1000 }
 
     var body: some View {
         MacPage {
@@ -47,6 +49,11 @@ struct MacRemoteView: View {
         }
         .onChange(of: vm.metrics.isOnline) { _, online in
             if !online { releaseCapture() }
+        }
+        .onChange(of: vm.isDemoMode) { _, _ in
+            // Demo toggles online→offline→online inside one update, so the
+            // isOnline change above may not fire; never keep capture in demo.
+            releaseCapture()
         }
         .onDisappear {
             releaseCapture()
@@ -152,8 +159,9 @@ struct MacRemoteView: View {
             title: "Pair your PC to use remote control",
             message: "Import the PC you already paired on your iPhone, or pair directly with the 6-digit code shown by Orbit Agent on Windows. The trackpad, keyboard, media and gamepad controls appear here once a PC is connected.",
             tint: theme.accent,
-            actionTitle: "Pair or import a PC"
-        ) { vm.selectedSection = .pcs }
+            actionTitle: "Pair or import a PC",
+            action: { vm.selectedSection = .pcs }
+        )
         .macGlass(cornerRadius: 22, tint: theme.accent, elevated: true)
     }
 
@@ -193,12 +201,13 @@ struct MacRemoteView: View {
                     title: "\(name) is offline",
                     message: vm.connectionError ?? "Remote control needs a live connection to Orbit Agent on your PC.",
                     tint: .orange,
-                    actionTitle: canWake ? "Power On" : "Retry"
-                ) {
-                    Task {
-                        if canWake { await vm.wakePC() } else { await vm.refreshMetrics() }
+                    actionTitle: canWake ? "Power On" : "Retry",
+                    action: {
+                        Task {
+                            if canWake { await vm.wakePC() } else { await vm.refreshMetrics() }
+                        }
                     }
-                }
+                )
             }
         }
         .frame(maxWidth: 460)
@@ -266,6 +275,7 @@ struct MacRemoteView: View {
                 vm: vm,
                 pointerSpeed: pointerSpeed,
                 enabled: isReady,
+                captureAllowed: isLive,
                 captureEnabled: $captureEnabled,
                 isCapturing: $isCapturing,
                 isHovering: $isHovering
@@ -391,7 +401,7 @@ struct MacRemoteView: View {
                 .help("Send text (Return)")
                 .accessibilityLabel("Send text")
             }
-            if typedText.count > 1000 {
+            if typedLength > 1000 {
                 Text("Orbit Agent accepts up to 1000 characters per send.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -708,6 +718,8 @@ private struct MacRemoteTrackpadSurface: NSViewRepresentable {
     let vm: OrbitMacViewModel
     var pointerSpeed: Double
     var enabled: Bool
+    /// Capture is only meaningful with a live PC; demo mode keeps the pad usable but never locks the pointer.
+    var captureAllowed: Bool
     @Binding var captureEnabled: Bool
     @Binding var isCapturing: Bool
     @Binding var isHovering: Bool
@@ -744,7 +756,7 @@ private struct MacRemoteTrackpadSurface: NSViewRepresentable {
             Task { @MainActor in isHovering = hovering }
         }
         view.isEnabled = enabled
-        view.captureEnabled = captureEnabled && enabled
+        view.captureEnabled = captureEnabled && enabled && captureAllowed
     }
 }
 
@@ -797,10 +809,12 @@ final class MacRemoteTrackpadView: NSView {
         flushTask?.cancel()
         worker?.cancel()
         if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        // deinit is nonisolated; AppKit's event/cursor APIs are main-actor, so hop.
+        let monitor = keyMonitor
         let hidden = cursorHidden
         let capturing = isCapturing
         Task { @MainActor in
+            if let monitor { NSEvent.removeMonitor(monitor) }
             if hidden { NSCursor.unhide() }
             if capturing { _ = CGAssociateMouseAndMouseCursorPosition(1) }
         }
@@ -914,7 +928,8 @@ final class MacRemoteTrackpadView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { super.mouseDown(with: event); return }
-        window?.makeFirstResponder(self)
+        // First responder is only taken by beginCapture(): outside capture mode the
+        // pad never handles keys, and stealing focus would make typing beep.
         dragActive = false
         if captureEnabled, !releaseLatch { beginCapture() }
     }
@@ -934,14 +949,12 @@ final class MacRemoteTrackpadView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         guard isEnabled else { super.rightMouseDown(with: event); return }
-        window?.makeFirstResponder(self)
         flushMovementNow()
         enqueue(MacRemotePacket(click: "right"))
     }
 
     override func otherMouseDown(with event: NSEvent) {
         guard isEnabled, event.buttonNumber == 2 else { super.otherMouseDown(with: event); return }
-        window?.makeFirstResponder(self)
         flushMovementNow()
         enqueue(MacRemotePacket(click: "middle"))
     }
