@@ -5,6 +5,18 @@ import SwiftUI
 struct OrbitApp: App {
     init() {
         OrbitAppShortcuts.updateAppShortcutParameters()
+        OrbitBackgroundRefresh.register()
+        Self.migrateDefaultTheme()
+    }
+
+    /// Ocean used to be the implicit default theme. Installs that never picked another theme
+    /// move to Noir once; an explicit choice of any other theme is left alone.
+    private static func migrateDefaultTheme() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "orbit.theme.noirMigrated") else { return }
+        defaults.set(true, forKey: "orbit.theme.noirMigrated")
+        if defaults.string(forKey: "orbit.theme") == "ocean" { defaults.set("noir", forKey: "orbit.theme") }
+        if defaults.string(forKey: "orbit.activity.accent") == "ocean" { defaults.set("noir", forKey: "orbit.activity.accent") }
     }
 
     var body: some Scene {

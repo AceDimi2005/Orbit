@@ -169,6 +169,7 @@ enum OrbitWidgetConnectionStore {
         _ = SecItemDelete(try keychainQuery(id: id, serviceName: controlService) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw StoreError.credential(status) }
         let remaining = try JSONEncoder().encode(connections().filter { $0.id != id })
+        clearSnapshot(for: id)
         storeDefaults.set(remaining, forKey: profilesKey)
         UserDefaults.standard.set(remaining, forKey: profilesKey)
         if storeDefaults.string(forKey: selectedKey) == id { storeDefaults.removeObject(forKey: selectedKey) }
@@ -198,6 +199,39 @@ enum OrbitWidgetConnectionStore {
             return token
         }
         throw StoreError.credential(errSecItemNotFound)
+    }
+
+    // MARK: Snapshot cache shared with the widgets
+
+    private static let snapshotPrefix = "Orbit.WidgetSnapshot.v1."
+    private static let snapshotReloadKey = "Orbit.WidgetSnapshotReload.v1"
+
+    /// The app writes the latest `/api/widget/status`-shaped reading here after every poll, so a
+    /// widget timeline can render immediately from what the app just saw instead of opening its
+    /// own connection (which also fails when the PC is asleep or Local Network access is pending).
+    static func cacheSnapshot(_ json: Data, for id: String, reloadInterval: TimeInterval = 60) {
+        guard !id.isEmpty, json.count <= 64 * 1024 else { return }
+        let store = fallbackDefaults
+        store.set(json, forKey: snapshotPrefix + id)
+        store.set(Date().timeIntervalSince1970, forKey: snapshotPrefix + id + ".at")
+        let lastReload = store.double(forKey: snapshotReloadKey)
+        guard Date().timeIntervalSince1970 - lastReload >= reloadInterval else { return }
+        store.set(Date().timeIntervalSince1970, forKey: snapshotReloadKey)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Cached reading for a PC if it is younger than `maxAge`.
+    static func cachedSnapshot(for id: String, maxAge: TimeInterval) -> Data? {
+        let store = fallbackDefaults
+        let written = store.double(forKey: snapshotPrefix + id + ".at")
+        guard written > 0, Date().timeIntervalSince1970 - written <= maxAge else { return nil }
+        return store.data(forKey: snapshotPrefix + id)
+    }
+
+    static func clearSnapshot(for id: String) {
+        let store = fallbackDefaults
+        store.removeObject(forKey: snapshotPrefix + id)
+        store.removeObject(forKey: snapshotPrefix + id + ".at")
     }
 
     static func recordPowerFeedback(_ message: String) {

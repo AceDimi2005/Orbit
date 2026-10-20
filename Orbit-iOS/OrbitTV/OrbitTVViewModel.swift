@@ -136,6 +136,17 @@ struct TVSunshineGame: Codable, Identifiable, Equatable {
     let accentHex: String
 }
 
+/// `/api/sunshine/info` (agent 4.2+): Sunshine's ports on the PC.
+struct TVSunshineInfo: Codable, Equatable {
+    var installed: Bool
+    var running: Bool
+    var httpPort: Int
+    var httpsPort: Int
+    var webUIPort: Int
+    var name: String
+    var appCount: Int
+}
+
 struct TVAudioSession: Codable, Identifiable, Equatable {
     let id: String
     let pid: Int
@@ -242,6 +253,7 @@ final class OrbitTVViewModel: ObservableObject {
 
     // Games
     @Published var games: [TVSunshineGame] = []
+    @Published var sunshineInfo: TVSunshineInfo?
 
     // Audio Mixer
     @Published var audioSessions: [TVAudioSession] = []
@@ -604,9 +616,12 @@ final class OrbitTVViewModel: ObservableObject {
 
     func refreshGames() async {
         guard !isDemoMode, metrics.isOnline else { return }
-        if let apiClient = try? client(),
-           let fetched: [TVSunshineGame] = try? await apiClient.get("/api/sunshine/apps") {
+        guard let apiClient = try? client() else { return }
+        if let fetched: [TVSunshineGame] = try? await apiClient.get("/api/sunshine/apps") {
             games = fetched
+        }
+        if let info: TVSunshineInfo = try? await apiClient.get("/api/sunshine/info") {
+            sunshineInfo = info
         }
     }
 

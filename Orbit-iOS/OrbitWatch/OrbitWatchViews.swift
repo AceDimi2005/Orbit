@@ -1,13 +1,14 @@
 import SwiftUI
 import WatchKit
 
+/// Noir palette: black, one accent; amber and coral are reserved for warnings.
 enum OrbitWatchPalette {
-    static let accent = Color(red: 0.25, green: 0.84, blue: 0.96)
-    static let purple = Color(red: 0.71, green: 0.58, blue: 1.0)
-    static let mint = Color(red: 0.35, green: 0.94, blue: 0.66)
+    static let accent = Color(red: 0.36, green: 0.86, blue: 1.0)
+    static let purple = accent
+    static let mint = accent
     static let amber = Color(red: 1.0, green: 0.78, blue: 0.36)
     static let coral = Color(red: 1.0, green: 0.45, blue: 0.48)
-    static let cardBackground = Color.white.opacity(0.075)
+    static let cardBackground = Color.white.opacity(0.09)
 }
 
 struct OrbitWatchRootView: View {
@@ -379,7 +380,7 @@ private struct WatchCockpitPage: View {
             }
             .foregroundStyle(tint)
             Text(value)
-                .font(.system(.title3, design: .rounded).weight(.bold))
+                .font(.system(.title3).weight(.bold))
                 .monospacedDigit()
                 .minimumScaleFactor(0.8)
                 .lineLimit(1)
@@ -897,7 +898,7 @@ private struct WatchMediaAndGamesPage: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(controlsEnabled ? "\(Int(crownVolume.rounded()))" : "—")
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                    .font(.system(.largeTitle).weight(.bold))
                     .monospacedDigit()
                 Text("%").font(.footnote).foregroundStyle(.secondary)
             }

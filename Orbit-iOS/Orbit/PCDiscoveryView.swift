@@ -5,7 +5,10 @@ import UIKit
 struct DiscoveredOrbitPC: Identifiable, Equatable {
     var id: String { fingerprint }
     let name: String
+    /// IPv4 address when Bonjour resolved one, otherwise the `.local` hostname.
     let host: String
+    /// Bonjour hostname kept as a fallback for when the PC's address changes.
+    let bonjourHost: String
     let port: Int
     let fingerprint: String
     let version: String
@@ -45,17 +48,37 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
         message = "Discovery is unavailable. Allow Local Network access for Orbit in iPhone Settings, then try again. You can also use manual setup."
     }
     func netServiceDidResolveAddress(_ sender: NetService) {
-        guard running, let data = sender.txtRecordData(), let host = sender.hostName else { return }
+        guard running, let data = sender.txtRecordData() else { return }
         let text = NetService.dictionary(fromTXTRecord: data)
         func value(_ key: String) -> String { text[key].flatMap { String(data: $0, encoding: .utf8) } ?? "" }
         let fingerprint = OrbitAPIClient.normalizedFingerprint(value("fingerprint"))
         guard OrbitAPIClient.validFingerprint(fingerprint), (1...65535).contains(sender.port),
               value("pairing") == "orbit-srp6a-sha256-2048-v1" else { return }
-        // A Bonjour hostname lets the OS select the reachable adapter when a PC
-        // also advertises VPN/virtual adapters. No credential is used for discovery.
-        resolved[sender.name] = DiscoveredOrbitPC(name: String(value("name").prefix(80)), host: host,
+        // Prefer the resolved IPv4 address over the Bonjour `.local` name: the plain
+        // address is what Wake-on-LAN, Tailscale and other VPN/relay setups need, and
+        // mDNS names are not resolvable outside the local link. The name is kept as a
+        // fallback so a PC whose DHCP lease changes can still be found again.
+        let bonjourHost = (sender.hostName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let host = Self.ipv4Address(from: sender.addresses ?? []) ?? bonjourHost
+        guard !host.isEmpty else { return }
+        resolved[sender.name] = DiscoveredOrbitPC(name: String(value("name").prefix(80)), host: host, bonjourHost: bonjourHost,
                                                 port: sender.port, fingerprint: fingerprint, version: value("version"))
         publish()
+    }
+    /// First routable IPv4 address in a list of `sockaddr` records from `NetService.addresses`.
+    static func ipv4Address(from addresses: [Data]) -> String? {
+        for address in addresses where address.count >= MemoryLayout<sockaddr_in>.size {
+            var storage = sockaddr_in()
+            _ = withUnsafeMutableBytes(of: &storage) { address.copyBytes(to: $0, count: MemoryLayout<sockaddr_in>.size) }
+            guard storage.sin_family == sa_family_t(AF_INET) else { continue }
+            var raw = storage.sin_addr
+            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            guard inet_ntop(AF_INET, &raw, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
+            let text = String(cString: buffer)
+            if text.hasPrefix("127.") || text.hasPrefix("169.254.") || text == "0.0.0.0" { continue }
+            return text
+        }
+        return nil
     }
     private func publish() {
         computers = Dictionary(resolved.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -134,7 +157,7 @@ private struct OrbitPINField: View {
                     let digit = index < digits.count ? String(digits[index]) : ""
                     let active = isFocused.wrappedValue && index == min(pin.count, 5)
                     Text(digit)
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold))
                         .monospacedDigit()
                         .frame(maxWidth: .infinity, minHeight: 56)
                         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -476,7 +499,7 @@ struct PCDiscoveryView: View {
             do {
                 let credentials = try await handshake.finish(pin: code)
                 guard identifier == attempt, !Task.isCancelled else { return }
-                try vm.acceptPairing(credentials, discoveredHost: candidate.host)
+                try vm.acceptPairing(credentials, discoveredHost: candidate.host, bonjourHost: candidate.bonjourHost)
                 self.handshake = nil; pin = ""; paired = true
                 OrbitHaptics.success()
                 await vm.connect()

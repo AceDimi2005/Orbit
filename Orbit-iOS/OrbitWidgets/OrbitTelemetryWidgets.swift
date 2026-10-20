@@ -30,7 +30,7 @@ struct OrbitPanelWidgetIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Widget Appearance & PC"
     static var description = IntentDescription("Choose a paired PC and visual theme.")
     @Parameter(title: "PC") var pc: OrbitWidgetPC?
-    @Parameter(title: "Theme", default: .ocean) var theme: OrbitWidgetTheme
+    @Parameter(title: "Theme", default: .noir) var theme: OrbitWidgetTheme
     @Parameter(title: "Use one accent colour", default: false) var monochrome: Bool
     static var parameterSummary: some ParameterSummary {
         Summary("\(\.$pc)") { \.$theme; \.$monochrome }
@@ -43,7 +43,7 @@ struct OrbitPCWidgetIntent: WidgetConfigurationIntent {
     static var description = IntentDescription("Choose a paired PC and the specific hardware metric to display.")
     @Parameter(title: "PC") var pc: OrbitWidgetPC?
     @Parameter(title: "Metric", default: .cpuUsage) var metric: OrbitWidgetMetric
-    @Parameter(title: "Theme", default: .ocean) var theme: OrbitWidgetTheme
+    @Parameter(title: "Theme", default: .noir) var theme: OrbitWidgetTheme
     @Parameter(title: "Use one accent colour", default: false) var monochrome: Bool
     static var parameterSummary: some ParameterSummary {
         Summary("\(\.$pc) · \(\.$metric)") { \.$theme; \.$monochrome }
@@ -51,16 +51,19 @@ struct OrbitPCWidgetIntent: WidgetConfigurationIntent {
 }
 
 enum OrbitWidgetTheme: String, AppEnum {
-    case ocean, aurora, violet, ember, graphite
+    case noir, ocean, aurora, violet, ember, graphite
     case cyberpunk, solarGold, crimson, matrix, arctic, sakura
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Theme")
     static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .ocean: "Ocean", .aurora: "Aurora", .violet: "Violet", .ember: "Ember", .graphite: "Graphite",
+        .noir: "Noir", .ocean: "Ocean", .aurora: "Aurora", .violet: "Violet", .ember: "Ember", .graphite: "Graphite",
         .cyberpunk: "Cyberpunk (Pro)", .solarGold: "Solar Gold (Pro)", .crimson: "Crimson (Pro)",
         .matrix: "Matrix (Pro)", .arctic: "Arctic (Pro)", .sakura: "Sakura (Pro)"
     ]
+    /// Noir uses one accent for every metric; the other themes colour metrics individually.
+    var isFlat: Bool { self == .noir }
     var accent: Color {
         switch self {
+        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
         case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
         case .aurora: Color(red: 0.45, green: 0.92, blue: 0.73)
         case .violet: Color(red: 0.76, green: 0.66, blue: 1)
@@ -76,6 +79,7 @@ enum OrbitWidgetTheme: String, AppEnum {
     }
     var background: Color {
         switch self {
+        case .noir: .black
         case .ocean: Color(red: 0.035, green: 0.065, blue: 0.105)
         case .aurora: Color(red: 0.035, green: 0.08, blue: 0.07)
         case .violet: Color(red: 0.075, green: 0.05, blue: 0.115)
@@ -254,7 +258,7 @@ private struct OrbitPCWidgetEntry: TimelineEntry {
     var date: Date
     var pc: OrbitWidgetPC?
     var metric: OrbitWidgetMetric = .cpuUsage
-    var theme: OrbitWidgetTheme = .ocean
+    var theme: OrbitWidgetTheme = .noir
     var monochrome: Bool = false
     var snapshot: OrbitWidgetSnapshot?
     var message: String?
@@ -352,6 +356,17 @@ private enum OrbitWidgetLoader {
         return Timeline(entries: entries, policy: .after(nextRefresh))
     }
 
+    /// A reading the app cached within the last two minutes is shown as-is: it is what the
+    /// user just saw in Orbit, and it spares the widget a network round trip that iOS may
+    /// not even allow right now.
+    private static func cachedEntry(connection: OrbitWidgetConnection, pc: OrbitWidgetPC?, metric: OrbitWidgetMetric, theme: OrbitWidgetTheme, monochrome: Bool, now: Date) -> OrbitPCWidgetEntry? {
+        guard let data = OrbitWidgetConnectionStore.cachedSnapshot(for: connection.id, maxAge: 120),
+              let snapshot = try? JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data),
+              snapshot.telemetryAvailable == true, let measured = snapshot.measuredAt,
+              now.timeIntervalSince(measured) <= 120, measured.timeIntervalSince(now) <= 60 else { return nil }
+        return OrbitPCWidgetEntry(date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome, snapshot: snapshot)
+    }
+
     static func load(pc: OrbitWidgetPC?, metric: OrbitWidgetMetric, theme: OrbitWidgetTheme, monochrome: Bool) async -> OrbitPCWidgetEntry {
         let now = Date()
         do {
@@ -362,6 +377,9 @@ private enum OrbitWidgetLoader {
                 connection = OrbitWidgetConnectionStore.defaultConnection()
             }
             guard let connection else { throw OrbitWidgetRequestError.address }
+            if let cached = cachedEntry(connection: connection, pc: pc, metric: metric, theme: theme, monochrome: monochrome, now: now) {
+                return cached
+            }
             let url = try endpoint(connection)
             let token: String
             do { token = try OrbitWidgetConnectionStore.readOnlyToken(for: connection.id) }
@@ -384,6 +402,7 @@ private enum OrbitWidgetLoader {
             if response.statusCode == 401 || response.statusCode == 403 { throw OrbitWidgetRequestError.denied }
             guard response.statusCode == 200, data.count <= 64 * 1024 else { throw OrbitWidgetRequestError.invalidResponse }
             let snapshot = try JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data)
+            if snapshot.telemetryAvailable == true { OrbitWidgetConnectionStore.cacheSnapshot(data, for: connection.id, reloadInterval: .infinity) }
             guard snapshot.telemetryAvailable == true, let measured = snapshot.measuredAt else {
                 return OrbitPCWidgetEntry(
                     date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
@@ -609,7 +628,7 @@ private struct OrbitTelemetryWidgetView: View {
             }
         }
         .widgetURL(URL(string: "orbit://dashboard"))
-        .containerBackground(entry.theme.background.gradient, for: .widget)
+        .containerBackground(entry.theme.isFlat ? AnyShapeStyle(entry.theme.background) : AnyShapeStyle(entry.theme.background.gradient), for: .widget)
     }
 
     private var panel: some View {
@@ -693,10 +712,10 @@ private struct OrbitTelemetryWidgetView: View {
 
     @ViewBuilder
     private var singleMetricContent: some View {
-        let color = entry.monochrome ? accent : entry.metric.color
+        let color = entry.monochrome || entry.theme.isFlat ? accent : entry.metric.color
         VStack(alignment: .leading, spacing: family == .systemLarge ? 14 : 6) {
             Text(entry.formatted(entry.metric))
-                .font(.system(size: family == .systemSmall ? 34 : (family == .systemLarge ? 48 : 40), weight: .bold, design: .rounded))
+                .font(.system(size: family == .systemSmall ? 34 : (family == .systemLarge ? 48 : 40), weight: .bold))
                 .monospacedDigit()
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
@@ -751,7 +770,7 @@ private struct OrbitTelemetryWidgetView: View {
                     Spacer()
                     if entry.snapshot?.fps != nil {
                         Text("\(entry.formatted(.fps)) FPS")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .font(.system(size: 11, weight: .bold))
                             .monospacedDigit()
                             .foregroundStyle(accent)
                     }
@@ -788,7 +807,7 @@ private struct OrbitTelemetryWidgetView: View {
     }
 
     private func metricTile(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
-        let color = entry.monochrome ? accent : metric.color
+        let color = entry.monochrome || entry.theme.isFlat ? accent : metric.color
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 4) {
                 Image(systemName: metric.symbol)
@@ -800,7 +819,7 @@ private struct OrbitTelemetryWidgetView: View {
                     .lineLimit(1)
             }
             Text(entry.formatted(metric))
-                .font(.system(size: prominent ? 21 : 16, weight: .bold, design: .rounded))
+                .font(.system(size: prominent ? 21 : 16, weight: .bold))
                 .foregroundStyle(color)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -820,14 +839,14 @@ private struct OrbitTelemetryWidgetView: View {
     }
 
     private func metricReading(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
-        let color = entry.monochrome ? accent : metric.color
+        let color = entry.monochrome || entry.theme.isFlat ? accent : metric.color
         return VStack(alignment: .leading, spacing: 3) {
             Text(metric.shortTitle)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(1)
             Text(entry.formatted(metric))
-                .font(.system(size: prominent ? 22 : 19, weight: .bold, design: .rounded))
+                .font(.system(size: prominent ? 22 : 19, weight: .bold))
                 .foregroundStyle(color)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -946,7 +965,7 @@ private struct OrbitTelemetryWidgetView: View {
                     .font(.system(size: 10))
             } currentValueLabel: {
                 Text(entry.formatted(entry.metric))
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold))
                     .monospacedDigit()
                     .minimumScaleFactor(0.55)
             }
@@ -956,7 +975,7 @@ private struct OrbitTelemetryWidgetView: View {
             VStack(spacing: 2) {
                 Image(systemName: entry.metric.symbol).font(.system(size: 11))
                 Text(entry.formatted(entry.metric))
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold))
                     .monospacedDigit()
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
@@ -979,7 +998,7 @@ private struct OrbitTelemetryWidgetView: View {
                     .lineLimit(1)
             }
             Text(entry.formatted(entry.metric))
-                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .font(.system(size: 19, weight: .bold))
                 .monospacedDigit()
             if let progress = entry.normalizedProgress(entry.metric) {
                 ProgressView(value: progress)

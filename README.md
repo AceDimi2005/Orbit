@@ -10,10 +10,10 @@ Orbit are două părți: aplicațiile Apple din `Orbit-iOS` (iPhone/iPad, Apple 
 
 ### Pornire
 
-1. Copiază întregul folder `Orbit-Windows-Agent` **4.1.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. Agentul instalează dependențele, păstrează identitatea PC-ului și pornește în fundal în **System Tray** (zona **Hidden icons** din dreapta-jos), cu pictograma Orbit și meniu pentru **Run at Windows startup**, detalii de conectare și **Stop Orbit Companion**.
+1. Copiază întregul folder `Orbit-Windows-Agent` **4.2.0** pe PC și rulează `start_agent.bat`. Ai nevoie de Python 3.11 sau mai nou. Agentul instalează dependențele, păstrează identitatea PC-ului și pornește în fundal în **System Tray** (zona **Hidden icons** din dreapta-jos), cu pictograma Orbit și meniu pentru **Run at Windows startup**, detalii de conectare și **Stop Orbit Companion**.
 2. Permite Python în Windows Firewall pe rețeaua **Private**, inclusiv HTTPS **8766** și descoperirea Bonjour/mDNS **UDP 5353**. Pentru prima asociere, telefonul și PC-ul trebuie să fie în aceeași rețea locală.
 3. Deschide `Orbit-iOS/Orbit.xcodeproj` în Xcode. Alege aceeași echipă pentru **Orbit** și **OrbitWidgets** și identificatori proprii dacă Xcode îi cere. Configurează același **App Group** în ambele ținte și `ORBIT_APP_GROUP_IDENTIFIER` pentru asocierea automată a widgeturilor; vezi [pașii de semnare](Orbit-iOS/WIDGETS.md#testare-gratuită).
-4. Rulează Orbit, acordă acces la rețeaua locală și apasă **Find my PC** în onboarding. Alege PC-ul găsit, apoi introdu pe iPhone **codul de șase cifre afișat de agent și în dialogul Windows**. Codul expiră după **120 de secunde** și funcționează o singură dată. Orbit completează automat adresa, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul.
+4. Rulează Orbit, acordă acces la rețeaua locală și apasă **Find my PC** în onboarding. Alege PC-ul găsit, apoi introdu pe iPhone **codul de șase cifre afișat de agent și în dialogul Windows**. Codul expiră după **120 de secunde** și funcționează o singură dată. Orbit completează automat adresa, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul. Profilul reține **adresa IPv4 reală** a PC-ului (de exemplu `192.168.1.196`), nu numele Bonjour `orbit-….local`: adresa simplă funcționează și prin Tailscale sau alte VPN-uri și pentru Wake-on-LAN. Numele `.local` rămâne salvat ca rezervă: dacă PC-ul primește alt IP, Orbit îl regăsește prin Bonjour și mută profilul automat. Profilurile vechi cu adresă `.local` sunt migrate la prima conectare.
 5. Pentru alt calculator, deschide **Tools → My PCs → Find a PC nearby**. **Explore with sample data** permite explorarea interfeței fără conectare și afișează explicit valori simulate.
 
 Asocierea folosește SRP și un răspuns criptat pentru a verifica PC-ul și a transfera credențialele; nu copiezi IP, MAC sau tokenuri în fluxul obișnuit. Tokenul principal al fiecărui PC rămâne separat în Keychain. Monitorizarea și comenzile folosesc **HTTPS cu verificarea certificatului acelui PC**, fără revenire la HTTP când verificarea eșuează. Files, Clipboard, Audio mixer și Sessions cer conexiunea criptată. Portul HTTP **8765** rămâne pentru clienți locali vechi. Nu publica porturile agentului pe Internet.
@@ -24,9 +24,9 @@ Asocierea folosește SRP și un răspuns criptat pentru a verifica PC-ul și a t
 
 - **Overview:** dashboard personalizabil cu CPU, GPU, RAM, VRAM, consum CPU/GPU, temperaturi, frecvență CPU, ventilatoare, trafic de rețea, activitate disc, uptime și FPS. Valorile care lipsesc sunt afișate ca indisponibile.
 - **Full PC specifications:** procesor și nuclee, GPU și driver, module RAM, placă de bază, BIOS, Windows, discuri, volume și adaptoare de rețea. Ecranul este accesibil din Overview și Settings. Denumirile pot fi personalizate pentru fiecare PC; câmpul gol revine la detectare.
-- **Library:** aplicațiile configurate în Sunshine pe PC. Lansarea cere un răspuns reușit de la agent. Moonlight gestionează streamingul pentru jocuri și propriile setări de calitate.
+- **Library:** aplicațiile configurate în Sunshine pe PC, cu **box art** și starea sesiunii citite direct de la Sunshine. Orbit vorbește nativ protocolul Moonlight/GameStream: **Pair** generează un PIN pe care îl introduci în pagina PIN a Sunshine (`https://<pc>:47990/pin`), apoi Orbit afișează lista Sunshine, aplicația care rulează și poate opri sesiunea (**Quit**). Lansarea pornește comanda aplicației prin agent. Video-ul cu audio și controller rămâne în aplicația Moonlight (pe Mac, **Stream in Moonlight** pornește direct stream-ul aplicației alese).
 - **Files:** discuri și foldere accesibile contului Windows, transfer în ambele sensuri, previzualizare, favorite și organizare.
-- **Remote:** trackpad, clickuri, scroll, tastatură și media. Desktop preview primește capturi JPEG, fără audio; pentru jocuri folosește Moonlight.
+- **Remote:** trackpad, clickuri, scroll, tastatură și media. **Desktop Preview** (din Library sau Overview) afișează cadrele JPEG trimise de agent, fără audio; pentru jocuri folosește Moonlight.
 - **Tools:** My PCs, Clipboard, Audio mixer, Sessions & graphs, Task Manager, specificații și sursele de monitorizare. **Settings** se deschide de aici și grupează Wake-on-LAN, onboarding, preview, widgeturi și Live Activity.
 
 Sliderul de volum actualizează direct nivelul audio Windows în timpul glisării. Comenzile sunt trimise în ordine, iar pozițiile intermediare sunt grupate pentru a păstra cea mai recentă valoare. Metoda veche care cobora la zero înainte de fiecare ajustare a fost eliminată. Dacă serviciul audio Windows nu este disponibil, controlul apare indisponibil.
@@ -68,7 +68,7 @@ Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descresc
 
 ### Aspect
 
-**Tools → Appearance** oferă stilul **Crisp**, cu suprafețe opace, contrast puternic și o margine speculară fină, și **Glass**, cu cardurile translucide originale. Alege dintre cele 11 teme (Ocean, Aurora, Violet, Ember, Graphite și temele Pro Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), o singură culoare pentru cardurile de metrici, lumina ambientală de fundal și feedbackul haptic. Previzualizarea live din partea de sus arată imediat tema aleasă. Tema se propagă în widgeturi, Live Activity și pe Apple Watch. Setările de accesibilitate ale telefonului (Reduce Motion, Reduce Transparency, text mare) sunt respectate.
+Tema implicită este **Noir**: fundal negru pur, suprafețe plate cu o linie fină de contur, o singură culoare de accent (cyan) pentru toate metricile și fără luminozitate ambientală sau gradiente. Este aplicată la fel pe iPhone/iPad, Apple Watch, Apple TV, Mac, widgeturi și Live Activity; instalările care încă foloseau vechiul implicit Ocean trec automat la Noir, iar o temă aleasă explicit se păstrează. **Tools → Appearance** oferă în continuare stilul **Crisp**/**Glass** și celelalte 11 teme (Ocean, Aurora, Violet, Ember, Graphite, Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), culoarea unică pentru metrici, lumina ambientală și feedbackul haptic. Fundalul animat a fost înlocuit cu unul static, iar fonturile rotunjite cu San Francisco standard. Setările de accesibilitate ale telefonului (Reduce Motion, Reduce Transparency, text mare) sunt respectate.
 
 **Ce aduce noul UI** (iPhone/iPad, Apple Watch, Apple TV):
 
@@ -76,7 +76,7 @@ Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descresc
 - Remote cu trackpad nativ multitouch: un deget mută cursorul, două degete derulează (vertical și orizontal), atingere cu două degete = click dreapta, apăsare lungă = drag; viteză reglabilă, taste rapide, gamepad mapat pe tastatură.
 - Pairing cu radar animat, câmp PIN din 6 celule și cronometru de expirare; profiluri PC cu stare TLS și Wake-on-LAN.
 - Task Manager, Audio Mixer, Clipboard, Fișiere și Sesiuni cu același limbaj vizual (carduri glass, bare de utilizare, grafice cu zonă umplută).
-- Apple Watch: gauge-uri inelare, butoane gradient pentru Power On / Shut Down, volum pe coroană ca inel; ceasul preia automat culoarea temei de pe iPhone.
+- Apple Watch: pagini Overview, Power, Air Mouse și Audio, butoane mari și comenzi explicite pentru Crown. Gyro Glide, Laser Pointer și Touchpad trimit comenzi serializate prin iPhone sau HTTP(S), cu confirmare de la PC; pauza și schimbarea paginii opresc mișcarea și eliberează dragul. Datele expirate nu sunt afișate ca live. Wake-on-LAN de pe ceas folosește iPhone-ul apropiat.
 - Apple TV: fundal ambient, hero cu gauge, secțiuni unitare și valori reale (fără „0°C” sau etichete inventate când senzorul lipsește); acțiunile media folosesc identificatorii corecți ai agentului.
 
 ### Aplicația pentru Mac
@@ -90,9 +90,11 @@ Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descresc
 - **Files (⌘4):** browser cu tabel sortabil, breadcrumb, căutare, favorite, descărcare în Finder, upload prin **drag & drop** din Finder, folder nou, redenumire, mutare și coș de reciclare, cu bară de progres pentru transferuri.
 - **Processes (⌘5):** Task Manager cu sortare pe coloane, filtrare și **End Task** cu confirmare; auto-refresh configurabil.
 - **Audio (⌘6) și Clipboard (⌘7):** mixer pe aplicații cu rutare pe ieșiri (când agentul o permite) și clipboard bidirecțional (Pull / Push / Copy to Mac / Paste from Mac).
-- **Sessions (⌘8):** înregistrări de telemetrie cu grafice Swift Charts, statistici min/medie/max și export CSV. **Library (⌘9):** aplicațiile Sunshine, lansare și deschiderea Moonlight.
+- **Sessions (⌘8):** înregistrări de telemetrie cu grafice Swift Charts, statistici min/medie/max și export CSV. **Library (⌘9):** aplicațiile Sunshine cu box art, asociere prin PIN cu Sunshine, oprirea sesiunii și **Stream in Moonlight** (pornește `Moonlight stream <pc> "<aplicație>"`; Moonlight trebuie asociat o dată cu PC-ul).
 - **Bara de meniu:** CPU/GPU/RAM/FPS/temperatură la alegere lângă pictogramă; fereastra rapidă arată gauge-urile, volumul, Lock/Sleep/Screenshot sau **Power On** când PC-ul e oprit.
-- **Setări (⌘,):** pornire la login, element în bara de meniu, interval de actualizare, notificări când PC-ul revine online, cele 11 teme comune cu iPhone-ul, Wake-on-LAN și verificarea actualizării agentului.
+- **Setări (⌘,):** pornire la login, element în bara de meniu, interval de actualizare, notificări când PC-ul revine online, cele 12 teme comune cu iPhone-ul, Wake-on-LAN și verificarea actualizării agentului.
+
+Notă pentru versiunile anterioare: aplicația Mac se bloca (fir principal la 100 %, „nu răspunde”) din cauza legării directe a elementului din bara de meniu la o preferință `@AppStorage`, ceea ce producea o buclă infinită de actualizare SwiftUI; a fost corectată, iar decodarea cadrelor din Desktop Preview nu mai rulează pe firul principal.
 
 Cerințe: macOS 14 Sonoma sau mai nou; aceeași rețea locală pentru asociere; permisiunea **Local Network** la prima pornire. Dacă senzorul lipsește, aplicația afișează **—**, niciodată valori inventate.
 
@@ -105,7 +107,7 @@ Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` 
 1. Instalează [MSI Afterburner de pe site-ul MSI](https://www.msi.com/Landing/afterburner/graphics-cards), inclusiv **RivaTuner Statistics Server (RTSS)**, și lasă ambele programe pornite pe PC.
 2. În **Afterburner → Settings → Monitoring**, bifează senzorii doriți din **Active hardware monitoring graphs**, inclusiv CPU/GPU temperature și Framerate, când există. Apasă **Apply**. **Show in On-Screen Display** este opțional pentru verificarea pe ecran; [ghidul MSI](https://www.msi.com/blog/msi-afterburner-on-screen-display/) arată opțiunile.
 3. În RTSS, alege **Application detection level → Low** pentru joc. Poți activa temporar **Show own statistics** ca să verifici detectarea.
-4. Pornește jocul și agentul **4.1.0**, apoi deschide Orbit. Datele sunt citite automat, prin memoria partajată locală; nu trebuie să conectezi telefonul direct la Afterburner sau să introduci o cheie suplimentară. În **Tools → Settings → Set up FPS** ai aceiași pași.
+4. Pornește jocul și agentul **4.2.0**, apoi deschide Orbit. Datele sunt citite automat, prin memoria partajată locală; nu trebuie să conectezi telefonul direct la Afterburner sau să introduci o cheie suplimentară. În **Tools → Settings → Set up FPS** ai aceiași pași.
 
 **FPS:** RTSS are prioritate și nu cere `ORBIT_PRESENTMON_CSV`. Jocurile care blochează RTSS sau unele sisteme anti-cheat pot rămâne incompatibile. Valoarea descrie cadrele aplicației, fără garanția FPS-ului afișat după generarea cadrelor sau streaming. Pentru un joc nerecunoscut, se poate configura executabilul prin `ORBIT_GAME_PROCESSES`.
 
@@ -115,7 +117,7 @@ Inventarul folosește Windows CIM și API-urile sistemului. NVIDIA `nvidia-smi` 
 
 ### Actualizare și diagnosticare
 
-Agentul din această versiune raportează **4.1.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul `%LOCALAPPDATA%\Orbit` cu identitatea TLS și istoricul; nu copia mediul `.venv` de pe alt calculator. Pentru asociere automată, folosește **Find my PC**; profilurile manuale existente rămân disponibile. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
+Agentul din această versiune raportează **4.2.0**. Oprește vechiul agent, copiază **întregul folder `Orbit-Windows-Agent`** actualizat pe PC și repornește cu `start_agent.bat`. Păstrează fișierele locale `.orbit-token`, `.orbit-widget-token` și folderul `%LOCALAPPDATA%\Orbit` cu identitatea TLS și istoricul; nu copia mediul `.venv` de pe alt calculator. Pentru asociere automată, folosește **Find my PC**; profilurile manuale existente rămân disponibile. Actualizează și aplicația din Xcode. Schimbările din proiect nu actualizează automat copia care rulează pe PC.
 
 În **Tools → Monitoring sources**, verifică versiunea raportată și sursele datelor. Pe PC, `check_monitoring.bat` sau `.venv\Scripts\python.exe check_monitoring.py` verifică sursele disponibile și configurarea FPS fără să trimită comenzi de control. Păstrează Afterburner și RTSS pornite și deschide jocul pentru verificarea FPS; dacă folosești o sursă alternativă, las-o pornită și pe aceea. Senzorii, cadrele jocului și comenzile Windows trebuie validate pe PC-ul tău; verificările automate folosesc și surse simulate.
 
@@ -125,9 +127,9 @@ WidgetKit oferă **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **CP
 
 După asocierea PC-ului, Orbit pregătește automat accesul widgeturilor. Adaugă widgetul pe Home Screen și alege un PC din **Edit Widget → PC**; **nu introduci IP, port sau token**. Aplicația și extensia au nevoie de același **App Group configurat și semnat în Xcode**. Este partajat exclusiv tokenul de monitorizare **read-only**, separat de tokenul principal privat. Widgeturile folosesc HTTPS și verifică certificatul PC-ului. Dacă partajarea nu este disponibilă, verifică semnarea și **Tools → Widgets → Refresh widget access**.
 
-Widgeturile arată capturi periodice cu ora măsurătorii. Solicită o actualizare după **15 minute**, dar iOS decide programarea; citirile mai vechi de 15 minute sunt ascunse. PC-ul trebuie să fie accesibil în rețea.
+Widgeturile arată capturi periodice cu ora măsurătorii. De fiecare dată când aplicația citește telemetria, salvează ultima citire în App Group și reîmprospătează widgeturile, astfel încât un widget redă imediat ce a văzut aplicația (citiri mai noi de două minute), fără o conexiune proprie. Altfel, widgetul solicită singur o actualizare după **15 minute**, dar iOS decide programarea; citirile mai vechi de 15 minute sunt ascunse. PC-ul trebuie să fie accesibil în rețea.
 
-În **Tools → Live Activity**, alege profilul **Overview / Gaming / Power**, stilul Lock Screen **Standard / Minimal / Detailed**, indicatorul compact, accentul și intervalul **5 / 10 / 15 secunde**. Butonul **Stop** din insula extinsă sau stilul Detailed oprește activitatea. Actualizările locale depind de aplicația activă; în fundal poate apărea starea de pauză, iar după trei intervale fără actualizare valorile sunt ascunse. iOS poate suspenda aplicația: nu există actualizări continue garantate în fundal. Vezi [configurarea și semnarea iOS](Orbit-iOS/WIDGETS.md).
+În **Tools → Live Activity**, alege profilul **Overview / Gaming / Power**, stilul Lock Screen **Standard / Minimal / Detailed**, indicatorul compact, accentul și intervalul **5 / 10 / 15 secunde**. Stilul Detailed afișează și temperaturile CPU/GPU. Butonul **Stop** din insula extinsă sau stilul Detailed oprește activitatea. Când aplicația trece în fundal, ultimele valori rămân afișate până la expirarea lor (trei intervale), apoi activitatea este marcată ca învechită; Orbit cere iOS-ului un refresh în fundal (Background App Refresh) care, atunci când sistemul îl acordă, actualizează activitatea și widgeturile. iOS decide când rulează acest refresh: nu există actualizări continue garantate în fundal. Vezi [configurarea și semnarea iOS](Orbit-iOS/WIDGETS.md).
 
 ### Wake-on-LAN
 
@@ -140,6 +142,12 @@ Broadcastul UDP poate avea restricții suplimentare pe iPhone; verifică nota di
 Iconul este deja inclus în `Orbit-iOS/Orbit/Assets.xcassets/AppIcon.appiconset/OrbitIcon.png`. Pentru a-l schimba, deschide **Assets → AppIcon** în Xcode și înlocuiește imaginea universală de 1024 × 1024 cu un PNG pătrat, opac. iOS aplică forma colțurilor.
 
 Generat cu instrumentul integrat imagegen. Promptul folosit: „Create a finished square iOS app icon image for Orbit, a refined PC companion app for monitoring and remote control. Deep midnight navy full-bleed opaque background. A single striking luminous cyan and ice-blue orbital ring around a small central polished dark sphere, subtle 3D glass and satin-metal depth, one bright satellite point. Elegant restrained premium technology aesthetic, strong recognizable silhouette at small size, centered composition occupying 70% of square. No text, letters, computer drawing, mockup, border, rounded square mask, or external padding. The entire 1024 by 1024 image IS the icon artwork, corners opaque navy.”
+
+### Publicare Apple TV
+
+Selectează schema **OrbitTV**, destinația **Any tvOS Device**, apoi **Product → Archive**. Buildul curent este **10**. După actualizarea proiectului creează o arhivă nouă; arhivele vechi din Organizer păstrează configurația veche.
+
+Catalogul `OrbitTV/Assets.xcassets/AppIcon.brandassets` include iconuri pe straturi pentru Home Screen și App Store, plus Top Shelf normal și Wide în variante 1x/2x. Ambele configurații folosesc **AppIcon**. Cheile `CFBundleIcons.CFBundlePrimaryIcon` și `TVTopShelfImage.TVTopShelfPrimaryImageWide` trebuie să existe și în `Info.plist` din aplicația arhivată, împreună cu imaginile compilate. Verificare locală: `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /cale/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Grafica se poate regenera din iconul Orbit existent cu `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
 
 ### Verificări de dezvoltare
 
@@ -198,10 +206,10 @@ Orbit has two parts: the Apple apps in `Orbit-iOS` (iPhone/iPad, Apple Watch, Ap
 
 ### Getting started
 
-1. Copy the entire `Orbit-Windows-Agent` **4.1.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The agent installs dependencies, preserves this PC's identity, and runs in the Windows **System Tray** (bottom-right **Hidden icons** area) with the Orbit icon and a menu for **Run at Windows startup**, connection details, and **Stop Orbit Companion**.
+1. Copy the entire `Orbit-Windows-Agent` **4.2.0** folder to your PC and run `start_agent.bat`. Python 3.11 or later is required. The agent installs dependencies, preserves this PC's identity, and runs in the Windows **System Tray** (bottom-right **Hidden icons** area) with the Orbit icon and a menu for **Run at Windows startup**, connection details, and **Stop Orbit Companion**.
 2. Allow Python through Windows Firewall on **Private** networks, including HTTPS **8766** and Bonjour/mDNS discovery over **UDP 5353**. Use the same local network for initial pairing.
 3. Open `Orbit-iOS/Orbit.xcodeproj` in Xcode. Choose the same team for **Orbit** and **OrbitWidgets**, using unique bundle identifiers if required. Configure the same **App Group** on both targets and `ORBIT_APP_GROUP_IDENTIFIER` for automatic widget setup; see the [signing instructions (Romanian)](Orbit-iOS/WIDGETS.md#testare-gratuită).
-4. Run Orbit, grant local network access, and choose **Find my PC** during onboarding. Select your PC and enter the **six-digit code shown by the agent and its Windows dialog**. The code expires after **120 seconds** and works once. Orbit automatically fills in the address, tokens, certificate, and Wake-on-LAN details and saves the profile.
+4. Run Orbit, grant local network access, and choose **Find my PC** during onboarding. Select your PC and enter the **six-digit code shown by the agent and its Windows dialog**. The code expires after **120 seconds** and works once. Orbit automatically fills in the address, tokens, certificate, and Wake-on-LAN details and saves the profile. The profile stores the PC's **plain IPv4 address** (for example `192.168.1.196`) rather than the Bonjour name `orbit-….local`, so it also works through Tailscale and other VPNs and for Wake-on-LAN. The `.local` name is kept as a fallback: if the PC's address changes, Orbit finds it again over Bonjour and moves the profile. Older `.local` profiles are migrated on the next connection.
 5. Add another computer through **Tools → My PCs → Find a PC nearby**. **Explore with sample data** lets you try the interface without connecting and clearly marks simulated readings.
 
 Pairing uses SRP and an encrypted response to verify the PC and transfer credentials; the normal flow needs no IP, MAC, or token copying. Each PC's main token stays separately in Keychain. Monitoring and controls use **HTTPS with verification of that PC's certificate**, without falling back to HTTP on a certificate error. Files, Clipboard, Audio mixer, and Sessions require encryption. HTTP port **8765** remains for legacy local clients. Do not expose the agent ports to the Internet.
@@ -212,9 +220,9 @@ Pairing uses SRP and an encrypted response to verify the PC and transfer credent
 
 - **Overview:** a customizable dashboard for CPU, GPU, RAM, VRAM, CPU/GPU power, temperatures, CPU clock, fans, network traffic, disk activity, uptime, and FPS. Missing readings are shown as unavailable.
 - **Full PC specifications:** processor and cores, GPU and driver, RAM modules, motherboard, BIOS, Windows, disks, volumes, and network adapters. Open this screen from Overview or Settings. You can customize component names for each PC; leave a field empty to use the detected name.
-- **Library:** apps configured in Sunshine on your PC. Launching requires a successful response from the agent. Moonlight handles game streaming and its own quality settings.
+- **Library:** apps configured in Sunshine on your PC, with **box art** and the session state read straight from Sunshine. Orbit speaks the Moonlight/GameStream protocol natively: **Pair** generates a PIN you type into Sunshine's PIN page (`https://<pc>:47990/pin`); afterwards Orbit shows Sunshine's app list, the running app, and can end the session (**Quit**). Launching runs the app's command through the agent. Video with audio and controller input stays in the Moonlight app (on Mac, **Stream in Moonlight** starts the chosen app's stream directly).
 - **Files:** drives and folders available to the Windows account, transfers in both directions, previews, favorites, and organization.
-- **Remote:** trackpad, clicks, scrolling, keyboard, and media controls. Desktop preview receives JPEG screenshots without audio; use Moonlight for games.
+- **Remote:** trackpad, clicks, scrolling, keyboard, and media controls. **Desktop Preview** (from Library or Overview) shows the JPEG frames sent by the agent, without audio; use Moonlight for games.
 - **Tools:** My PCs, Clipboard, Audio mixer, Sessions & graphs, Task Manager, specifications, and monitoring sources. Open **Settings** here for Wake-on-LAN, onboarding, preview mode, widgets, and Live Activity.
 
 The volume slider directly updates the Windows audio level while you drag. Commands are sent in order, and intermediate positions are combined to keep the latest value. The old method that lowered the volume to zero before each adjustment has been removed. If the Windows audio service is unavailable, the control is shown as unavailable.
@@ -256,7 +264,7 @@ Open **Tools → Task Manager**, search by name/PID, and sort descending by **CP
 
 ### Appearance
 
-**Tools → Appearance** offers the **Crisp** style, with opaque surfaces, strong contrast and a subtle specular edge, and **Glass**, with the original translucent cards. Pick one of 11 themes (Ocean, Aurora, Violet, Ember, Graphite plus the Pro themes Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), a single accent for metric cards, the ambient background glow and haptic feedback. The live preview at the top reflects the theme instantly. The theme carries over to widgets, the Live Activity and Apple Watch. Phone accessibility settings (Reduce Motion, Reduce Transparency, larger text) are respected.
+The default theme is **Noir**: a pure black background, flat surfaces with a thin hairline border, one accent colour (cyan) for every metric, and no ambient glow or gradients. It is applied identically on iPhone/iPad, Apple Watch, Apple TV, Mac, widgets and the Live Activity; installs still on the old implicit default (Ocean) move to Noir automatically, while an explicitly chosen theme is kept. **Tools → Appearance** still offers the **Crisp**/**Glass** styles and the other 11 themes (Ocean, Aurora, Violet, Ember, Graphite, Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, Sakura), the single metric colour, the ambient glow and haptic feedback. The animated background became static and rounded fonts were replaced with standard San Francisco. The phone's accessibility settings (Reduce Motion, Reduce Transparency, large text) are respected.
 
 **What the UI refresh brings** (iPhone/iPad, Apple Watch, Apple TV):
 
@@ -264,7 +272,7 @@ Open **Tools → Task Manager**, search by name/PID, and sort descending by **CP
 - A native multitouch trackpad in Remote: one finger moves, two fingers scroll (vertical and horizontal), two-finger tap right-clicks, long press drags; adjustable speed, quick keys and a keyboard-mapped gamepad.
 - Pairing with an animated radar, a six-cell PIN field and an expiry countdown; PC profiles show TLS and Wake-on-LAN status.
 - Task Manager, Audio Mixer, Clipboard, Files and Sessions share the same visual language (glass cards, usage bars, area charts).
-- Apple Watch: ring gauges, gradient Power On / Shut Down buttons, Crown volume as a ring; the watch adopts the iPhone theme colour automatically.
+- Apple Watch: Overview, Power, Air Mouse and Audio pages, large buttons and explicit Crown controls. Gyro Glide, Laser Pointer and Touchpad serialize input through iPhone or HTTP(S), with PC acknowledgement; pausing or leaving the page stops motion and releases drag. Stale readings are not shown as live. Watch Wake-on-LAN uses the nearby paired iPhone.
 - Apple TV: ambient background, hero with ring gauge, unified sections and honest values (no “0°C” or invented labels when a sensor is missing); media actions use the agent’s real identifiers.
 
 ### Mac app
@@ -278,9 +286,11 @@ Open **Tools → Task Manager**, search by name/PID, and sort descending by **CP
 - **Files (⌘4):** a browser with a sortable table, breadcrumbs, search, favorites, download to Finder, upload by **drag & drop** from Finder, new folder, rename, move and recycle bin, with a transfer progress bar.
 - **Processes (⌘5):** Task Manager with column sorting, filtering and **End Task** with confirmation; configurable auto-refresh.
 - **Audio (⌘6) and Clipboard (⌘7):** per-app mixer with output routing (when the agent allows it) and a two-way clipboard (Pull / Push / Copy to Mac / Paste from Mac).
-- **Sessions (⌘8):** telemetry recordings with Swift Charts graphs, min/average/max statistics and CSV export. **Library (⌘9):** Sunshine apps, launch and Moonlight hand-off.
+- **Sessions (⌘8):** telemetry recordings with Swift Charts graphs, min/average/max statistics and CSV export. **Library (⌘9):** Sunshine apps with box art, PIN pairing with Sunshine, ending the session and **Stream in Moonlight** (runs `Moonlight stream <pc> "<app>"`; pair Moonlight with the PC once).
 - **Menu bar:** your choice of CPU/GPU/RAM/FPS/temperature next to the icon; the quick panel shows the gauges, volume, Lock/Sleep/Screenshot or **Power On** when the PC is off.
-- **Settings (⌘,):** launch at login, menu bar item, refresh interval, notifications when the PC comes back online, the same 11 themes as the iPhone app, Wake-on-LAN and agent update checks.
+- **Settings (⌘,):** launch at login, menu bar item, refresh interval, notifications when the PC comes back online, the same 12 themes as the iPhone app, Wake-on-LAN and agent update checks.
+
+Note for earlier builds: the Mac app used to hang (main thread at 100 %, "not responding") because the menu bar item was bound directly to an `@AppStorage` preference, which produced an endless SwiftUI update loop; this is fixed, and Desktop Preview frames are no longer decoded on the main thread.
 
 Requirements: macOS 14 Sonoma or later; the same local network for pairing; the **Local Network** permission on first launch. When a sensor is missing the app shows **—**, never invented values.
 
@@ -293,7 +303,7 @@ Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains
 1. Install [MSI Afterburner from MSI](https://www.msi.com/Landing/afterburner/graphics-cards), including **RivaTuner Statistics Server (RTSS)**, and keep both running on the PC.
 2. In **Afterburner → Settings → Monitoring**, tick the desired **Active hardware monitoring graphs**, including CPU/GPU temperature and Framerate when present. Click **Apply**. **Show in On-Screen Display** is optional for checking readings on the PC; see the [MSI monitoring guide](https://www.msi.com/support/technical_details/VGA_MSI_Utility_AfterBurner).
 3. In RTSS, set **Application detection level → Low** for the game. Enable **Show own statistics** temporarily if you want to check detection.
-4. Start the game and agent **4.1.0**, then open Orbit. Readings are detected through local shared memory; there is no direct phone connection to Afterburner or extra pairing key. **Tools → Settings → Set up FPS** includes the same steps.
+4. Start the game and agent **4.2.0**, then open Orbit. Readings are detected through local shared memory; there is no direct phone connection to Afterburner or extra pairing key. **Tools → Settings → Set up FPS** includes the same steps.
 
 **FPS:** RTSS has priority and does not need `ORBIT_PRESENTMON_CSV`. Games that block RTSS and some anti-cheat systems may be incompatible. The reading describes application frames and does not guarantee displayed FPS after frame generation or streaming. Set `ORBIT_GAME_PROCESSES` to the executable if a game is not recognized.
 
@@ -303,7 +313,7 @@ Hardware inventory uses Windows CIM and system APIs. NVIDIA `nvidia-smi` remains
 
 ### Updating and troubleshooting
 
-The agent in this version reports **4.1.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token`, `.orbit-widget-token`, and `%LOCALAPPDATA%\Orbit` folder containing TLS identity and history; do not copy another computer's `.venv`. Use **Find my PC** for automatic pairing; existing manual profiles remain available. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
+The agent in this version reports **4.2.0**. Stop the old agent, copy the updated **entire `Orbit-Windows-Agent` folder** to your PC, and restart with `start_agent.bat`. Keep the local `.orbit-token`, `.orbit-widget-token`, and `%LOCALAPPDATA%\Orbit` folder containing TLS identity and history; do not copy another computer's `.venv`. Use **Find my PC** for automatic pairing; existing manual profiles remain available. Update the app through Xcode too. Editing the project does not automatically update the copy running on your PC.
 
 Open **Tools → Monitoring sources** to check the reported version and providers. On the PC, `check_monitoring.bat` or `.venv\Scripts\python.exe check_monitoring.py` checks available sources and FPS configuration without sending control commands. Keep Afterburner and RTSS running and open a game to check FPS; keep any fallback source you use running as well. Actual sensors, game frames, and Windows controls still need validation on your PC; automated checks also use mocked sources.
 
@@ -313,9 +323,9 @@ WidgetKit includes **PC overview**, **Gaming snapshot**, **CPU & GPU power**, **
 
 Pairing the PC automatically prepares widget access. Add a Home Screen widget and select a PC under **Edit Widget → PC**; **no IP, port, or token entry is needed**. The app and extension require the same **App Group registered and signed in Xcode**. Only the **read-only** monitoring token is shared; the main control token remains private. Widgets use HTTPS and verify the PC certificate. If sharing is unavailable, check signing and **Tools → Widgets → Refresh widget access**.
 
-Widgets show periodic snapshots with the measurement timestamp. They request an update after **15 minutes**, but iOS controls scheduling; readings older than 15 minutes are hidden. The PC must be reachable on your network.
+Widgets show periodic snapshots with the measurement timestamp. Every time the app reads telemetry it stores the latest reading in the App Group and reloads the widgets, so a widget renders immediately from what the app just saw (readings under two minutes old) without opening its own connection. Otherwise the widget requests an update after **15 minutes**, but iOS controls scheduling; readings older than 15 minutes are hidden. The PC must be reachable on your network.
 
-Under **Tools → Live Activity**, choose **Overview / Gaming / Power**, a **Standard / Minimal / Detailed** Lock Screen style, compact metric, accent, and **5 / 10 / 15-second** interval. **Stop** in the expanded island or Detailed style ends the activity. Local updates depend on the app running in the foreground; the background may show a paused state, and readings are hidden after three missed intervals. iOS can suspend the app, so continuous background updates are not guaranteed. See the [iOS setup and signing guide (Romanian)](Orbit-iOS/WIDGETS.md).
+Under **Tools → Live Activity**, choose **Overview / Gaming / Power**, a **Standard / Minimal / Detailed** Lock Screen style, compact metric, accent, and **5 / 10 / 15-second** interval. The Detailed style also shows CPU/GPU temperatures. **Stop** in the expanded island or Detailed style ends the activity. When the app goes to the background the last values stay visible until they expire (three intervals), then the activity is marked stale; Orbit asks iOS for a Background App Refresh which, when the system grants it, updates the activity and the widgets. iOS decides when that runs, so continuous background updates are not guaranteed. See the [iOS setup and signing guide (Romanian)](Orbit-iOS/WIDGETS.md).
 
 ### Wake-on-LAN
 
@@ -328,6 +338,12 @@ UDP broadcast may face additional restrictions on iPhone; see the note in the [t
 The icon is already included at `Orbit-iOS/Orbit/Assets.xcassets/AppIcon.appiconset/OrbitIcon.png`. To change it, open **Assets → AppIcon** in Xcode and replace the universal 1024 × 1024 image with a square, opaque PNG. iOS applies the rounded corners.
 
 Generated with the built-in imagegen tool. Prompt: “Create a finished square iOS app icon image for Orbit, a refined PC companion app for monitoring and remote control. Deep midnight navy full-bleed opaque background. A single striking luminous cyan and ice-blue orbital ring around a small central polished dark sphere, subtle 3D glass and satin-metal depth, one bright satellite point. Elegant restrained premium technology aesthetic, strong recognizable silhouette at small size, centered composition occupying 70% of square. No text, letters, computer drawing, mockup, border, rounded square mask, or external padding. The entire 1024 by 1024 image IS the icon artwork, corners opaque navy.”
+
+### Apple TV submission
+
+Choose **OrbitTV**, destination **Any tvOS Device**, then **Product → Archive**. The current build is **10**. Create a fresh archive after updating the project; existing archives in Organizer retain their old configuration.
+
+`OrbitTV/Assets.xcassets/AppIcon.brandassets` contains layered Home Screen/App Store icons and standard/Wide Top Shelf images at 1x/2x. Both configurations select **AppIcon**. The archived app must contain `CFBundleIcons.CFBundlePrimaryIcon` and `TVTopShelfImage.TVTopShelfPrimaryImageWide` as well as the compiled images. Verify locally with `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /path/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Regenerate the assets from the existing Orbit artwork with `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
 
 ### Development checks
 

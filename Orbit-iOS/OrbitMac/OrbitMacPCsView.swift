@@ -311,7 +311,7 @@ struct MacPCsView: View {
         HStack(alignment: .center, spacing: 14) {
             MacIconBadge(systemName: "sparkles", tint: .orange, size: 36)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Demo Mode").font(.system(.headline, design: .rounded, weight: .bold))
+                Text("Demo Mode").font(.system(.headline, weight: .bold))
                 Text("Explore every section with simulated readings. Nothing is sent to a PC and your saved PCs stay untouched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -400,7 +400,7 @@ private struct MacPcsSavedCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(pc.name.isEmpty ? "Unnamed PC" : pc.name)
-                        .font(.system(.headline, design: .rounded, weight: .bold))
+                        .font(.system(.headline, weight: .bold))
                         .lineLimit(1)
                     Button { onRename() } label: { Image(systemName: "pencil") }
                         .buttonStyle(MacIconButtonStyle(size: 22))
@@ -548,7 +548,7 @@ private struct MacPcsDiscoveredRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text(pc.name.isEmpty ? pc.host : pc.name)
-                        .font(.system(.subheadline, design: .rounded, weight: .bold))
+                        .font(.system(.subheadline, weight: .bold))
                         .lineLimit(1)
                     if saved != nil {
                         MacStatusPill(text: "Paired", tint: .mint, icon: "checkmark.seal.fill")
@@ -685,7 +685,7 @@ private struct MacPcsPairingSheet: View {
                     .frame(width: 64, height: 64)
                 VStack(spacing: 0) {
                     Text("\(Int(remaining.rounded()))")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(.system(size: 17, weight: .bold))
                         .monospacedDigit()
                     Text("sec").font(.caption2).foregroundStyle(.secondary)
                 }
@@ -788,7 +788,7 @@ private struct MacPcsField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title.uppercased())
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(.white.opacity(0.5))
             TextField(placeholder, text: $text)

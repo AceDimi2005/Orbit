@@ -12,11 +12,11 @@ struct OrbitWatchWidgets: WidgetBundle {
 }
 
 private enum WatchWidgetPalette {
-    static let accent = Color(red: 0.25, green: 0.84, blue: 0.96)
-    static let purple = Color(red: 0.71, green: 0.58, blue: 1.0)
-    static let mint = Color(red: 0.35, green: 0.94, blue: 0.66)
+    static let accent = Color(red: 0.36, green: 0.86, blue: 1.0)
+    static let purple = accent
+    static let mint = accent
     static let coral = Color(red: 1.0, green: 0.45, blue: 0.48)
-    static let background = Color(red: 0.04, green: 0.06, blue: 0.11)
+    static let background = Color.black
 }
 
 struct WatchTelemetryEntry: TimelineEntry {
@@ -137,7 +137,7 @@ private struct OrbitWatchTelemetryComplicationView: View {
                 Text("CPU")
             } currentValueLabel: {
                 Text(entry.isOnline ? "\(Int(entry.cpuUsage.rounded()))%" : "OFF")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.system(size: 11, weight: .bold))
             }
             .gaugeStyle(.accessoryCircular)
             .tint(WatchWidgetPalette.accent.gradient)
@@ -145,7 +145,7 @@ private struct OrbitWatchTelemetryComplicationView: View {
 
         case .accessoryCorner:
             Text(entry.isOnline ? "\(Int(entry.cpuUsage.rounded()))%" : "OFF")
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(WatchWidgetPalette.accent)
                 .widgetCurvesContent()
                 .widgetLabel {
@@ -177,12 +177,12 @@ private struct OrbitWatchTelemetryComplicationView: View {
                         .fill(entry.isOnline ? WatchWidgetPalette.mint : Color.orange)
                         .frame(width: 6, height: 6)
                     Text(entry.pcName)
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .font(.system(size: 11, weight: .bold))
                         .lineLimit(1)
                     Spacer(minLength: 2)
                     if let fps = entry.fps, entry.isOnline {
                         Text("\(Int(fps.rounded())) FPS")
-                            .font(.system(size: 9.5, weight: .heavy, design: .rounded))
+                            .font(.system(size: 9.5, weight: .heavy))
                             .foregroundStyle(WatchWidgetPalette.mint)
                     } else {
                         Text(entry.isOnline ? "LIVE" : "OFF")
@@ -207,7 +207,7 @@ private struct OrbitWatchTelemetryComplicationView: View {
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .font(.system(size: 11.5, weight: .bold))
                 .monospacedDigit()
                 .lineLimit(1)
         }

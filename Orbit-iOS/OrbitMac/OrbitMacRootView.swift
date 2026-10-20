@@ -110,7 +110,7 @@ struct MacRootView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(vm.isConfigured ? vm.selectedPCName : "No PC")
-                                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                                .font(.system(.subheadline, weight: .bold))
                                 .lineLimit(1)
                             Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                         }
@@ -139,7 +139,7 @@ struct MacRootView: View {
                 Task { await vm.wakePC() }
             } label: {
                 Label(vm.isWaking ? "Waking…" : "Power On", systemImage: "power")
-                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .font(.system(.caption, weight: .bold))
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(MacHoverButtonStyle(tint: .mint, prominent: !vm.metrics.isOnline))

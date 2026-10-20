@@ -297,7 +297,7 @@ struct MacFilesView: View {
                 if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .semibold)) }
                 Text(title).lineLimit(1)
             }
-            .font(.system(.callout, design: .rounded, weight: isCurrent ? .bold : .medium))
+            .font(.system(.callout, weight: isCurrent ? .bold : .medium))
             .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.65))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
@@ -458,7 +458,7 @@ struct MacFilesView: View {
             MacIconBadge(systemName: "folder.fill", tint: theme.accent, size: 44, filled: true)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Files on \(vm.selectedPCName)")
-                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .font(.system(.title3, weight: .bold))
                     .lineLimit(1)
                 HStack(spacing: 8) {
                     MacStatChip(label: "Drives", value: "\(roots.roots.count)", icon: "internaldrive.fill")
@@ -878,7 +878,7 @@ private struct MacFilesRailRow: View {
                         .foregroundStyle(tint)
                         .frame(width: 18)
                     Text(title)
-                        .font(.system(.callout, design: .rounded, weight: isSelected ? .semibold : .regular))
+                        .font(.system(.callout, weight: isSelected ? .semibold : .regular))
                         .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.82))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -932,7 +932,7 @@ private struct MacFilesLocationTile: View {
                     MacIconBadge(systemName: location.symbol, tint: tint, size: 34)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(location.name)
-                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            .font(.system(.subheadline, weight: .semibold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                         Text(location.path)

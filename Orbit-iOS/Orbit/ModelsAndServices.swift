@@ -1,3 +1,4 @@
+import BackgroundTasks
 import Foundation
 import Network
 import SwiftUI
@@ -186,6 +187,16 @@ struct SunshineGame: Identifiable, Codable, Hashable {
     var cmd: String? = nil
     var isFavorite: Bool = false
 }
+/// `/api/sunshine/info`: where Sunshine listens on the PC (agent 4.2+).
+struct SunshineInfo: Codable, Equatable {
+    var installed: Bool
+    var running: Bool
+    var httpPort: Int
+    var httpsPort: Int
+    var webUIPort: Int
+    var name: String
+    var appCount: Int
+}
 enum SmartLaunchStep: String {
     case idle = ""
     case checkingPC = "Checking your PC…"
@@ -199,6 +210,32 @@ enum SmartLaunchStep: String {
 struct OrbitError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+/// BGAppRefreshTask plumbing. Registration must happen before the app finishes launching
+/// (`OrbitApp.init`); the handler is installed by the view model. iOS schedules the task at
+/// its discretion, typically minutes apart, so this is a best-effort refresh, not a timer.
+enum OrbitBackgroundRefresh {
+    static let identifier = "com.dimitrie.orbit.refresh"
+    nonisolated(unsafe) static var handler: (@MainActor () async -> Bool)?
+
+    static func register() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+            guard let refresh = task as? BGAppRefreshTask else { task.setTaskCompleted(success: false); return }
+            schedule()
+            let work = Task { @MainActor in
+                let ok = await handler?() ?? false
+                refresh.setTaskCompleted(success: ok)
+            }
+            refresh.expirationHandler = { work.cancel(); refresh.setTaskCompleted(success: false) }
+        }
+    }
+
+    static func schedule() {
+        let request = BGAppRefreshTaskRequest(identifier: identifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
 }
 
 final class WakeOnLANService {
@@ -333,6 +370,7 @@ final class OrbitViewModel: ObservableObject {
     @Published var liveFrameImage: UIImage?
     @Published var isDraggingVolume = false
     @Published var games: [SunshineGame] = []
+    @Published var sunshineInfo: SunshineInfo?
     @Published var lastUpdated: Date?
     @Published var streamError: String?
     @Published var liveActivityError: String?
@@ -352,6 +390,7 @@ final class OrbitViewModel: ObservableObject {
     }
     private var lastVolumeChangeTime: Date = .distantPast
     private var lastSpecsAttempt: Date = .distantPast
+    private var lastBonjourRediscovery: Date = .distantPast
     private var hasSynced = false
     private var isRefreshing = false
     private var appActive = true
@@ -382,6 +421,7 @@ final class OrbitViewModel: ObservableObject {
         if isDemoMode { metrics = .demo; games = Self.demoGames }
         OrbitWatchBridge.shared.attach(to: self)
         OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+        OrbitBackgroundRefresh.handler = { [weak self] in await self?.backgroundRefresh() ?? false }
         startMonitoringLoop()
     }
     private static var demoGames: [SunshineGame] {
@@ -391,7 +431,7 @@ final class OrbitViewModel: ObservableObject {
         generation += 1
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
-        metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; lastUpdated = nil; pingMs = 0
+        metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; sunshineInfo = nil; lastUpdated = nil; pingMs = 0
         widgetToken = nil; widgetSetupError = nil
         processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil; processGpuStatus = nil
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
@@ -429,8 +469,51 @@ final class OrbitViewModel: ObservableObject {
         appActive = active
         if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else {
             monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed()
-            Task { await activity.pauseUpdates() }
+            activity.enterBackground()
+            if activity.isActive { OrbitBackgroundRefresh.schedule() }
         }
+    }
+
+    /// One poll while iOS runs Orbit in the background (BGAppRefreshTask): refreshes the Live
+    /// Activity and the widget snapshot cache. iOS decides when (and whether) this runs.
+    func backgroundRefresh() async -> Bool {
+        guard !isDemoMode, isConfigured, activity.isActive else { return false }
+        let version = generation
+        do {
+            let data = try await request("/api/status")
+            let decoded = try JSONDecoder().decode(PCMetrics.self, from: data)
+            guard generation == version else { return false }
+            metrics = decoded
+            lastUpdated = Date()
+            await updateLiveActivity(force: true)
+            publishWidgetSnapshot(decoded)
+            return true
+        } catch {
+            guard generation == version else { return false }
+            metrics.isOnline = false
+            await updateLiveActivity(force: true)
+            return false
+        }
+    }
+
+    /// Mirrors the agent's `/api/widget/status` shape so widgets can render from the app's reading.
+    private func publishWidgetSnapshot(_ m: PCMetrics) {
+        guard hasSecureConnection, !selectedPCID.isEmpty, m.isOnline, m.telemetryAvailable != false else { return }
+        func number(_ value: Double?) -> Any { value.flatMap { $0.isFinite ? $0 : nil } ?? NSNull() }
+        let json: [String: Any] = [
+            "pc_name": m.hostname, "timestamp": Date().timeIntervalSince1970, "telemetry_available": true,
+            "cpu_usage": number(m.cpuUsage), "gpu_usage": number(m.gpuUsage),
+            "ram_usage": m.ramTotalGB > 0 ? number(min(100, max(0, m.ramUsedGB / m.ramTotalGB * 100))) : NSNull(),
+            "cpu_temp": number(m.cpuTemp), "gpu_temp": number(m.gpuTemp),
+            "vram_used": number(m.vramUsedGB), "vram_total": number(m.vramTotalGB),
+            "cpu_power": number(m.cpuPowerWatts), "gpu_power": number(m.gpuPowerWatts), "cpu_clock": number(m.cpuClockMHz),
+            "cpu_fan": number(m.cpuFanRPM), "gpu_fan": number(m.gpuFanPercent), "coolant_temp": number(m.liquidTemp),
+            "disk_read": number(m.diskReadMBps), "disk_write": number(m.diskWriteMBps),
+            "network_download": number(m.networkDownloadMBps), "network_upload": number(m.networkUploadMBps),
+            "fps": number(m.fps), "game_name": m.activeGame ?? NSNull()
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        OrbitWidgetConnectionStore.cacheSnapshot(data, for: selectedPCID)
     }
     func startMonitoringLoop() {
         monitoringTask?.cancel()
@@ -484,6 +567,7 @@ final class OrbitViewModel: ObservableObject {
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
             statusLog = "Connected • \(cleanHost())"
             await updateLiveActivity()
+            publishWidgetSnapshot(decoded)
             OrbitWatchBridge.shared.pushStateToWatch()
             guard generation == version, !Task.isCancelled else { return }
             if !hasSynced {
@@ -503,6 +587,7 @@ final class OrbitViewModel: ObservableObject {
             statusLog = (error as? OrbitError)?.message ?? "PC unreachable • check Wi-Fi and Orbit Agent"
             await updateLiveActivity()
             OrbitWatchBridge.shared.pushStateToWatch()
+            await rediscoverThroughBonjourIfNeeded()
         }
     }
     /// Demo mode is explicitly simulated, so a gentle drift keeps the preview
@@ -536,6 +621,7 @@ final class OrbitViewModel: ObservableObject {
             if !info.subnetMask.isEmpty { subnetMask = info.subnetMask }
             if autoCalcBroadcast && !info.broadcastAddress.isEmpty { wolTargetIP = info.broadcastAddress }
             persistSelectedPC()
+            if migrateBonjourAddressIfNeeded(to: info.ipAddress) { return }
             let previouslyEnteredNames = componentOverrides
             currentIdentity = info.macAddress.isEmpty ? info.hostname : info.macAddress
             let hasSavedNames = UserDefaults.standard.object(forKey: overrideKey) != nil
@@ -546,6 +632,41 @@ final class OrbitViewModel: ObservableObject {
                 UserDefaults.standard.set(previouslyEnteredNames, forKey: overrideKey)
             }
         } catch { if version == generation { statusLog = "Network details unavailable: \(error.localizedDescription)" } }
+    }
+    /// Profiles paired before 4.2 stored the Bonjour `.local` name as the address. Once the
+    /// agent reports the IPv4 address the phone connected through, switch the profile to it
+    /// (keeping the name as a fallback) so Wake-on-LAN and VPN access use a real address.
+    @discardableResult
+    func migrateBonjourAddressIfNeeded(to ipAddress: String) -> Bool {
+        let host = cleanHost()
+        guard IPv4Address(host) == nil, IPv4Address(ipAddress) != nil,
+              let index = savedPCs.firstIndex(where: { $0.id == selectedPCID && $0.address == host }) else { return false }
+        savedPCs[index].bonjourHost = host
+        savedPCs[index].address = ipAddress
+        savedPCs[index].lastKnownIPv4 = ipAddress
+        let profile = savedPCs[index]
+        PCProfileStore.save(savedPCs)
+        statusLog = "Switched \(profile.name) to its IPv4 address \(ipAddress)"
+        selectPC(profile, persistCurrent: false)
+        return true
+    }
+    /// When the stored IPv4 stops answering, ask the agent's Bonjour name for its current
+    /// address (certificate-pinned, so only the same PC can answer) and move the profile.
+    func rediscoverThroughBonjourIfNeeded() async {
+        guard !isDemoMode, hasSecureConnection, Date().timeIntervalSince(lastBonjourRediscovery) > 60,
+              let profile = savedPCs.first(where: { $0.id == selectedPCID }),
+              let name = profile.bonjourHost, !name.isEmpty, name != cleanHost() else { return }
+        lastBonjourRediscovery = Date()
+        let version = generation
+        guard let client = try? OrbitAPIClient(host: name, port: securePort, token: apiToken, fingerprint: certificateFingerprint),
+              let info: PCNetworkConfigResponse = try? await client.get("/api/network-info"),
+              generation == version, IPv4Address(info.ipAddress) != nil, info.ipAddress != cleanHost(),
+              let index = savedPCs.firstIndex(where: { $0.id == profile.id }) else { return }
+        savedPCs[index].address = info.ipAddress
+        savedPCs[index].lastKnownIPv4 = info.ipAddress
+        PCProfileStore.save(savedPCs)
+        statusLog = "\(profile.name) moved to \(info.ipAddress) · reconnecting"
+        selectPC(savedPCs[index], persistCurrent: false)
     }
     func fetchSpecs() async {
         guard !isLoadingSpecs else { return }
@@ -702,6 +823,10 @@ final class OrbitViewModel: ObservableObject {
             let fetched = try JSONDecoder().decode([SunshineGame].self, from: await request("/api/sunshine/apps"))
             guard version == generation else { return }; games = fetched
         } catch { if version == generation { statusLog = "Could not refresh the Sunshine library: \(error.localizedDescription)" } }
+        // Optional on older agents: tells the Moonlight-protocol client which ports Sunshine uses.
+        if let data = try? await request("/api/sunshine/info"), let info = try? JSONDecoder().decode(SunshineInfo.self, from: data), version == generation {
+            sunshineInfo = info
+        }
     }
     func scanLANForPC() async {
         guard !isScanningLAN else { return }
@@ -915,18 +1040,20 @@ final class OrbitViewModel: ObservableObject {
                                      vramUsedGB: metrics.vramUsedGB, vramTotalGB: metrics.vramTotalGB,
                                      cpuPowerWatts: metrics.cpuPowerWatts, gpuPowerWatts: metrics.gpuPowerWatts,
                                      focus: dashboardConfiguration.activityFocus.rawValue,
-                                     telemetryAvailable: metrics.telemetryAvailable != false)
+                                     telemetryAvailable: metrics.telemetryAvailable != false,
+                                     cpuTemp: metrics.cpuTemp, gpuTemp: metrics.gpuTemp)
                 liveActivityError = activity.lastError
             }
         }
     }
-    private func updateLiveActivity() async {
+    private func updateLiveActivity(force: Bool = false) async {
         guard activity.isActive else { return }
         await activity.update(cpuUsage: metrics.telemetryAvailable == false ? nil : metrics.cpuUsage, gpuUsage: metrics.gpuUsage, ramUsage: metrics.ramTotalGB > 0 ? metrics.ramUsedGB / metrics.ramTotalGB * 100 : nil, fps: metrics.fps, gameName: metrics.activeGame, isConnected: metrics.isOnline,
                               vramUsedGB: metrics.vramUsedGB, vramTotalGB: metrics.vramTotalGB,
                               cpuPowerWatts: metrics.cpuPowerWatts, gpuPowerWatts: metrics.gpuPowerWatts,
                               focus: dashboardConfiguration.activityFocus.rawValue,
-                              telemetryAvailable: metrics.telemetryAvailable != false)
+                              telemetryAvailable: metrics.telemetryAvailable != false,
+                              cpuTemp: metrics.cpuTemp, gpuTemp: metrics.gpuTemp, force: force)
     }
 
     func checkPCCompanionUpdate() async {

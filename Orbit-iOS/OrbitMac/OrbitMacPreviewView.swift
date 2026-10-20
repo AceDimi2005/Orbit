@@ -105,7 +105,7 @@ struct MacPreviewView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     Text("Desktop Preview")
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .font(.system(size: 24, weight: .bold))
                         .lineLimit(1)
                     MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.isStreaming)
                 }
@@ -163,7 +163,7 @@ struct MacPreviewView: View {
             MacIconBadge(systemName: icon, tint: theme.accent, size: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.system(.subheadline, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
                 Text(text)
                     .font(.caption)
@@ -180,7 +180,7 @@ struct MacPreviewView: View {
             optionRow("Keep the window on top", "The detached preview floats above other apps and follows you across Spaces.", isOn: $alwaysOnTop)
             Divider().overlay(.white.opacity(0.1))
             Text("SHORTCUTS")
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .tracking(1)
                 .foregroundStyle(.white.opacity(0.5))
             ForEach(Self.shortcuts) { shortcut in
@@ -206,7 +206,7 @@ struct MacPreviewView: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.system(.subheadline, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
                 Text(detail)
                     .font(.caption)
@@ -460,7 +460,7 @@ fileprivate struct MacPreviewCanvas: View {
         HStack(spacing: 5) {
             Image(systemName: icon).font(.system(size: 10, weight: .bold))
             Text(text)
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.system(.caption, weight: .bold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .lineLimit(1)
@@ -549,7 +549,7 @@ fileprivate struct MacPreviewCanvas: View {
         VStack(spacing: 8) {
             if let message = snapshotMessage {
                 Label(message, systemImage: "checkmark.circle.fill")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(.system(.caption, weight: .semibold))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(.black.opacity(0.62), in: Capsule())

@@ -599,11 +599,11 @@ private struct OrbitHistoryDetailView: View {
     private func statistic(_ title: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .font(.system(size: 9.5, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
             Text(text)
-                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .font(.system(size: 17, weight: .bold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
         }

@@ -6,8 +6,15 @@ struct OrbitMacApp: App {
     @StateObject private var viewModel = OrbitMacViewModel()
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("mac.menuBarEnabled") private var menuBarEnabled = true
-    @AppStorage("mac.menuBarMetric") private var menuBarMetric = "cpu"
+
+    init() {
+        // Ocean used to be the implicit default; installs that never chose another theme move to Noir once.
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: "mac.theme.noirMigrated") {
+            defaults.set(true, forKey: "mac.theme.noirMigrated")
+            if defaults.string(forKey: "mac.theme") == "ocean" { defaults.set("noir", forKey: "mac.theme") }
+        }
+    }
 
     var body: some Scene {
         WindowGroup("Orbit", id: "main") {
@@ -104,12 +111,20 @@ struct OrbitMacApp: App {
                 .macAppearance()
         }
 
-        MenuBarExtra(isInserted: $menuBarEnabled) {
+        // `isInserted` must never be bound straight to `@AppStorage`: AppKit reports the
+        // status item's visibility back through KVO on every scene update, SwiftUI then
+        // writes the (unchanged) value to UserDefaults, the App body re-evaluates, the
+        // scene updates again… and the main thread spins at 100 % until the app stops
+        // responding. The guarded binding below only publishes real changes.
+        MenuBarExtra(isInserted: Binding(
+            get: { viewModel.menuBarEnabled },
+            set: { value in if viewModel.menuBarEnabled != value { viewModel.menuBarEnabled = value } }
+        )) {
             MacMenuBarView()
                 .environmentObject(viewModel)
                 .macAppearance()
         } label: {
-            MacMenuBarLabel(metric: menuBarMetric)
+            MacMenuBarLabel(metric: viewModel.menuBarMetric)
                 .environmentObject(viewModel)
         }
         .menuBarExtraStyle(.window)

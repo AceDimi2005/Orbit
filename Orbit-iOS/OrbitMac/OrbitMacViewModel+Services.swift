@@ -7,9 +7,9 @@ import Network
 extension OrbitMacViewModel {
     func refreshGames() async {
         guard !isDemoMode, metrics.isOnline, !isLoadingGames else { return }
-        isLoadingGames = true
-        defer { isLoadingGames = false }
         let version = generation
+        isLoadingGames = true
+        defer { if version == generation { isLoadingGames = false } }
         do {
             let fetched: [MacSunshineGame] = try await client().get("/api/sunshine/apps")
             guard version == generation else { return }
@@ -17,6 +17,35 @@ extension OrbitMacViewModel {
         } catch {
             guard version == generation else { return }
             statusBanner = "Could not refresh the Sunshine library: \(error.localizedDescription)"
+        }
+        if let info: MacSunshineInfo = try? await client().get("/api/sunshine/info"), version == generation {
+            sunshineInfo = info
+        }
+    }
+
+    /// Starts the stream straight away in Moonlight (moonlight-qt) with its command line
+    /// `stream <host> "<app>"`. Moonlight must already be paired with the PC itself; if it is
+    /// already running, macOS only brings it forward and the app has to be picked there.
+    func streamInMoonlight(appTitle: String) {
+        guard let pc = currentPC, !isDemoMode else { openMoonlight(); return }
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.moonlight-stream.Moonlight") else {
+            openMoonlight(); return
+        }
+        let alreadyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: "com.moonlight-stream.Moonlight").isEmpty == false
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = ["stream", pc.address, appTitle]
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: app, configuration: configuration) { [weak self] _, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.statusBanner = "Moonlight could not start: \(error.localizedDescription)"
+                } else if alreadyRunning {
+                    self.statusBanner = "Moonlight was already open: choose \(pc.name) and \(appTitle) there."
+                } else {
+                    self.statusBanner = "Moonlight is starting \(appTitle) from \(pc.name)."
+                }
+            }
         }
     }
 
@@ -60,9 +89,9 @@ extension OrbitMacViewModel {
     func refreshAudio() async {
         if isDemoMode { return }
         guard metrics.isOnline, !isLoadingAudio else { return }
-        isLoadingAudio = true
-        defer { isLoadingAudio = false }
         let version = generation
+        isLoadingAudio = true
+        defer { if version == generation { isLoadingAudio = false } }
         do {
             let apiClient = try client()
             let reply: MacAudioSessionsReply = try await apiClient.get("/api/audio/sessions")
@@ -185,9 +214,9 @@ extension OrbitMacViewModel {
     func refreshProcesses() async {
         if isDemoMode { return }
         guard metrics.isOnline, !isLoadingProcesses else { return }
-        isLoadingProcesses = true
-        defer { isLoadingProcesses = false }
         let version = generation
+        isLoadingProcesses = true
+        defer { if version == generation { isLoadingProcesses = false } }
         do {
             let list: MacProcessList = try await client().get("/api/processes")
             guard version == generation else { return }
@@ -440,7 +469,7 @@ extension OrbitMacViewModel {
             }
         } catch is CancellationError {
         } catch {
-            guard version == generation else { return }
+            guard version == generation, filePath == requestedPath, fileSearch == requestedSearch, fileSort == requestedSort else { return }
             filesError = error.localizedDescription
         }
     }
@@ -458,7 +487,7 @@ extension OrbitMacViewModel {
             fileEntries += page.entries.filter { !existing.contains($0.path) }
             fileTotal = page.total
         } catch {
-            guard version == generation else { return }
+            guard version == generation, filePath == path, fileSearch == requestedSearch, fileSort == requestedSort else { return }
             filesError = error.localizedDescription
         }
     }
@@ -481,8 +510,8 @@ extension OrbitMacViewModel {
     }
 
     private func progressHandler(_ identifier: UUID, generation version: Int) -> @Sendable (Double) -> Void {
-        { progress in
-            Task { @MainActor [weak self] in
+        { [weak self] progress in
+            Task { @MainActor in
                 guard let self, self.transferID == identifier, self.generation == version else { return }
                 self.transfer?.progress = min(1, max(0, progress))
                 let elapsed = Date().timeIntervalSince(self.transferLastTime)
@@ -724,7 +753,7 @@ extension OrbitMacViewModel {
     nonisolated private func resolve(_ endpoint: NWEndpoint, txt: [String: String]) {
         let fingerprint = OrbitAPIClient.normalizedFingerprint(txt["fingerprint"] ?? "")
         let connection = NWConnection(to: endpoint, using: .tcp)
-        connection.stateUpdateHandler = { state in
+        connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
                 if let remote = connection.currentPath?.remoteEndpoint, case .hostPort(let host, let port) = remote {

@@ -67,7 +67,7 @@ struct MacOverviewView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 10) {
                         Text(vm.isConfigured ? vm.selectedPCName : "No PC paired")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .font(.system(size: 26, weight: .bold))
                             .lineLimit(1)
                         MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
                     }
@@ -230,7 +230,7 @@ struct MacOverviewView: View {
             MacIconBadge(systemName: "gamecontroller.fill", tint: .mint, size: 40, filled: true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("PLAYING NOW")
-                    .font(.system(.caption2, design: .rounded, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .tracking(1.1)
                     .foregroundStyle(.mint)
                 Text(title).font(.headline.weight(.bold)).lineLimit(1)
@@ -248,7 +248,7 @@ struct MacOverviewView: View {
             if let fps = vm.metrics.fps, fps > 0 {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(Int(fps.rounded()))")
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .font(.system(size: 34, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(.mint)
                         .contentTransition(.numericText())

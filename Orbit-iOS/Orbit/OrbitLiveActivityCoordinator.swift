@@ -22,21 +22,21 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
 
     deinit { stateTask?.cancel() }
 
-    func start(pcName: String, cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true) async {
+    func start(pcName: String, cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true, cpuTemp: Double? = nil, gpuTemp: Double? = nil) async {
         lastError = nil
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             lastError = "Live Activities are unavailable or disabled. Enable them for Orbit in iPhone Settings."
             return
         }
         if isActive {
-            await update(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
+            await update(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable, cpuTemp: cpuTemp, gpuTemp: gpuTemp)
             return
         }
-        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
+        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: true, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable, cpuTemp: cpuTemp, gpuTemp: gpuTemp)
         do {
             let created = try Activity.request(
                 attributes: OrbitActivityAttributes(pcName: String(pcName.prefix(80))),
-                content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval)),
+                content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval), relevanceScore: 100),
                 pushType: nil
             )
             lastPublishedAt = Date()
@@ -49,20 +49,30 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
     /// Called after successful polling, or once with isConnected=false on failure.
     /// iOS may suspend polling when Orbit is in the background. The stale date
     /// makes that limitation visible instead of presenting old numbers as live.
-    func update(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true) async {
+    func update(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double? = nil, vramTotalGB: Double? = nil, cpuPowerWatts: Double? = nil, gpuPowerWatts: Double? = nil, focus: String = "overview", telemetryAvailable: Bool = true, cpuTemp: Double? = nil, gpuTemp: Double? = nil, force: Bool = false) async {
         guard let activity, isActive else { return }
         let connectionChanged = activity.content.state.isConnected != isConnected
         let availabilityChanged = activity.content.state.telemetryAvailable != telemetryAvailable
         let preferences = OrbitActivityPreferences()
         let preferenceChanged = lastPreferences != preferences
         let wasPaused = activity.content.state.isPaused == true
-        guard connectionChanged || availabilityChanged || preferenceChanged || wasPaused || Date().timeIntervalSince(lastPublishedAt) >= Double(preferences.interval) else { return }
+        let wentStale = (activity.content.staleDate ?? .distantFuture) <= Date()
+        guard force || connectionChanged || availabilityChanged || preferenceChanged || wasPaused || wentStale || Date().timeIntervalSince(lastPublishedAt) >= Double(preferences.interval) else { return }
         lastPreferences = preferences
         lastPublishedAt = Date()
-        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: isConnected, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable)
-        await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval)))
+        let state = snapshot(cpuUsage: cpuUsage, gpuUsage: gpuUsage, ramUsage: ramUsage, fps: fps, gameName: gameName, isConnected: isConnected, vramUsedGB: vramUsedGB, vramTotalGB: vramTotalGB, cpuPowerWatts: cpuPowerWatts, gpuPowerWatts: gpuPowerWatts, focus: focus, telemetryAvailable: telemetryAvailable, cpuTemp: cpuTemp, gpuTemp: gpuTemp)
+        await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(OrbitActivityPreferences().staleInterval), relevanceScore: isConnected ? 100 : 50))
     }
 
+    /// The app is leaving the foreground. The last reading keeps its stale date (three
+    /// update intervals), after which iOS marks the activity stale and the Lock Screen
+    /// says so; a background refresh, when iOS grants one, pushes a fresh reading first.
+    /// Nothing is marked "paused" up front, so a short trip to another app shows real values.
+    func enterBackground() {
+        lastPublishedAt = .distantPast
+    }
+
+    /// Explicit pause: hides the numbers immediately (used when the PC disconnects while backgrounded).
     func pauseUpdates() async {
         guard let activity, isActive else { return }
         var state = activity.content.state
@@ -100,7 +110,7 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
         }
     }
 
-    private func snapshot(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double?, vramTotalGB: Double?, cpuPowerWatts: Double?, gpuPowerWatts: Double?, focus: String, telemetryAvailable: Bool) -> OrbitActivityAttributes.ContentState {
+    private func snapshot(cpuUsage: Double?, gpuUsage: Double?, ramUsage: Double?, fps: Double?, gameName: String?, isConnected: Bool, vramUsedGB: Double?, vramTotalGB: Double?, cpuPowerWatts: Double?, gpuPowerWatts: Double?, focus: String, telemetryAvailable: Bool, cpuTemp: Double?, gpuTemp: Double?) -> OrbitActivityAttributes.ContentState {
         func percentage(_ value: Double?) -> Double? {
             guard telemetryAvailable, let value, value.isFinite else { return nil }
             return min(100, max(0, value))
@@ -120,7 +130,8 @@ final class OrbitLiveActivityCoordinator: ObservableObject {
             telemetryAvailable: telemetryAvailable,
             style: preferences.style, primaryMetric: preferences.primaryMetric, accent: preferences.accent,
             showGame: preferences.showGame, showTimestamp: preferences.showTimestamp,
-            updateInterval: preferences.interval, isPaused: false
+            updateInterval: preferences.interval, isPaused: false,
+            cpuTemp: nonnegative(cpuTemp).flatMap { $0 <= 150 ? $0 : nil }, gpuTemp: nonnegative(gpuTemp).flatMap { $0 <= 150 ? $0 : nil }
         )
     }
 }

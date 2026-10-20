@@ -431,7 +431,7 @@ struct PCFilesView: View {
                         ProgressView().controlSize(.small).tint(theme.accent)
                     } else {
                         Text("\(Int(transferProgress * 100))")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .font(.system(size: 11, weight: .bold))
                             .monospacedDigit()
                             .contentTransition(.numericText())
                     }

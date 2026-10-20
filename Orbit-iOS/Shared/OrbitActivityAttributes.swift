@@ -26,6 +26,8 @@ struct OrbitActivityAttributes: ActivityAttributes {
         var showTimestamp: Bool? = nil
         var updateInterval: Int? = nil
         var isPaused: Bool? = nil
+        var cpuTemp: Double? = nil
+        var gpuTemp: Double? = nil
     }
 
     var pcName: String
@@ -45,9 +47,9 @@ struct OrbitActivityPreferences: Equatable {
         self.style = ["standard", "minimal", "detailed"].contains(style) ? style : "standard"
         let metric = defaults.string(forKey: "orbit.activity.primaryMetric") ?? "automatic"
         primaryMetric = ["automatic", "cpu", "gpu", "ram", "fps", "cpuPower", "gpuPower", "vram"].contains(metric) ? metric : "automatic"
-        let accent = defaults.string(forKey: "orbit.activity.accent") ?? "ocean"
-        let knownAccents = ["ocean", "aurora", "violet", "ember", "graphite", "cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
-        self.accent = knownAccents.contains(accent) ? accent : "ocean"
+        let accent = defaults.string(forKey: "orbit.activity.accent") ?? "noir"
+        let knownAccents = ["noir", "ocean", "aurora", "violet", "ember", "graphite", "cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
+        self.accent = knownAccents.contains(accent) ? accent : "noir"
         showGame = defaults.object(forKey: "orbit.activity.showGame") as? Bool ?? true
         showTimestamp = defaults.object(forKey: "orbit.activity.showTimestamp") as? Bool ?? true
         let interval = defaults.integer(forKey: "orbit.activity.interval")

@@ -245,7 +245,7 @@ struct MacSessionsView: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 10) {
                     Text(active.name.isEmpty ? "Untitled session" : active.name)
-                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .font(.system(.title3, weight: .bold))
                         .lineLimit(1)
                     MacStatusPill(text: "Recording", tint: .red, pulsing: true)
                 }
@@ -281,7 +281,7 @@ struct MacSessionsView: View {
         Group {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Record a session")
-                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .font(.system(.title3, weight: .bold))
                 Text(recordHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -290,7 +290,7 @@ struct MacSessionsView: View {
             Spacer(minLength: 8)
             TextField("Session name (optional)", text: $newSessionName)
                 .textFieldStyle(.plain)
-                .font(.system(.body, design: .rounded))
+                .font(.system(.body))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -427,7 +427,7 @@ struct MacSessionsView: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 10) {
                     Text(session.name.isEmpty ? "Untitled session" : session.name)
-                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .font(.system(.title3, weight: .bold))
                         .lineLimit(1)
                     MacStatusPill(text: session.statusLabel, tint: statusTint(session), pulsing: session.isRecording)
                 }
@@ -637,7 +637,7 @@ struct MacSessionsView: View {
         if let stat = session.statistics[selectedMetric.rawValue] {
             HStack(spacing: 8) {
                 Text("Reported by the PC")
-                    .font(.system(.caption2, design: .rounded, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .tracking(0.8)
                     .foregroundStyle(.white.opacity(0.5))
                 MacStatChip(label: "Avg", value: selectedMetric.formatted(stat.average))
@@ -830,7 +830,7 @@ private struct MacSessionsRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(session.name.isEmpty ? "Untitled session" : session.name)
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .font(.system(.subheadline, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(1)
                     if session.isRecording {
@@ -901,7 +901,7 @@ private struct MacSessionsHoverCard: View {
     var body: some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.system(.caption, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(tint)
             Text(time, format: .dateTime.hour().minute().second())

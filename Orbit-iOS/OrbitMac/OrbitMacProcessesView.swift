@@ -298,7 +298,7 @@ struct MacProcessesView: View {
             .accessibilityLabel("Search processes")
             TextField("Name or PID", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(.callout, design: .rounded))
+                .font(.system(.callout))
                 .focused($searchFocused)
                 .onExitCommand {
                     query = ""
@@ -461,7 +461,7 @@ struct MacProcessesView: View {
             MacIconBadge(systemName: glyph(for: process), tint: badgeTint(for: process), size: 24)
             VStack(alignment: .leading, spacing: 1) {
                 Text(process.name)
-                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .font(.system(.caption, weight: .bold))
                     .lineLimit(1)
                 Text(detailLine(process))
                     .font(.caption2)
@@ -559,7 +559,7 @@ struct MacProcessesView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(process.name)
-                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(ending ? Color.orange : Color.white.opacity(0.92))
                     .lineLimit(1)
                 if ending {

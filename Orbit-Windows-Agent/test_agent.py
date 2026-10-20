@@ -44,7 +44,7 @@ class APITests(unittest.TestCase):
         self.assertNotIn(WIDGET_TOKEN, response.text)
 
     def test_private_reads_and_mutations_require_auth(self):
-        for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps"):
+        for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps", "/api/sunshine/info"):
             self.assertEqual(self.client.get(path).status_code, 401)
             self.assertEqual(self.client.get(path, headers={"Authorization": "Bearer wrong"}).status_code, 401)
         for path in ("/api/action/shutdown", "/api/volume?level=55", "/api/input/mouse", "/api/sunshine/launch?app=Example"):
@@ -190,6 +190,25 @@ class APITests(unittest.TestCase):
             self.assertEqual(self.client.post("/api/sunshine/launch?app=Missing", headers=AUTH).status_code, 404)
             self.assertIsNone(state["activeGame"])
             launch.assert_not_called()
+
+    def test_sunshine_info_reports_ports_from_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = Path(directory) / "sunshine.conf"
+            conf.write_text("# comment\nsunshine_name = Living Room PC\nport = 48989\nbroken line\n", encoding="utf-8")
+            with patch.object(agent, "SUNSHINE_CONF_PATHS", [conf]), patch.object(agent, "SUNSHINE_APPS_PATHS", [Path(directory) / "apps.json"]), \
+                 patch.object(agent, "sunshine_running", return_value=True):
+                info = self.client.get("/api/sunshine/info", headers=AUTH).json()
+        self.assertEqual(info, {"installed": True, "running": True, "httpPort": 48989, "httpsPort": 48984, "webUIPort": 48990,
+                                "name": "Living Room PC", "appCount": 0})
+
+    def test_sunshine_info_defaults_without_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(agent, "SUNSHINE_CONF_PATHS", [Path(directory) / "missing.conf"]), \
+                 patch.object(agent, "SUNSHINE_APPS_PATHS", [Path(directory) / "missing.json"]), \
+                 patch.object(agent, "sunshine_running", return_value=False):
+                info = self.client.get("/api/sunshine/info", headers=AUTH).json()
+        self.assertEqual((info["installed"], info["running"], info["httpPort"], info["httpsPort"], info["webUIPort"]), (False, False, 47989, 47984, 47990))
+        self.assertNotIn(TOKEN, str(info))
 
     def test_desktop_entry_requires_moonlight(self):
         with patch.object(agent, "require_windows"), patch.object(agent, "sunshine_entries", return_value=[{"name": "Desktop"}]):

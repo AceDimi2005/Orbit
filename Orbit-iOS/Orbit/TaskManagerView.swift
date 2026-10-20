@@ -171,10 +171,10 @@ struct TaskManagerView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Text(label)
-                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(tint)
                 Text(value.flatMap { $0.isFinite ? String(format: "%.\(digits)f", $0) + unit : nil } ?? "—")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.system(size: 11, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(1)

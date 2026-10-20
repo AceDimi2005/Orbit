@@ -16,31 +16,46 @@ struct MacLibraryView: View {
     @State private var loadError: String?
     @State private var confirmStop = false
     @State private var moonlightInstalled: Bool?
+    @StateObject private var sunshine = MoonlightHostCoordinator()
+    @State private var showsPairing = false
+    @State private var confirmForgetPairing = false
 
     private static let refreshFailurePrefix = "Could not refresh the Sunshine library"
     private static let launchWarningPrefixes = ["Could not", "Launch stopped", "Moonlight is not installed"]
-    /// Computed rather than a stored static so no non-Sendable value lives in
-    /// static storage under strict concurrency checking.
-    private static var nowPlayingGradient: LinearGradient {
-        LinearGradient(
-            colors: [Color.mint.opacity(0.16), Color.mint.opacity(0.03), .clear],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-    }
     private static let moonlightSite = "https://moonlight-stream.org"
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)]
+
+    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+
+    private func syncSunshine() async {
+        guard !vm.isDemoMode, let pc = vm.currentPC else { return }
+        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        if vm.metrics.isOnline { await sunshine.refresh() }
+    }
 
     var body: some View {
         MacPage {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if vm.isDemoMode { demoNotice }
+                if !vm.isDemoMode, vm.currentPC != nil, vm.metrics.isOnline { sunshineCard }
                 content
                 footer
             }
         }
         .task { await initialLoad() }
+        .task(id: sunshineKey) { await syncSunshine() }
+        .sheet(isPresented: $showsPairing) {
+            MoonlightPairingView(host: sunshine, pcName: pcName, accent: theme.accent) { showsPairing = false }
+                .frame(width: 520)
+                .background(theme.background)
+        }
+        .confirmationDialog("Forget the Sunshine pairing?", isPresented: $confirmForgetPairing, titleVisibility: .visible) {
+            Button("Forget Pairing", role: .destructive) { sunshine.forgetPairing() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Orbit drops its Sunshine pairing for \(pcName). Remove \"\(MoonlightHostCoordinator.deviceName)\" in Sunshine's web UI too if you no longer want it listed.")
+        }
         .onChange(of: vm.selectedPCID) { _, _ in
             search = ""
             launchingID = nil
@@ -205,6 +220,66 @@ struct MacLibraryView: View {
         }
     }
 
+    private var sunshineTint: Color {
+        switch sunshine.statusTone {
+        case .good: return .mint
+        case .active: return theme.accent
+        case .warning: return .orange
+        case .neutral: return .secondary
+        }
+    }
+
+    /// Sunshine host card: pairing state, running session, and the Moonlight hand-off.
+    private var sunshineCard: some View {
+        HStack(alignment: .center, spacing: 14) {
+            MacIconBadge(systemName: "sun.max.fill", tint: theme.accent, size: 40, filled: sunshine.isPaired)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("Sunshine on \(pcName)")
+                        .font(.subheadline.weight(.semibold))
+                    MacStatusPill(text: sunshine.statusText, tint: sunshineTint, pulsing: sunshine.isBusy)
+                    if let info = sunshine.info, !info.appVersion.isEmpty, sunshine.isPaired {
+                        MacStatChip(label: "Apps", value: "\(sunshine.apps.count)")
+                    }
+                }
+                Text(sunshine.summary(pcName: pcName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let error = sunshine.lastError, !sunshine.isPairing {
+                    Text(error).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            if sunshine.isPairing {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { sunshine.cancelPairing() }
+                    .buttonStyle(MacHoverButtonStyle())
+            } else if sunshine.isPaired {
+                if sunshine.isBusy {
+                    Button { Task { await sunshine.quitRunningApp() } } label: { Label("Quit Session", systemImage: "stop.fill") }
+                        .buttonStyle(MacHoverButtonStyle(tint: .orange))
+                        .help("Ask Sunshine to end the running app and its stream")
+                }
+                Button { Task { await sunshine.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(MacIconButtonStyle(size: 26))
+                    .disabled(sunshine.isRefreshing)
+                    .help("Refresh Sunshine status")
+                Button { confirmForgetPairing = true } label: { Image(systemName: "link.badge.minus") }
+                    .buttonStyle(MacIconButtonStyle(size: 26))
+                    .help("Forget the Sunshine pairing")
+            } else {
+                Button { showsPairing = true } label: { Label("Pair with Sunshine", systemImage: "link") }
+                    .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: sunshine.reachable))
+                    .disabled(!sunshine.reachable)
+                    .help("Pair Orbit with Sunshine using a PIN")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .macGlass(cornerRadius: 18, tint: theme.accent)
+    }
+
     private var moonlightPill: some View {
         Group {
             switch moonlightInstalled {
@@ -342,14 +417,19 @@ struct MacLibraryView: View {
     private var grid: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
             ForEach(filteredGames) { game in
+                let app = sunshine.app(titled: game.title)
                 MacLibraryTile(
                     game: game,
                     symbol: MacLibraryIcon.symbol(for: game),
-                    accent: MacLibraryIcon.accent(for: game, fallback: theme.accent),
+                    accent: theme.isFlat ? theme.accent : MacLibraryIcon.accent(for: game, fallback: theme.accent),
+                    artwork: app.flatMap { sunshine.artwork[$0.id] },
+                    isRunning: app != nil && app?.id == sunshine.info?.currentGame,
                     isLaunching: launchingID == game.id,
                     isBusy: launchingID != nil,
-                    onLaunch: { launch(game) }
+                    onLaunch: { launch(game) },
+                    onStream: moonlightInstalled == true ? { vm.streamInMoonlight(appTitle: game.title) } : nil
                 )
+                .onAppear { if let app { sunshine.loadArtwork(for: app) } }
             }
         }
         .animation(.snappy(duration: 0.25), value: filteredGames)
@@ -357,22 +437,27 @@ struct MacLibraryView: View {
 
     // MARK: - Now Playing
 
+    private var gameTint: Color { theme.isFlat ? theme.accent : .mint }
+    private var nowPlayingGradient: LinearGradient {
+        LinearGradient(colors: [gameTint.opacity(theme.isFlat ? 0.08 : 0.16), gameTint.opacity(0.03), .clear], startPoint: .leading, endPoint: .trailing)
+    }
+
     private func nowPlaying(_ title: String) -> some View {
         HStack(spacing: 14) {
-            MacIconBadge(systemName: "gamecontroller.fill", tint: .mint, size: 46, filled: true)
+            MacIconBadge(systemName: "gamecontroller.fill", tint: gameTint, size: 46, filled: true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("NOW PLAYING")
-                    .font(.system(.caption2, design: .rounded, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .tracking(1.1)
-                    .foregroundStyle(.mint)
+                    .foregroundStyle(gameTint)
                 Text(title)
-                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .font(.system(.title3, weight: .bold))
                     .lineLimit(1)
                 nowPlayingDetails
             }
             Spacer(minLength: 8)
             if fpsHistory.count >= 3 {
-                MacSparkline(values: fpsHistory, tint: .mint, lineWidth: 1.6)
+                MacSparkline(values: fpsHistory, tint: gameTint, lineWidth: 1.6)
                     .frame(width: 150, height: 34)
                     .opacity(0.7)
             }
@@ -380,13 +465,13 @@ struct MacLibraryView: View {
             Button { confirmStop = true } label: { Label("Stop Game", systemImage: "stop.fill") }
                 .buttonStyle(MacHoverButtonStyle(tint: .orange))
                 .help("Ask the PC to end the running game")
-            Button { vm.openMoonlight() } label: { Label("Open Moonlight", systemImage: "play.tv") }
-                .buttonStyle(MacHoverButtonStyle(tint: .mint, prominent: true))
-                .help("Open Moonlight on this Mac")
+            Button { vm.streamInMoonlight(appTitle: title) } label: { Label("Stream in Moonlight", systemImage: "play.tv") }
+                .buttonStyle(MacHoverButtonStyle(tint: gameTint, prominent: true))
+                .help("Start streaming this app in Moonlight on this Mac")
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Self.nowPlayingGradient))
-        .macGlass(cornerRadius: 20, tint: .mint, elevated: true)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(nowPlayingGradient))
+        .macGlass(cornerRadius: 20, tint: gameTint, elevated: true)
     }
 
     @ViewBuilder
@@ -409,11 +494,11 @@ struct MacLibraryView: View {
     private var fpsReadout: some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text(fpsText)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .font(.system(size: 32, weight: .bold))
                 .monospacedDigit()
-                .foregroundStyle(.mint)
+                .foregroundStyle(gameTint)
                 .contentTransition(.numericText())
-                .shadow(color: reduceGlow ? .clear : .mint.opacity(0.45), radius: 10)
+                .shadow(color: reduceGlow ? .clear : gameTint.opacity(0.45), radius: 10)
             Text("FPS").font(.caption.weight(.bold)).foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
@@ -441,7 +526,7 @@ struct MacLibraryView: View {
 
     private var footerMessage: String {
         switch moonlightInstalled {
-        case .some(true): return "Moonlight is installed on this Mac. Launch an app above, then pick \(pcName) in Moonlight to start streaming."
+        case .some(true): return "Moonlight is installed. Right-click an app and choose Stream in Moonlight: Orbit starts Moonlight with that app on \(pcName) (pair \(pcName) in Moonlight once)."
         case .some(false): return "Moonlight is not installed on this Mac. Download it free from moonlight-stream.org to stream the apps in this library."
         case .none: return "Checking whether Moonlight is installed on this Mac…"
         }
@@ -534,28 +619,32 @@ private struct MacLibraryTile: View {
     let game: MacSunshineGame
     let symbol: String
     let accent: Color
+    var artwork: Data? = nil
+    var isRunning = false
     let isLaunching: Bool
     let isBusy: Bool
     let onLaunch: () -> Void
+    var onStream: (() -> Void)? = nil
     @State private var hovered = false
     @FocusState private var launchFocused: Bool
-
-    init(game: MacSunshineGame, symbol: String, accent: Color, isLaunching: Bool, isBusy: Bool, onLaunch: @escaping () -> Void) {
-        self.game = game
-        self.symbol = symbol
-        self.accent = accent
-        self.isLaunching = isLaunching
-        self.isBusy = isBusy
-        self.onLaunch = onLaunch
-    }
 
     private var showsLaunch: Bool { hovered || launchFocused || isLaunching }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 8) {
-                MacIconBadge(systemName: symbol, tint: accent, size: 56, filled: showsLaunch)
+                if artwork != nil {
+                    MoonlightArtwork(data: artwork)
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1))
+                } else {
+                    MacIconBadge(systemName: symbol, tint: accent, size: 56, filled: showsLaunch)
+                }
                 Spacer(minLength: 0)
+                if isRunning {
+                    MacStatusPill(text: "Running", tint: accent, pulsing: true)
+                }
                 if game.isFavorite {
                     Image(systemName: "star.fill")
                         .font(.system(size: 11, weight: .bold))
@@ -583,7 +672,7 @@ private struct MacLibraryTile: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(game.title)
-                .font(.system(.headline, design: .rounded, weight: .bold))
+                .font(.system(.headline, weight: .bold))
                 .foregroundStyle(.white.opacity(0.95))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -639,6 +728,9 @@ private struct MacLibraryTile: View {
     private var contextItems: some View {
         Button { onLaunch() } label: { Label("Launch", systemImage: "play.fill") }
             .disabled(isBusy)
+        if let onStream {
+            Button { onStream() } label: { Label("Stream in Moonlight", systemImage: "play.tv") }
+        }
         Button { copy(game.title) } label: { Label("Copy Name", systemImage: "doc.on.doc") }
         if let cmd = game.cmd, !cmd.isEmpty {
             Button { copy(cmd) } label: { Label("Copy Command", systemImage: "terminal") }

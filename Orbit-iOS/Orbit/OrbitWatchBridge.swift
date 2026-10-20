@@ -219,9 +219,9 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
     }
 
-    private static func sendCursorRequest(client: OrbitAPIClient, query: [URLQueryItem], timeout: Double) async throws -> Data {
+    private static func sendCursorRequest(client: OrbitAPIClient, query: [URLQueryItem], timeout: Double, path: String = "/api/input/cursor") async throws -> Data {
         try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask { try await client.data("/api/input/cursor", method: "POST", query: query) }
+            group.addTask { try await client.data(path, method: "POST", query: query) }
             group.addTask {
                 try await Task.sleep(for: .seconds(timeout))
                 throw OrbitError(message: "The PC did not respond to cursor control. Check the companion and local network.")
@@ -230,6 +230,67 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             guard let result = try await group.next() else { throw CancellationError() }
             return result
         }
+    }
+
+    /// Bind every remote control to a PC, and acknowledge the actual operation.
+    /// The normal iPhone UI methods intentionally consume errors for UI feedback;
+    /// using them here would report success even when no PC received the command.
+    private func forwardPCCommand(_ message: [String: Any]) async -> [String: Any] {
+        do {
+            guard let vm = viewModel, !vm.isDemoMode,
+                  let pcID = message["pcID"] as? String, !pcID.isEmpty,
+                  pcID == vm.selectedPCID,
+                  let host = message["host"] as? String,
+                  Self.normalizedHost(host) == Self.normalizedHost(vm.cleanHost()),
+                  let deadline = message["expiresAt"] as? Double, deadline.isFinite,
+                  deadline > Date().timeIntervalSince1970 else {
+                throw OrbitError(message: "Sync the selected PC with your iPhone, then try again.")
+            }
+            let cmd = message["cmd"] as? String ?? ""
+            if cmd == "wake" {
+                guard (1...65535).contains(vm.wolPort) else { throw OrbitError(message: "Invalid Wake-on-LAN port.") }
+                let ip = WakeOnLANService.ipv4ForWake(host: vm.cleanHost(), knownAddress: vm.lastKnownPCIPv4)
+                // Return as soon as UDP accepts the packet. Waiting for the PC to
+                // boot here would exceed WatchConnectivity's interactive deadline.
+                try await WakeOnLANService.sendMagicPacket(macAddress: vm.pcMAC, pcIP: ip,
+                    targetBroadcastIP: vm.wolTargetIP, subnetMask: vm.subnetMask, port: UInt16(vm.wolPort))
+            } else {
+                let client = try vm.companionClient()
+                let path: String
+                var query: [URLQueryItem] = []
+                switch cmd {
+                case "powerAction":
+                    let action = message["action"] as? String ?? ""
+                    let allowed = ["lock", "sleep", "restart", "shutdown", "mute", "volume_up", "volume_down",
+                                   "media_play_pause", "media_next", "media_prev", "toggle_hdr", "restore_display",
+                                   "kill_game", "show_desktop", "task_view", "alt_tab", "screenshot", "fullscreen"]
+                    guard allowed.contains(action) else { throw OrbitError(message: "Unsupported PC action.") }
+                    path = "/api/action/" + action
+                case "volume":
+                    guard let level = message["level"] as? Double, level.isFinite else { throw OrbitError(message: "Invalid volume.") }
+                    path = "/api/volume"
+                    query = [URLQueryItem(name: "level", value: String(Int(min(100, max(0, level.rounded())))))]
+                case "launchGame":
+                    guard let title = message["title"] as? String, !title.isEmpty, title.count <= 200 else {
+                        throw OrbitError(message: "Select a game from your PC library.")
+                    }
+                    path = "/api/sunshine/launch"
+                    query = [URLQueryItem(name: "app", value: title)]
+                default: throw OrbitError(message: "Unsupported PC command.")
+                }
+                let timeout = min(4, deadline - Date().timeIntervalSince1970)
+                guard timeout > 0 else { throw OrbitError(message: "The command expired. Try again.") }
+                _ = try await Self.sendCursorRequest(client: client, query: query, timeout: timeout, path: path)
+                if vm.selectedPCID == pcID, Self.normalizedHost(vm.cleanHost()) == Self.normalizedHost(host) {
+                    if cmd == "volume", let level = message["level"] as? Double { vm.metrics.volume = min(100, max(0, level.rounded())) }
+                    if cmd == "powerAction", let action = message["action"] as? String {
+                        if ["sleep", "restart", "shutdown"].contains(action) { vm.metrics.isOnline = false }
+                        if action == "mute" { vm.metrics.isMuted.toggle() }
+                    }
+                }
+            }
+            return ["status": "sent", "pcID": pcID]
+        } catch { return ["status": "failed", "message": error.localizedDescription] }
     }
 
     private func handleIncomingWatchMessage(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)? = nil) {
@@ -242,25 +303,12 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         case "requestSync":
             let payload = buildSyncPayload()
             replyHandler?(payload)
-        case "wake":
+        case "wake", "powerAction", "volume", "launchGame":
             Task {
-                await vm.wakePC()
-                pushStateToWatch(force: true)
-                replyHandler?(buildSyncPayload())
-            }
-        case "powerAction":
-            let action = message["action"] as? String ?? ""
-            Task {
-                await vm.sendPowerAction(action)
-                pushStateToWatch(force: true)
-                replyHandler?(buildSyncPayload())
-            }
-        case "volume":
-            if let level = message["level"] as? Double {
-                Task {
-                    await vm.updateVolume(level)
-                    pushStateToWatch(force: true)
-                    replyHandler?(buildSyncPayload())
+                let result = await forwardPCCommand(message)
+                replyHandler?(result)
+                if result["status"] as? String == "failed", let failure = result["message"] as? String {
+                    vm.statusLog = "Watch: \(failure)"
                 }
             }
         case "cursor":
@@ -277,15 +325,6 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                 try? await Task.sleep(for: .milliseconds(350))
                 pushStateToWatch(force: true)
                 replyHandler?(buildSyncPayload())
-            }
-        case "launchGame":
-            if let title = message["title"] as? String {
-                let game = vm.games.first(where: { $0.title == title }) ?? SunshineGame(id: title, title: title, genre: "Watch Launch", iconSymbol: "gamecontroller.fill", accentHex: "#57C8FF")
-                Task {
-                    await vm.smartLaunch(game: game)
-                    pushStateToWatch(force: true)
-                    replyHandler?(buildSyncPayload())
-                }
             }
         case "selectPC":
             if let id = message["id"] as? String, let profile = vm.savedPCs.first(where: { $0.id == id }) {

@@ -3,14 +3,18 @@ import UIKit
 
 // MARK: - tvOS design tokens
 
+/// Noir palette: black background, flat surfaces and a single accent. Amber and coral
+/// stay reserved for warnings and destructive actions.
 enum TVPalette {
-    static let accent = Color(red: 0.30, green: 0.85, blue: 0.97)
-    static let secondary = Color(red: 0.42, green: 0.52, blue: 1.0)
-    static let mint = Color(red: 0.35, green: 0.94, blue: 0.66)
-    static let purple = Color(red: 0.71, green: 0.58, blue: 1.0)
+    static let accent = Color(red: 0.36, green: 0.86, blue: 1.0)
+    static let secondary = accent
+    static let mint = accent
+    static let purple = accent
     static let amber = Color(red: 1.0, green: 0.78, blue: 0.36)
     static let coral = Color(red: 1.0, green: 0.45, blue: 0.48)
-    static let background = Color(red: 0.025, green: 0.04, blue: 0.075)
+    static let background = Color.black
+    static let surface = Color(red: 0.063, green: 0.063, blue: 0.07)
+    static let hairline = Color.white.opacity(0.14)
 }
 
 /// Formats an optional reading. Missing sensors are shown as “—”, never as 0.
@@ -21,41 +25,9 @@ private func tvValue(_ value: Double?, _ format: String, suffix: String = "") ->
 
 struct TVAmbientBackground: View {
     var isOnline: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drift = false
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.035, green: 0.05, blue: 0.10),
-                    TVPalette.background,
-                    Color(red: 0.015, green: 0.02, blue: 0.045)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Ellipse()
-                .fill(TVPalette.accent.opacity(isOnline ? 0.16 : 0.08))
-                .frame(width: 1400, height: 700)
-                .blur(radius: 220)
-                .offset(x: -520 + (drift ? 60 : -30), y: -420 + (drift ? 30 : -20))
-            Ellipse()
-                .fill(TVPalette.secondary.opacity(0.13))
-                .frame(width: 1200, height: 640)
-                .blur(radius: 240)
-                .offset(x: 640 + (drift ? -50 : 30), y: 380 + (drift ? -30 : 20))
-            Circle()
-                .fill((isOnline ? TVPalette.mint : Color.orange).opacity(0.06))
-                .frame(width: 900)
-                .blur(radius: 200)
-                .offset(x: 200, y: 520)
-        }
-        .ignoresSafeArea()
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) { drift = true }
-        }
+        TVPalette.background.ignoresSafeArea()
     }
 }
 
@@ -67,22 +39,8 @@ struct TVGlassCard: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .background(
-                shape
-                    .fill(Color.white.opacity(elevated ? 0.075 : 0.055))
-                    .overlay(
-                        shape.fill(
-                            LinearGradient(colors: [tint.opacity(elevated ? 0.14 : 0.08), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        )
-                    )
-            )
-            .overlay(
-                shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.06), tint.opacity(0.18)], startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1
-                )
-            )
-            .shadow(color: .black.opacity(0.35), radius: elevated ? 30 : 16, y: elevated ? 14 : 8)
+            .background(shape.fill(elevated ? Color(red: 0.08, green: 0.08, blue: 0.09) : TVPalette.surface))
+            .overlay(shape.strokeBorder(TVPalette.hairline, lineWidth: 1))
     }
 }
 
@@ -109,7 +67,6 @@ struct TVRing: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: tint.opacity(0.55), radius: 10)
                     .animation(.snappy(duration: 0.5), value: clamped)
             }
         }
@@ -136,7 +93,7 @@ struct TVSectionHeader<Trailing: View>: View {
                 HStack(spacing: 10) {
                     Capsule().fill(tint).frame(width: 5, height: 22)
                     Text(title.uppercased())
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(.system(size: 17, weight: .bold))
                         .tracking(1.6)
                         .foregroundStyle(tint)
                 }
@@ -169,10 +126,10 @@ struct TVStatusPill: View {
             if let icon {
                 Image(systemName: icon).font(.system(size: 12, weight: .bold))
             } else {
-                Circle().fill(tint).frame(width: 9, height: 9).shadow(color: tint.opacity(0.9), radius: 6)
+                Circle().fill(tint).frame(width: 9, height: 9)
             }
             Text(text)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.system(size: 14, weight: .bold))
                 .lineLimit(1)
         }
         .foregroundStyle(tint)
@@ -191,11 +148,11 @@ struct TVStatChip: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(label.uppercased())
-                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .font(.system(size: 11.5, weight: .bold))
                 .tracking(1)
                 .foregroundStyle(.white.opacity(0.5))
             Text(value)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(.system(size: 15, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())
@@ -231,7 +188,7 @@ struct TVActionPillStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .font(.system(size: 19, weight: .bold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .foregroundStyle(isFocused ? Color.black.opacity(0.88) : Color.white)
@@ -253,7 +210,6 @@ struct TVActionPillStyle: ButtonStyle {
                         )
                 )
                 .scaleEffect(configuration.isPressed ? 0.96 : (isFocused ? 1.06 : 1.0))
-                .shadow(color: isFocused ? tint.opacity(0.6) : .clear, radius: 18, y: 8)
                 .opacity(isEnabled ? 1 : 0.45)
                 .animation(.spring(duration: 0.22), value: isFocused)
         }
@@ -278,21 +234,14 @@ struct TVSurfaceCardStyle: ButtonStyle {
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             configuration.label
-                .background(
-                    shape
-                        .fill(Color.white.opacity(isFocused ? 0.12 : 0.055))
-                        .overlay(
-                            shape.fill(LinearGradient(colors: [accent.opacity(isFocused ? 0.22 : 0.08), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        )
-                )
+                .background(shape.fill(isFocused ? Color(red: 0.11, green: 0.11, blue: 0.12) : TVPalette.surface))
                 .overlay(
                     shape.strokeBorder(
-                        isFocused ? accent : accent.opacity(0.24),
+                        isFocused ? accent : TVPalette.hairline,
                         lineWidth: isFocused ? 3 : 1
                     )
                 )
                 .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.03 : 1.0))
-                .shadow(color: isFocused ? accent.opacity(0.45) : .black.opacity(0.25), radius: isFocused ? 24 : 12, y: 10)
                 .opacity(isEnabled ? 1 : 0.5)
                 .animation(.spring(duration: 0.22), value: isFocused)
         }
@@ -466,7 +415,7 @@ struct TVDashboardTab: View {
                         subtitle: "Dedicated video memory",
                         footerLeft: vm.metrics.vramTotalGB.flatMap { total in vm.metrics.vramUsedGB.map { String(format: "Free %.1f GB", max(0, total - $0)) } } ?? "—",
                         footerRight: "",
-                        accent: .indigo,
+                        accent: TVPalette.accent,
                         progress: (vm.metrics.vramTotalGB ?? 0) > 0 && vm.metrics.vramUsedGB != nil ? vm.metrics.vramUsagePercent / 100.0 : nil,
                         sparkline: []
                     )
@@ -478,7 +427,7 @@ struct TVDashboardTab: View {
                         subtitle: "Download · Upload",
                         footerLeft: vm.metrics.isOnline && !vm.isDemoMode ? "Ping \(max(1, vm.pingMs)) ms" : (vm.isDemoMode ? "Preview" : "—"),
                         footerRight: vm.metrics.isOnline ? "Active" : "Standby",
-                        accent: .blue,
+                        accent: TVPalette.accent,
                         progress: vm.metrics.networkDownloadMBps.map { min(1.0, $0 / 100.0) },
                         sparkline: []
                     )
@@ -490,7 +439,7 @@ struct TVDashboardTab: View {
                         subtitle: "Primary system drive",
                         footerLeft: vm.metrics.diskReadMBps.map { String(format: "R %.1f MB/s", $0) } ?? "—",
                         footerRight: vm.metrics.diskWriteMBps.map { String(format: "W %.1f MB/s", $0) } ?? "",
-                        accent: TVPalette.amber,
+                        accent: TVPalette.accent,
                         progress: vm.metrics.ssdTotalTB > 0 ? vm.metrics.ssdUsagePercent / 100.0 : nil,
                         sparkline: []
                     )
@@ -504,7 +453,7 @@ struct TVDashboardTab: View {
                         subtitle: hasTelemetry ? (hasPower ? "CPU package + GPU board" : "No power sensor reported") : "—",
                         footerLeft: vm.peakPowerWatts > 0 ? String(format: "Peak %.0f W", vm.peakPowerWatts) : "—",
                         footerRight: vm.metrics.uptimeSeconds > 0 ? "Up \(vm.metrics.formattedUptime)" : "",
-                        accent: .pink,
+                        accent: TVPalette.accent,
                         progress: hasPower && hasTelemetry ? min(1.0, totalWatts / 500.0) : nil,
                         sparkline: []
                     )
@@ -513,7 +462,7 @@ struct TVDashboardTab: View {
                 VStack(alignment: .leading, spacing: 16) {
                     TVSectionHeader("Living Room Quick Controls", subtitle: "Volume, media and display from the Siri Remote") {
                         Text(vm.statusBanner)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(TVPalette.accent)
                             .lineLimit(1)
                     }
@@ -577,7 +526,7 @@ struct TVHeroPowerDeck: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 14) {
                         Text(vm.metrics.hostname)
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .font(.system(size: 32, weight: .bold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                         TVStatusPill(text: statusText, tint: statusColor)
@@ -627,7 +576,7 @@ struct TVHeroPowerDeck: View {
                 } label: {
                     Label("Sleep", systemImage: "moon.zzz.fill")
                 }
-                .buttonStyle(TVActionPillStyle(tint: .indigo))
+                .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
 
                 Button {
                     showRestartConfirm = true
@@ -687,7 +636,7 @@ struct TVTelemetryCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     Text(title.uppercased())
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold))
                         .tracking(1.1)
                         .foregroundStyle(accent)
                         .lineLimit(1)
@@ -695,7 +644,7 @@ struct TVTelemetryCard: View {
                     Spacer(minLength: 4)
 
                     Text(secondaryBadge)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4)
@@ -706,7 +655,7 @@ struct TVTelemetryCard: View {
 
                 HStack(alignment: .center, spacing: 14) {
                     Text(primaryValue)
-                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        .font(.system(size: 38, weight: .bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -761,7 +710,7 @@ struct TVTelemetryCard: View {
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(footerRight)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.85))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -830,7 +779,7 @@ struct TVQuickActionCard: View {
                         .foregroundStyle(tint)
                 }
                 Text(title)
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(subtitle)
@@ -867,7 +816,7 @@ struct TVEmptyBanner: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(message)
@@ -905,9 +854,103 @@ struct TVEmptyBanner: View {
 
 struct TVControlsAndGamesTab: View {
     @EnvironmentObject var vm: OrbitTVViewModel
+    @StateObject private var sunshine = MoonlightHostCoordinator()
 
     private let desktopColumns = Array(repeating: GridItem(.flexible(), spacing: 20), count: 4)
     private let gameColumns = Array(repeating: GridItem(.flexible(), spacing: 22), count: 3)
+
+    private var sunshineKey: String { "\(vm.currentPC?.id ?? "")|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+
+    private func syncSunshine() async {
+        guard !vm.isDemoMode, let pc = vm.currentPC else { return }
+        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        if vm.metrics.isOnline { await sunshine.refresh() }
+    }
+
+    private var sunshineTint: Color {
+        switch sunshine.statusTone {
+        case .good: return TVPalette.mint
+        case .active: return TVPalette.accent
+        case .warning: return TVPalette.amber
+        case .neutral: return Color.secondary
+        }
+    }
+
+    /// Sunshine host card: pairing, running session and the Moonlight hand-off.
+    private var sunshineCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 18) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(sunshine.isPaired ? TVPalette.accent : Color.white.opacity(0.08))
+                        .frame(width: 68, height: 68)
+                    Image(systemName: "sun.max.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(sunshine.isPaired ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 12) {
+                        Text("Sunshine on \(vm.metrics.hostname)")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        TVStatusPill(text: sunshine.statusText, tint: sunshineTint)
+                    }
+                    Text(sunshine.summary(pcName: vm.metrics.hostname))
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if let error = sunshine.lastError, !sunshine.isPairing {
+                        Text(error).font(.system(size: 14)).foregroundStyle(TVPalette.amber).lineLimit(2)
+                    }
+                }
+                Spacer()
+                if sunshine.isPairing {
+                    Button { sunshine.cancelPairing() } label: { Label("Cancel", systemImage: "xmark") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.amber))
+                } else if sunshine.isPaired {
+                    if sunshine.isBusy {
+                        Button { Task { await sunshine.quitRunningApp() } } label: { Label("Quit Session", systemImage: "stop.fill") }
+                            .buttonStyle(TVActionPillStyle(tint: TVPalette.amber))
+                    }
+                    Button { Task { await sunshine.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
+                    Button { sunshine.forgetPairing() } label: { Label("Forget", systemImage: "link.badge.minus") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
+                } else {
+                    Button { sunshine.beginPairing() } label: { Label("Pair with Sunshine", systemImage: "link") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
+                        .disabled(!sunshine.reachable)
+                }
+            }
+            if sunshine.isPairing, let pin = sunshine.pairingPIN {
+                HStack(spacing: 18) {
+                    HStack(spacing: 10) {
+                        ForEach(Array(pin.enumerated()), id: \.offset) { _, digit in
+                            Text(String(digit))
+                                .font(.system(size: 40, weight: .bold).monospacedDigit())
+                                .frame(width: 64, height: 76)
+                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(TVPalette.accent, lineWidth: 2))
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(sunshine.pairingStage ?? "Waiting for the PIN…")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(TVPalette.accent)
+                        Text("On the PC open Sunshine's web UI, PIN page (https://localhost:\((vm.sunshineInfo?.webUIPort ?? 47990)))/pin), type this PIN and a device name.")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .tvGlass(tint: TVPalette.accent)
+        .focusSection()
+    }
 
     var body: some View {
         ScrollView {
@@ -915,7 +958,7 @@ struct TVControlsAndGamesTab: View {
                 VStack(alignment: .leading, spacing: 16) {
                     TVSectionHeader("Windows Desktop & Display", subtitle: "Control active windows, take PC screenshots, or switch HDR directly from your Siri Remote") {
                         Text(vm.statusBanner)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(TVPalette.accent)
                             .lineLimit(1)
                     }
@@ -930,13 +973,13 @@ struct TVControlsAndGamesTab: View {
                         TVQuickActionCard(title: "Switch Window", subtitle: "Next App (Alt + Tab)", icon: "macwindow.on.rectangle", tint: TVPalette.mint) {
                             Task { await vm.sendAction("alt_tab") }
                         }
-                        TVQuickActionCard(title: "PC Screenshot", subtitle: "Save to PC Pictures", icon: "camera.viewfinder", tint: TVPalette.amber) {
+                        TVQuickActionCard(title: "PC Screenshot", subtitle: "Save to PC Pictures", icon: "camera.viewfinder", tint: TVPalette.accent) {
                             Task { await vm.sendAction("screenshot") }
                         }
-                        TVQuickActionCard(title: "Fullscreen", subtitle: "Press F11", icon: "arrow.up.left.and.arrow.down.right", tint: .blue) {
+                        TVQuickActionCard(title: "Fullscreen", subtitle: "Press F11", icon: "arrow.up.left.and.arrow.down.right", tint: TVPalette.accent) {
                             Task { await vm.sendAction("fullscreen") }
                         }
-                        TVQuickActionCard(title: "Extend Display", subtitle: "DisplaySwitch /extend", icon: "display.2", tint: .indigo) {
+                        TVQuickActionCard(title: "Extend Display", subtitle: "DisplaySwitch /extend", icon: "display.2", tint: TVPalette.accent) {
                             Task { await vm.sendAction("restore_display") }
                         }
                         TVQuickActionCard(title: "Lock PC", subtitle: "Lock workstation", icon: "lock.fill", tint: TVPalette.accent) {
@@ -952,13 +995,15 @@ struct TVControlsAndGamesTab: View {
                 VStack(alignment: .leading, spacing: 16) {
                     TVSectionHeader("Couch Game Launcher", subtitle: "Wakes your PC via Wake-on-LAN and starts the selected Sunshine app", tint: TVPalette.purple) {
                         Button {
-                            Task { await vm.refreshGames() }
+                            Task { await vm.refreshGames(); await sunshine.refresh() }
                         } label: {
                             Label("Refresh Library", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(TVActionPillStyle(tint: TVPalette.purple))
                     }
                     .focusSection()
+
+                    if !vm.isDemoMode, vm.currentPC != nil, vm.metrics.isOnline { sunshineCard }
 
                     if vm.games.isEmpty {
                         TVEmptyBanner(
@@ -972,29 +1017,31 @@ struct TVControlsAndGamesTab: View {
                     } else {
                         LazyVGrid(columns: gameColumns, spacing: 22) {
                             ForEach(vm.games) { game in
+                                let app = sunshine.app(titled: game.title)
+                                let isRunning = app != nil && app?.id == sunshine.info?.currentGame
                                 Button {
                                     Task { await vm.launchGame(game) }
                                 } label: {
                                     HStack(spacing: 18) {
                                         ZStack {
                                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                .fill(
-                                                    LinearGradient(
-                                                        colors: [Color(tvHex: game.accentHex).opacity(0.75), Color(tvHex: game.accentHex).opacity(0.25)],
-                                                        startPoint: .topLeading,
-                                                        endPoint: .bottomTrailing
-                                                    )
-                                                )
+                                                .fill(Color.white.opacity(0.08))
                                                 .frame(width: 68, height: 68)
-                                            Image(systemName: game.iconSymbol)
-                                                .font(.system(size: 28, weight: .semibold))
-                                                .foregroundStyle(.white)
-                                                .shadow(color: .black.opacity(0.3), radius: 4)
+                                            if let app, let data = sunshine.artwork[app.id] {
+                                                MoonlightArtwork(data: data)
+                                                    .frame(width: 68, height: 68)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                            } else {
+                                                Image(systemName: game.iconSymbol)
+                                                    .font(.system(size: 28, weight: .semibold))
+                                                    .foregroundStyle(.white)
+                                            }
                                         }
+                                        .onAppear { if let app { sunshine.loadArtwork(for: app) } }
 
                                         VStack(alignment: .leading, spacing: 5) {
                                             Text(game.title)
-                                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                                .font(.system(size: 20, weight: .bold))
                                                 .foregroundStyle(.white)
                                                 .lineLimit(1)
                                             Text(game.genre)
@@ -1003,10 +1050,10 @@ struct TVControlsAndGamesTab: View {
                                                 .lineLimit(1)
                                             HStack(spacing: 6) {
                                                 Image(systemName: "play.fill")
-                                                Text(vm.metrics.activeGame == game.title ? "Running on PC" : "Press to launch")
+                                                Text(isRunning || vm.metrics.activeGame == game.title ? "Running on PC" : "Press to launch")
                                             }
-                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            .foregroundStyle(vm.metrics.activeGame == game.title ? TVPalette.mint : TVPalette.accent)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(isRunning || vm.metrics.activeGame == game.title ? TVPalette.mint : TVPalette.accent)
                                             .lineLimit(1)
                                         }
                                         Spacer(minLength: 0)
@@ -1014,7 +1061,7 @@ struct TVControlsAndGamesTab: View {
                                     .padding(20)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .buttonStyle(TVSurfaceCardStyle(accent: Color(tvHex: game.accentHex)))
+                                .buttonStyle(TVSurfaceCardStyle(accent: TVPalette.accent))
                             }
                         }
                         .focusSection()
@@ -1024,7 +1071,7 @@ struct TVControlsAndGamesTab: View {
                 HStack(spacing: 24) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(TVPalette.accent.opacity(0.16))
+                            .fill(Color.white.opacity(0.08))
                             .frame(width: 76, height: 76)
                         Image(systemName: "play.tv.fill")
                             .font(.system(size: 32, weight: .semibold))
@@ -1032,23 +1079,11 @@ struct TVControlsAndGamesTab: View {
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 12) {
-                            Text("Live PC Desktop & Game Video Streaming")
-                                .font(.system(size: 22, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-
-                            Text("COMING SOON")
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .tracking(1.1)
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(TVPalette.accent, in: Capsule())
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-
-                        Text("Ultra-low-latency live video streaming from your Windows PC to Apple TV and iOS is currently in development and will arrive in an upcoming Orbit update.")
+                        Text("Game video runs in Moonlight for Apple TV")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("Install Moonlight from the App Store and pair it with \(vm.metrics.hostname) once. Launch an app here, then open Moonlight and choose Resume. Orbit shows Sunshine's status and can end the session.")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -1059,6 +1094,7 @@ struct TVControlsAndGamesTab: View {
                 .padding(24)
                 .tvGlass(tint: TVPalette.accent)
             }
+            .task(id: sunshineKey) { await syncSunshine() }
             .padding(.horizontal, 52)
             .padding(.top, 18)
             .padding(.bottom, 36)
@@ -1100,11 +1136,11 @@ struct TVAudioAndMediaTab: View {
                             }
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("MASTER PC AUDIO")
-                                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                                    .font(.system(size: 15, weight: .bold))
                                     .tracking(1.3)
                                     .foregroundStyle(TVPalette.accent)
                                 Text(vm.metrics.isMuted ? "Muted" : (vm.metrics.isOnline || vm.isDemoMode ? "\(Int(vm.metrics.volume))%" : "Offline"))
-                                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                                    .font(.system(size: 38, weight: .bold))
                                     .monospacedDigit()
                                     .foregroundStyle(vm.metrics.isMuted ? TVPalette.amber : .white)
                                     .contentTransition(.numericText())
@@ -1157,7 +1193,7 @@ struct TVAudioAndMediaTab: View {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack {
                             Text("NOW PLAYING TRANSPORT")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .font(.system(size: 15, weight: .bold))
                                 .tracking(1.3)
                                 .foregroundStyle(TVPalette.mint)
                             Spacer()
@@ -1253,7 +1289,7 @@ struct TVAudioAndMediaTab: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.name)
-                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                    .font(.system(size: 21, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text("\(session.pid == 0 ? "System sounds" : "PID \(session.pid)") • \(session.outputDeviceName ?? "Windows default output")")
@@ -1279,7 +1315,7 @@ struct TVAudioAndMediaTab: View {
                 }
 
                 Text("\(Int(session.volume))%")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: 18, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(session.isMuted ? TVPalette.amber : .white)
                     .frame(width: 58, alignment: .trailing)
@@ -1390,7 +1426,7 @@ struct TVAudioOutputPickerSheet: View {
 
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(device.name)
-                                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                                .font(.system(size: 20, weight: .bold))
                                                 .foregroundStyle(.white)
                                                 .lineLimit(1)
                                             Text(isSelected ? "Current output for \(currentSession.name)" : "Press Select on Siri Remote to route audio here")
@@ -1454,7 +1490,7 @@ struct TVTaskManagerTab: View {
                 TVSectionHeader("Windows Process Monitor", subtitle: "\(vm.processes.count) processes • sorted by CPU • select an unresponsive app to end it") {
                     if let msg = vm.processStatusMessage {
                         Text(msg)
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(TVPalette.accent)
                             .lineLimit(1)
                             .padding(.trailing, 12)
@@ -1490,7 +1526,7 @@ struct TVTaskManagerTab: View {
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(proc.name)
-                                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                                    .font(.system(size: 21, weight: .bold))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                 Text("PID \(proc.pid) • \(proc.status.capitalized)\(proc.canTerminate ? "" : " • Protected")")
@@ -1503,7 +1539,7 @@ struct TVTaskManagerTab: View {
                             TVMetricPill(label: "CPU", value: tvValue(proc.cpuPercent, "%.1f", suffix: "%"), tint: TVPalette.accent, fraction: proc.cpuPercent.map { $0 / 100 })
                             TVMetricPill(label: "GPU", value: tvValue(proc.gpuPercent, "%.1f", suffix: "%"), tint: TVPalette.purple, fraction: proc.gpuPercent.map { $0 / 100 })
                             TVMetricPill(label: "RAM", value: tvValue(proc.memoryMB, "%.0f", suffix: " MB"), tint: TVPalette.mint, fraction: proc.memoryMB.flatMap { vm.metrics.ramTotalGB > 0 ? $0 / (vm.metrics.ramTotalGB * 1024) : nil })
-                            TVMetricPill(label: "VRAM", value: tvValue(proc.vramMB, "%.0f", suffix: " MB"), tint: .indigo, fraction: proc.vramMB.flatMap { mb in vm.metrics.vramTotalGB.flatMap { $0 > 0 ? mb / ($0 * 1024) : nil } })
+                            TVMetricPill(label: "VRAM", value: tvValue(proc.vramMB, "%.0f", suffix: " MB"), tint: TVPalette.accent, fraction: proc.vramMB.flatMap { mb in vm.metrics.vramTotalGB.flatMap { $0 > 0 ? mb / ($0 * 1024) : nil } })
 
                             Spacer(minLength: 12)
 
@@ -1559,11 +1595,11 @@ struct TVMetricPill: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(tint)
                 .lineLimit(1)
             Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.system(size: 18, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(value == "—" ? Color.secondary : Color.white)
                 .lineLimit(1)
@@ -1663,7 +1699,7 @@ struct TVPCsAndPairingTab: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("IMPORT PAIRED PC FROM IPHONE")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .font(.system(size: 16, weight: .bold))
                     .tracking(1.3)
                     .foregroundStyle(TVPalette.accent)
                 Text(vm.iPhoneSyncStatusMessage ?? "Already paired your PC on your iPhone? Open Orbit on your iPhone (or use iCloud) to import its address, certificate, MAC address and token automatically.")
@@ -1739,7 +1775,7 @@ struct TVPCsAndPairingTab: View {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 10) {
                                 Text(pc.name)
-                                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                                    .font(.system(size: 20, weight: .bold))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                 if selected {
@@ -1835,7 +1871,7 @@ struct TVPCsAndPairingTab: View {
                         }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(pc.name)
-                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .font(.system(size: 20, weight: .bold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                             Text("\(pc.host):\(pc.securePort) • Companion v\(pc.agentVersion)")
@@ -1880,7 +1916,7 @@ struct TVPCsAndPairingTab: View {
                             .foregroundStyle(TVPalette.accent)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("PC IPv4 ADDRESS")
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundStyle(TVPalette.accent)
                             Text(manualHost.isEmpty ? "Select to enter PC IP (e.g. 192.168.1.50)" : manualHost)
                                 .font(.system(size: 19, weight: .bold, design: .monospaced))
@@ -1903,7 +1939,7 @@ struct TVPCsAndPairingTab: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("PORT")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(TVPalette.accent)
                         Text(manualPort.isEmpty ? "8765" : manualPort)
                             .font(.system(size: 19, weight: .bold, design: .monospaced))
@@ -1939,10 +1975,10 @@ struct TVPCsAndPairingTab: View {
                         }
                         VStack(alignment: .leading, spacing: 3) {
                             Text("CONNECT & PAIR")
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundStyle(TVPalette.mint)
                             Text(vm.isProbingManualHost ? "Probing PC…" : "Probe & Pair PC")
-                                .font(.system(size: 19, weight: .bold, design: .rounded))
+                                .font(.system(size: 19, weight: .bold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                         }
@@ -1965,7 +2001,7 @@ struct TVPCsAndPairingTab: View {
                                 .foregroundStyle(TVPalette.mint)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("6-DIGIT PIN SHOWN ON \(target.name.uppercased())")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .font(.system(size: 12, weight: .bold))
                                     .foregroundStyle(TVPalette.mint)
                                 Text(vm.pairingPIN.isEmpty ? "Select to enter the 6-digit PIN" : vm.pairingPIN)
                                     .font(.system(size: 20, weight: .bold, design: .monospaced))

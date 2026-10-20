@@ -34,7 +34,7 @@ Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lip
 
 1. Asociază PC-ul în aplicația Orbit. Aplicația pregătește automat accesul de monitorizare pentru widgeturi.
 2. Adaugă widgetul pe Home Screen. PC-ul asociat este disponibil în lista **PC**; nu introduci IP, port sau token.
-3. Prin **Edit Widget**, alege alt PC asociat, o metrică și una dintre cele cinci teme: Ocean, Aurora, Violet, Ember sau Graphite. Opțiunea **Use one accent colour** înlocuiește culorile separate ale metricilor cu accentul ales.
+3. Prin **Edit Widget**, alege alt PC asociat, o metrică și o temă; implicită este **Noir** (fundal negru, un singur accent). Opțiunea **Use one accent colour** înlocuiește culorile separate ale metricilor cu accentul ales la celelalte teme.
 4. Dacă accesul necesită refacere, deschide **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
 
 Widgeturile se conectează prin **HTTPS**, pe portul securizat al profilului, și verifică exact certificatul PC-ului deja asociat. Redirecturile nu sunt urmate. În Keychain-ul grupului comun este păstrat exclusiv tokenul **read-only** pentru `GET /api/widget/status`; tokenul principal de control rămâne în Keychain-ul privat al aplicației. Numele, adresa și amprenta certificatului sunt partajate separat pentru configurare. Datele de acces nu apar în câmpurile Edit Widget.
@@ -45,7 +45,7 @@ Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcod
 
 ## Actualizare și expirare
 
-**Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Solicită o nouă citire după **15 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. După **15 minute** de la măsurătoare, valorile sunt marcate ca expirate și ascunse. PC-ul oprit, agentul indisponibil sau lipsa accesului la rețea produc un mesaj de indisponibilitate. Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
+**Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Aplicația salvează după fiecare citire reușită un instantaneu în App Group (`Orbit.WidgetSnapshot.v1.<id PC>`) și reîmprospătează widgeturile cel mult o dată pe minut; un widget care găsește un instantaneu mai nou de două minute îl afișează direct, fără conexiune proprie. Altfel solicită o nouă citire după **15 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. După **15 minute** de la măsurătoare, valorile sunt marcate ca expirate și ascunse. PC-ul oprit, agentul indisponibil sau lipsa accesului la rețea produc un mesaj de indisponibilitate. Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
 
 **Live Activity** este separată de widgeturi. În **Tools → Live Activity** poți porni sau opri sesiunea și alege:
 
@@ -55,13 +55,13 @@ Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcod
 - Accentul, afișarea numelui jocului și a orei ultimei actualizări.
 - Intervalul de actualizare în foreground: **5, 10 sau 15 secunde**.
 
-Insula extinsă și stilul Detailed oferă un buton real **Stop**, fără deschiderea aplicației. La trecerea în fundal, activitatea poate afișa starea de pauză. Ca protecție suplimentară, după trei intervale fără o actualizare, valorile sunt ascunse și apare **Open to refresh**. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
+Insula extinsă și stilul Detailed oferă un buton real **Stop**, fără deschiderea aplicației; stilul Detailed afișează și temperaturile CPU/GPU. La trecerea în fundal, ultimele valori rămân afișate până la expirare (trei intervale), apoi iOS marchează activitatea ca învechită și apare **Paused · tap to refresh**. Orbit programează un **Background App Refresh** (`com.dimitrie.orbit.refresh`, `UIBackgroundModes: fetch`) cât timp activitatea rulează; când sistemul îl acordă, aplicația citește o dată telemetria și actualizează activitatea și instantaneul widgeturilor. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
 
 iOS poate suspenda aplicația; alegerea unui interval mai scurt nu acordă rulare continuă în fundal. Nu există promisiunea unor actualizări în timp real cu aplicația suspendată. Dynamic Island apare doar pe modele compatibile, iar iOS controlează prezentarea ei.
 
 ## Aspectul aplicației
 
-**Tools → Appearance** oferă **Improved** (suprafețe mai clare și contrast mai puternic) și **Classic** (cardurile translucide), cinci teme, o singură culoare pentru metrici și reducerea luminii de fundal. Aplicația respectă textul mărit și Reduce Transparency; modul de text accesibil folosește o coloană pe dashboard.
+Tema implicită este **Noir** (fundal negru, suprafețe plate, un singur accent). **Tools → Appearance** oferă stilurile **Crisp**/**Glass**, celelalte teme, o singură culoare pentru metrici și reducerea luminii de fundal. Aplicația respectă textul mărit și Reduce Transparency; modul de text accesibil folosește o coloană pe dashboard.
 
 ## Dacă lipsesc temperaturile sau FPS
 

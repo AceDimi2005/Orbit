@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import ImageIO
 import Network
 import Security
 import SwiftUI
@@ -43,6 +44,14 @@ final class OrbitMacViewModel: ObservableObject {
     @Published var savedPCs: [MacSavedPC] = []
     @Published var selectedPCID: String = UserDefaults.standard.string(forKey: "mac.selectedPCID") ?? ""
     @Published var isDemoMode: Bool = UserDefaults.standard.bool(forKey: "mac.demoMode")
+    /// Menu bar status item preferences live here instead of `@AppStorage` so the
+    /// `MenuBarExtra(isInserted:)` binding can drop unchanged writes (see OrbitMacApp).
+    @Published var menuBarEnabled: Bool = (UserDefaults.standard.object(forKey: "mac.menuBarEnabled") as? Bool) ?? true {
+        didSet { if oldValue != menuBarEnabled { UserDefaults.standard.set(menuBarEnabled, forKey: "mac.menuBarEnabled") } }
+    }
+    @Published var menuBarMetric: String = UserDefaults.standard.string(forKey: "mac.menuBarMetric") ?? "cpu" {
+        didSet { if oldValue != menuBarMetric { UserDefaults.standard.set(menuBarMetric, forKey: "mac.menuBarMetric") } }
+    }
     @Published var selectedSection: MacSection = MacSection(rawValue: UserDefaults.standard.string(forKey: "mac.section") ?? "") ?? .overview {
         didSet { UserDefaults.standard.set(selectedSection.rawValue, forKey: "mac.section") }
     }
@@ -70,6 +79,7 @@ final class OrbitMacViewModel: ObservableObject {
 
     // MARK: Library, audio, processes, clipboard
     @Published var games: [MacSunshineGame] = []
+    @Published var sunshineInfo: MacSunshineInfo?
     @Published var isLoadingGames = false
     @Published var audioSessions: [MacAudioSession] = []
     @Published var audioOutputs: [MacAudioOutput] = []
@@ -257,11 +267,14 @@ final class OrbitMacViewModel: ObservableObject {
         peaks = MacSessionPeaks()
         pingMs = 0
         lastUpdated = nil
+        isLoadingSpecs = false; isLoadingGames = false; isLoadingAudio = false
+        isLoadingProcesses = false; isLoadingHistory = false; isHistoryActing = false
+        isClipboardBusy = false; endingProcessID = nil; audioRoutingSessionID = nil
         connectionError = nil
         specs = nil
         specsError = nil
         lastSpecsAttempt = .distantPast
-        games = []
+        games = []; sunshineInfo = nil
         audioSessions = []; audioOutputs = []; audioRoutingAvailable = false; audioRoutingReason = nil; audioError = nil; audioStatus = nil; audioUpdated = nil
         audioPending = [:]; audioWorker?.cancel(); audioWorker = nil; audioDragging = []; audioChanged = [:]
         processes = []; processesCapturedAt = nil; processGpuStatus = nil; processesError = nil; processActionStatus = nil
@@ -269,6 +282,8 @@ final class OrbitMacViewModel: ObservableObject {
         historyList = nil; historyError = nil
         resetFiles()
         stopPreview()
+        previewFrame = nil
+        streamError = nil
         closeInputSocket()
         pendingVolume = nil; volumeWorker?.cancel(); volumeWorker = nil
         agentUpdateAvailable = false; agentLatestVersion = nil; agentUpdateMessage = nil
@@ -655,8 +670,13 @@ final class OrbitMacViewModel: ObservableObject {
                 do {
                     while !Task.isCancelled {
                         let message = try await socket.receive()
+                        guard !Task.isCancelled, self != nil, self?.generation == version else { break }
+                        guard case .data(let data) = message else { continue }
+                        // Decoding happens off the main actor; the receive loop waits for it,
+                        // so frames never pile up faster than they can be shown.
+                        let decoded = await Self.decodeFrame(data)
                         guard !Task.isCancelled, let self, self.generation == version else { break }
-                        if case .data(let data) = message, let image = NSImage(data: data) {
+                        if let image = decoded?.image {
                             self.previewFrame = image
                             let now = Date()
                             self.frameTimestamps.append(now)
@@ -674,6 +694,19 @@ final class OrbitMacViewModel: ObservableObject {
             streamError = error.localizedDescription
             isStreaming = false
         }
+    }
+
+    /// `NSImage(data:)` only parses the header and leaves the expensive JPEG decode to
+    /// the first draw on the main thread, which stalls the UI at high frame rates.
+    /// Forcing the decode through ImageIO on a background task keeps the window responsive.
+    struct DecodedFrame: @unchecked Sendable { let image: NSImage }
+    nonisolated static func decodeFrame(_ data: Data) async -> DecodedFrame? {
+        await Task.detached(priority: .userInitiated) {
+            let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let cgImage = CGImageSourceCreateImageAtIndex(source, 0, options) else { return nil }
+            return DecodedFrame(image: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
+        }.value
     }
 
     func stopPreview() {

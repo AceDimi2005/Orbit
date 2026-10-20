@@ -4,11 +4,15 @@ import AppKit
 // MARK: - Theme
 
 enum MacTheme: String, CaseIterable, Identifiable {
-    case ocean, aurora, violet, ember, graphite, cyberpunk, solarGold, crimson, matrix, arctic, sakura
+    case noir, ocean, aurora, violet, ember, graphite, cyberpunk, solarGold, crimson, matrix, arctic, sakura
 
     var id: String { rawValue }
+    /// Noir: pure black, one accent, flat surfaces, no glow. The default.
+    var isFlat: Bool { self == .noir }
+    var hairline: Color { isFlat ? .white.opacity(0.14) : .white.opacity(0.10) }
     var title: String {
         switch self {
+        case .noir: "Noir"
         case .ocean: "Ocean"
         case .aurora: "Aurora"
         case .violet: "Violet"
@@ -24,6 +28,7 @@ enum MacTheme: String, CaseIterable, Identifiable {
     }
     var accent: Color {
         switch self {
+        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
         case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
         case .aurora: Color(red: 0.45, green: 0.92, blue: 0.73)
         case .violet: Color(red: 0.76, green: 0.66, blue: 1)
@@ -39,6 +44,7 @@ enum MacTheme: String, CaseIterable, Identifiable {
     }
     var secondary: Color {
         switch self {
+        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
         case .ocean: Color(red: 0.42, green: 0.52, blue: 1.0)
         case .aurora: Color(red: 0.36, green: 0.80, blue: 0.98)
         case .violet: Color(red: 1.0, green: 0.55, blue: 0.82)
@@ -54,6 +60,7 @@ enum MacTheme: String, CaseIterable, Identifiable {
     }
     var background: Color {
         switch self {
+        case .noir: .black
         case .ocean: Color(red: 0.035, green: 0.05, blue: 0.085)
         case .aurora: Color(red: 0.03, green: 0.06, blue: 0.05)
         case .violet: Color(red: 0.05, green: 0.035, blue: 0.085)
@@ -69,6 +76,7 @@ enum MacTheme: String, CaseIterable, Identifiable {
     }
     var surface: Color {
         switch self {
+        case .noir: Color(red: 0.063, green: 0.063, blue: 0.07)
         case .ocean: Color(red: 0.085, green: 0.11, blue: 0.16)
         case .aurora: Color(red: 0.07, green: 0.12, blue: 0.10)
         case .violet: Color(red: 0.115, green: 0.09, blue: 0.17)
@@ -88,7 +96,7 @@ enum MacTheme: String, CaseIterable, Identifiable {
     var heroColors: [Color] { [accent, secondary] }
 }
 
-private struct MacThemeKey: EnvironmentKey { static let defaultValue = MacTheme.ocean }
+private struct MacThemeKey: EnvironmentKey { static let defaultValue = MacTheme.noir }
 extension EnvironmentValues {
     var macTheme: MacTheme { get { self[MacThemeKey.self] } set { self[MacThemeKey.self] = newValue } }
 }
@@ -96,7 +104,7 @@ extension EnvironmentValues {
 /// Applies the Orbit look to a scene root: theme tint, dark appearance and the
 /// theme environment value.
 struct MacAppearanceModifier: ViewModifier {
-    @AppStorage("mac.theme") private var theme: MacTheme = .ocean
+    @AppStorage("mac.theme") private var theme: MacTheme = .noir
     func body(content: Content) -> some View {
         content
             .tint(theme.accent)
@@ -109,29 +117,29 @@ extension View { func macAppearance() -> some View { modifier(MacAppearanceModif
 // MARK: - Backgrounds & surfaces
 
 struct MacAmbientBackground: View {
-    @AppStorage("mac.theme") private var theme: MacTheme = .ocean
+    @AppStorage("mac.theme") private var theme: MacTheme = .noir
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drift = false
     var isOnline: Bool = true
 
+    // Static glow: the previous perpetual drift re-rendered three large blurs on
+    // every frame and cost real CPU while the window sat idle. Noir is plain black.
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
             ZStack {
                 theme.background
-                LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .center, endPoint: .bottom)
-                if !reduceGlow {
+                if !reduceGlow && !theme.isFlat {
+                    LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .center, endPoint: .bottom)
                     Ellipse()
                         .fill(theme.accent.opacity(0.14))
                         .frame(width: max(600, size.width * 0.9), height: max(320, size.height * 0.45))
                         .blur(radius: 130)
-                        .offset(x: -size.width * 0.3 + (drift ? 40 : -20), y: -size.height * 0.3 + (drift ? 24 : -16))
+                        .offset(x: -size.width * 0.3, y: -size.height * 0.3)
                     Ellipse()
                         .fill(theme.secondary.opacity(0.11))
                         .frame(width: max(500, size.width * 0.7), height: max(300, size.height * 0.4))
                         .blur(radius: 140)
-                        .offset(x: size.width * 0.35 + (drift ? -30 : 20), y: size.height * 0.25 + (drift ? -20 : 18))
+                        .offset(x: size.width * 0.35, y: size.height * 0.25)
                     Circle()
                         .fill((isOnline ? theme.accent : Color.orange).opacity(0.05))
                         .frame(width: max(400, size.width * 0.5))
@@ -141,10 +149,6 @@ struct MacAmbientBackground: View {
             }
             .frame(width: size.width, height: size.height)
             .clipped()
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 14).repeatForever(autoreverses: true)) { drift = true }
-            }
         }
         .ignoresSafeArea()
     }
@@ -153,7 +157,7 @@ struct MacAmbientBackground: View {
 /// Glass card: opaque themed surface with a specular edge. Shadows are cast by
 /// the silhouette only so glyphs inside never bleed.
 struct MacGlassCard: ViewModifier {
-    @AppStorage("mac.theme") private var theme: MacTheme = .ocean
+    @AppStorage("mac.theme") private var theme: MacTheme = .noir
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
     var cornerRadius: CGFloat = 18
     var tint: Color = .white
@@ -165,28 +169,36 @@ struct MacGlassCard: ViewModifier {
         content
             .background {
                 ZStack {
-                    shape.fill(theme.surface.opacity(0.92))
-                    shape.fill(
-                        LinearGradient(
-                            colors: [tint.opacity(elevated || hovered ? 0.14 : 0.07), tint.opacity(0.015), .clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                    if theme.isFlat {
+                        shape.fill(hovered ? Color(red: 0.085, green: 0.085, blue: 0.095) : theme.surface)
+                    } else {
+                        shape.fill(theme.surface.opacity(0.92))
+                        shape.fill(
+                            LinearGradient(
+                                colors: [tint.opacity(elevated || hovered ? 0.14 : 0.07), tint.opacity(0.015), .clear],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
+                    }
                 }
                 .compositingGroup()
-                .shadow(color: .black.opacity(0.30), radius: elevated ? 22 : 10, y: elevated ? 10 : 4)
-                .shadow(color: elevated && !reduceGlow ? tint.opacity(0.12) : .clear, radius: 28, y: 8)
+                .shadow(color: .black.opacity(theme.isFlat ? 0 : 0.30), radius: elevated ? 22 : 10, y: elevated ? 10 : 4)
+                .shadow(color: elevated && !reduceGlow && !theme.isFlat ? tint.opacity(0.12) : .clear, radius: 28, y: 8)
             }
             .overlay {
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(hovered ? 0.30 : (elevated ? 0.24 : 0.16)), .white.opacity(0.05), tint.opacity(0.12)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
+                if theme.isFlat {
+                    shape.strokeBorder(hovered ? Color.white.opacity(0.22) : theme.hairline, lineWidth: 1)
+                } else {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(hovered ? 0.30 : (elevated ? 0.24 : 0.16)), .white.opacity(0.05), tint.opacity(0.12)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                }
             }
     }
 }
@@ -217,22 +229,28 @@ struct MacIconBadge: View {
     var tint: Color
     var size: CGFloat = 30
     var filled: Bool = false
+    @Environment(\.macTheme) private var theme
+
+    private var fillStyle: AnyShapeStyle {
+        if theme.isFlat {
+            return filled ? AnyShapeStyle(theme.accent) : AnyShapeStyle(Color.white.opacity(0.08))
+        }
+        return filled
+            ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
+    }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(
-                    filled
-                        ? LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        : LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
+                .fill(fillStyle)
                 .overlay(
                     RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                        .strokeBorder(.white.opacity(filled ? 0.22 : 0.08), lineWidth: 1)
+                        .strokeBorder(.white.opacity(filled ? 0.22 : (theme.isFlat ? 0.10 : 0.08)), lineWidth: 1)
                 )
             Image(systemName: systemName)
                 .font(.system(size: size * 0.46, weight: .semibold))
-                .foregroundStyle(filled ? Color.black.opacity(0.85) : tint)
+                .foregroundStyle(filled ? Color.black.opacity(0.85) : (theme.isFlat ? Color.white.opacity(0.92) : tint))
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
@@ -264,7 +282,7 @@ struct MacSectionHeader<Trailing: View>: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title.uppercased())
-                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .font(.system(.caption, weight: .bold))
                     .tracking(1.1)
                     .foregroundStyle(.white.opacity(0.62))
                 if let subtitle {
@@ -311,7 +329,7 @@ struct MacStatusPill: View {
                 .frame(width: 10, height: 10)
             }
             Text(text)
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.system(.caption, weight: .bold))
                 .lineLimit(1)
         }
         .foregroundStyle(tint)
@@ -339,11 +357,11 @@ struct MacStatChip: View {
                 Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(tint.opacity(0.9))
             }
             Text(label.uppercased())
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(.white.opacity(0.5))
             Text(value)
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.system(.caption, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())
@@ -361,6 +379,7 @@ struct MacRing: View {
     var lineWidth: CGFloat = 6
     var tint: Color
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
+    @Environment(\.macTheme) private var theme
 
     var body: some View {
         ZStack {
@@ -374,7 +393,7 @@ struct MacRing: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: reduceGlow ? .clear : tint.opacity(0.5), radius: 6)
+                    .shadow(color: reduceGlow || theme.isFlat ? .clear : tint.opacity(0.5), radius: 6)
                     .animation(.snappy(duration: 0.45), value: clamped)
             }
         }
@@ -457,10 +476,11 @@ struct MacHoverButtonStyle: ButtonStyle {
         let cornerRadius: CGFloat
         @State private var hovered = false
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.macTheme) private var theme
 
         var body: some View {
             configuration.label
-                .font(.system(.body, design: .rounded, weight: .semibold))
+                .font(.system(.body, weight: .semibold))
                 .foregroundStyle(prominent ? Color.black.opacity(0.85) : (tint == .white ? Color.white : tint))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
@@ -476,7 +496,7 @@ struct MacHoverButtonStyle: ButtonStyle {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(prominent ? .white.opacity(0.25) : tint.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
                 )
-                .shadow(color: prominent ? tint.opacity(hovered ? 0.45 : 0.3) : .clear, radius: 12, y: 5)
+                .shadow(color: prominent && !theme.isFlat ? tint.opacity(hovered ? 0.45 : 0.3) : .clear, radius: 12, y: 5)
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .opacity(isEnabled ? 1 : 0.45)
                 .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
@@ -538,7 +558,7 @@ struct MacActionTile: View {
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : tint)
                     .frame(height: 20)
                 Text(title)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(.system(.caption, weight: .semibold))
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -568,7 +588,7 @@ struct MacActionTile: View {
 
 struct MacMetricCard: View {
     @AppStorage("mac.monochromeMetrics") private var monochrome = false
-    @AppStorage("mac.theme") private var theme: MacTheme = .ocean
+    @AppStorage("mac.theme") private var theme: MacTheme = .noir
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
     let title: String
     let subtitle: String
@@ -580,7 +600,8 @@ struct MacMetricCard: View {
     var history: [Double] = []
     var showsRing: Bool = false
 
-    private var metricAccent: Color { monochrome ? theme.accent : accent }
+    private var metricAccent: Color { monochrome || theme.isFlat ? theme.accent : accent }
+    private var glow: Bool { !reduceGlow && !theme.isFlat }
     private var isHot: Bool { progress != nil && (progress ?? 0) >= 0.9 }
     private var barTint: Color { isHot ? Color(red: 1.0, green: 0.42, blue: 0.38) : metricAccent }
 
@@ -589,7 +610,7 @@ struct MacMetricCard: View {
             HStack(spacing: 8) {
                 MacIconBadge(systemName: icon, tint: metricAccent, size: 26)
                 Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.system(.subheadline, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(1)
                 Spacer(minLength: 0)
@@ -607,13 +628,13 @@ struct MacMetricCard: View {
                         .opacity(0.75)
                 }
                 Text(valueText)
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .font(.system(size: 28, weight: .bold))
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                     .contentTransition(.numericText())
                     .foregroundStyle(.white)
-                    .shadow(color: reduceGlow ? .clear : metricAccent.opacity(0.25), radius: 10)
+                    .shadow(color: glow ? metricAccent.opacity(0.25) : .clear, radius: 10)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
@@ -639,7 +660,7 @@ struct MacMetricCard: View {
                         Capsule()
                             .fill(LinearGradient(colors: [barTint.opacity(0.7), barTint], startPoint: .leading, endPoint: .trailing))
                             .frame(width: max(4, geometry.size.width * min(1, max(0, progress))))
-                            .shadow(color: reduceGlow ? .clear : barTint.opacity(0.6), radius: 4)
+                            .shadow(color: glow ? barTint.opacity(0.6) : .clear, radius: 4)
                             .animation(.snappy(duration: 0.4), value: progress)
                     }
                 }

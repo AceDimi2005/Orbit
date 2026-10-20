@@ -90,7 +90,7 @@ struct MacAudioView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(masterValueText)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(.system(size: 34, weight: .bold))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 if volumeKnown {
@@ -169,7 +169,7 @@ struct MacAudioView: View {
         return HStack(spacing: 10) {
             MacIconBadge(systemName: "hifispeaker.fill", tint: theme.secondary, size: 28)
             Text(output.name)
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .font(.system(.subheadline, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 6)
@@ -342,7 +342,7 @@ private struct MacAudioclipSessionRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(session.name)
-                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .font(.system(.headline, weight: .semibold))
                             .lineLimit(1)
                         if session.isMuted {
                             MacStatusPill(text: "Muted", tint: .orange, icon: "speaker.slash.fill")
@@ -390,7 +390,7 @@ private struct MacAudioclipSessionRow: View {
                 }
             } label: {
                 Label(session.outputDeviceName ?? "Choose output", systemImage: "hifispeaker")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(.system(.caption, weight: .semibold))
                     .lineLimit(1)
                     .frame(maxWidth: 200)
             }
@@ -428,7 +428,7 @@ private struct MacAudioclipSessionRow: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(MacFormat.percent(session.volume))
-                .font(.system(.callout, design: .rounded, weight: .bold))
+                .font(.system(.callout, weight: .bold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .frame(width: 48, alignment: .trailing)

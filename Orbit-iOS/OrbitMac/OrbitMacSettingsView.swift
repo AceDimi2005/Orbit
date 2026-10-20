@@ -64,8 +64,6 @@ private enum MacSettingsMenuBarMetric: String, CaseIterable, Identifiable {
 private struct MacSettingsGeneralTab: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
-    @AppStorage("mac.menuBarEnabled") private var menuBarEnabled = true
-    @AppStorage("mac.menuBarMetric") private var menuBarMetric = "cpu"
     @AppStorage("mac.refreshInterval") private var refreshInterval: Double = 2
     @AppStorage("mac.notifyOnline") private var notifyOnline = true
     @AppStorage("mac.previewAutoStart") private var previewAutoStart = true
@@ -127,13 +125,13 @@ private struct MacSettingsGeneralTab: View {
 
     private var menuBarSection: some View {
         Section {
-            Toggle("Show Orbit in the menu bar", isOn: $menuBarEnabled)
-            Picker("Menu bar readout", selection: $menuBarMetric) {
+            Toggle("Show Orbit in the menu bar", isOn: $vm.menuBarEnabled)
+            Picker("Menu bar readout", selection: $vm.menuBarMetric) {
                 ForEach(MacSettingsMenuBarMetric.allCases) { option in
                     Text(option.title).tag(option.rawValue)
                 }
             }
-            .disabled(!menuBarEnabled)
+            .disabled(!vm.menuBarEnabled)
         } header: {
             Text("Menu bar")
         } footer: {
@@ -275,7 +273,7 @@ private struct MacSettingsGeneralTab: View {
 private struct MacSettingsAppearanceTab: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
-    @AppStorage("mac.theme") private var selectedTheme: MacTheme = .ocean
+    @AppStorage("mac.theme") private var selectedTheme: MacTheme = .noir
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
     @AppStorage("mac.monochromeMetrics") private var monochrome = false
 
@@ -364,9 +362,9 @@ private struct MacSettingsAppearanceTab: View {
                 MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
                 MacStatChip(label: "Up", value: vm.metrics.formattedUptime)
                 Spacer(minLength: 0)
-                Button("Reset to Ocean") { withAnimation(.snappy(duration: 0.25)) { selectedTheme = .ocean } }
+                Button("Reset to Noir") { withAnimation(.snappy(duration: 0.25)) { selectedTheme = .noir } }
                     .buttonStyle(MacHoverButtonStyle(tint: selectedTheme.accent, prominent: true))
-                    .disabled(selectedTheme == .ocean)
+                    .disabled(selectedTheme == .noir)
             }
             HStack(spacing: 10) {
                 MacMetricCard(title: MacMetric.cpuLoad.title, subtitle: vm.metrics.cpuName, valueText: MacFormat.percent(cpuLoad), progress: cpuLoad.map { $0 / 100 },

@@ -42,7 +42,7 @@ enum OrbitHaptics {
 /// translucent materials. Both respect Reduce Transparency.
 struct LiquidGlassCard: ViewModifier {
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var cornerRadius: CGFloat = 22
@@ -56,7 +56,9 @@ struct LiquidGlassCard: ViewModifier {
                 // Shadows are cast by the card silhouette only, never by the
                 // glyphs inside it (important for the translucent Glass style).
                 ZStack {
-                    if style == .improved || reduceTransparency {
+                    if theme.isFlat {
+                        shape.fill(theme.surface)
+                    } else if style == .improved || reduceTransparency {
                         shape
                             .fill(theme.surface)
                             .overlay {
@@ -75,19 +77,23 @@ struct LiquidGlassCard: ViewModifier {
                     }
                 }
                 .compositingGroup()
-                .shadow(color: .black.opacity(style == .improved ? 0.28 : 0.18), radius: elevated ? 22 : 12, y: elevated ? 10 : 5)
-                .shadow(color: elevated && !reduceGlow ? tint.opacity(0.12) : .clear, radius: 30, y: 8)
+                .shadow(color: .black.opacity(theme.isFlat ? 0.0 : (style == .improved ? 0.28 : 0.18)), radius: elevated ? 22 : 12, y: elevated ? 10 : 5)
+                .shadow(color: elevated && !reduceGlow && !theme.isFlat ? tint.opacity(0.12) : .clear, radius: 30, y: 8)
             }
             .overlay {
-                // Specular top edge + soft outer hairline.
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(elevated ? 0.26 : 0.18), .white.opacity(0.06), tint.opacity(0.10)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
+                if theme.isFlat {
+                    shape.strokeBorder(theme.hairline, lineWidth: 1)
+                } else {
+                    // Specular top edge + soft outer hairline.
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(elevated ? 0.26 : 0.18), .white.opacity(0.06), tint.opacity(0.10)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                }
             }
     }
 }
@@ -101,49 +107,47 @@ extension View {
 // MARK: - Ambient background
 
 struct OrbitAmbientBackground: View {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drift = false
     var isOnline: Bool
 
+    // The glow is static: a perpetually drifting blur costs CPU on every frame
+    // for no information. Noir shows the plain black background.
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
             ZStack {
                 theme.background
-                LinearGradient(
-                    colors: [theme.background.opacity(0), .black.opacity(0.35)],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-                if !reduceGlow && !reduceTransparency {
+                if !theme.isFlat {
+                    LinearGradient(
+                        colors: [theme.background.opacity(0), .black.opacity(0.35)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                }
+                if !reduceGlow && !reduceTransparency && !theme.isFlat {
                     let strength = style == .improved ? 0.9 : 1.25
                     Ellipse()
                         .fill(theme.accent.opacity(0.13 * strength))
                         .frame(width: size.width * 1.15, height: size.height * 0.42)
                         .blur(radius: 110)
-                        .offset(x: -size.width * 0.30 + (drift ? 26 : -14), y: -size.height * 0.30 + (drift ? 18 : -10))
+                        .offset(x: -size.width * 0.30, y: -size.height * 0.30)
                     Ellipse()
                         .fill(theme.secondary.opacity(0.10 * strength))
                         .frame(width: size.width * 0.95, height: size.height * 0.38)
                         .blur(radius: 120)
-                        .offset(x: size.width * 0.38 + (drift ? -22 : 12), y: size.height * 0.22 + (drift ? -14 : 16))
+                        .offset(x: size.width * 0.38, y: size.height * 0.22)
                     Circle()
                         .fill((isOnline ? theme.accent : Color.orange).opacity(0.06 * strength))
                         .frame(width: size.width * 0.7)
                         .blur(radius: 90)
-                        .offset(x: size.width * 0.1, y: size.height * 0.62 + (drift ? 20 : -8))
+                        .offset(x: size.width * 0.1, y: size.height * 0.62)
                 }
             }
             .frame(width: size.width, height: size.height)
             .clipped()
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 11).repeatForever(autoreverses: true)) { drift = true }
-            }
         }
         .ignoresSafeArea()
     }
@@ -155,6 +159,7 @@ extension OrbitTheme {
     /// A complementary tone used for gradients, secondary glows and hero rings.
     var secondary: Color {
         switch self {
+        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
         case .ocean: Color(red: 0.42, green: 0.52, blue: 1.0)
         case .aurora: Color(red: 0.36, green: 0.80, blue: 0.98)
         case .violet: Color(red: 1.0, green: 0.55, blue: 0.82)
@@ -182,22 +187,34 @@ struct OrbitIconBadge: View {
     var tint: Color
     var size: CGFloat = 36
     var filled: Bool = false
+    @Environment(\.orbitTheme) private var theme
+
+    /// Noir keeps badges monochrome: a filled badge uses the theme accent, everything
+    /// else is a white glyph on a neutral tile, so colour is reserved for status.
+    private var fillStyle: AnyShapeStyle {
+        if theme.isFlat {
+            return filled ? AnyShapeStyle(theme.accent) : AnyShapeStyle(Color.white.opacity(0.08))
+        }
+        return filled
+            ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
+    }
+    private var glyphColor: Color {
+        if filled { return Color.black.opacity(0.85) }
+        return theme.isFlat ? Color.white.opacity(0.92) : tint
+    }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(
-                    filled
-                        ? LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        : LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
+                .fill(fillStyle)
                 .overlay(
                     RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                        .strokeBorder(.white.opacity(filled ? 0.22 : 0.08), lineWidth: 1)
+                        .strokeBorder(.white.opacity(filled ? 0.22 : (theme.isFlat ? 0.10 : 0.08)), lineWidth: 1)
                 )
             Image(systemName: systemName)
                 .font(.system(size: size * 0.44, weight: .semibold))
-                .foregroundStyle(filled ? Color.black.opacity(0.85) : tint)
+                .foregroundStyle(glyphColor)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
@@ -227,7 +244,7 @@ struct OrbitSectionHeader<Trailing: View>: View {
                     .foregroundStyle(tint ?? accent)
             }
             Text(title.uppercased())
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .tracking(1.1)
                 .foregroundStyle(.white.opacity(0.62))
             Spacer(minLength: 0)
@@ -270,7 +287,7 @@ struct OrbitStatusPill: View {
                 .frame(width: 10, height: 10)
             }
             Text(text)
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .lineLimit(1)
         }
         .foregroundStyle(tint)
@@ -292,6 +309,7 @@ struct OrbitRingGauge: View {
     var tint: Color
     var track: Color = .white.opacity(0.08)
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+    @Environment(\.orbitTheme) private var theme
 
     private var clamped: Double { min(1, max(0, progress ?? 0)) }
 
@@ -306,7 +324,7 @@ struct OrbitRingGauge: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: reduceGlow ? .clear : tint.opacity(0.55), radius: 6)
+                    .shadow(color: reduceGlow || theme.isFlat ? .clear : tint.opacity(0.55), radius: 6)
                     .animation(.snappy(duration: 0.45), value: clamped)
             }
         }
@@ -407,6 +425,7 @@ struct OrbitProminentButtonStyle: ButtonStyle {
     var foreground: Color = .black
     var cornerRadius: CGFloat = 16
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.orbitTheme) private var theme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -422,7 +441,7 @@ struct OrbitProminentButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(.white.opacity(0.25), lineWidth: 1)
             )
-            .shadow(color: (colors.first ?? .clear).opacity(configuration.isPressed ? 0.15 : 0.35), radius: 16, y: 8)
+            .shadow(color: theme.isFlat ? .clear : (colors.first ?? .clear).opacity(configuration.isPressed ? 0.15 : 0.35), radius: 16, y: 8)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(isEnabled ? 1 : 0.5)
             .animation(.spring(response: 0.28, dampingFraction: 0.75), value: configuration.isPressed)
@@ -466,7 +485,7 @@ struct OrbitActionTile: View {
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : tint)
                     .frame(height: 20)
                 Text(title)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(.system(.caption, weight: .semibold))
                     .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -491,10 +510,11 @@ struct OrbitActionTile: View {
 
 struct HardwareMetricCard: View {
     @AppStorage("orbit.monochromeMetrics") private var monochrome = false
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
-    private var metricAccent: Color { monochrome ? theme.accent : accent }
+    private var metricAccent: Color { monochrome || theme.isFlat ? theme.accent : accent }
+    private var glow: Bool { !reduceGlow && !theme.isFlat }
     let title: String
     let subtitle: String
     let valueText: String
@@ -513,7 +533,7 @@ struct HardwareMetricCard: View {
             HStack(spacing: 8) {
                 OrbitIconBadge(systemName: icon, tint: metricAccent, size: 28)
                 Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.system(.subheadline, weight: .semibold))
                     .foregroundStyle(style == .improved ? Color.white.opacity(0.88) : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -533,13 +553,13 @@ struct HardwareMetricCard: View {
                         .opacity(0.75)
                 }
                 Text(valueText)
-                    .font(.system(.title, design: .rounded, weight: .bold))
+                    .font(.system(.title, weight: .bold))
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                     .contentTransition(.numericText())
                     .foregroundStyle(.white)
-                    .shadow(color: reduceGlow ? .clear : metricAccent.opacity(0.25), radius: 10)
+                    .shadow(color: glow ? metricAccent.opacity(0.25) : .clear, radius: 10)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -567,7 +587,7 @@ struct HardwareMetricCard: View {
                         Capsule()
                             .fill(LinearGradient(colors: [barTint.opacity(0.7), barTint], startPoint: .leading, endPoint: .trailing))
                             .frame(width: max(4, geometry.size.width * min(1, max(0, progress))))
-                            .shadow(color: reduceGlow ? .clear : barTint.opacity(0.6), radius: 4)
+                            .shadow(color: glow ? barTint.opacity(0.6) : .clear, radius: 4)
                             .animation(.snappy(duration: 0.4), value: progress)
                     }
                 }
@@ -672,14 +692,14 @@ struct OrbitListChrome: ViewModifier {
 }
 
 struct OrbitRowBackground: ViewModifier {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     var tint: Color?
     func body(content: Content) -> some View {
         content.listRowBackground(
             ZStack {
-                theme.surface.opacity(style == .improved ? 0.92 : 0.6)
-                if let tint { tint.opacity(0.06) }
+                theme.surface.opacity(theme.isFlat ? 1 : (style == .improved ? 0.92 : 0.6))
+                if let tint, !theme.isFlat { tint.opacity(0.06) }
             }
         )
     }
@@ -703,11 +723,11 @@ struct OrbitStatChip: View {
                 Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(tint.opacity(0.9))
             }
             Text(label.uppercased())
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(.system(.caption2, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(.white.opacity(0.5))
             Text(value)
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.system(.caption, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())

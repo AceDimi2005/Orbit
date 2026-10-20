@@ -75,7 +75,7 @@ struct MacRemoteView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) {
                         Text(vm.isConfigured ? vm.selectedPCName : "No PC paired")
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .font(.system(size: 22, weight: .bold))
                             .lineLimit(1)
                         MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
                         if isCapturing {
@@ -230,7 +230,7 @@ struct MacRemoteView: View {
                     Toggle("Capture pointer", isOn: $captureEnabled)
                         .toggleStyle(.switch)
                         .controlSize(.small)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .font(.system(.caption, weight: .semibold))
                         .disabled(!isLive)
                         .help(isLive ? "Lock the Mac pointer inside the pad and forward keystrokes · press ⎋ to release" : "Available when a real PC is connected")
                 }
@@ -299,7 +299,7 @@ struct MacRemoteView: View {
                 .font(.system(size: 34, weight: .medium))
                 .foregroundStyle(tint)
             Text(isCapturing ? "Pointer captured" : (vm.isDemoMode ? "Demo trackpad" : "Move here to control the PC pointer"))
-                .font(.system(.headline, design: .rounded, weight: .bold))
+                .font(.system(.headline, weight: .bold))
             Text(hintDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -377,7 +377,7 @@ struct MacRemoteView: View {
                         sendKey(chip.id)
                     } label: {
                         Label(chip.title, systemImage: chip.icon)
-                            .font(.system(.caption, design: .rounded, weight: .semibold))
+                            .font(.system(.caption, weight: .semibold))
                     }
                     .buttonStyle(MacHoverButtonStyle())
                     .help("Send \(chip.title)")

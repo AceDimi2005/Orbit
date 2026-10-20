@@ -545,7 +545,7 @@ struct AudioMixerView: View {
                 Spacer()
                 if mixer.sendingIDs.contains(session.id) { ProgressView().controlSize(.mini) }
                 Text(session.isMuted ? "Muted" : "\(Int(session.volume))%")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(session.isMuted ? .orange : .white)
                     .contentTransition(.numericText())

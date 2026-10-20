@@ -25,8 +25,8 @@ struct OrbitWidgets: WidgetBundle {
 }
 
 private enum OrbitWidgetStyle {
-    static let accent = Color(red: 0.25, green: 0.84, blue: 0.96)
-    static let background = Color(red: 0.035, green: 0.055, blue: 0.095)
+    static let accent = Color(red: 0.36, green: 0.86, blue: 1.0)
+    static let background = Color.black
     static let dashboardURL = URL(string: "orbit://dashboard")!
     static let remoteURL = URL(string: "orbit://remote")!
 }
@@ -60,7 +60,7 @@ struct OrbitShortcutsWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "OrbitShortcuts", provider: ShortcutProvider()) { entry in
             OrbitShortcutsView(entry: entry)
-                .containerBackground(OrbitWidgetStyle.background.gradient, for: .widget)
+                .containerBackground(OrbitWidgetStyle.background, for: .widget)
         }
         .configurationDisplayName("Orbit Power & Quick Controls")
         .description("Interactive Power On (Wake-on-LAN), Shut Down, Sleep, and instant shortcuts to your PC.")
@@ -314,7 +314,7 @@ struct OrbitMonitorActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: OrbitActivityAttributes.self) { context in
             OrbitLiveActivityPanel(context: context)
-                .activityBackgroundTint(OrbitWidgetTheme(rawValue: context.state.accent ?? "ocean")?.background ?? OrbitWidgetStyle.background)
+                .activityBackgroundTint(OrbitWidgetTheme(rawValue: context.state.accent ?? "noir")?.background ?? OrbitWidgetStyle.background)
                 .activitySystemActionForegroundColor(accent(context))
                 .widgetURL(OrbitWidgetStyle.dashboardURL)
         } dynamicIsland: { context in
@@ -363,13 +363,13 @@ struct OrbitMonitorActivity: Widget {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(accent(context))
                     Text(view.compactTitle)
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.8))
                 }
             } compactTrailing: {
                 if view.fresh {
                     Text(view.primaryValue)
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(accent(context))
                 } else {
@@ -401,7 +401,7 @@ struct OrbitMonitorActivity: Widget {
     }
 
     private func accent(_ context: ActivityViewContext<OrbitActivityAttributes>) -> Color {
-        OrbitWidgetTheme(rawValue: context.state.accent ?? "ocean")?.accent ?? OrbitWidgetStyle.accent
+        OrbitWidgetTheme(rawValue: context.state.accent ?? "noir")?.accent ?? OrbitWidgetStyle.accent
     }
 }
 
@@ -482,7 +482,8 @@ private struct OrbitActivityPresentation {
         }
     }
     func color(_ metric: String, fallback: Color) -> Color {
-        switch metric {
+        if (state.accent ?? "noir") == "noir" { return fallback }
+        return switch metric {
         case "cpu": Color(red: 0.25, green: 0.84, blue: 0.96)
         case "gpu", "vram": Color(red: 0.71, green: 0.58, blue: 1)
         case "ram", "fps": Color(red: 0.40, green: 0.91, blue: 0.69)
@@ -528,6 +529,8 @@ private struct OrbitActivityPresentation {
         case "cpuPower": return number(state.cpuPowerWatts, suffix: "W")
         case "gpuPower": return number(state.gpuPowerWatts, suffix: "W")
         case "vram": return state.vramUsedGB.map { String(format: "%.1fG", $0) } ?? "—"
+        case "cpuTemp": return number(state.cpuTemp, suffix: "°")
+        case "gpuTemp": return number(state.gpuTemp, suffix: "°")
         default: return "—"
         }
     }
@@ -541,7 +544,7 @@ private struct OrbitLiveActivityPanel: View {
     var context: ActivityViewContext<OrbitActivityAttributes>
     var island = false
     private var presentation: OrbitActivityPresentation { OrbitActivityPresentation(context) }
-    private var accent: Color { OrbitWidgetTheme(rawValue: context.state.accent ?? "ocean")?.accent ?? OrbitWidgetStyle.accent }
+    private var accent: Color { OrbitWidgetTheme(rawValue: context.state.accent ?? "noir")?.accent ?? OrbitWidgetStyle.accent }
     private var detailed: Bool { context.state.style == "detailed" }
     private var minimal: Bool { context.state.style == "minimal" }
 
@@ -584,7 +587,7 @@ private struct OrbitLiveActivityPanel: View {
                     .fill(presentation.fresh ? Color.green : Color.orange)
                     .frame(width: 6, height: 6)
                 Text(context.attributes.pcName)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold))
                     .lineLimit(1)
                 Spacer(minLength: 2)
                 if let game = context.state.gameName, !game.isEmpty, presentation.fresh {
@@ -607,7 +610,7 @@ private struct OrbitLiveActivityPanel: View {
                             .font(.system(size: 8.5, weight: .bold))
                             .foregroundStyle(tint)
                         Text(presentation.value(metric))
-                            .font(.system(size: 13.5, weight: .bold, design: .rounded))
+                            .font(.system(size: 13.5, weight: .bold))
                             .monospacedDigit()
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
@@ -686,7 +689,7 @@ private struct OrbitLiveActivityPanel: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.65))
                 Text(presentation.primaryValue)
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 32, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(accent)
             }
@@ -720,7 +723,7 @@ private struct OrbitLiveActivityPanel: View {
                             .lineLimit(1)
                     }
                     Text(presentation.value(metric))
-                        .font(.system(size: island ? 18 : 20, weight: .bold, design: .rounded))
+                        .font(.system(size: island ? 18 : 20, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(.white)
                         .lineLimit(1)
@@ -750,6 +753,8 @@ private struct OrbitLiveActivityPanel: View {
 
     private var secondaryRow: some View {
         HStack(spacing: 8) {
+            secondaryPill(label: "CPU", value: presentation.value("cpuTemp"), icon: "thermometer.medium")
+            secondaryPill(label: "GPU", value: presentation.value("gpuTemp"), icon: "thermometer.medium")
             secondaryPill(label: "CPU W", value: presentation.value("cpuPower"), icon: "bolt.fill")
             secondaryPill(label: "GPU W", value: presentation.value("gpuPower"), icon: "bolt.fill")
             secondaryPill(label: "VRAM", value: presentation.value("vram"), icon: "memorychip")
@@ -766,7 +771,7 @@ private struct OrbitLiveActivityPanel: View {
                 .foregroundStyle(.white.opacity(0.55))
             Spacer(minLength: 2)
             Text(value)
-                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .font(.system(size: 10.5, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.9))
         }

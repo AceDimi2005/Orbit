@@ -29,6 +29,14 @@
 	<string>Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.</string>
 	<key>OrbitAppGroupIdentifier</key>
 	<string>$(ORBIT_APP_GROUP_IDENTIFIER)</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.dimitrie.orbit.refresh</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

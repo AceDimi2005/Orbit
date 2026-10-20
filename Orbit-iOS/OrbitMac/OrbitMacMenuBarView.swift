@@ -88,7 +88,7 @@ struct MacMenuBarView: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(vm.isConfigured ? vm.selectedPCName : "No PC paired")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .font(.system(.subheadline, weight: .bold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     MacStatusPill(text: vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? "Online" : (vm.currentPC == nil ? "Not paired" : "Offline")),
@@ -120,7 +120,7 @@ struct MacMenuBarView: View {
                     .frame(width: 54, height: 54)
                 VStack(spacing: -1) {
                     Text(value.map { "\(Int($0.rounded()))" } ?? "—")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.system(size: 15, weight: .bold))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                     Text(title)

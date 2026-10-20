@@ -66,6 +66,9 @@ SUNSHINE_APPS_PATHS = [
 ]
 if os.getenv("ORBIT_SUNSHINE_APPS"):
     SUNSHINE_APPS_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_APPS"]))
+SUNSHINE_CONF_PATHS = [path.with_name("sunshine.conf") for path in SUNSHINE_APPS_PATHS]
+if os.getenv("ORBIT_SUNSHINE_CONF"):
+    SUNSHINE_CONF_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_CONF"]))
 
 STATE_LOCK = threading.Lock()
 STOP_EVENT = threading.Event()
@@ -725,6 +728,56 @@ def sunshine_entries():
             except (OSError, ValueError, AttributeError) as error:
                 raise HTTPException(status_code=503, detail="Sunshine apps configuration is unreadable") from error
     return []
+
+
+def sunshine_config():
+    """`key = value` pairs from the first sunshine.conf found; empty when Sunshine is not installed."""
+    for path in SUNSHINE_CONF_PATHS:
+        if not path.is_file():
+            continue
+        values = {}
+        try:
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+        except OSError:
+            continue
+        return values
+    return {}
+
+
+def sunshine_running():
+    try:
+        return any((proc.info.get("name") or "").lower() in ("sunshine.exe", "sunshine") for proc in psutil.process_iter(["name"]))
+    except Exception:
+        return False
+
+
+@app.get("/api/sunshine/info")
+def get_sunshine_info(authorization: str = Header(None)):
+    """Where Orbit's Moonlight-protocol client should talk to Sunshine on this PC.
+
+    Sunshine derives every port from its base `port` (default 47989): HTTPS is base - 5,
+    the Web UI (where the pairing PIN is entered) is base + 1.
+    """
+    verify_token(authorization)
+    config = sunshine_config()
+    try:
+        base = int(config.get("port", "47989"))
+    except ValueError:
+        base = 47989
+    if not 6 <= base <= 65534:
+        base = 47989
+    try:
+        app_count = len(sunshine_entries())
+        installed = any(path.is_file() for path in SUNSHINE_APPS_PATHS) or bool(config)
+    except HTTPException:
+        app_count, installed = 0, True
+    return {"installed": installed, "running": sunshine_running(), "httpPort": base, "httpsPort": base - 5,
+            "webUIPort": base + 1, "name": config.get("sunshine_name") or socket.gethostname(), "appCount": app_count}
 
 
 @app.get("/api/sunshine/apps")

@@ -148,6 +148,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     // Retain this until retirement: a queued release can be cancelled while a
     // previously dispatched press is still completing. UI drag state alone is insufficient.
     private var cursorMayNeedRelease = false
+    private var cursorFailureHandled = false
     private var volumeQueue: VolumeCommandQueue?
     private var volumeTarget: OrbitWatchControlTarget?
     private var avoidPhoneUntil: Date = .distantPast
@@ -372,9 +373,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
         statusMessage = "Sending Wake-on-LAN via iPhone…"
         do {
-            let reply = try await sendPhoneMessage(["cmd": "wake", "pcID": selectedPCID])
+            let destination = target
+            let reply = try await sendPCMessage(["cmd": "wake"], to: destination)
+            guard target == destination else { return }
             applyPhonePayload(reply)
-            statusMessage = "Wake requested via iPhone · waiting for PC"
+            statusMessage = "Wake packet sent via iPhone · waiting for PC"
             WKInterfaceDevice.current().play(.success)
         } catch {
             statusMessage = "Wake failed: \(error.localizedDescription)"
@@ -385,40 +388,26 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     func sendPowerAction(_ action: String) async {
         WKInterfaceDevice.current().play(.click)
         let label = action.replacingOccurrences(of: "_", with: " ").capitalized
+        let destination = target
         statusMessage = "Sending \(label)…"
-
-        if hasDirectCredentials {
-            do {
-                _ = try await performPCRequest(path: "/api/action/\(action)", method: "POST")
-                statusMessage = "\(label) sent"
-                if ["shutdown", "sleep", "restart"].contains(action) {
-                    isOnline = false
-                    stopMotionCursor()
-                }
-                if action == "mute" { isMuted.toggle() }
-                WKInterfaceDevice.current().play(.success)
-                saveSnapshotForComplications()
-                return
-            } catch {
-                // Fall through to iPhone relay
+        do {
+            // The paired phone also works when the Watch only has Bluetooth.
+            // Choose one route; an unconfirmed media toggle must not be replayed.
+            if phoneCanRelay {
+                _ = try await sendPCMessage(["cmd": "powerAction", "action": action], to: destination)
+            } else {
+                _ = try await client(for: destination).data(path: "/api/action/\(action)", method: "POST")
             }
-        }
-
-        if WCSession.isSupported() && WCSession.default.isReachable {
-            WCSession.default.sendMessage(["cmd": "powerAction", "action": action], replyHandler: { [weak self] reply in
-                Task { @MainActor in
-                    self?.applyPhonePayload(reply)
-                    self?.statusMessage = "\(label) sent"
-                }
-            }, errorHandler: nil)
-            return
-        }
-
-        // Fallback to OrbitWidgetPowerService for shutdown/sleep/restart
-        if ["shutdown", "sleep", "restart", "lock"].contains(action) {
-            if let message = try? await OrbitWidgetPowerService.sendPowerAction(action, id: selectedPCID.isEmpty ? nil : selectedPCID) {
-                statusMessage = message
-            }
+            guard target == destination else { return }
+            statusMessage = "\(label) sent"
+            if ["shutdown", "sleep", "restart"].contains(action) { isOnline = false; stopMotionCursor() }
+            if action == "mute" { isMuted.toggle() }
+            WKInterfaceDevice.current().play(.success)
+            saveSnapshotForComplications()
+        } catch {
+            guard target == destination else { return }
+            statusMessage = "\(label) failed: \(error.localizedDescription)"
+            WKInterfaceDevice.current().play(.failure)
         }
     }
 
@@ -440,7 +429,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 } catch {
                     guard self.target == destination else { return }
                     do {
-                        _ = try await self.sendPhoneMessage(["cmd": "volume", "level": level, "pcID": destination.id])
+                        _ = try await self.sendPCMessage(["cmd": "volume", "level": level], to: destination)
                     } catch { self.statusMessage = "Volume: \(error.localizedDescription)" }
                 }
             }
@@ -464,22 +453,22 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     func launchGame(_ game: WatchSunshineGame) {
         WKInterfaceDevice.current().play(.start)
+        let destination = target
         statusMessage = "Launching \(game.title)…"
         Task {
-            if hasDirectCredentials && isOnline {
-                if (try? await performPCRequest(path: "/api/sunshine/launch", method: "POST", query: [URLQueryItem(name: "app", value: game.title)])) != nil {
-                    statusMessage = "Launched \(game.title)"
-                    WKInterfaceDevice.current().play(.success)
-                    return
+            do {
+                if phoneCanRelay {
+                    _ = try await sendPCMessage(["cmd": "launchGame", "title": game.title], to: destination)
+                } else {
+                    _ = try await client(for: destination).data(path: "/api/sunshine/launch", method: "POST",
+                        query: [URLQueryItem(name: "app", value: game.title)])
                 }
-            }
-            if WCSession.isSupported() && WCSession.default.isReachable {
-                WCSession.default.sendMessage(["cmd": "launchGame", "title": game.title], replyHandler: { [weak self] reply in
-                    Task { @MainActor in
-                        self?.applyPhonePayload(reply)
-                        self?.statusMessage = "Launched \(game.title)"
-                    }
-                }, errorHandler: nil)
+                guard target == destination else { return }
+                statusMessage = "Launched \(game.title)"
+                WKInterfaceDevice.current().play(.success)
+            } catch {
+                guard target == destination else { return }
+                statusMessage = "Launch failed: \(error.localizedDescription)"
             }
         }
     }
@@ -720,13 +709,18 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 try await self.deliverCursor(packet, to: destination)
             }, onFailure: { [weak self] error in
                 guard let self, self.target == destination else { return }
-                self.cursorQueue?.cancel()
+                // A failed button-up must not recursively queue another button-up
+                // forever when both routes are offline. One recovery release is
+                // attempted after the original failure, then user input is required.
+                if self.cursorFailureHandled { self.cursorMayNeedRelease = false }
+                self.cursorFailureHandled = true
                 self.stopMotionCursor()
                 self.cursorStatusMessage = "Cursor paused: \(error.localizedDescription)"
                 self.cursorRouteLabel = "Connection needs attention"
                 WKInterfaceDevice.current().play(.failure)
             })
         }
+        if drag != "up" { cursorFailureHandled = false }
         if drag == "down" { cursorMayNeedRelease = true }
         cursorQueue?.enqueue(OrbitCursorPacket(dx: dx, dy: dy, click: click, scroll: scroll,
             hscroll: hscroll, normX: normX, normY: normY, drag: drag))
@@ -772,6 +766,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 }
             }
             guard target == destination, !Task.isCancelled else { return }
+            if packet.isReleaseOnly { cursorMayNeedRelease = false }
             lastCursorDeliveryAt = Date()
             cursorRouteLabel = route
             cursorStatusMessage = isMotionCursorActive ? "Controlling your PC · tap Pause to stop" : "PC confirmed your input"
@@ -782,8 +777,16 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             else { avoidPhoneUntil = .distantPast }
             // Button-up is idempotent and safe to deliver by the other route.
             if packet.isReleaseOnly {
-                if usePhone { try await client(for: destination).sendCursor(packet); return }
-                if phoneCanRelay { try await relayCursor(packet, to: destination); return }
+                if usePhone {
+                    try await client(for: destination).sendCursor(packet)
+                    if target == destination { cursorMayNeedRelease = false }
+                    return
+                }
+                if phoneCanRelay {
+                    try await relayCursor(packet, to: destination)
+                    if target == destination { cursorMayNeedRelease = false }
+                    return
+                }
             }
             throw error
         }
@@ -814,6 +817,18 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     private func performPCRequest(path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
         try await client(for: target).data(path: path, method: method, query: query)
+    }
+
+    private func sendPCMessage(_ fields: [String: Any], to destination: OrbitWatchControlTarget) async throws -> [String: Any] {
+        var message = fields
+        message["pcID"] = destination.id
+        message["host"] = destination.host
+        message["expiresAt"] = Date().addingTimeInterval(5).timeIntervalSince1970
+        let reply = try await sendPhoneMessage(message)
+        guard reply["status"] as? String == "sent", reply["pcID"] as? String == destination.id else {
+            throw WatchControlError(reply["message"] as? String ?? "iPhone did not confirm the PC command. Update Orbit on both devices.")
+        }
+        return reply
     }
 
     private func sendPhoneMessage(_ message: [String: Any]) async throws -> [String: Any] {

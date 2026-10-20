@@ -15,6 +15,8 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var wolPort = 9
     var autoCalcBroadcast = true
     var lastKnownIPv4: String? = nil
+    /// Bonjour `.local` name of the agent, used to find the PC again if its IPv4 changes.
+    var bonjourHost: String? = nil
 }
 
 struct OrbitSyncedPCItem: Codable {
@@ -131,11 +133,16 @@ enum PCProfileStore {
 
 @MainActor
 extension OrbitViewModel {
-    func acceptPairing(_ credentials: PCPairingCredentials, discoveredHost: String) throws {
+    func acceptPairing(_ credentials: PCPairingCredentials, discoveredHost: String, bonjourHost: String = "") throws {
         let fingerprint = OrbitAPIClient.normalizedFingerprint(credentials.certificateFingerprint)
         guard OrbitAPIClient.validFingerprint(fingerprint), !discoveredHost.isEmpty else { throw OrbitError(message: "Invalid PC pairing response.") }
-        var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }) ?? SavedPC(name: credentials.hostname, address: discoveredHost)
-        profile.name = credentials.hostname; profile.address = discoveredHost
+        // Store the plain IPv4 address. The agent reports the adapter address the phone
+        // actually connected through, which beats a `.local` name for Wake-on-LAN and VPNs.
+        let address = IPv4Address(discoveredHost) != nil ? discoveredHost : (IPv4Address(credentials.ipAddress) != nil ? credentials.ipAddress : discoveredHost)
+        var profile = savedPCs.first(where: { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }) ?? SavedPC(name: credentials.hostname, address: address)
+        profile.name = credentials.hostname; profile.address = address
+        let fallbackName = bonjourHost.isEmpty ? (discoveredHost.hasSuffix(".local") ? discoveredHost : "") : bonjourHost
+        if !fallbackName.isEmpty { profile.bonjourHost = fallbackName }
         profile.agentPort = credentials.agentPort; profile.securePort = credentials.securePort
         profile.certificateFingerprint = fingerprint; profile.macAddress = credentials.macAddress
         profile.subnetMask = credentials.subnetMask; profile.broadcastAddress = credentials.broadcastAddress

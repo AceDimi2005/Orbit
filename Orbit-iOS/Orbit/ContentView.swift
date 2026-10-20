@@ -93,7 +93,7 @@ struct DashboardView: View {
     @State private var isShowingPCs = false
     @State private var isShowingDiscovery = false
     @State private var wakePulse = false
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -328,7 +328,7 @@ struct DashboardView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
-                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .font(.system(size: 20, weight: .bold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.75)
@@ -581,14 +581,17 @@ struct DashboardView: View {
         return "\(frametime) ms frametime"
     }
 
+    /// Game card colour: the single accent in Noir, mint elsewhere.
+    private var gameTint: Color { theme.isFlat ? theme.accent : .mint }
+
     private func activeGameCard(_ title: String) -> some View {
         HStack(spacing: 12) {
-            OrbitIconBadge(systemName: "gamecontroller.fill", tint: .mint, size: 40, filled: true)
+            OrbitIconBadge(systemName: "gamecontroller.fill", tint: gameTint, size: 40, filled: true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("PLAYING NOW")
                     .font(.system(size: 10, weight: .bold))
                     .tracking(1.1)
-                    .foregroundStyle(.mint)
+                    .foregroundStyle(gameTint)
                 Text(title)
                     .font(.subheadline.weight(.bold))
                     .lineLimit(1)
@@ -602,18 +605,18 @@ struct DashboardView: View {
             Spacer(minLength: 8)
             ZStack(alignment: .trailing) {
                 if vm.history.fps.count >= 3 {
-                    OrbitSparkline(values: vm.history.fps, tint: .mint, lineWidth: 1.5)
+                    OrbitSparkline(values: vm.history.fps, tint: gameTint, lineWidth: 1.5)
                         .frame(width: 92, height: 30)
                         .opacity(0.6)
                 }
                 if let fps = vm.metrics.fps {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text("\(Int(fps.rounded()))")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .font(.system(size: 28, weight: .bold))
                             .monospacedDigit()
-                            .foregroundStyle(.mint)
+                            .foregroundStyle(gameTint)
                             .contentTransition(.numericText())
-                            .shadow(color: reduceGlow ? .clear : .mint.opacity(0.45), radius: 10)
+                            .shadow(color: reduceGlow || theme.isFlat ? .clear : gameTint.opacity(0.45), radius: 10)
                         Text("FPS")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
@@ -626,7 +629,7 @@ struct DashboardView: View {
             }
         }
         .padding(15)
-        .liquidGlass(cornerRadius: 20, tint: .mint)
+        .liquidGlass(cornerRadius: 20, tint: gameTint)
     }
 
     private var specsLink: some View {
@@ -714,7 +717,7 @@ struct DashboardView: View {
                         .foregroundStyle(.orange)
                         .frame(height: 20)
                     Text("Power")
-                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.9))
                 }
                 .frame(maxWidth: .infinity, minHeight: 60)
@@ -988,11 +991,26 @@ struct GameLibraryView: View {
     @ObservedObject var vm: OrbitViewModel
     var isEmbeddedInDuo = false
     @State private var searchText = ""
+    @StateObject private var sunshine = MoonlightHostCoordinator()
+    @State private var showsPairing = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.orbitTheme) private var theme
 
+    /// Agent library first; when it is empty but Sunshine is paired, Sunshine's own list fills in.
+    private var libraryGames: [SunshineGame] {
+        if !vm.games.isEmpty || !sunshine.isPaired { return vm.games }
+        return sunshine.apps.map { SunshineGame(id: "sunshine-\($0.id)", title: $0.title, genre: $0.supportsHDR ? "Sunshine · HDR" : "Sunshine", iconSymbol: "gamecontroller.fill", accentHex: "5CDBFF") }
+    }
     private var filteredGames: [SunshineGame] {
-        searchText.isEmpty ? vm.games : vm.games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+        searchText.isEmpty ? libraryGames : libraryGames.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)" }
+
+    private func syncSunshine() async {
+        guard !vm.isDemoMode else { return }
+        sunshine.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+                           httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        if vm.metrics.isOnline { await sunshine.refresh() }
     }
 
     private var adaptiveGameColumns: [GridItem] {
@@ -1018,7 +1036,7 @@ struct GameLibraryView: View {
                         ToolbarItemGroup(placement: .topBarTrailing) {
                             Button {
                                 OrbitHaptics.tap()
-                                Task { await vm.fetchSunshineApps() }
+                                Task { await vm.fetchSunshineApps(); await sunshine.refresh() }
                             } label: {
                                 Image(systemName: "arrow.clockwise")
                             }
@@ -1026,15 +1044,18 @@ struct GameLibraryView: View {
                             .accessibilityLabel("Refresh library")
 
                             Menu {
-                                Button("Open Moonlight", systemImage: "arrow.up.forward.app") {
-                                    vm.openNativeMoonlight()
-                                }
                                 Button("Desktop Preview", systemImage: "display") {
                                     vm.openDesktopPreview()
                                 }
                                 .disabled(!vm.metrics.isOnline)
-                                Divider()
-                                Toggle("Auto-Open Moonlight on Launch", isOn: $vm.autoOpenMoonlight)
+                                if sunshine.isPaired {
+                                    Button("Quit Sunshine Session", systemImage: "stop.circle") { Task { await sunshine.quitRunningApp() } }
+                                        .disabled(!sunshine.isBusy)
+                                    Button("Forget Sunshine Pairing", systemImage: "link.badge.minus", role: .destructive) { sunshine.forgetPairing() }
+                                } else {
+                                    Button("Pair with Sunshine…", systemImage: "link") { showsPairing = true }
+                                        .disabled(!vm.metrics.isOnline || vm.isDemoMode)
+                                }
                             } label: {
                                 Image(systemName: "ellipsis.circle")
                             }
@@ -1044,6 +1065,12 @@ struct GameLibraryView: View {
                 }
             }
         }
+        .task(id: sunshineKey) { await syncSunshine() }
+        .sheet(isPresented: $showsPairing) {
+            MoonlightPairingView(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent) { showsPairing = false }
+                .presentationDetents([.large])
+                .presentationBackground(theme.background)
+        }
     }
 
     private var libraryContent: some View {
@@ -1051,8 +1078,8 @@ struct GameLibraryView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if !vm.metrics.isOnline {
                     OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
-                } else if !isEmbeddedInDuo {
-                    streamingHeader
+                } else if !vm.isDemoMode {
+                    sunshineCard
                 }
                 if filteredGames.isEmpty {
                     OrbitEmptyState(
@@ -1067,12 +1094,14 @@ struct GameLibraryView: View {
                 } else {
                     LazyVGrid(columns: adaptiveGameColumns, spacing: 14) {
                         ForEach(filteredGames) { game in
-                            GameCoverCard(game: game) {
+                            let app = sunshine.app(titled: game.title)
+                            GameCoverCard(game: game, artwork: app.flatMap { sunshine.artwork[$0.id] }, isRunning: app != nil && app?.id == sunshine.info?.currentGame) {
                                 OrbitHaptics.press()
                                 Task { await vm.smartLaunch(game: game) }
                             }
                             .disabled(!vm.metrics.isOnline)
                             .opacity(vm.metrics.isOnline ? 1 : 0.55)
+                            .onAppear { if let app { sunshine.loadArtwork(for: app) } }
                         }
                     }
                 }
@@ -1081,30 +1110,65 @@ struct GameLibraryView: View {
             .padding(isEmbeddedInDuo ? 12 : 18)
             .frame(maxWidth: .infinity)
         }
-        .refreshable { await vm.fetchSunshineApps() }
+        .refreshable { await vm.fetchSunshineApps(); await sunshine.refresh() }
     }
 
-    private var streamingHeader: some View {
-        HStack(spacing: 12) {
-            OrbitIconBadge(systemName: "play.tv.fill", tint: theme.accent, size: 40, filled: true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(vm.games.count) app\(vm.games.count == 1 ? "" : "s") on \(vm.selectedPCName)")
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                Text(vm.autoOpenMoonlight ? "Moonlight opens automatically after launch" : "Launch on PC, then stream with Moonlight")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    private var sunshineTint: Color {
+        switch sunshine.statusTone {
+        case .good: return .mint
+        case .active: return theme.accent
+        case .warning: return .orange
+        case .neutral: return .secondary
+        }
+    }
+
+    /// Sunshine host card: pairing state, running session and the Moonlight hand-off.
+    private var sunshineCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                OrbitIconBadge(systemName: "sun.max.fill", tint: theme.accent, size: 40, filled: sunshine.isPaired)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Sunshine · \(vm.selectedPCName)")
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        OrbitStatusPill(text: sunshine.statusText, tint: sunshineTint, pulsing: sunshine.isBusy)
+                        if !sunshine.isPaired, sunshine.reachable, let info = sunshine.info, !info.appVersion.isEmpty {
+                            OrbitStatChip(label: "Host", value: info.hostname.isEmpty ? sunshine.address : info.hostname)
+                        }
+                    }
+                }
+                Spacer(minLength: 6)
+                if sunshine.isPaired {
+                    if sunshine.isBusy {
+                        Button {
+                            OrbitHaptics.warning()
+                            Task { await sunshine.quitRunningApp() }
+                        } label: {
+                            Label("Quit", systemImage: "stop.fill").font(.caption.weight(.bold))
+                        }
+                        .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 20))
+                    } else if sunshine.isRefreshing {
+                        ProgressView().tint(theme.accent)
+                    }
+                } else {
+                    Button {
+                        OrbitHaptics.tap()
+                        showsPairing = true
+                    } label: {
+                        Label("Pair", systemImage: "link").font(.caption.weight(.bold))
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
+                    .disabled(!sunshine.reachable)
+                }
             }
-            Spacer(minLength: 6)
-            Button {
-                OrbitHaptics.tap()
-                vm.openNativeMoonlight()
-            } label: {
-                Label("Moonlight", systemImage: "arrow.up.forward.app")
-                    .font(.caption.weight(.bold))
+            Text(sunshine.summary(pcName: vm.selectedPCName))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = sunshine.lastError, !sunshine.isPairing {
+                Text(error).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
         }
         .padding(14)
         .liquidGlass(cornerRadius: 20, tint: theme.accent)
@@ -1113,33 +1177,51 @@ struct GameLibraryView: View {
 
 struct GameCoverCard: View {
     let game: SunshineGame
+    var artwork: Data? = nil
+    var isRunning = false
     let onLaunch: () -> Void
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+    @Environment(\.orbitTheme) private var theme
 
-    private var accent: Color { Color(hex: game.accentHex) }
+    private var accent: Color { theme.isFlat ? theme.accent : Color(hex: game.accentHex) }
 
     var body: some View {
         Button(action: onLaunch) {
             VStack(alignment: .leading, spacing: 0) {
                 ZStack(alignment: .bottomTrailing) {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [accent.opacity(0.55), accent.opacity(0.16), Color.black.opacity(0.25)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Circle()
-                        .fill(accent.opacity(0.35))
-                        .frame(width: 120, height: 120)
-                        .blur(radius: 30)
-                        .offset(x: 30, y: 30)
-                    Image(systemName: game.iconSymbol)
-                        .font(.system(size: 38, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .shadow(color: reduceGlow ? .clear : accent.opacity(0.8), radius: 14)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .fill(theme.isFlat ? AnyShapeStyle(Color.white.opacity(0.06)) : AnyShapeStyle(LinearGradient(
+                            colors: [accent.opacity(0.55), accent.opacity(0.16), Color.black.opacity(0.25)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )))
+                    if artwork != nil {
+                        MoonlightArtwork(data: artwork)
+                    } else {
+                        if !theme.isFlat {
+                            Circle()
+                                .fill(accent.opacity(0.35))
+                                .frame(width: 120, height: 120)
+                                .blur(radius: 30)
+                                .offset(x: 30, y: 30)
+                        }
+                        Image(systemName: game.iconSymbol)
+                            .font(.system(size: 38, weight: .semibold))
+                            .foregroundStyle(theme.isFlat ? Color.white.opacity(0.9) : .white)
+                            .shadow(color: reduceGlow || theme.isFlat ? .clear : accent.opacity(0.8), radius: 14)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    if isRunning {
+                        Text("RUNNING")
+                            .font(.system(size: 9, weight: .bold))
+                            .tracking(0.8)
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(accent, in: Capsule())
+                            .padding(10)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                     Image(systemName: "play.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.black.opacity(0.85))
@@ -1340,7 +1422,7 @@ struct QuickRemoteView: View {
     @State private var touchPoint: CGPoint?
     @State private var isDragging = false
     @State private var showsGamepad = false
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.remote.sensitivity") private var sensitivity = 2.0
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @FocusState private var keyboardFocused: Bool
@@ -1494,7 +1576,7 @@ struct QuickRemoteView: View {
                         .fill(theme.accent.opacity(0.22))
                         .frame(width: 46, height: 46)
                         .overlay(Circle().strokeBorder(theme.accent.opacity(0.6), lineWidth: 1))
-                        .shadow(color: reduceGlow ? .clear : theme.accent.opacity(0.6), radius: 14)
+                        .shadow(color: reduceGlow || theme.isFlat ? .clear : theme.accent.opacity(0.6), radius: 14)
                         .position(touchPoint)
                         .allowsHitTesting(false)
                         .transition(.scale.combined(with: .opacity))
@@ -1574,7 +1656,7 @@ struct QuickRemoteView: View {
                     sensitivity = value
                 } label: {
                     Text(label)
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .font(.system(size: 11, weight: .bold))
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(selected ? theme.accent.opacity(0.22) : .white.opacity(0.05), in: Capsule())
@@ -1751,7 +1833,7 @@ struct QuickRemoteView: View {
                 if let icon {
                     Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundStyle(tint ?? theme.accent)
                 } else if let label {
-                    Text(label).font(.system(size: 15, weight: .heavy, design: .rounded)).foregroundStyle(tint ?? theme.accent)
+                    Text(label).font(.system(size: 15, weight: .heavy)).foregroundStyle(tint ?? theme.accent)
                 }
             }
             .frame(width: 44, height: 44)
@@ -1771,7 +1853,7 @@ struct QuickRemoteView: View {
                     .foregroundStyle(tint ?? .white)
                     .frame(height: 18)
                 Text(title)
-                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+                    .font(.system(.caption2, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                     .foregroundStyle(.white.opacity(0.85))
@@ -1836,6 +1918,8 @@ struct SmartLaunchOverlay: View {
     }
 }
 
+/// Desktop preview: JPEG frames from the agent's `/ws/stream` socket. Game video with
+/// audio and controller input stays in Moonlight; this is for a quick look at the desktop.
 struct MoonlightStreamView: View {
     @ObservedObject var vm: OrbitViewModel
     @Environment(\.orbitTheme) private var theme
@@ -1843,57 +1927,36 @@ struct MoonlightStreamView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                VStack(spacing: 18) {
-                    ZStack {
-                        Circle()
-                            .fill(theme.accent.opacity(0.14))
-                            .frame(width: 96, height: 96)
-                        Circle()
-                            .strokeBorder(theme.heroGradient, lineWidth: 1.5)
-                            .frame(width: 96, height: 96)
-                        Image(systemName: "play.tv.fill")
-                            .font(.system(size: 38, weight: .semibold))
-                            .foregroundStyle(theme.heroGradient)
+                theme.background.ignoresSafeArea()
+                if let frame = vm.liveFrameImage {
+                    Image(uiImage: frame)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel("Live desktop of \(vm.selectedPCName)")
+                } else if let error = vm.streamError {
+                    OrbitEmptyState(icon: "exclamationmark.triangle", title: "Preview interrupted", message: error, tint: .orange,
+                                    actionTitle: "Retry") { vm.startLiveScreenFeed() }
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(theme.accent)
+                        Text("Connecting to \(vm.selectedPCName)…").font(.callout).foregroundStyle(.secondary)
                     }
-
-                    Text("COMING SOON")
-                        .font(.caption.weight(.bold))
-                        .tracking(1.4)
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(theme.accent, in: Capsule())
-
-                    Text("Live PC Video Streaming")
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
-
-                    Text("Low-latency live desktop and game video streaming directly inside Orbit for iPhone, iPad, and Apple TV is currently in development and will arrive in an upcoming update.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
-                        .padding(.horizontal, 20)
-
-                    Button {
-                        vm.openNativeMoonlight()
-                    } label: {
-                        Label("Open Moonlight", systemImage: "arrow.up.forward.app")
-                    }
-                    .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
-                    .frame(maxWidth: 260)
-                    .padding(.top, 6)
                 }
-                .padding(28)
             }
-            .navigationTitle("Live Stream")
+            .navigationTitle("Desktop Preview")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close", systemImage: "xmark") { vm.stopStreaming(putPCToSleep: false) }
                 }
+                ToolbarItem(placement: .bottomBar) {
+                    Text("Snapshots only, no audio. For games open Moonlight.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .onAppear { vm.startLiveScreenFeed() }
         }
         .orbitAppearance()
         .preferredColorScheme(.dark)
@@ -2293,9 +2356,9 @@ struct OnboardingView: View {
     @Environment(\.orbitTheme) private var theme
 
     private let introPages: [(icon: String, title: String, text: String, tint: Color)] = [
-        ("gauge.with.dots.needle.67percent", "Your PC,\nwithin reach.", "Live CPU, GPU, memory, power and FPS telemetry on iPhone, iPad, Apple Watch, Apple TV and the Dynamic Island.", .cyan),
-        ("computermouse.fill", "Control the whole desk.", "Trackpad, keyboard, media keys, per-app audio mixer, file transfers and a remote task manager.", .mint),
-        ("lock.shield.fill", "Private by design.", "Everything stays on your local network. Pairing uses a one-time 6-digit code, TLS 1.3 and certificate pinning. No cloud, no accounts.", .purple)
+        ("gauge.with.dots.needle.67percent", "Your PC,\nwithin reach.", "Live CPU, GPU, memory, power and FPS telemetry on iPhone, iPad, Apple Watch, Apple TV and the Dynamic Island.", OrbitTheme.noir.accent),
+        ("computermouse.fill", "Control the whole desk.", "Trackpad, keyboard, media keys, per-app audio mixer, file transfers and a remote task manager.", OrbitTheme.noir.accent),
+        ("lock.shield.fill", "Private by design.", "Everything stays on your local network. Pairing uses a one-time 6-digit code, TLS 1.3 and certificate pinning. No cloud, no accounts.", OrbitTheme.noir.accent)
     ]
 
     private var lastIntroPage: Int { introPages.count - 1 }
@@ -2368,7 +2431,7 @@ struct OnboardingView: View {
             }
             VStack(spacing: 12) {
                 Text(item.title)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(.system(size: 34, weight: .bold))
                     .multilineTextAlignment(.center)
                 Text(item.text)
                     .font(.subheadline)
@@ -2414,7 +2477,7 @@ struct OnboardingView: View {
                     OrbitMark(size: 56)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Connect your PC")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .font(.system(size: 26, weight: .bold))
                         Text("Two steps, about a minute.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -2480,7 +2543,7 @@ struct OnboardingView: View {
 
             Divider().overlay(.white.opacity(0.12))
 
-            stepLabel(2, "Pair with the 6-digit code", tint: .mint)
+            stepLabel(2, "Pair with the 6-digit code", tint: theme.accent)
             Text("Keep Orbit Companion running on Windows, then tap Find my PC. The code appears on your PC screen.")
                 .font(.caption).foregroundStyle(.secondary)
 
@@ -2490,7 +2553,7 @@ struct OnboardingView: View {
             } label: {
                 Label("Find my PC", systemImage: "dot.radiowaves.left.and.right")
             }
-            .buttonStyle(OrbitProminentButtonStyle(colors: [.mint, Color(red: 0.36, green: 0.80, blue: 0.98)]))
+            .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
 
             if connectionPassed {
                 Label("Paired securely · \(vm.selectedPCName)", systemImage: "checkmark.shield.fill")
@@ -2550,7 +2613,7 @@ struct OnboardingView: View {
     private func stepLabel(_ number: Int, _ title: String, tint: Color) -> some View {
         HStack(spacing: 10) {
             Text("\(number)")
-                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                .font(.system(size: 12, weight: .heavy))
                 .foregroundStyle(.black.opacity(0.85))
                 .frame(width: 22, height: 22)
                 .background(tint, in: Circle())

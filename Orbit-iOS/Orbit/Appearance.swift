@@ -10,8 +10,8 @@ enum OrbitVisualStyle: String, CaseIterable, Identifiable {
 }
 
 enum OrbitTheme: String, CaseIterable, Identifiable {
-    // Free themes
-    case ocean, aurora, violet, ember, graphite
+    // Free themes. Noir is the default: pure black, one accent, no decoration.
+    case noir, ocean, aurora, violet, ember, graphite
     // Orbit Pro themes
     case cyberpunk, solarGold, crimson, matrix, arctic, sakura
 
@@ -19,6 +19,7 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .noir: "Noir"
         case .ocean: "Ocean"
         case .aurora: "Aurora"
         case .violet: "Violet"
@@ -35,7 +36,7 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 
     var isPro: Bool {
         switch self {
-        case .ocean, .aurora, .violet, .ember, .graphite: false
+        case .noir, .ocean, .aurora, .violet, .ember, .graphite: false
         case .cyberpunk, .solarGold, .crimson, .matrix, .arctic, .sakura: true
         }
     }
@@ -45,6 +46,7 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 
     var accent: Color {
         switch self {
+        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
         case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
         case .aurora: Color(red: 0.45, green: 0.92, blue: 0.73)
         case .violet: Color(red: 0.76, green: 0.66, blue: 1)
@@ -61,6 +63,7 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 
     var background: Color {
         switch self {
+        case .noir: .black
         case .ocean: Color(red: 0.025, green: 0.045, blue: 0.075)
         case .aurora: Color(red: 0.025, green: 0.055, blue: 0.045)
         case .violet: Color(red: 0.045, green: 0.03, blue: 0.075)
@@ -77,6 +80,7 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 
     var surface: Color {
         switch self {
+        case .noir: Color(red: 0.063, green: 0.063, blue: 0.07)
         case .ocean: Color(red: 0.075, green: 0.10, blue: 0.145)
         case .aurora: Color(red: 0.065, green: 0.115, blue: 0.095)
         case .violet: Color(red: 0.11, green: 0.085, blue: 0.16)
@@ -90,6 +94,11 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
         case .sakura: Color(red: 0.135, green: 0.075, blue: 0.12)
         }
     }
+
+    /// Noir draws flat surfaces with a visible hairline, no ambient glow, no gradients
+    /// and one accent for every metric. Primitives read this to drop their decoration.
+    var isFlat: Bool { self == .noir }
+    var hairline: Color { isFlat ? .white.opacity(0.14) : .white.opacity(0.10) }
 
     /// sRGB hex (without #) of the accent, shared with Apple Watch so the wrist
     /// app can follow the iPhone theme.
@@ -299,7 +308,7 @@ final class OrbitProStore: ObservableObject {
 // MARK: - Appearance environment
 
 struct OrbitAppearanceModifier: ViewModifier {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     func body(content: Content) -> some View {
         content.tint(theme.accent).preferredColorScheme(.dark)
@@ -308,8 +317,8 @@ struct OrbitAppearanceModifier: ViewModifier {
             .environment(\.orbitImprovedStyle, style == .improved)
     }
 }
-private struct OrbitAccentKey: EnvironmentKey { static let defaultValue = OrbitTheme.ocean.accent }
-private struct OrbitThemeKey: EnvironmentKey { static let defaultValue = OrbitTheme.ocean }
+private struct OrbitAccentKey: EnvironmentKey { static let defaultValue = OrbitTheme.noir.accent }
+private struct OrbitThemeKey: EnvironmentKey { static let defaultValue = OrbitTheme.noir }
 private struct OrbitImprovedKey: EnvironmentKey { static let defaultValue = true }
 extension EnvironmentValues {
     var orbitAccent: Color { get { self[OrbitAccentKey.self] } set { self[OrbitAccentKey.self] = newValue } }
@@ -321,7 +330,7 @@ extension View { func orbitAppearance() -> some View { modifier(OrbitAppearanceM
 // MARK: - Appearance settings
 
 struct AppearanceSettingsView: View {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     @AppStorage("orbit.monochromeMetrics") private var monochromeMetrics = false
     @AppStorage("orbit.reduceGlow") private var reduceGlow = false
@@ -347,7 +356,7 @@ struct AppearanceSettingsView: View {
             } header: {
                 Text("Themes")
             } footer: {
-                Text("Themes recolour the app and your Apple Watch. Widgets and the Live Activity have their own colour pickers.")
+                Text("Noir keeps a black background and a single accent colour. Widgets and the Live Activity have their own colour pickers.")
             }
             .orbitRow()
 
@@ -355,13 +364,7 @@ struct AppearanceSettingsView: View {
                 themeStrip(OrbitTheme.proThemes)
                     .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8))
             } header: {
-                HStack {
-                    Text("Orbit Pro Themes")
-                    Spacer()
-                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.mint)
-                }
+                Text("More themes")
             }
             .orbitRow(tint: .yellow)
 
@@ -392,13 +395,7 @@ struct AppearanceSettingsView: View {
                         .foregroundStyle(.orange)
                 }
             } header: {
-                HStack {
-                    Text("Home Screen Icon")
-                    Spacer()
-                    Label("Unlocked for Testing", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.mint)
-                }
+                Text("Home Screen Icon")
             }
             .orbitRow()
 
@@ -696,7 +693,7 @@ struct OrbitProPaywallView: View {
                             .padding(.top, 8)
 
                             Text("Orbit Pro")
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .font(.system(size: 30, weight: .bold))
                                 .foregroundStyle(.white)
 
                             Text("Coming Soon · Exclusive themes, icons & advanced packs")
@@ -844,13 +841,13 @@ struct LiveActivitySettingsView: View {
     @ObservedObject var vm: OrbitViewModel
     @AppStorage("orbit.activity.style") private var style = "standard"
     @AppStorage("orbit.activity.primaryMetric") private var primaryMetric = "automatic"
-    @AppStorage("orbit.activity.accent") private var accent = "ocean"
+    @AppStorage("orbit.activity.accent") private var accent = "noir"
     @AppStorage("orbit.activity.interval") private var interval = 5
     @AppStorage("orbit.activity.showGame") private var showGame = true
     @AppStorage("orbit.activity.showTimestamp") private var showTimestamp = true
     @Environment(\.orbitTheme) private var theme
 
-    private var activityTheme: OrbitTheme { OrbitTheme(rawValue: accent) ?? .ocean }
+    private var activityTheme: OrbitTheme { OrbitTheme(rawValue: accent) ?? .noir }
 
     var body: some View {
         Form {
@@ -977,7 +974,7 @@ struct LiveActivitySettingsView: View {
                     .foregroundStyle(tint)
                 Capsule().fill(.black).frame(width: 70, height: 22)
                 Text(badge)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(tint)
             }

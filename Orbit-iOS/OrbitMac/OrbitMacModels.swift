@@ -283,6 +283,17 @@ struct MacSunshineGame: Codable, Identifiable, Hashable {
     var isFavorite: Bool = false
 }
 
+/// `/api/sunshine/info` (agent 4.2+): Sunshine's ports on the PC.
+struct MacSunshineInfo: Codable, Equatable {
+    var installed: Bool
+    var running: Bool
+    var httpPort: Int
+    var httpsPort: Int
+    var webUIPort: Int
+    var name: String
+    var appCount: Int
+}
+
 struct MacAudioSession: Codable, Identifiable, Hashable {
     let id: String
     let pid: Int

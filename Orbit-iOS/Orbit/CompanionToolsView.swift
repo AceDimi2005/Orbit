@@ -7,7 +7,7 @@ struct CompanionToolsView: View {
     @State private var showsSettings = false
     @State private var showsDiscovery = false
     @State private var showsProPaywall = false
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 165, maximum: 340), spacing: 12)]
@@ -19,16 +19,7 @@ struct CompanionToolsView: View {
                 OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 14) {
-                                pcSwitcherCard
-                                orbitProCard
-                            }
-                            VStack(spacing: 14) {
-                                pcSwitcherCard
-                                orbitProCard
-                            }
-                        }
+                        pcSwitcherCard
 
                         OrbitSectionHeader("PC Control", icon: "slider.horizontal.3")
                         LazyVGrid(columns: columns, spacing: 12) {
@@ -134,7 +125,7 @@ struct CompanionToolsView: View {
                         Button {
                             showsProPaywall = true
                         } label: {
-                            Label("Orbit Pro · Coming Soon", systemImage: "crown.fill")
+                            Label("Orbit Pro", systemImage: "crown.fill")
                         }
 
                         Button {
@@ -258,7 +249,7 @@ struct CompanionToolsView: View {
                 Spacer()
                 if let badge {
                     Text(badge)
-                        .font(.system(size: 9, weight: .heavy, design: .rounded))
+                        .font(.system(size: 9, weight: .heavy))
                         .tracking(0.8)
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 7)
@@ -289,7 +280,7 @@ struct CompanionToolsView: View {
 struct AppleWatchCompanionHelpView: View {
     @ObservedObject var vm: OrbitViewModel
     @ObservedObject private var watchBridge = OrbitWatchBridge.shared
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
 
     var body: some View {
         ZStack {
@@ -415,7 +406,7 @@ struct AppleWatchCompanionHelpView: View {
                 ForEach(Array(points.enumerated()), id: \.offset) { index, point in
                     HStack(alignment: .top, spacing: 10) {
                         Text("\(index + 1)")
-                            .font(.system(size: 10, weight: .heavy, design: .rounded))
+                            .font(.system(size: 10, weight: .heavy))
                             .foregroundStyle(tint)
                             .frame(width: 18, height: 18)
                             .background(tint.opacity(0.14), in: Circle())
