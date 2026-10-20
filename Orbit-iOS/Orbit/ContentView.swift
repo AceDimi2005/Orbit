@@ -1,9 +1,19 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @StateObject private var vm = OrbitViewModel()
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+        appearance.backgroundEffect = UIBlurEffect(style: .systemUltraThinMaterialDark)
+        appearance.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -23,13 +33,14 @@ struct ContentView: View {
                 .tabItem { Label("Tools", systemImage: "square.stack.3d.up.fill") }
                 .tag(3)
         }
-        .orbitAppearance()
-        .preferredColorScheme(.dark)
+        .onChange(of: selectedTab) { _, _ in OrbitHaptics.selection() }
         .overlay {
             if vm.smartLaunchStep != .idle {
                 SmartLaunchOverlay(vm: vm)
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: vm.smartLaunchStep)
         .fullScreenCover(isPresented: $vm.isShowingStreamView) {
             MoonlightStreamView(vm: vm)
         }
@@ -67,6 +78,9 @@ struct ContentView: View {
             default: selectedTab = 0
             }
         }
+        // Applied last so presented sheets, covers and overlays inherit the theme environment.
+        .orbitAppearance()
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -78,9 +92,12 @@ struct DashboardView: View {
     @State private var isShowingCustomization = false
     @State private var isShowingPCs = false
     @State private var isShowingDiscovery = false
+    @State private var wakePulse = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func adaptiveColumns(for availableWidth: CGFloat) -> [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
@@ -110,6 +127,8 @@ struct DashboardView: View {
                             .padding(.top, 8)
                             .padding(.bottom, 28)
                             .frame(maxWidth: .infinity)
+                            .animation(.snappy(duration: 0.35), value: vm.metrics.isOnline)
+                            .animation(.snappy(duration: 0.35), value: vm.metrics.activeGame)
                     }
                     .refreshable { await vm.refreshMetrics() }
                 }
@@ -118,10 +137,12 @@ struct DashboardView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
+                        OrbitHaptics.press()
                         vm.toggleDynamicIsland()
                     } label: {
                         Image(systemName: vm.isDynamicIslandActive ? "capsule.portrait.tophalf.filled" : "waveform.path.ecg")
                             .foregroundStyle(vm.isDynamicIslandActive ? .mint : .primary)
+                            .symbolEffect(.pulse, isActive: vm.isDynamicIslandActive)
                     }
                     .disabled(!vm.isDynamicIslandActive && !vm.metrics.isOnline)
                     .accessibilityLabel(vm.isDynamicIslandActive ? "Stop Live Activity" : "Start Live Activity")
@@ -201,6 +222,7 @@ struct DashboardView: View {
                 if let action = pendingAction {
                     Button(action.button, role: .destructive) {
                         pendingAction = nil
+                        OrbitHaptics.warning()
                         Task { await vm.sendPowerAction(action.rawValue) }
                     }
                 }
@@ -215,11 +237,11 @@ struct DashboardView: View {
     private func overviewColumn(width: CGFloat, isWide: Bool) -> some View {
         VStack(spacing: 16) {
             if vm.isDemoMode { previewNotice }
-            computerHeader
+            heroCard
             if vm.metrics.isOnline {
                 if vm.dashboardConfiguration.showsGame, let game = vm.metrics.activeGame { activeGameCard(game) }
                 if vm.metrics.telemetryAvailable == false {
-                    OrbitNotice(title: "Syncing sensors…", message: "Collecting initial readings from your PC.", icon: "waveform.path.ecg")
+                    OrbitNotice(title: "Syncing sensors…", message: "Collecting the first readings from your PC. Cards appear as soon as the agent reports them.", icon: "waveform.path.ecg", tint: theme.accent)
                 } else {
                     metricsGrid(width: width)
                 }
@@ -250,122 +272,174 @@ struct DashboardView: View {
                 vm.setDemoMode(false)
                 isShowingDiscovery = true
             }
+            .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 20))
             .font(.caption.weight(.bold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(.orange.opacity(0.2), in: Capsule())
-            .foregroundStyle(.orange)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .liquidGlass(cornerRadius: 16, tint: .orange)
     }
 
-    private var computerHeader: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill((vm.metrics.isOnline ? theme.accent : .secondary).opacity(0.14))
-                    .frame(width: 52, height: 52)
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(vm.metrics.isOnline ? theme.accent : .secondary)
-            }
+    // MARK: Hero
 
-            VStack(alignment: .leading, spacing: 4) {
-                Menu {
-                    ForEach(vm.savedPCs) { pc in
-                        Button {
-                            vm.selectPC(pc)
-                        } label: {
-                            Label(pc.name, systemImage: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
+    private var statusTint: Color {
+        if vm.isDemoMode { return .orange }
+        return vm.metrics.isOnline ? .mint : .orange
+    }
+
+    private var statusText: String {
+        if vm.isDemoMode { return "Demo" }
+        if vm.isWakingUp { return "Waking…" }
+        return vm.metrics.isOnline ? "Online" : "Offline"
+    }
+
+    private var heroCard: some View {
+        VStack(spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    OrbitRingGauge(
+                        progress: vm.metrics.isOnline && vm.metrics.telemetryAvailable != false ? vm.metrics.cpuUsage / 100 : nil,
+                        lineWidth: 5,
+                        tint: theme.accent
+                    )
+                    .frame(width: 58, height: 58)
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(vm.metrics.isOnline ? AnyShapeStyle(theme.heroGradient) : AnyShapeStyle(Color.secondary))
+                }
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Menu {
+                        ForEach(vm.savedPCs) { pc in
+                            Button {
+                                vm.selectPC(pc)
+                            } label: {
+                                Label(pc.name, systemImage: vm.selectedPCID == pc.id ? "checkmark.circle.fill" : "desktopcomputer")
+                            }
+                        }
+                        Divider()
+                        Button { isShowingDiscovery = true } label: {
+                            Label("Pair New PC…", systemImage: "plus.circle")
+                        }
+                        Button { isShowingPCs = true } label: {
+                            Label("Manage PCs…", systemImage: "list.bullet")
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.5))
                         }
                     }
-                    Divider()
-                    Button { isShowingDiscovery = true } label: {
-                        Label("Pair New PC…", systemImage: "plus.circle")
-                    }
-                    Button { isShowingPCs = true } label: {
-                        Label("Manage PCs…", systemImage: "list.bullet")
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.secondary)
+                    .accessibilityLabel(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
+                    .accessibilityHint("Switches the connected PC")
+
+                    HStack(spacing: 6) {
+                        OrbitStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
+                        if vm.metrics.isOnline && !vm.isDemoMode {
+                            OrbitStatChip(label: "Ping", value: "\(vm.pingMs) ms")
+                        }
+                        if vm.metrics.isOnline && vm.metrics.telemetryAvailable != false {
+                            OrbitStatChip(label: "Up", value: vm.metrics.formattedUptime)
+                        }
                     }
                 }
 
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(vm.metrics.isOnline ? Color.mint : .orange)
-                        .frame(width: 7, height: 7)
-                    Text(vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? "\(vm.pingMs) ms" : "Offline"))
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    if vm.metrics.isOnline && vm.metrics.telemetryAvailable != false {
-                        Text("· \(vm.metrics.formattedUptime)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+
+                VStack(spacing: 8) {
+                    heroIconButton(
+                        icon: vm.isDynamicIslandActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait",
+                        tint: vm.isDynamicIslandActive ? .mint : theme.accent,
+                        active: vm.isDynamicIslandActive,
+                        label: vm.isDynamicIslandActive ? "Stop Live Activity" : "Start Live Activity"
+                    ) {
+                        OrbitHaptics.press()
+                        vm.toggleDynamicIsland()
+                    }
+                    .disabled(!vm.isDynamicIslandActive && !vm.metrics.isOnline)
+                    .opacity(!vm.isDynamicIslandActive && !vm.metrics.isOnline ? 0.4 : 1)
+
+                    heroIconButton(icon: "slider.horizontal.3", tint: theme.accent, active: false, label: "Customize cards") {
+                        isShowingCustomization = true
                     }
                 }
             }
 
-            Spacer(minLength: 4)
-
-            if vm.metrics.isOnline {
-                Button {
-                    isShowingCustomization = true
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                        .background(.white.opacity(0.07), in: Circle())
-                        .foregroundStyle(theme.accent)
+            if vm.metrics.isOnline && !vm.isDemoMode {
+                HStack(spacing: 8) {
+                    OrbitStatChip(label: "Link", value: vm.hasSecureConnection ? "Encrypted" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open")
+                    if let version = vm.metrics.agentVersion {
+                        OrbitStatChip(label: "Agent", value: version)
+                    }
+                    if let source = vm.metrics.sensorSource, !source.isEmpty {
+                        OrbitStatChip(label: "Sensors", value: source)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Customize cards")
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             }
         }
         .padding(16)
-        .liquidGlass(cornerRadius: 22, tint: theme.accent)
+        .liquidGlass(cornerRadius: 24, tint: theme.accent, elevated: true)
     }
+
+    private func heroIconButton(icon: String, tint: Color, active: Bool, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 38, height: 38)
+                .background(active ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Color.white.opacity(0.07)), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(active ? 0.25 : 0.08), lineWidth: 1))
+                .foregroundStyle(active ? Color.black.opacity(0.85) : tint)
+        }
+        .buttonStyle(.orbitPressable)
+        .accessibilityLabel(label)
+    }
+
+    // MARK: Metrics
 
     @ViewBuilder
     private func metricsGrid(width: CGFloat) -> some View {
         if vm.dashboardConfiguration.orderedVisibleMetrics.isEmpty {
             Button { isShowingCustomization = true } label: {
-                OrbitNotice(title: "No cards selected", message: "Tap to choose hardware metrics.", icon: "slider.horizontal.3")
+                OrbitNotice(title: "No cards selected", message: "Tap to choose which hardware metrics appear here.", icon: "slider.horizontal.3", tint: theme.accent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.orbitPressable)
         } else {
             LazyVGrid(columns: adaptiveColumns(for: width), spacing: 12) {
                 ForEach(vm.dashboardConfiguration.orderedVisibleMetrics) { metric in
                     metricCard(metric)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
             }
+            .animation(.snappy(duration: 0.3), value: vm.dashboardConfiguration.orderedVisibleMetrics)
         }
     }
 
     @ViewBuilder
     private func metricCard(_ metric: DashboardMetric) -> some View {
+        let series = vm.history.series(for: metric)
         switch metric {
         case .cpuLoad:
             HardwareMetricCard(
                 title: metric.title, subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
                 valueText: percent(vm.metrics.cpuUsage), progress: vm.metrics.cpuUsage / 100,
                 icon: metric.symbol, accent: metric.accent,
-                detail: vm.metrics.cpuTemp.map { "\(Int($0))°C" }
+                detail: cpuDetail, history: series, showsRing: true
             )
         case .gpuLoad:
             HardwareMetricCard(
                 title: metric.title, subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
                 valueText: vm.metrics.gpuUsage.map(percent) ?? "—", progress: vm.metrics.gpuUsage.map { $0 / 100 },
-                icon: metric.symbol, accent: metric.accent, detail: gpuDetail
+                icon: metric.symbol, accent: metric.accent, detail: gpuDetail, history: series, showsRing: true
             )
         case .memory:
             HardwareMetricCard(
@@ -373,7 +447,8 @@ struct DashboardView: View {
                 valueText: vm.metrics.ramTotalGB > 0 ? "\(decimal(vm.metrics.ramUsedGB)) GB" : "—",
                 progress: vm.metrics.ramTotalGB > 0 ? vm.metrics.ramUsedGB / vm.metrics.ramTotalGB : nil,
                 icon: metric.symbol, accent: metric.accent,
-                detail: vm.metrics.ramTotalGB > 0 ? "of \(decimal(vm.metrics.ramTotalGB, digits: 0)) GB" : nil
+                detail: vm.metrics.ramTotalGB > 0 ? "of \(decimal(vm.metrics.ramTotalGB, digits: 0)) GB · \(percent(vm.metrics.ramUsedGB / vm.metrics.ramTotalGB * 100))" : nil,
+                history: series, showsRing: true
             )
         case .storage:
             HardwareMetricCard(
@@ -381,35 +456,36 @@ struct DashboardView: View {
                 valueText: vm.metrics.ssdTotalTB > 0 ? "\(decimal(vm.metrics.ssdUsedTB, digits: 2)) TB" : "—",
                 progress: vm.metrics.ssdTotalTB > 0 ? vm.metrics.ssdUsedTB / vm.metrics.ssdTotalTB : nil,
                 icon: metric.symbol, accent: metric.accent,
-                detail: vm.metrics.ssdTotalTB > 0 ? "of \(decimal(vm.metrics.ssdTotalTB, digits: 2)) TB" : nil
+                detail: vm.metrics.ssdTotalTB > 0 ? "of \(decimal(vm.metrics.ssdTotalTB, digits: 2)) TB · \(decimal(max(0, vm.metrics.ssdTotalTB - vm.metrics.ssdUsedTB), digits: 2)) TB free" : nil,
+                showsRing: true
             )
         case .vram:
             HardwareMetricCard(
                 title: metric.title, subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
                 valueText: vm.metrics.vramUsedGB.map { "\(decimal($0)) GB" } ?? "—",
                 progress: vramProgress, icon: metric.symbol, accent: metric.accent,
-                detail: vramDetail
+                detail: vramDetail, history: series, showsRing: true
             )
         case .cpuPower:
             sensorCard(metric, value: vm.metrics.cpuPowerWatts, unit: "W",
                        subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
                        detail: "Package power",
-                       progress: vm.metrics.cpuPowerWatts.map { min(max($0 / 200.0, 0.04), 1) })
+                       progress: vm.metrics.cpuPowerWatts.map { min(max($0 / 200.0, 0.04), 1) }, history: series)
         case .gpuPower:
             sensorCard(metric, value: vm.metrics.gpuPowerWatts, unit: "W",
                        subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
                        detail: "Board power",
-                       progress: vm.metrics.gpuPowerWatts.map { min(max($0 / 400.0, 0.04), 1) })
+                       progress: vm.metrics.gpuPowerWatts.map { min(max($0 / 400.0, 0.04), 1) }, history: series)
         case .cpuTemperature:
             sensorCard(metric, value: vm.metrics.cpuTemp, unit: "°C",
                        subtitle: vm.componentName("cpu", detected: vm.metrics.cpuName),
-                       detail: "Core sensor",
-                       progress: vm.metrics.cpuTemp.map { min(max(($0 - 25.0) / 70.0, 0.05), 1) })
+                       detail: vm.metrics.sensorSource ?? "Core sensor",
+                       progress: vm.metrics.cpuTemp.map { min(max(($0 - 25.0) / 70.0, 0.05), 1) }, history: series)
         case .gpuTemperature:
             sensorCard(metric, value: vm.metrics.gpuTemp, unit: "°C",
                        subtitle: vm.componentName("gpu", detected: vm.metrics.gpuName),
-                       detail: "GPU thermal",
-                       progress: vm.metrics.gpuTemp.map { min(max(($0 - 25.0) / 70.0, 0.05), 1) })
+                       detail: vm.metrics.gpuSource ?? "GPU thermal",
+                       progress: vm.metrics.gpuTemp.map { min(max(($0 - 25.0) / 70.0, 0.05), 1) }, history: series)
         case .coolantTemperature:
             sensorCard(metric, value: vm.metrics.liquidTemp, unit: "°C",
                        subtitle: vm.componentName("cooler", detected: vm.metrics.coolerName),
@@ -420,27 +496,28 @@ struct DashboardView: View {
                                valueText: vm.metrics.cpuClockMHz.map { "\(decimal($0 / 1000, digits: 2)) GHz" } ?? "—",
                                progress: vm.metrics.cpuClockMHz.map { min(max($0 / 5800.0, 0.1), 1) },
                                icon: metric.symbol, accent: metric.accent,
-                               detail: vm.metrics.cpuClockSource)
+                               detail: vm.metrics.cpuClockSource, history: series)
         case .network:
             HardwareMetricCard(title: metric.title, subtitle: vm.metrics.networkInterface ?? "Network",
                                valueText: transferRate(vm.metrics.networkDownloadMBps), progress: nil,
                                icon: metric.symbol, accent: metric.accent,
-                               detail: vm.metrics.networkUploadMBps.map { "↑ \(transferRate($0))" })
+                               detail: vm.metrics.networkUploadMBps.map { "↑ \(transferRate($0))" }, history: series)
         case .diskActivity:
             HardwareMetricCard(title: metric.title, subtitle: "Disk Throughput",
                                valueText: transferRate(vm.metrics.diskReadMBps), progress: nil,
                                icon: metric.symbol, accent: metric.accent,
-                               detail: vm.metrics.diskWriteMBps.map { "W: \(transferRate($0))" })
+                               detail: vm.metrics.diskWriteMBps.map { "Write \(transferRate($0))" }, history: series)
         case .uptime:
             HardwareMetricCard(title: metric.title, subtitle: "Active session",
                                valueText: vm.metrics.formattedUptime, progress: nil,
-                               icon: metric.symbol, accent: metric.accent, detail: nil)
+                               icon: metric.symbol, accent: metric.accent,
+                               detail: vm.lastUpdated.map { "Updated \($0.formatted(date: .omitted, time: .shortened))" })
         case .fps:
             HardwareMetricCard(title: metric.title, subtitle: vm.metrics.activeGame ?? "No active game",
                                valueText: vm.metrics.fps.map { "\(Int($0.rounded())) FPS" } ?? "—",
                                progress: vm.metrics.fps.map { min(max($0 / 165.0, 0.05), 1) },
                                icon: metric.symbol, accent: metric.accent,
-                               detail: vm.metrics.fpsSource)
+                               detail: fpsDetail, history: series)
         case .cpuFan:
             sensorCard(metric, value: vm.metrics.cpuFanRPM, unit: "RPM", subtitle: "CPU Cooler", detail: nil,
                        progress: vm.metrics.cpuFanRPM.map { min(max($0 / 2400.0, 0.05), 1) })
@@ -450,7 +527,7 @@ struct DashboardView: View {
         }
     }
 
-    private func sensorCard(_ metric: DashboardMetric, value: Double?, unit: String, subtitle: String, detail: String?, progress: Double? = nil) -> some View {
+    private func sensorCard(_ metric: DashboardMetric, value: Double?, unit: String, subtitle: String, detail: String?, progress: Double? = nil, history: [Double] = []) -> some View {
         HardwareMetricCard(
             title: metric.title,
             subtitle: subtitle,
@@ -458,7 +535,8 @@ struct DashboardView: View {
             progress: progress,
             icon: metric.symbol,
             accent: metric.accent,
-            detail: value == nil ? nil : detail
+            detail: value == nil ? nil : detail,
+            history: history
         )
     }
 
@@ -468,8 +546,8 @@ struct DashboardView: View {
     }
 
     private var vramDetail: String? {
-        guard vm.metrics.vramUsedGB != nil else { return nil }
-        if let total = vm.metrics.vramTotalGB, total > 0 { return "of \(decimal(total)) GB" }
+        guard let used = vm.metrics.vramUsedGB else { return nil }
+        if let total = vm.metrics.vramTotalGB, total > 0 { return "of \(decimal(total)) GB · \(percent(used / total * 100))" }
         return nil
     }
 
@@ -480,24 +558,33 @@ struct DashboardView: View {
         return "\(decimal(value * 1_000_000, digits: 0)) B/s"
     }
 
+    private var cpuDetail: String? {
+        var parts: [String] = []
+        if let temperature = vm.metrics.cpuTemp { parts.append("\(Int(temperature))°C") }
+        if let clock = vm.metrics.cpuClockMHz { parts.append("\(decimal(clock / 1000, digits: 2)) GHz") }
+        if let watts = vm.metrics.cpuPowerWatts { parts.append("\(Int(watts)) W") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private var gpuDetail: String? {
         var parts: [String] = []
         if let temperature = vm.metrics.gpuTemp { parts.append("\(Int(temperature))°C") }
         if let watts = vm.metrics.gpuPowerWatts { parts.append("\(Int(watts)) W") }
+        if let fan = vm.metrics.gpuFanPercent { parts.append("Fan \(Int(fan))%") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var fpsDetail: String? {
+        guard let fps = vm.metrics.fps, fps > 0 else { return vm.metrics.fpsSource }
+        let frametime = decimal(1000 / fps, digits: 1)
+        if let source = vm.metrics.fpsSource { return "\(frametime) ms · \(source)" }
+        return "\(frametime) ms frametime"
     }
 
     private func activeGameCard(_ title: String) -> some View {
         HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.mint.opacity(0.16))
-                    .frame(width: 38, height: 38)
-                Image(systemName: "gamecontroller.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.mint)
-            }
-            VStack(alignment: .leading, spacing: 2) {
+            OrbitIconBadge(systemName: "gamecontroller.fill", tint: .mint, size: 40, filled: true)
+            VStack(alignment: .leading, spacing: 3) {
                 Text("PLAYING NOW")
                     .font(.system(size: 10, weight: .bold))
                     .tracking(1.1)
@@ -505,16 +592,35 @@ struct DashboardView: View {
                 Text(title)
                     .font(.subheadline.weight(.bold))
                     .lineLimit(1)
+                if let fps = vm.metrics.fps, fps > 0 {
+                    Text("\(decimal(1000 / fps, digits: 1)) ms frametime\(vm.metrics.fpsSource.map { " · \($0)" } ?? "")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
-            if let fps = vm.metrics.fps {
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text("\(Int(fps.rounded()))")
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.mint)
-                    Text("FPS")
-                        .font(.caption2.weight(.bold))
+            ZStack(alignment: .trailing) {
+                if vm.history.fps.count >= 3 {
+                    OrbitSparkline(values: vm.history.fps, tint: .mint, lineWidth: 1.5)
+                        .frame(width: 92, height: 30)
+                        .opacity(0.6)
+                }
+                if let fps = vm.metrics.fps {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text("\(Int(fps.rounded()))")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.mint)
+                            .contentTransition(.numericText())
+                            .shadow(color: reduceGlow ? .clear : .mint.opacity(0.45), radius: 10)
+                        Text("FPS")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("FPS —")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -526,122 +632,169 @@ struct DashboardView: View {
     private var specsLink: some View {
         NavigationLink { FullSpecsView(vm: vm) } label: {
             HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(theme.accent.opacity(0.15)).frame(width: 34, height: 34)
-                    Image(systemName: "cpu").font(.system(size: 14, weight: .semibold)).foregroundStyle(theme.accent)
+                OrbitIconBadge(systemName: "cpu", tint: theme.accent, size: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hardware Specifications")
+                        .font(.subheadline.weight(.semibold))
+                    Text(specsSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Text("Hardware Specifications")
-                    .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.secondary)
             }
-            .padding(15)
+            .padding(14)
             .liquidGlass(cornerRadius: 18)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.orbitPressable)
+    }
+
+    private var specsSummary: String {
+        if let specs = vm.specs {
+            let parts = [specs.cpu.name, specs.gpus.first?.name].compactMap { $0 }
+            if !parts.isEmpty { return parts.joined(separator: " · ") }
+        }
+        return vm.metrics.isOnline ? "CPU, GPU, memory, board, storage & network" : "Last detected hardware"
     }
 
     private var volumeCard: some View {
         HStack(spacing: 12) {
             Button {
+                OrbitHaptics.tap()
                 Task { await vm.sendPowerAction("mute") }
             } label: {
-                ZStack {
-                    Circle()
-                        .fill((vm.metrics.isMuted ? Color.orange : theme.accent).opacity(0.15))
-                        .frame(width: 36, height: 36)
-                    Image(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(vm.metrics.isMuted ? .orange : theme.accent)
-                }
+                OrbitIconBadge(
+                    systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                    tint: vm.metrics.isMuted ? .orange : theme.accent,
+                    size: 38
+                )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.orbitPressable)
             .accessibilityLabel(vm.metrics.isMuted ? "Unmute PC" : "Mute PC")
 
-            Slider(value: Binding(get: { vm.metrics.volume }, set: { vm.setVolume($0) }), in: 0...100, step: 1) { editing in
-                vm.isDraggingVolume = editing
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("PC Volume")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                    Spacer()
+                    Text(vm.metrics.volumeAvailable == false ? "—" : (vm.metrics.isMuted ? "Muted" : "\(Int(vm.metrics.volume))%"))
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(vm.metrics.isMuted ? .orange : .white)
+                        .contentTransition(.numericText())
+                }
+                Slider(value: Binding(get: { vm.metrics.volume }, set: { vm.setVolume($0) }), in: 0...100, step: 1) { editing in
+                    vm.isDraggingVolume = editing
+                    if !editing { OrbitHaptics.tap() }
+                }
+                .tint(vm.metrics.isMuted ? .orange : theme.accent)
+                .accessibilityLabel("PC volume")
             }
-            .accessibilityLabel("PC volume")
-
-            Text(vm.metrics.volumeAvailable == false ? "—" : (vm.metrics.isMuted ? "Muted" : "\(Int(vm.metrics.volume))%"))
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.vertical, 12)
         .liquidGlass(cornerRadius: 20)
         .disabled(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false)
     }
 
     private var powerCard: some View {
         HStack(spacing: 10) {
-            controlButton("Lock", icon: "lock.fill") { Task { await vm.sendPowerAction("lock") } }
-            controlButton("Display", icon: "display") { Task { await vm.sendPowerAction("restore_display") } }
-            controlButton("Preview", icon: "rectangle.on.rectangle") { vm.openDesktopPreview() }
+            OrbitActionTile(title: "Lock", icon: "lock.fill", tint: theme.accent) { Task { await vm.sendPowerAction("lock") } }
+            OrbitActionTile(title: "Display", icon: "display", tint: theme.accent) { Task { await vm.sendPowerAction("restore_display") } }
+            OrbitActionTile(title: "Preview", icon: "rectangle.on.rectangle", tint: theme.accent) { vm.openDesktopPreview() }
             Menu {
                 Button("Sleep", systemImage: "moon.fill") { pendingAction = .sleep }
                 Button("Restart", systemImage: "arrow.clockwise") { pendingAction = .restart }
                 Button("Shut Down", systemImage: "power", role: .destructive) { pendingAction = .shutdown }
             } label: {
-                VStack(spacing: 6) {
-                    Image(systemName: "power").font(.system(size: 16, weight: .semibold)).foregroundStyle(.orange)
-                    Text("Power").font(.caption2.weight(.semibold))
+                VStack(spacing: 7) {
+                    Image(systemName: "power")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .frame(height: 20)
+                    Text("Power")
+                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
                 }
-                .frame(maxWidth: .infinity, minHeight: 58)
-                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .frame(maxWidth: .infinity, minHeight: 60)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Color.orange.opacity(0.22), lineWidth: 1))
             }
+            .accessibilityLabel("Power options")
         }
         .padding(12)
         .liquidGlass(cornerRadius: 20)
         .disabled(!vm.metrics.isOnline)
     }
 
-    private func controlButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 16, weight: .semibold)).foregroundStyle(theme.accent)
-                Text(title).font(.caption2.weight(.semibold)).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, minHeight: 58)
-            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
     private var offlineCard: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 20) {
             Button {
+                OrbitHaptics.press()
                 Task { await vm.wakePC() }
             } label: {
                 ZStack {
-                    Circle().fill(theme.accent.opacity(0.10)).frame(width: 96, height: 96)
-                    Circle().strokeBorder(theme.accent.opacity(0.25), lineWidth: 1.2).frame(width: 96, height: 96)
+                    if !reduceMotion && !reduceGlow {
+                        Circle()
+                            .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1.5)
+                            .frame(width: 104, height: 104)
+                            .scaleEffect(wakePulse ? 1.35 : 1)
+                            .opacity(wakePulse ? 0 : 0.8)
+                    }
+                    Circle()
+                        .fill(theme.accent.opacity(0.10))
+                        .frame(width: 104, height: 104)
+                    Circle()
+                        .strokeBorder(theme.heroGradient, lineWidth: 1.5)
+                        .frame(width: 104, height: 104)
                     if vm.isWakingUp {
-                        ProgressView().controlSize(.large).orbitAppearance()
+                        ProgressView().controlSize(.large).tint(theme.accent)
                     } else {
-                        Image(systemName: "power").font(.system(size: 32, weight: .medium)).foregroundStyle(theme.accent)
+                        Image(systemName: "power")
+                            .font(.system(size: 36, weight: .medium))
+                            .foregroundStyle(theme.heroGradient)
+                            .shadow(color: reduceGlow ? .clear : theme.accent.opacity(0.6), radius: 14)
                     }
                 }
             }
+            .buttonStyle(.orbitPressable)
             .disabled(vm.isWakingUp || !vm.isConfigured || vm.pcMAC.isEmpty)
             .accessibilityLabel("Wake PC")
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeOut(duration: 2.2).repeatForever(autoreverses: false)) { wakePulse = true }
+            }
 
-            VStack(spacing: 4) {
+            VStack(spacing: 5) {
                 Text(vm.isWakingUp ? "Waking PC…" : (vm.isConfigured ? "PC Offline" : "Pair Your PC"))
-                    .font(.headline.weight(.bold))
-                Text(vm.isConfigured ? "Tap power to send Wake-on-LAN or reconnect." : "Connect over your local network with a 6-digit code.")
+                    .font(.title3.weight(.bold))
+                Text(vm.isConfigured
+                     ? (vm.pcMAC.isEmpty ? "Connect once while the PC is on to save its MAC address for Wake-on-LAN." : "Tap the power ring to send Wake-on-LAN, or retry the connection.")
+                     : "Pair over your local network with the 6-digit code shown on Windows.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
             }
 
             HStack(spacing: 10) {
-                Button("Find PC", systemImage: "dot.radiowaves.left.and.right") { isShowingDiscovery = true }
-                    .buttonStyle(.borderedProminent).orbitAppearance().foregroundStyle(.black)
+                Button {
+                    isShowingDiscovery = true
+                } label: {
+                    Label(vm.isConfigured ? "Find PC" : "Find my PC", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
+                .frame(maxWidth: 220)
+
                 if vm.isConfigured {
-                    Button("Retry", systemImage: "arrow.clockwise") { Task { await vm.connect() } }
-                        .buttonStyle(.bordered)
+                    Button {
+                        OrbitHaptics.tap()
+                        Task { await vm.connect() }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
                 } else {
                     ShareLink(
                         item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
@@ -650,13 +803,22 @@ struct DashboardView: View {
                     ) {
                         Label("Get PC App", systemImage: "square.and.arrow.up")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
                 }
             }
+
+            if !vm.statusLog.isEmpty && vm.isConfigured {
+                Text(vm.statusLog)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .frame(maxWidth: 420)
+            }
         }
-        .padding(22)
+        .padding(24)
         .frame(maxWidth: .infinity)
-        .liquidGlass(tint: theme.accent)
+        .liquidGlass(cornerRadius: 24, tint: theme.accent, elevated: true)
     }
 }
 
@@ -665,6 +827,7 @@ struct DashboardView: View {
 struct DashboardCustomizationView: View {
     @ObservedObject var vm: OrbitViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.orbitTheme) private var theme
     @State private var draft: DashboardConfiguration
 
     init(vm: OrbitViewModel) {
@@ -675,43 +838,50 @@ struct DashboardCustomizationView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Presets") {
+                Section {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 10) {
                             presetButton("Balanced", icon: "square.grid.2x2", configuration: .balanced)
                             presetButton("Gaming", icon: "gamecontroller", configuration: .gaming)
                             presetButton("Work", icon: "hammer", configuration: .workstation)
                             presetButton("Cooling", icon: "fanblades", configuration: .cooling)
                             presetButton("All", icon: "rectangle.grid.3x2", configuration: .allMetrics)
                         }
+                        .padding(.horizontal, 2)
                     }
-                    .padding(.vertical, 4)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
 
                     Picker("Grid Layout", selection: $draft.columnCount) {
                         Text("1 Column").tag(1)
                         Text("2 Columns").tag(2)
                     }
                     .pickerStyle(.segmented)
+                } header: {
+                    Text("Presets")
                 }
+                .orbitRow()
 
                 Section {
                     ForEach(draft.metricOrder) { metric in
+                        let visible = draft.visibleMetrics.contains(metric)
                         HStack(spacing: 12) {
-                            Image(systemName: metric.symbol)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(metric.accent)
-                                .frame(width: 28, height: 32)
+                            OrbitIconBadge(systemName: metric.symbol, tint: metric.accent, size: 30)
+                                .opacity(visible ? 1 : 0.5)
                             Text(metric.title)
                                 .font(.subheadline.weight(.medium))
+                                .foregroundStyle(visible ? .white : .secondary)
                             Spacer(minLength: 4)
                             Button {
-                                draft.setVisible(metric, !draft.visibleMetrics.contains(metric))
+                                OrbitHaptics.selection()
+                                withAnimation(.snappy) { draft.setVisible(metric, !visible) }
                             } label: {
-                                Image(systemName: draft.visibleMetrics.contains(metric) ? "checkmark.circle.fill" : "circle")
+                                Image(systemName: visible ? "checkmark.circle.fill" : "circle")
                                     .font(.title3)
-                                    .foregroundStyle(draft.visibleMetrics.contains(metric) ? Color.cyan : .secondary)
+                                    .foregroundStyle(visible ? theme.accent : .secondary)
+                                    .contentTransition(.symbolEffect(.replace))
                             }
                             .buttonStyle(.borderless)
+                            .accessibilityLabel(visible ? "Hide \(metric.title)" : "Show \(metric.title)")
                         }
                     }
                     .onMove { source, destination in draft.metricOrder.move(fromOffsets: source, toOffset: destination) }
@@ -721,7 +891,10 @@ struct DashboardCustomizationView: View {
                         Spacer()
                         Text("\(draft.orderedVisibleMetrics.count) active")
                     }
+                } footer: {
+                    Text("Drag to reorder. Cards for sensors your PC does not report show “—” instead of estimated values.")
                 }
+                .orbitRow()
 
                 Section("Sections") {
                     Toggle("Active Game Banner", isOn: $draft.showsGame)
@@ -729,7 +902,9 @@ struct DashboardCustomizationView: View {
                     Toggle("Quick Power Bar", isOn: $draft.showsQuickControls)
                     Toggle("Hardware Specs Link", isOn: $draft.showsSpecifications)
                 }
+                .orbitRow()
             }
+            .orbitListChrome()
             .environment(\.editMode, .constant(.active))
             .navigationTitle("Customize Overview")
             .navigationBarTitleDisplayMode(.inline)
@@ -737,6 +912,7 @@ struct DashboardCustomizationView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        OrbitHaptics.success()
                         vm.dashboardConfiguration = draft
                         dismiss()
                     }
@@ -749,26 +925,31 @@ struct DashboardCustomizationView: View {
     }
 
     private func presetButton(_ title: String, icon: String, configuration: DashboardConfiguration) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) { draft = configuration }
+        let selected = draft == configuration
+        return Button {
+            OrbitHaptics.selection()
+            withAnimation(.snappy) { draft = configuration }
         } label: {
-            VStack(spacing: 6) {
-                Image(systemName: icon).font(.subheadline.weight(.semibold))
-                Text(title).font(.caption2.weight(.semibold))
+            VStack(spacing: 7) {
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold))
+                Text(title).font(.caption2.weight(.bold))
             }
-            .frame(width: 76, height: 62)
-            .foregroundStyle(draft == configuration ? Color.cyan : .primary)
-            .background(draft == configuration ? Color.cyan.opacity(0.12) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(draft == configuration ? Color.cyan.opacity(0.4) : Color.clear, lineWidth: 1)
-            }
+            .frame(width: 78, height: 64)
+            .foregroundStyle(selected ? Color.black.opacity(0.85) : .white)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(theme.heroGradient) : AnyShapeStyle(Color.white.opacity(0.05)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(selected ? theme.accent.opacity(0.5) : Color.white.opacity(0.08), lineWidth: 1)
+            )
         }
         .buttonStyle(.borderless)
     }
 }
 
-private extension DashboardMetric {
+extension DashboardMetric {
     var accent: Color {
         switch self {
         case .cpuLoad, .cpuTemperature, .cpuClock, .cpuFan: return .cyan
@@ -808,6 +989,7 @@ struct GameLibraryView: View {
     var isEmbeddedInDuo = false
     @State private var searchText = ""
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.orbitTheme) private var theme
 
     private var filteredGames: [SunshineGame] {
         searchText.isEmpty ? vm.games : vm.games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
@@ -817,7 +999,7 @@ struct GameLibraryView: View {
         if dynamicTypeSize.isAccessibilitySize {
             return [GridItem(.flexible(), spacing: 14)]
         }
-        return [GridItem(.adaptive(minimum: 175, maximum: 320), spacing: 14)]
+        return [GridItem(.adaptive(minimum: 160, maximum: 300), spacing: 14)]
     }
 
     var body: some View {
@@ -835,6 +1017,7 @@ struct GameLibraryView: View {
                     .toolbar {
                         ToolbarItemGroup(placement: .topBarTrailing) {
                             Button {
+                                OrbitHaptics.tap()
                                 Task { await vm.fetchSunshineApps() }
                             } label: {
                                 Image(systemName: "arrow.clockwise")
@@ -868,19 +1051,28 @@ struct GameLibraryView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if !vm.metrics.isOnline {
                     OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
+                } else if !isEmbeddedInDuo {
+                    streamingHeader
                 }
                 if filteredGames.isEmpty {
-                    ContentUnavailableView(
-                        searchText.isEmpty ? "No Sunshine Apps" : "No Matches",
-                        systemImage: "gamecontroller",
-                        description: Text(searchText.isEmpty ? "Apps configured in Sunshine on your PC appear here automatically." : "Try a different search term.")
+                    OrbitEmptyState(
+                        icon: searchText.isEmpty ? "gamecontroller" : "magnifyingglass",
+                        title: searchText.isEmpty ? "No Sunshine Apps" : "No Matches",
+                        message: searchText.isEmpty ? "Apps configured in Sunshine on your PC appear here automatically." : "Try a different search term.",
+                        tint: theme.accent,
+                        actionTitle: searchText.isEmpty && vm.metrics.isOnline ? "Refresh" : nil,
+                        action: { Task { await vm.fetchSunshineApps() } }
                     )
-                    .padding(.vertical, 36)
+                    .padding(.vertical, 24)
                 } else {
                     LazyVGrid(columns: adaptiveGameColumns, spacing: 14) {
                         ForEach(filteredGames) { game in
-                            GameCoverCard(game: game) { Task { await vm.smartLaunch(game: game) } }
-                                .disabled(!vm.metrics.isOnline)
+                            GameCoverCard(game: game) {
+                                OrbitHaptics.press()
+                                Task { await vm.smartLaunch(game: game) }
+                            }
+                            .disabled(!vm.metrics.isOnline)
+                            .opacity(vm.metrics.isOnline ? 1 : 0.55)
                         }
                     }
                 }
@@ -891,56 +1083,267 @@ struct GameLibraryView: View {
         }
         .refreshable { await vm.fetchSunshineApps() }
     }
+
+    private var streamingHeader: some View {
+        HStack(spacing: 12) {
+            OrbitIconBadge(systemName: "play.tv.fill", tint: theme.accent, size: 40, filled: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(vm.games.count) app\(vm.games.count == 1 ? "" : "s") on \(vm.selectedPCName)")
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                Text(vm.autoOpenMoonlight ? "Moonlight opens automatically after launch" : "Launch on PC, then stream with Moonlight")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            Button {
+                OrbitHaptics.tap()
+                vm.openNativeMoonlight()
+            } label: {
+                Label("Moonlight", systemImage: "arrow.up.forward.app")
+                    .font(.caption.weight(.bold))
+            }
+            .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
+        }
+        .padding(14)
+        .liquidGlass(cornerRadius: 20, tint: theme.accent)
+    }
 }
 
 struct GameCoverCard: View {
     let game: SunshineGame
     let onLaunch: () -> Void
+    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+
+    private var accent: Color { Color(hex: game.accentHex) }
 
     var body: some View {
         Button(action: onLaunch) {
-            VStack(alignment: .leading, spacing: 12) {
-                ZStack {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .bottomTrailing) {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(hex: game.accentHex).opacity(0.28), Color(hex: game.accentHex).opacity(0.06)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(
+                            LinearGradient(
+                                colors: [accent.opacity(0.55), accent.opacity(0.16), Color.black.opacity(0.25)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Circle()
+                        .fill(accent.opacity(0.35))
+                        .frame(width: 120, height: 120)
+                        .blur(radius: 30)
+                        .offset(x: 30, y: 30)
                     Image(systemName: game.iconSymbol)
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(Color(hex: game.accentHex))
-                }
-                .frame(height: 100)
-                Text(game.title)
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                HStack {
-                    Text("Launch")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: reduceGlow ? .clear : accent.opacity(0.8), radius: 14)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Image(systemName: "play.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.cyan)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 28, height: 28)
+                        .background(.white.opacity(0.92), in: Circle())
+                        .padding(10)
                 }
+                .frame(height: 112)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.title)
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                    Text(game.genre.isEmpty ? "Sunshine app" : game.genre)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.top, 10)
             }
-            .padding(14)
-            .liquidGlass(cornerRadius: 20)
+            .padding(12)
+            .liquidGlass(cornerRadius: 22, tint: accent)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.orbitPressable)
         .accessibilityLabel("Launch \(game.title) on PC")
     }
 }
 
 // MARK: - Remote
 
+/// Multitouch trackpad backed by UIKit gesture recognisers: one finger moves,
+/// two fingers scroll, a two-finger tap right-clicks and a long press holds the
+/// left button for drag. Movement is coalesced before reaching the network.
+struct OrbitTrackpadSurface: UIViewRepresentable {
+    var sensitivity: Double
+    var onMove: (Int, Int) -> Void
+    var onScroll: (Int, Int) -> Void
+    var onClick: (String) -> Void
+    var onDrag: (Bool) -> Void
+    var onTouch: (CGPoint?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = true
+        let coordinator = context.coordinator
+
+        let move = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleMove(_:)))
+        move.minimumNumberOfTouches = 1
+        move.maximumNumberOfTouches = 1
+        move.delegate = coordinator
+
+        let scroll = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleScroll(_:)))
+        scroll.minimumNumberOfTouches = 2
+        scroll.maximumNumberOfTouches = 2
+        scroll.delegate = coordinator
+
+        let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleTap(_:)))
+        tap.numberOfTouchesRequired = 1
+        tap.delegate = coordinator
+
+        let secondaryTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleSecondaryTap(_:)))
+        secondaryTap.numberOfTouchesRequired = 2
+        secondaryTap.delegate = coordinator
+
+        let hold = UILongPressGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleHold(_:)))
+        hold.minimumPressDuration = 0.38
+        hold.allowableMovement = 8
+        hold.delegate = coordinator
+
+        [move, scroll, tap, secondaryTap, hold].forEach { view.addGestureRecognizer($0) }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: OrbitTrackpadSurface
+        private var lastTranslation: CGPoint = .zero
+        private var pendingX = 0.0
+        private var pendingY = 0.0
+        private var lastFlush = Date.distantPast
+        private var scrollTranslation: CGPoint = .zero
+        private var scrollRemainderY = 0.0
+        private var scrollRemainderX = 0.0
+        private var isHolding = false
+        private var isPanning = false
+
+        init(parent: OrbitTrackpadSurface) { self.parent = parent }
+
+        /// Only the trackpad's own recognisers run together; the enclosing
+        /// ScrollView keeps UIKit's default exclusivity so the page does not
+        /// scroll while the cursor is being moved.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            otherGestureRecognizer.view === gestureRecognizer.view
+        }
+
+        @objc func handleMove(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            switch recognizer.state {
+            case .began:
+                isPanning = true
+                lastTranslation = .zero
+                pendingX = 0; pendingY = 0
+                parent.onTouch(recognizer.location(in: view))
+            case .changed:
+                let translation = recognizer.translation(in: view)
+                pendingX += Double(translation.x - lastTranslation.x) * parent.sensitivity
+                pendingY += Double(translation.y - lastTranslation.y) * parent.sensitivity
+                lastTranslation = translation
+                parent.onTouch(recognizer.location(in: view))
+                if Date().timeIntervalSince(lastFlush) >= 0.024 { flush() }
+            case .ended, .cancelled, .failed:
+                flush()
+                isPanning = false
+                lastTranslation = .zero
+                parent.onTouch(nil)
+            default:
+                break
+            }
+        }
+
+        private func flush() {
+            let dx = Int(pendingX)
+            let dy = Int(pendingY)
+            guard dx != 0 || dy != 0 else { return }
+            pendingX -= Double(dx)
+            pendingY -= Double(dy)
+            lastFlush = Date()
+            parent.onMove(dx, dy)
+        }
+
+        @objc func handleScroll(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            switch recognizer.state {
+            case .began:
+                scrollTranslation = .zero
+                scrollRemainderX = 0; scrollRemainderY = 0
+            case .changed:
+                let translation = recognizer.translation(in: view)
+                scrollRemainderY += Double(translation.y - scrollTranslation.y)
+                scrollRemainderX += Double(translation.x - scrollTranslation.x)
+                scrollTranslation = translation
+                let stepSize = 16.0
+                let verticalSteps = Int(scrollRemainderY / stepSize)
+                let horizontalSteps = Int(scrollRemainderX / stepSize)
+                if verticalSteps != 0 || horizontalSteps != 0 {
+                    scrollRemainderY -= Double(verticalSteps) * stepSize
+                    scrollRemainderX -= Double(horizontalSteps) * stepSize
+                    // Natural scrolling: fingers down moves content down (wheel up).
+                    parent.onScroll(max(-8, min(8, verticalSteps)), max(-8, min(8, -horizontalSteps)))
+                }
+            default:
+                break
+            }
+        }
+
+        @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, !isHolding else { return }
+            parent.onClick("left")
+        }
+
+        @objc func handleSecondaryTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            parent.onClick("right")
+        }
+
+        @objc func handleHold(_ recognizer: UILongPressGestureRecognizer) {
+            switch recognizer.state {
+            case .began:
+                // A slow, precise nudge must stay a plain cursor move.
+                guard !isPanning else { return }
+                isHolding = true
+                parent.onDrag(true)
+            case .ended, .cancelled, .failed:
+                guard isHolding else { return }
+                isHolding = false
+                flush()
+                parent.onDrag(false)
+            default:
+                break
+            }
+        }
+    }
+}
+
 struct QuickRemoteView: View {
     @ObservedObject var vm: OrbitViewModel
     var isEmbeddedInDuo = false
     @State private var keyboardInput = ""
-    @State private var lastDragLocation: CGPoint?
-    @State private var lastSentTime: Date = .distantPast
-    @State private var accumulatedDX = 0.0
-    @State private var accumulatedDY = 0.0
     @State private var confirmCloseApp = false
+    @State private var touchPoint: CGPoint?
+    @State private var isDragging = false
+    @State private var showsGamepad = false
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .ocean
+    @AppStorage("orbit.remote.sensitivity") private var sensitivity = 2.0
+    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
+    @FocusState private var keyboardFocused: Bool
 
     var body: some View {
         Group {
@@ -993,6 +1396,10 @@ struct QuickRemoteView: View {
                             .disabled(!vm.metrics.isOnline)
                             .accessibilityLabel("Remote Actions Menu")
                         }
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { keyboardFocused = false }
+                        }
                     }
                     .confirmationDialog("Close the active game?", isPresented: $confirmCloseApp, titleVisibility: .visible) {
                         Button("Close Game", role: .destructive) { Task { await vm.sendPowerAction("kill_game") } }
@@ -1008,27 +1415,30 @@ struct QuickRemoteView: View {
     private var remoteContent: some View {
         GeometryReader { geo in
             let isSplitRemote = geo.size.width >= 680 && !isEmbeddedInDuo
+            let trackpadHeight = max(200, min(360, geo.size.height * (isSplitRemote ? 0.5 : 0.32)))
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 16) {
                     if !vm.metrics.isOnline {
-                        OrbitNotice(title: "PC Offline", message: "Connect to your PC to use trackpad, keyboard, and media controls.", icon: "wifi.slash", tint: .orange)
+                        OrbitNotice(title: "PC Offline", message: "Connect to your PC to use the trackpad, keyboard, and media controls.", icon: "wifi.slash", tint: .orange)
                     }
                     Group {
                         if isSplitRemote {
                             HStack(alignment: .top, spacing: 16) {
-                                trackpad
+                                trackpad(height: trackpadHeight)
                                     .frame(maxWidth: .infinity)
                                 VStack(spacing: 16) {
                                     keyboard
                                     mediaControls
+                                    gamepad
                                 }
                                 .frame(maxWidth: .infinity)
                             }
                         } else {
                             VStack(spacing: 16) {
-                                trackpad
+                                trackpad(height: trackpadHeight)
                                 keyboard
                                 mediaControls
+                                gamepad
                             }
                         }
                     }
@@ -1039,69 +1449,144 @@ struct QuickRemoteView: View {
                 .padding(isEmbeddedInDuo ? 12 : 18)
                 .frame(maxWidth: .infinity)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
-    private var trackpad: some View {
+    // MARK: Trackpad
+
+    private func trackpad(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Trackpad", systemImage: "hand.draw.fill")
                     .font(.subheadline.weight(.bold))
                 Spacer()
-                HStack(spacing: 8) {
-                    Button {
-                        Task { await vm.sendMouseInput(scroll: 3) }
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 28, height: 28)
-                            .background(.white.opacity(0.06), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        Task { await vm.sendMouseInput(scroll: -3) }
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 28, height: 28)
-                            .background(.white.opacity(0.06), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                sensitivityPicker
             }
 
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.white.opacity(0.035))
-                .overlay {
-                    VStack(spacing: 8) {
-                        Image(systemName: "cursorarrow.motionlines")
-                            .font(.system(size: 28, weight: .light))
-                        Text("Drag to move · Tap to click")
-                            .font(.caption2)
-                    }
-                    .foregroundStyle(.white.opacity(0.24))
-                    .allowsHitTesting(false)
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.055), Color.white.opacity(0.025)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(isDragging ? theme.accent.opacity(0.7) : .white.opacity(0.08), lineWidth: isDragging ? 1.5 : 1)
+                    .animation(.easeInOut(duration: 0.2), value: isDragging)
+
+                VStack(spacing: 8) {
+                    Image(systemName: isDragging ? "hand.tap.fill" : "cursorarrow.motionlines")
+                        .font(.system(size: 30, weight: .light))
+                        .contentTransition(.symbolEffect(.replace))
+                    Text(isDragging ? "Dragging · release to drop" : "Drag to move · Tap to click · Two fingers scroll · Hold to drag")
+                        .font(.caption2)
+                        .multilineTextAlignment(.center)
                 }
-                .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 1) }
-                .frame(height: 200)
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .gesture(DragGesture(minimumDistance: 1).onChanged(handleDrag).onEnded { _ in finishDrag() })
-                .simultaneousGesture(TapGesture().onEnded {
-                    guard vm.metrics.isOnline else { return }
-                    Task { await vm.sendMouseInput(click: "left") }
-                })
+                .foregroundStyle(isDragging ? theme.accent.opacity(0.8) : .white.opacity(0.26))
+                .padding(.horizontal, 20)
+                .allowsHitTesting(false)
+
+                if let touchPoint {
+                    Circle()
+                        .fill(theme.accent.opacity(0.22))
+                        .frame(width: 46, height: 46)
+                        .overlay(Circle().strokeBorder(theme.accent.opacity(0.6), lineWidth: 1))
+                        .shadow(color: reduceGlow ? .clear : theme.accent.opacity(0.6), radius: 14)
+                        .position(touchPoint)
+                        .allowsHitTesting(false)
+                        .transition(.scale.combined(with: .opacity))
+                }
+
+                OrbitTrackpadSurface(
+                    sensitivity: sensitivity,
+                    onMove: { dx, dy in
+                        guard vm.metrics.isOnline else { return }
+                        Task { await vm.sendCursorInput(dx: dx, dy: dy) }
+                    },
+                    onScroll: { vertical, horizontal in
+                        guard vm.metrics.isOnline else { return }
+                        Task { await vm.sendCursorInput(scroll: vertical, hscroll: horizontal) }
+                    },
+                    onClick: { button in
+                        guard vm.metrics.isOnline else { return }
+                        OrbitHaptics.tap()
+                        Task { await vm.sendCursorInput(click: button) }
+                    },
+                    onDrag: { active in
+                        guard vm.metrics.isOnline else { return }
+                        OrbitHaptics.press()
+                        withAnimation(.snappy) { isDragging = active }
+                        Task { await vm.sendCursorInput(drag: active ? "down" : "up") }
+                    },
+                    onTouch: { point in
+                        withAnimation(.easeOut(duration: 0.18)) { touchPoint = point }
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .allowsHitTesting(vm.metrics.isOnline)
-                .accessibilityLabel("PC trackpad")
+            }
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .accessibilityLabel("PC trackpad")
+            .accessibilityHint("Drag to move the cursor, tap to click, use two fingers to scroll, hold to drag")
+            .accessibilityAction(named: "Scroll up") { Task { await vm.sendCursorInput(scroll: 3) } }
+            .accessibilityAction(named: "Scroll down") { Task { await vm.sendCursorInput(scroll: -3) } }
+            .accessibilityAction(named: "Left click") { Task { await vm.sendCursorInput(click: "left") } }
+            .accessibilityAction(named: "Right click") { Task { await vm.sendCursorInput(click: "right") } }
+            .accessibilityAction(named: isDragging ? "Drop" : "Start drag") {
+                let next = !isDragging
+                isDragging = next
+                Task { await vm.sendCursorInput(drag: next ? "down" : "up") }
+            }
 
             HStack(spacing: 8) {
-                remoteButton("Left", icon: "computermouse") { await vm.sendMouseInput(click: "left") }
-                remoteButton("Double", icon: "cursorarrow.click.2") { await vm.sendMouseInput(click: "double") }
-                remoteButton("Right", icon: "contextualmenu.and.cursorarrow") { await vm.sendMouseInput(click: "right") }
+                remoteButton("Left", icon: "computermouse") { await vm.sendCursorInput(click: "left") }
+                remoteButton("Middle", icon: "scroll") { await vm.sendCursorInput(click: "middle") }
+                remoteButton("Right", icon: "contextualmenu.and.cursorarrow") { await vm.sendCursorInput(click: "right") }
+                remoteButton("Double", icon: "cursorarrow.click.2") { await vm.sendCursorInput(click: "double") }
+                OrbitActionTile(title: isDragging ? "Drop" : "Drag", icon: isDragging ? "hand.point.up.left.fill" : "hand.point.up.left", tint: theme.accent, isActive: isDragging, minHeight: 52) {
+                    guard vm.metrics.isOnline else { return }
+                    let next = !isDragging
+                    withAnimation(.snappy) { isDragging = next }
+                    Task { await vm.sendCursorInput(drag: next ? "down" : "up") }
+                }
             }
         }
         .padding(16)
-        .liquidGlass(cornerRadius: 20, tint: theme.accent)
+        .liquidGlass(cornerRadius: 22, tint: theme.accent)
+        .onDisappear {
+            if isDragging {
+                isDragging = false
+                Task { await vm.sendCursorInput(drag: "up") }
+            }
+        }
     }
+
+    private var sensitivityPicker: some View {
+        HStack(spacing: 4) {
+            ForEach([("Slow", 1.2), ("Normal", 2.0), ("Fast", 3.0)], id: \.0) { label, value in
+                let selected = abs(sensitivity - value) < 0.05
+                Button {
+                    OrbitHaptics.selection()
+                    sensitivity = value
+                } label: {
+                    Text(label)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(selected ? theme.accent.opacity(0.22) : .white.opacity(0.05), in: Capsule())
+                        .foregroundStyle(selected ? theme.accent : .white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .accessibilityLabel("Cursor speed")
+    }
+
+    // MARK: Keyboard
 
     private var keyboard: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1109,42 +1594,61 @@ struct QuickRemoteView: View {
                 .font(.subheadline.weight(.bold))
             HStack(spacing: 8) {
                 TextField("Type text to send…", text: $keyboardInput)
+                    .submitLabel(.send)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($keyboardFocused)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(keyboardFocused ? theme.accent.opacity(0.5) : .white.opacity(0.06), lineWidth: 1))
                     .onSubmit(sendCurrentText)
                 Button(action: sendCurrentText) {
                     Image(systemName: "paperplane.fill")
                         .font(.subheadline.weight(.semibold))
                         .frame(width: 42, height: 42)
-                        .background(theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .foregroundStyle(theme.accent)
+                        .background(keyboardInput.isEmpty ? AnyShapeStyle(Color.white.opacity(0.06)) : AnyShapeStyle(theme.heroGradient), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .foregroundStyle(keyboardInput.isEmpty ? Color.secondary : Color.black.opacity(0.85))
                 }
+                .buttonStyle(.orbitPressable)
                 .disabled(keyboardInput.isEmpty)
                 .accessibilityLabel("Send text")
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                ForEach(["ENTER", "BACKSPACE", "SPACE", "ESC", "WIN", "TAB"], id: \.self) { key in
-                    Button { Task { await vm.sendKeyboardInput(key: key) } } label: {
-                        Text(key == "WIN" ? "Win" : (key == "BACKSPACE" ? "⌫ Back" : key.capitalized))
-                            .font(.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 38)
-                            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
+                keyButton("Enter", key: "ENTER", icon: "return")
+                keyButton("Backspace", key: "BACKSPACE", icon: "delete.left")
+                keyButton("Space", key: "SPACE", icon: "space")
+                keyButton("Esc", key: "ESC", icon: "escape")
+                keyButton("Win", key: "WIN", icon: "command")
+                keyButton("Tab", key: "TAB", icon: "arrow.right.to.line")
             }
         }
         .padding(16)
-        .liquidGlass(cornerRadius: 20)
+        .liquidGlass(cornerRadius: 22)
     }
+
+    private func keyButton(_ title: String, key: String, icon: String) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            Task { await vm.sendKeyboardInput(key: key) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+                Text(title).font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 1))
+        }
+        .buttonStyle(.orbitPressable)
+    }
+
+    // MARK: Media & shortcuts
 
     private var mediaControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Media & Desktop Shortcuts", systemImage: "play.tv.fill")
+                Label("Media & Desktop", systemImage: "play.tv.fill")
                     .font(.subheadline.weight(.bold))
                 Spacer()
                 if vm.metrics.activeGame != nil {
@@ -1153,16 +1657,17 @@ struct QuickRemoteView: View {
                     } label: {
                         Label("Quit Game", systemImage: "xmark.circle.fill")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 20))
                 }
             }
             HStack(spacing: 8) {
                 remoteButton("Prev", icon: "backward.end.fill") { await vm.sendPowerAction("media_prev") }
-                remoteButton("Play/Pause", icon: "playpause.fill") { await vm.sendPowerAction("media_play_pause") }
+                remoteButton("Play", icon: "playpause.fill") { await vm.sendPowerAction("media_play_pause") }
                 remoteButton("Next", icon: "forward.end.fill") { await vm.sendPowerAction("media_next") }
-                remoteButton(vm.metrics.isMuted ? "Unmute" : "Mute", icon: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
+                remoteButton("Vol −", icon: "speaker.minus.fill") { await vm.sendPowerAction("volume_down") }
+                remoteButton("Vol +", icon: "speaker.plus.fill") { await vm.sendPowerAction("volume_up") }
+                remoteButton(vm.metrics.isMuted ? "Unmute" : "Mute", icon: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", tint: vm.metrics.isMuted ? .orange : nil) {
                     await vm.sendPowerAction("mute")
                 }
             }
@@ -1170,82 +1675,170 @@ struct QuickRemoteView: View {
                 remoteButton("Desktop", icon: "menubar.dock.rectangle") { await vm.sendPowerAction("show_desktop") }
                 remoteButton("Task View", icon: "rectangle.3.group") { await vm.sendPowerAction("task_view") }
                 remoteButton("Alt+Tab", icon: "macwindow.on.rectangle") { await vm.sendPowerAction("alt_tab") }
+                remoteButton("Fullscreen", icon: "arrow.up.left.and.arrow.down.right") { await vm.sendPowerAction("fullscreen") }
                 remoteButton("Screenshot", icon: "camera.viewfinder") { await vm.sendPowerAction("screenshot") }
             }
         }
         .padding(16)
-        .liquidGlass(cornerRadius: 20)
+        .liquidGlass(cornerRadius: 22)
     }
 
-    private func remoteButton(_ title: String, icon: String, action: @escaping () async -> Void) -> some View {
-        Button { Task { await action() } } label: {
+    // MARK: Gamepad (keyboard-mapped)
+
+    private var gamepad: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                OrbitHaptics.selection()
+                withAnimation(.snappy) { showsGamepad.toggle() }
+            } label: {
+                HStack {
+                    Label("Gamepad", systemImage: "gamecontroller.fill")
+                        .font(.subheadline.weight(.bold))
+                    Spacer()
+                    Text("WASD · Space · Esc")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(showsGamepad ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showsGamepad ? "Hide gamepad" : "Show gamepad")
+
+            if showsGamepad {
+                HStack(alignment: .center, spacing: 18) {
+                    VStack(spacing: 6) {
+                        padButton("UP", icon: "arrowtriangle.up.fill")
+                        HStack(spacing: 6) {
+                            padButton("LEFT", icon: "arrowtriangle.left.fill")
+                            Circle().fill(.white.opacity(0.05)).frame(width: 44, height: 44)
+                            padButton("RIGHT", icon: "arrowtriangle.right.fill")
+                        }
+                        padButton("DOWN", icon: "arrowtriangle.down.fill")
+                    }
+                    Spacer(minLength: 0)
+                    VStack(spacing: 6) {
+                        padButton("Y", label: "Y", tint: .yellow)
+                        HStack(spacing: 6) {
+                            padButton("X", label: "X", tint: .blue)
+                            Circle().fill(.white.opacity(0.05)).frame(width: 44, height: 44)
+                            padButton("B", label: "B", tint: .red)
+                        }
+                        padButton("A", label: "A", tint: .green)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(16)
+        .liquidGlass(cornerRadius: 22)
+    }
+
+    private func padButton(_ button: String, icon: String? = nil, label: String? = nil, tint: Color? = nil) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            Task { await vm.sendGamepadButton(button) }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill((tint ?? theme.accent).opacity(0.16))
+                Circle()
+                    .strokeBorder((tint ?? theme.accent).opacity(0.3), lineWidth: 1)
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundStyle(tint ?? theme.accent)
+                } else if let label {
+                    Text(label).font(.system(size: 15, weight: .heavy, design: .rounded)).foregroundStyle(tint ?? theme.accent)
+                }
+            }
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.orbitPressable)
+        .accessibilityLabel("Gamepad \(label ?? button.capitalized)")
+    }
+
+    private func remoteButton(_ title: String, icon: String, tint: Color? = nil, action: @escaping () async -> Void) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            Task { await action() }
+        } label: {
             VStack(spacing: 6) {
-                Image(systemName: icon).font(.subheadline.weight(.semibold))
-                Text(title).font(.caption2.weight(.medium)).lineLimit(1)
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint ?? .white)
+                    .frame(height: 18)
+                Text(title)
+                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(.white.opacity(0.85))
             }
             .frame(maxWidth: .infinity, minHeight: 52)
-            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 2)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 1))
         }
-        .buttonStyle(.plain)
-    }
-
-    private func handleDrag(_ value: DragGesture.Value) {
-        guard vm.metrics.isOnline else { return }
-        if let last = lastDragLocation {
-            accumulatedDX += (value.location.x - last.x) * 2.2
-            accumulatedDY += (value.location.y - last.y) * 2.2
-            if Date().timeIntervalSince(lastSentTime) >= 0.028 { flushMovement() }
-        }
-        lastDragLocation = value.location
-    }
-
-    private func flushMovement() {
-        let dx = Int(accumulatedDX)
-        let dy = Int(accumulatedDY)
-        guard dx != 0 || dy != 0 else { return }
-        accumulatedDX -= Double(dx)
-        accumulatedDY -= Double(dy)
-        lastSentTime = Date()
-        Task { await vm.sendMouseInput(dx: dx, dy: dy) }
-    }
-
-    private func finishDrag() {
-        if vm.metrics.isOnline { flushMovement() }
-        accumulatedDX = 0
-        accumulatedDY = 0
-        lastDragLocation = nil
+        .buttonStyle(.orbitPressable)
     }
 
     private func sendCurrentText() {
         guard vm.metrics.isOnline, !keyboardInput.isEmpty else { return }
         let text = keyboardInput
         keyboardInput = ""
+        OrbitHaptics.success()
         Task { await vm.sendKeyboardInput(text: text) }
     }
 }
 
-// MARK: - Desktop preview
+// MARK: - Launch overlay & stream placeholder
 
 struct SmartLaunchOverlay: View {
     @ObservedObject var vm: OrbitViewModel
+    @Environment(\.orbitTheme) private var theme
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.65).ignoresSafeArea()
             VStack(spacing: 16) {
-                ProgressView().controlSize(.large).orbitAppearance()
+                ZStack {
+                    OrbitRingGauge(progress: stepProgress, lineWidth: 5, tint: theme.accent)
+                        .frame(width: 72, height: 72)
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(theme.heroGradient)
+                }
                 Text(vm.activeStreamingGame?.title ?? "Connecting to PC").font(.headline)
-                Text(vm.smartLaunchStep.rawValue).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(vm.smartLaunchStep.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .contentTransition(.opacity)
             }
             .padding(26)
             .frame(maxWidth: 300)
-            .liquidGlass(tint: .cyan)
+            .liquidGlass(tint: theme.accent, elevated: true)
+        }
+    }
+
+    private var stepProgress: Double {
+        switch vm.smartLaunchStep {
+        case .idle: return 0
+        case .checkingPC: return 0.15
+        case .sendingWoL: return 0.3
+        case .waitingBoot: return 0.45
+        case .handshaking: return 0.65
+        case .launchingGame: return 0.85
+        case .streaming: return 1
         }
     }
 }
 
 struct MoonlightStreamView: View {
     @ObservedObject var vm: OrbitViewModel
+    @Environment(\.orbitTheme) private var theme
 
     var body: some View {
         NavigationStack {
@@ -1254,11 +1847,14 @@ struct MoonlightStreamView: View {
                 VStack(spacing: 18) {
                     ZStack {
                         Circle()
-                            .fill(Color.cyan.opacity(0.16))
-                            .frame(width: 84, height: 84)
+                            .fill(theme.accent.opacity(0.14))
+                            .frame(width: 96, height: 96)
+                        Circle()
+                            .strokeBorder(theme.heroGradient, lineWidth: 1.5)
+                            .frame(width: 96, height: 96)
                         Image(systemName: "play.tv.fill")
-                            .font(.system(size: 36, weight: .semibold))
-                            .foregroundStyle(.cyan)
+                            .font(.system(size: 38, weight: .semibold))
+                            .foregroundStyle(theme.heroGradient)
                     }
 
                     Text("COMING SOON")
@@ -1267,7 +1863,7 @@ struct MoonlightStreamView: View {
                         .foregroundStyle(.black)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
-                        .background(Color.cyan, in: Capsule())
+                        .background(theme.accent, in: Capsule())
 
                     Text("Live PC Video Streaming")
                         .font(.title2.weight(.bold))
@@ -1279,17 +1875,23 @@ struct MoonlightStreamView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                         .padding(.horizontal, 20)
+
+                    Button {
+                        vm.openNativeMoonlight()
+                    } label: {
+                        Label("Open Moonlight", systemImage: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
+                    .frame(maxWidth: 260)
+                    .padding(.top, 6)
                 }
                 .padding(28)
             }
-            .navigationTitle("Live Stream · Coming Soon")
+            .navigationTitle("Live Stream")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close", systemImage: "xmark") { vm.stopStreaming(putPCToSleep: false) }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Moonlight", systemImage: "arrow.up.forward.app") { vm.openNativeMoonlight() }
                 }
             }
         }
@@ -1305,6 +1907,7 @@ struct SettingsView: View {
     @ObservedObject private var proStore = OrbitProStore.shared
     var isPresentedAsSheet = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.orbitTheme) private var theme
     @State private var isConnecting = false
     @State private var isShowingDashboardCustomization = false
     @State private var isShowingDiscovery = false
@@ -1317,39 +1920,40 @@ struct SettingsView: View {
             Form {
                 Section {
                     HStack(spacing: 14) {
-                        OrbitMark(size: 46)
-                        VStack(alignment: .leading, spacing: 2) {
+                        OrbitMark(size: 50)
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(vm.isConfigured ? vm.selectedPCName : "Orbit Companion")
                                 .font(.headline.weight(.bold))
-                            Text(vm.metrics.isOnline ? "Online · Agent \(vm.metrics.agentVersion ?? "4.1.0")" : vm.statusLog)
-                                .font(.caption)
-                                .foregroundStyle(vm.metrics.isOnline ? .mint : .secondary)
                                 .lineLimit(1)
+                            HStack(spacing: 6) {
+                                OrbitStatusPill(text: vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? "Online" : "Offline"), tint: vm.metrics.isOnline && !vm.isDemoMode ? .mint : .orange, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
+                                if vm.metrics.isOnline, let version = vm.metrics.agentVersion {
+                                    Text("Agent \(version)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
                         }
                         Spacer()
                         Button("Pair PC") { isShowingDiscovery = true }
+                            .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
                             .font(.caption.weight(.bold))
-                            .buttonStyle(.borderedProminent)
-                            .tint(.cyan)
-                            .foregroundStyle(.black)
                     }
                     .padding(.vertical, 4)
 
                     NavigationLink { PCProfilesView(vm: vm) } label: {
-                        Label("Saved PCs & Profiles", systemImage: "desktopcomputer")
+                        settingsRow("Saved PCs & Profiles", icon: "desktopcomputer", tint: theme.accent, detail: "\(vm.savedPCs.count)")
                     }
                 }
+                .orbitRow(tint: theme.accent)
 
-                Section("Orbit Pro") {
+                Section {
                     Button {
                         isShowingProPaywall = true
                     } label: {
                         HStack {
-                            Label(
-                                "Orbit Pro · Coming Soon",
-                                systemImage: "crown.fill"
-                            )
-                            .foregroundStyle(.yellow)
+                            settingsRow("Orbit Pro · Coming Soon", icon: "crown.fill", tint: .yellow)
                             Spacer()
                             Text("SOON")
                                 .font(.caption2.weight(.bold))
@@ -1363,55 +1967,67 @@ struct SettingsView: View {
                         Text(status).font(.caption).foregroundStyle(.yellow)
                     }
                 }
+                .orbitRow(tint: .yellow)
 
                 pcCompanionUpdateSection
 
                 Section("Personalization & iOS") {
                     NavigationLink { AppearanceSettingsView() } label: {
-                        Label("Themes & Home Screen Icons", systemImage: "paintpalette")
+                        settingsRow("Themes & Home Screen Icons", icon: "paintpalette.fill", tint: .pink, detail: theme.title)
                     }
                     Button { isShowingDashboardCustomization = true } label: {
-                        Label("Customize Overview Cards", systemImage: "slider.horizontal.3")
+                        settingsRow("Customize Overview Cards", icon: "slider.horizontal.3", tint: theme.accent)
                     }
                     NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
-                        HStack {
-                            Label("Dynamic Island & Live Activity", systemImage: "capsule.portrait.tophalf.filled")
-                            Spacer()
-                            Text(vm.isDynamicIslandActive ? "Active" : "Off").font(.caption).foregroundStyle(vm.isDynamicIslandActive ? .mint : .secondary)
-                        }
+                        settingsRow("Dynamic Island & Live Activity", icon: "capsule.portrait.tophalf.filled", tint: .mint, detail: vm.isDynamicIslandActive ? "Active" : "Off")
                     }
                     NavigationLink { WidgetHelpView(vm: vm) } label: {
-                        Label("Widgets, Control Center & Siri", systemImage: "square.grid.2x2")
+                        settingsRow("Widgets, Control Center & Siri", icon: "square.grid.2x2.fill", tint: .orange)
+                    }
+                    NavigationLink { AppleWatchCompanionHelpView(vm: vm) } label: {
+                        settingsRow("Apple Watch", icon: "applewatch.radiowaves.left.and.right", tint: .green)
                     }
                 }
+                .orbitRow()
 
                 Section("Hardware & Diagnostics") {
                     NavigationLink { FullSpecsView(vm: vm) } label: {
-                        Label("Hardware Specifications", systemImage: "cpu")
+                        settingsRow("Hardware Specifications", icon: "cpu", tint: .indigo)
                     }
                     NavigationLink { MonitoringSourcesView(vm: vm) } label: {
-                        Label("Sensor Sources", systemImage: "waveform.path.ecg")
+                        settingsRow("Sensor Sources", icon: "waveform.path.ecg", tint: .teal)
                     }
                     NavigationLink { FPSSetupView(vm: vm) } label: {
-                        Label("FPS Counter Setup", systemImage: "speedometer")
+                        settingsRow("FPS Counter Setup", icon: "speedometer", tint: .mint)
                     }
                 }
+                .orbitRow()
 
                 connectionSection
                 wakeSection
 
                 Section("Preferences & Legal") {
-                    Toggle("Demo Mode (Sample Data)", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
-                    Toggle("Auto-Open Moonlight on Launch", isOn: $vm.autoOpenMoonlight)
-                    Button("Run Setup Walkthrough", systemImage: "sparkles") {
+                    Toggle(isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) })) {
+                        settingsRow("Demo Mode (Sample Data)", icon: "sparkles", tint: .orange)
+                    }
+                    Toggle(isOn: $vm.autoOpenMoonlight) {
+                        settingsRow("Auto-Open Moonlight on Launch", icon: "arrow.up.forward.app", tint: .purple)
+                    }
+                    Button {
                         if isPresentedAsSheet { dismiss() }
                         vm.showOnboarding = true
+                    } label: {
+                        settingsRow("Run Setup Walkthrough", icon: "wand.and.stars", tint: theme.accent)
                     }
-                    Button("Privacy Policy & Terms", systemImage: "hand.raised.fill") {
+                    Button {
                         isShowingPrivacy = true
+                    } label: {
+                        settingsRow("Privacy Policy & Terms", icon: "hand.raised.fill", tint: .gray)
                     }
                 }
+                .orbitRow()
             }
+            .orbitListChrome(isOnline: vm.metrics.isOnline)
             .navigationTitle("Settings")
             .sheet(isPresented: $isShowingDashboardCustomization) {
                 DashboardCustomizationView(vm: vm)
@@ -1444,9 +2060,24 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
     }
 
+    private func settingsRow(_ title: String, icon: String, tint: Color, detail: String? = nil) -> some View {
+        HStack(spacing: 12) {
+            OrbitIconBadge(systemName: icon, tint: tint, size: 30)
+            Text(title)
+                .foregroundStyle(.white)
+            if let detail {
+                Spacer()
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
     private var pcCompanionUpdateSection: some View {
-        Section("PC Companion Updates (GitHub)") {
-            LabeledContent("Installed Agent", value: vm.metrics.agentVersion ?? "4.1.0")
+        Section {
+            LabeledContent("Installed Agent", value: vm.metrics.agentVersion ?? "—")
             if let latest = vm.agentLatestVersion {
                 LabeledContent("Latest on GitHub", value: latest)
             }
@@ -1454,7 +2085,7 @@ struct SettingsView: View {
                 Task { await vm.checkPCCompanionUpdate() }
             } label: {
                 HStack {
-                    Label(vm.isCheckingAgentUpdate ? "Checking GitHub…" : "Check for PC Companion Update", systemImage: "arrow.triangle.2.circlepath.circle")
+                    settingsRow(vm.isCheckingAgentUpdate ? "Checking GitHub…" : "Check for PC Companion Update", icon: "arrow.triangle.2.circlepath", tint: theme.accent)
                     Spacer()
                     if vm.isCheckingAgentUpdate { ProgressView() }
                 }
@@ -1465,8 +2096,7 @@ struct SettingsView: View {
                 Button {
                     Task { await vm.applyPCCompanionUpdate() }
                 } label: {
-                    Label("Install Update on PC Now", systemImage: "arrow.down.circle.fill")
-                        .foregroundStyle(.mint)
+                    settingsRow("Install Update on PC Now", icon: "arrow.down.circle.fill", tint: .mint)
                         .fontWeight(.semibold)
                 }
                 .disabled(vm.isCheckingAgentUpdate || !vm.metrics.isOnline)
@@ -1483,25 +2113,25 @@ struct SettingsView: View {
                 subject: Text("Orbit PC Companion for Windows"),
                 message: Text("Download the Orbit PC Companion for Windows: https://github.com/AceDimi2005/Orbit (Direct ZIP: https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip)")
             ) {
-                Label("Send PC Companion Link to PC", systemImage: "square.and.arrow.up")
-                    .font(.subheadline)
+                settingsRow("Send PC Companion Link to PC", icon: "square.and.arrow.up", tint: .blue)
             }
 
             Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip")!) {
-                Label("Download Windows Companion (.zip)", systemImage: "arrow.down.doc.fill")
-                    .font(.subheadline)
+                settingsRow("Download Windows Companion (.zip)", icon: "arrow.down.doc.fill", tint: .blue)
             }
 
             Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
-                Label("Open GitHub Repository", systemImage: "arrow.up.right.square")
-                    .font(.subheadline)
+                settingsRow("Open GitHub Repository", icon: "arrow.up.right.square", tint: .gray)
             }
+        } header: {
+            Text("PC Companion Updates (GitHub)")
         }
+        .orbitRow()
     }
 
     private var connectionSection: some View {
         Section("Manual Connection") {
-            DisclosureGroup("Connection & Ports") {
+            DisclosureGroup {
                 labeledField("PC Address", placeholder: "192.168.1.100", text: $vm.pcIP)
                     .onChange(of: vm.pcIP) { _, _ in vm.recalculateBroadcastIfNeeded() }
                 VStack(alignment: .leading, spacing: 6) {
@@ -1524,13 +2154,16 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(isConnecting || !vm.isConfigured)
+            } label: {
+                settingsRow("Connection & Ports", icon: "network", tint: .blue)
             }
         }
+        .orbitRow()
     }
 
     private var wakeSection: some View {
         Section("Wake-on-LAN") {
-            DisclosureGroup("Wake-on-LAN Settings") {
+            DisclosureGroup {
                 labeledField("MAC Address", placeholder: "AA:BB:CC:DD:EE:FF", text: $vm.pcMAC)
                 labeledField("Subnet Mask", placeholder: "255.255.255.0", text: $vm.subnetMask)
                     .onChange(of: vm.subnetMask) { _, _ in vm.recalculateBroadcastIfNeeded() }
@@ -1543,10 +2176,18 @@ struct SettingsView: View {
                     Task { await vm.fetchNetworkConfigFromPC() }
                 }
                 .disabled(!vm.metrics.isOnline || vm.isDemoMode)
+            } label: {
+                settingsRow("Wake-on-LAN Settings", icon: "power", tint: .green)
             }
-            Button("Send Wake Packet Now", systemImage: "power") { Task { await vm.wakePC() } }
-                .disabled(!vm.isConfigured || vm.pcMAC.isEmpty || vm.isWakingUp)
+            Button {
+                OrbitHaptics.press()
+                Task { await vm.wakePC() }
+            } label: {
+                settingsRow("Send Wake Packet Now", icon: "bolt.fill", tint: .green)
+            }
+            .disabled(!vm.isConfigured || vm.pcMAC.isEmpty || vm.isWakingUp)
         }
+        .orbitRow()
     }
 
     private func labeledField(_ title: String, placeholder: String, text: Binding<String>) -> some View {
@@ -1571,20 +2212,23 @@ struct SettingsView: View {
 struct WidgetHelpView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var pairedPCs: [OrbitWidgetConnection] = []
+    @Environment(\.orbitTheme) private var theme
 
     var body: some View {
         List {
             Section("Home & Lock Screen Widgets") {
                 widgetRow("Power & Quick Controls", detail: "Interactive Power On (Wake), Sleep & Shut Down buttons directly on Home Screen", icon: "power.circle.fill", tint: .green)
-                widgetRow("PC Overview & Gaming", detail: "CPU, GPU, RAM, VRAM, FPS & temps with On/Off buttons (Small, Medium, Large)", icon: "desktopcomputer", tint: .cyan)
+                widgetRow("PC Overview & Gaming", detail: "CPU, GPU, RAM, VRAM, FPS & temps with On/Off buttons (Small, Medium, Large)", icon: "desktopcomputer", tint: theme.accent)
                 widgetRow("Specialty Panels", detail: "Dedicated Power, Temperatures, Cooling, Storage & Network widgets", icon: "bolt.fill", tint: .orange)
                 widgetRow("Single PC Metric", detail: "Pick any 1 of 18 sensors for Home or Lock Screen", icon: "waveform.path.ecg", tint: .purple)
             }
+            .orbitRow()
 
             Section("Control Center & Siri (iOS 18+)") {
                 widgetRow("Control Center Buttons", detail: "Swipe down Control Center → tap + → Add a Control → search Orbit to add Power On, Sleep, or Shut Down buttons", icon: "switch.2", tint: .mint)
                 widgetRow("Siri & Shortcuts", detail: "Say \"Hey Siri, power on my PC with Orbit\" or \"Shut down my PC with Orbit\"", icon: "mic.fill", tint: .pink)
             }
+            .orbitRow()
 
             Section("Paired PCs for Widgets") {
                 ForEach(pairedPCs) { pc in
@@ -1608,13 +2252,16 @@ struct WidgetHelpView: View {
                 .disabled(!vm.metrics.isOnline || vm.isDemoMode || vm.isLoadingWidgetToken)
                 if let error = vm.widgetSetupError { Text(error).font(.caption).foregroundStyle(.orange) }
             }
+            .orbitRow()
 
             Section("Quick Tip") {
-                Text("Long-press any Orbit widget and tap Edit Widget to switch between paired PCs or change its color theme.")
+                Text("Long-press any Orbit widget and tap Edit Widget to switch between paired PCs or change its colour theme.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Widgets & Siri")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { pairedPCs = OrbitWidgetConnectionStore.connections() }
@@ -1623,14 +2270,7 @@ struct WidgetHelpView: View {
 
     private func widgetRow(_ title: String, detail: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(tint.opacity(0.16))
-                    .frame(width: 36, height: 36)
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
+            OrbitIconBadge(systemName: icon, tint: tint, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.subheadline.weight(.semibold))
                 Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -1644,54 +2284,56 @@ struct WidgetHelpView: View {
 
 struct OnboardingView: View {
     @ObservedObject var vm: OrbitViewModel
+    @State private var page = 0
     @State private var showsDiscovery = false
     @State private var isTesting = false
     @State private var connectionPassed = false
     @State private var didTest = false
     @FocusState private var focusedField: Bool
+    @Environment(\.orbitTheme) private var theme
+
+    private let introPages: [(icon: String, title: String, text: String, tint: Color)] = [
+        ("gauge.with.dots.needle.67percent", "Your PC,\nwithin reach.", "Live CPU, GPU, memory, power and FPS telemetry on iPhone, iPad, Apple Watch, Apple TV and the Dynamic Island.", .cyan),
+        ("computermouse.fill", "Control the whole desk.", "Trackpad, keyboard, media keys, per-app audio mixer, file transfers and a remote task manager.", .mint),
+        ("lock.shield.fill", "Private by design.", "Everything stays on your local network. Pairing uses a one-time 6-digit code, TLS 1.3 and certificate pinning. No cloud, no accounts.", .purple)
+    ]
+
+    private var lastIntroPage: Int { introPages.count - 1 }
+    private var setupPage: Int { introPages.count }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 OrbitAmbientBackground(isOnline: true)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        welcome
-                        connectionForm
-                        VStack(spacing: 10) {
-                            Button {
-                                focusedField = false
-                                vm.hasCompletedOnboarding = true
-                                vm.showOnboarding = false
-                            } label: {
-                                HStack { Text("Continue"); Spacer(); Image(systemName: "arrow.right") }
-                                    .font(.headline).padding(16).frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.cyan).foregroundStyle(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .disabled(!connectionPassed || !vm.metrics.isOnline)
-
-                            Button("Try Demo Mode") {
-                                focusedField = false
-                                vm.setDemoMode(true)
-                                vm.hasCompletedOnboarding = true
-                                vm.showOnboarding = false
-                            }
-                            .font(.subheadline.weight(.medium))
-                            .padding(8)
+                VStack(spacing: 0) {
+                    TabView(selection: $page) {
+                        ForEach(Array(introPages.enumerated()), id: \.offset) { index, item in
+                            introPage(item)
+                                .tag(index)
                         }
+                        setupStep
+                            .tag(setupPage)
                     }
-                    .frame(maxWidth: 520)
-                    .padding(24)
-                    .frame(maxWidth: .infinity)
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .animation(.snappy, value: page)
+
+                    footer
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 16)
                 }
-                .scrollDismissesKeyboard(.interactively)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if vm.hasCompletedOnboarding {
-                    ToolbarItem(placement: .topBarTrailing) { Button("Close") { vm.showOnboarding = false } }
+                ToolbarItem(placement: .topBarLeading) {
+                    if page < setupPage {
+                        Button("Skip") { withAnimation(.snappy) { page = setupPage } }
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if vm.hasCompletedOnboarding {
+                        Button("Close") { vm.showOnboarding = false }
+                    }
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -1704,43 +2346,116 @@ struct OnboardingView: View {
                 connectionPassed = vm.metrics.isOnline && !vm.isDemoMode; didTest = true
             }
         }
-        .tint(.cyan).preferredColorScheme(.dark)
+        .orbitAppearance()
+        .preferredColorScheme(.dark)
     }
 
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            OrbitMark(size: 76)
-                .padding(.top, 8)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Your PC,\nWithin Reach.")
+    private func introPage(_ item: (icon: String, title: String, text: String, tint: Color)) -> some View {
+        VStack(spacing: 26) {
+            Spacer(minLength: 10)
+            ZStack {
+                Circle()
+                    .fill(item.tint.opacity(0.12))
+                    .frame(width: 180, height: 180)
+                    .blur(radius: 10)
+                Circle()
+                    .strokeBorder(LinearGradient(colors: [item.tint, item.tint.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.5)
+                    .frame(width: 150, height: 150)
+                Image(systemName: item.icon)
+                    .font(.system(size: 60, weight: .medium))
+                    .foregroundStyle(LinearGradient(colors: [.white, item.tint], startPoint: .top, endPoint: .bottom))
+                    .shadow(color: item.tint.opacity(0.6), radius: 20)
+            }
+            VStack(spacing: 12) {
+                Text(item.title)
                     .font(.system(size: 34, weight: .bold, design: .rounded))
-                Text("Live telemetry, remote control, and Dynamic Island.")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text(item.text)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
             }
-            HStack(spacing: 0) {
-                feature("Telemetry", icon: "waveform.path.ecg")
-                feature("Wake on LAN", icon: "power")
-                feature("Remote", icon: "computermouse.fill")
+            Spacer(minLength: 10)
+        }
+        .padding(.horizontal, 28)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 6) {
+                ForEach(0...setupPage, id: \.self) { index in
+                    Capsule()
+                        .fill(index == page ? theme.accent : .white.opacity(0.2))
+                        .frame(width: index == page ? 22 : 7, height: 7)
+                        .animation(.snappy, value: page)
+                }
             }
-            .padding(.vertical, 4)
+            if page < setupPage {
+                Button {
+                    OrbitHaptics.selection()
+                    withAnimation(.snappy) { page = min(setupPage, page + 1) }
+                } label: {
+                    HStack {
+                        Text(page == lastIntroPage ? "Set up my PC" : "Continue")
+                        Image(systemName: "arrow.right")
+                    }
+                }
+                .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
+                .frame(maxWidth: 420)
+            }
         }
     }
 
-    private func feature(_ title: String, icon: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.subheadline).foregroundStyle(.cyan)
-            Text(title).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+    private var setupStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 14) {
+                    OrbitMark(size: 56)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Connect your PC")
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                        Text("Two steps, about a minute.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                connectionForm
+                VStack(spacing: 10) {
+                    Button {
+                        focusedField = false
+                        OrbitHaptics.success()
+                        vm.hasCompletedOnboarding = true
+                        vm.showOnboarding = false
+                    } label: {
+                        HStack { Text("Continue to Orbit"); Spacer(); Image(systemName: "arrow.right") }
+                            .padding(.horizontal, 4)
+                    }
+                    .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
+                    .disabled(!connectionPassed || !vm.metrics.isOnline)
+                    .opacity(!connectionPassed || !vm.metrics.isOnline ? 0.5 : 1)
+
+                    Button("Try Demo Mode") {
+                        focusedField = false
+                        vm.setDemoMode(true)
+                        vm.hasCompletedOnboarding = true
+                        vm.showOnboarding = false
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
+                }
+            }
+            .frame(maxWidth: 520)
+            .padding(24)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var connectionForm: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Step 1 · Install on Windows PC", systemImage: "desktopcomputer.and.arrow.down")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.cyan)
-                Text("Download Orbit PC Companion on your Windows PC and run install_orbit.bat.")
+                stepLabel(1, "Install on your Windows PC", tint: theme.accent)
+                Text("Download Orbit PC Companion on your Windows PC and run install_orbit.bat. It lives in the system tray.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     ShareLink(
@@ -1751,38 +2466,37 @@ struct OnboardingView: View {
                         Label("Send Link to PC", systemImage: "square.and.arrow.up")
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 12))
 
                     Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
                         Label("GitHub Page", systemImage: "arrow.up.right.square")
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 12))
                 }
             }
 
             Divider().overlay(.white.opacity(0.12))
 
-            Label("Step 2 · Pair with 6-Digit Code", systemImage: "lock.shield")
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.mint)
-            Text("Keep Orbit Companion running on Windows and tap Find my PC below.")
+            stepLabel(2, "Pair with the 6-digit code", tint: .mint)
+            Text("Keep Orbit Companion running on Windows, then tap Find my PC. The code appears on your PC screen.")
                 .font(.caption).foregroundStyle(.secondary)
 
-            Button { showsDiscovery = true } label: {
+            Button {
+                OrbitHaptics.press()
+                showsDiscovery = true
+            } label: {
                 Label("Find my PC", systemImage: "dot.radiowaves.left.and.right")
-                    .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(OrbitProminentButtonStyle(colors: [.mint, Color(red: 0.36, green: 0.80, blue: 0.98)]))
 
             if connectionPassed {
-                Label("Paired securely", systemImage: "checkmark.shield.fill")
+                Label("Paired securely · \(vm.selectedPCName)", systemImage: "checkmark.shield.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.mint)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             DisclosureGroup("Manual Setup") {
@@ -1811,10 +2525,11 @@ struct OnboardingView: View {
                             connectionPassed = vm.metrics.isOnline && !vm.isDemoMode
                             didTest = true
                             isTesting = false
+                            if connectionPassed { OrbitHaptics.success() } else { OrbitHaptics.error() }
                         }
                     } label: {
                         HStack {
-                            if isTesting { ProgressView().tint(.cyan) }
+                            if isTesting { ProgressView().tint(theme.accent) }
                             Label(isTesting ? "Testing…" : "Test Connection", systemImage: "network")
                             Spacer()
                             if connectionPassed { Image(systemName: "checkmark.circle.fill").foregroundStyle(.mint) }
@@ -1828,7 +2543,21 @@ struct OnboardingView: View {
             .font(.subheadline)
         }
         .padding(18)
-        .liquidGlass(tint: .cyan)
+        .liquidGlass(tint: theme.accent, elevated: true)
+        .animation(.snappy, value: connectionPassed)
+    }
+
+    private func stepLabel(_ number: Int, _ title: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Text("\(number)")
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                .foregroundStyle(.black.opacity(0.85))
+                .frame(width: 22, height: 22)
+                .background(tint, in: Circle())
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+        }
     }
 }
 
@@ -1837,31 +2566,40 @@ struct OnboardingView: View {
 struct FullSpecsView: View {
     @ObservedObject var vm: OrbitViewModel
     @State private var showNames = false
+    @Environment(\.orbitTheme) private var theme
 
     var body: some View {
         List {
             Section {
-                HStack {
-                    Label(
-                        vm.isDemoMode ? "Demo Hardware" : (vm.metrics.isOnline ? "Detected Hardware" : "Cached Hardware"),
-                        systemImage: vm.metrics.isOnline ? "checkmark.seal.fill" : "clock"
-                    )
-                    .foregroundStyle(vm.metrics.isOnline ? .mint : .secondary)
+                HStack(spacing: 12) {
+                    OrbitIconBadge(systemName: vm.metrics.isOnline ? "checkmark.seal.fill" : "clock", tint: vm.metrics.isOnline ? .mint : .secondary, size: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vm.isDemoMode ? "Demo Hardware" : (vm.metrics.isOnline ? "Detected Hardware" : "Cached Hardware"))
+                            .font(.subheadline.weight(.semibold))
+                        if let source = vm.specs?.source {
+                            Text(source).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     Button("Rename") { showNames = true }
+                        .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
                         .font(.caption.weight(.bold))
                 }
             }
+            .orbitRow(tint: theme.accent)
             if let specs = vm.specs {
                 inventory(specs)
             } else if vm.isLoadingSpecs {
                 Section { HStack { ProgressView(); Text("Reading hardware…").padding(.leading, 8) } }
+                    .orbitRow()
             } else {
                 Section {
-                    ContentUnavailableView("No Specs Loaded", systemImage: "cpu", description: Text(vm.specsError ?? "Connect to your PC to read hardware specifications."))
+                    OrbitEmptyState(icon: "cpu", title: "No Specs Loaded", message: vm.specsError ?? "Connect to your PC to read hardware specifications.", tint: theme.accent)
                 }
+                .orbitRow()
             }
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Specifications")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1880,20 +2618,22 @@ struct FullSpecsView: View {
 
     @ViewBuilder
     private func inventory(_ specs: PCSpecs) -> some View {
-        Section("System") {
+        Section {
             specRow("Computer", specs.hostname)
             specRow("OS", specs.osName)
             specRow("Version", specs.osVersion)
             specRow("Architecture", specs.architecture)
-        }
-        Section("Processor") {
+        } header: { sectionHeader("System", icon: "desktopcomputer", tint: theme.accent) }
+        .orbitRow()
+        Section {
             displayName("cpu")
             specRow("Model", specs.cpu.name)
             specRow("Cores / Threads", specs.cpu.physicalCores.map { "\($0)C / \(specs.cpu.logicalCores ?? $0)T" })
             specRow("Max Clock", specs.cpu.maxClockMHz.map { "\(decimal($0 / 1000, digits: 2)) GHz" })
             specRow("Temperature", vm.metrics.cpuTemp.map { "\(decimal($0))°C" })
-        }
-        Section("Graphics") {
+        } header: { sectionHeader("Processor", icon: "cpu", tint: .cyan) }
+        .orbitRow()
+        Section {
             displayName("gpu")
             if specs.gpus.isEmpty { specRow("GPU", nil) }
             ForEach(Array(specs.gpus.enumerated()), id: \.offset) { index, gpu in
@@ -1902,8 +2642,9 @@ struct FullSpecsView: View {
                 specRow("VRAM", gpu.vramGB.map { "\(decimal($0)) GB" })
                 specRow("Driver", gpu.driverVersion)
             }
-        }
-        Section("Memory") {
+        } header: { sectionHeader("Graphics", icon: "square.stack.3d.up", tint: .mint) }
+        .orbitRow()
+        Section {
             displayName("memory")
             specRow("Installed", specs.memory.totalGB.map { "\(decimal($0)) GB" })
             ForEach(Array(specs.memory.modules.enumerated()), id: \.offset) { index, module in
@@ -1913,15 +2654,17 @@ struct FullSpecsView: View {
                     specRow("Speed", module.speedMHz.map { "\(decimal($0, digits: 0)) MHz" })
                 }
             }
-        }
-        Section("Motherboard & Cooling") {
+        } header: { sectionHeader("Memory", icon: "memorychip", tint: Color(red: 0.68, green: 0.65, blue: 0.98)) }
+        .orbitRow()
+        Section {
             displayName("motherboard")
             specRow("Board", [specs.motherboard.manufacturer, specs.motherboard.model].compactMap { $0 }.joined(separator: " "))
             specRow("BIOS", specs.motherboard.biosVersion)
             displayName("cooler")
             specRow("Cooler", specs.coolerName)
-        }
-        Section("Storage") {
+        } header: { sectionHeader("Motherboard & Cooling", icon: "fanblades", tint: .blue) }
+        .orbitRow()
+        Section {
             displayName("storage")
             ForEach(Array(specs.disks.enumerated()), id: \.offset) { index, disk in
                 DisclosureGroup(disk.name ?? "Drive \(index + 1)") {
@@ -1929,6 +2672,41 @@ struct FullSpecsView: View {
                     specRow("Type", [disk.interfaceType, disk.mediaType].compactMap { $0 }.joined(separator: " · "))
                 }
             }
+            ForEach(Array(specs.volumes.enumerated()), id: \.offset) { _, volume in
+                if let mount = volume.mountpoint {
+                    specRow(mount, volumeDescription(volume))
+                }
+            }
+        } header: { sectionHeader("Storage", icon: "internaldrive", tint: .orange) }
+        .orbitRow()
+        if !specs.networkAdapters.isEmpty {
+            Section {
+                ForEach(Array(specs.networkAdapters.enumerated()), id: \.offset) { index, adapter in
+                    DisclosureGroup(adapter.name ?? "Adapter \(index + 1)") {
+                        specRow("MAC", adapter.macAddress)
+                        specRow("IPv4", adapter.ipv4Addresses.isEmpty ? nil : adapter.ipv4Addresses.joined(separator: ", "))
+                    }
+                }
+            } header: { sectionHeader("Network", icon: "network", tint: .teal) }
+            .orbitRow()
+        }
+    }
+
+    private func volumeDescription(_ volume: PCSpecs.Volume) -> String? {
+        var parts: [String] = []
+        if let used = volume.usedGB, let total = volume.totalGB, total > 0 {
+            parts.append("\(decimal(used, digits: 0)) / \(decimal(total, digits: 0)) GB")
+        } else if let total = volume.totalGB {
+            parts.append("\(decimal(total, digits: 0)) GB")
+        }
+        if let fs = volume.fileSystem { parts.append(fs) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func sectionHeader(_ title: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(tint)
+            Text(title)
         }
     }
 
@@ -1959,7 +2737,7 @@ struct ComponentNamesView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Custom Labels") {
+                Section {
                     ForEach(components, id: \.0) { key, title in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(title).font(.caption).foregroundStyle(.secondary)
@@ -1968,11 +2746,18 @@ struct ComponentNamesView: View {
                         }
                         .padding(.vertical, 2)
                     }
+                } header: {
+                    Text("Custom Labels")
+                } footer: {
+                    Text("Labels replace detected component names on the Overview cards for this PC only.")
                 }
+                .orbitRow()
                 Section {
                     Button("Reset to Detected Names", role: .destructive) { names = [:] }
                 }
+                .orbitRow()
             }
+            .orbitListChrome()
             .navigationTitle("Custom Labels")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1980,6 +2765,7 @@ struct ComponentNamesView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
                         for (key, _) in components { vm.setComponentOverride(key, value: names[key] ?? "") }
+                        OrbitHaptics.success()
                         dismiss()
                     }
                     .fontWeight(.semibold)

@@ -28,11 +28,26 @@ private struct PCFileEntry: Decodable, Identifiable {
     var symbol: String {
         if isDirectory { return "folder.fill" }
         let type = UTType(filenameExtension: (name as NSString).pathExtension)
-        if type?.conforms(to: .image) == true { return "photo" }
-        if type?.conforms(to: .movie) == true { return "film" }
+        if type?.conforms(to: .image) == true { return "photo.fill" }
+        if type?.conforms(to: .movie) == true { return "film.fill" }
         if type?.conforms(to: .audio) == true { return "music.note" }
-        if type?.conforms(to: .pdf) == true { return "doc.richtext" }
-        return "doc"
+        if type?.conforms(to: .pdf) == true { return "doc.richtext.fill" }
+        if type?.conforms(to: .archive) == true { return "doc.zipper" }
+        if type?.conforms(to: .sourceCode) == true || type?.conforms(to: .script) == true { return "chevron.left.forwardslash.chevron.right" }
+        if type?.conforms(to: .executable) == true { return "app.badge" }
+        return "doc.fill"
+    }
+    var tint: Color {
+        if isDirectory { return .cyan }
+        let type = UTType(filenameExtension: (name as NSString).pathExtension)
+        if type?.conforms(to: .image) == true { return .pink }
+        if type?.conforms(to: .movie) == true { return .purple }
+        if type?.conforms(to: .audio) == true { return .orange }
+        if type?.conforms(to: .pdf) == true { return .red }
+        if type?.conforms(to: .archive) == true { return .yellow }
+        if type?.conforms(to: .sourceCode) == true || type?.conforms(to: .script) == true { return .mint }
+        if type?.conforms(to: .executable) == true { return .green }
+        return .secondary
     }
     private static let fractionalDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -131,22 +146,28 @@ struct PCFilesView: View {
     private var favoritesKey: String { "Orbit.Files.Favorites.\(vm.selectedPCStorageKey)" }
     private var queryIdentity: String { "\(vm.connectionID)|\(currentPath ?? "")|\(search)|\(sort.rawValue)|\(refreshID)" }
 
+    @Environment(\.orbitTheme) private var theme
+
     var body: some View {
         List {
             if !enabled {
                 Section {
-                    ContentUnavailableView("Your PC files", systemImage: "folder.badge.questionmark",
-                        description: Text(vm.isDemoMode ? "Connect to your own PC to browse and transfer files." : "Keep your PC and Orbit Agent running, then connect to it."))
+                    OrbitEmptyState(icon: "folder.badge.questionmark", title: "Your PC files",
+                                    message: vm.isDemoMode ? "Connect to your own PC to browse and transfer files." : "Keep your PC and Orbit Agent running, then connect to it.",
+                                    tint: .blue)
                 }
+                .orbitRow()
             }
             if let error {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+                    .orbitRow(tint: .orange)
             }
-            if let notice { Section { Text(notice).font(.caption).foregroundStyle(.secondary) } }
-            Section { navigationControls }
-            if transferTitle != nil { transferSection }
+            if let notice { Section { Label(notice, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) }.orbitRow(tint: .mint) }
+            Section { navigationControls }.orbitRow()
+            if transferTitle != nil { transferSection.orbitRow(tint: theme.accent) }
             if let currentPath { folderSection(currentPath) } else { locationsSection }
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Files")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Search this folder")
@@ -179,65 +200,117 @@ struct PCFilesView: View {
     }
 
     private var navigationControls: some View {
-        HStack(spacing: 12) {
-            Button { goBack() } label: { Label("Back", systemImage: "arrow.left") }
-                .disabled(backHistory.isEmpty || !enabled || transferTitle != nil)
-                .accessibilityHint("Return to the previous location you visited")
-            Button { goForward() } label: { Image(systemName: "arrow.right") }
-                .disabled(forwardHistory.isEmpty || !enabled || transferTitle != nil)
-                .accessibilityLabel("Forward")
-            Divider().frame(height: 20)
-            Button { if let parentPath { open(parentPath) } } label: { Image(systemName: "arrow.up") }
-                .disabled(parentPath == nil || !enabled || transferTitle != nil)
-                .accessibilityLabel("Parent folder")
-            Spacer(minLength: 0)
-            Button { open(nil) } label: { Image(systemName: "house") }
-                .disabled(currentPath == nil || !enabled || transferTitle != nil)
-                .accessibilityLabel("All locations")
+        HStack(spacing: 8) {
+            navButton("arrow.left", label: "Back", enabled: !backHistory.isEmpty) { goBack() }
+            navButton("arrow.right", label: "Forward", enabled: !forwardHistory.isEmpty) { goForward() }
+            navButton("arrow.up", label: "Parent folder", enabled: parentPath != nil) { if let parentPath { open(parentPath) } }
+            Spacer(minLength: 4)
+            Text(currentPath.map { ($0 as NSString).lastPathComponent.isEmpty ? $0 : ($0 as NSString).lastPathComponent } ?? "All locations")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            navButton("house.fill", label: "All locations", enabled: currentPath != nil) { open(nil) }
         }
-        .font(.subheadline)
-        .buttonStyle(.borderless)
         .frame(minHeight: 30)
+    }
+
+    private func navButton(_ icon: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 32)
+                .background(.white.opacity(0.06), in: Circle())
+        }
+        .buttonStyle(.borderless)
+        .disabled(!enabled || !self.enabled || transferTitle != nil)
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder private var locationsSection: some View {
         if !favorites.isEmpty {
             Section("Favorites") {
                 ForEach(favorites) { favorite in
-                    Button { open(favorite.path) } label: { Label(favorite.name, systemImage: "star.fill") }
-                        .contextMenu { Button("Remove favorite", role: .destructive) { favorites.removeAll { $0.id == favorite.id }; saveFavorites() } }
+                    Button { open(favorite.path) } label: {
+                        locationLabel(favorite.name, detail: favorite.path, icon: "star.fill", tint: .yellow)
+                    }
+                    .contextMenu { Button("Remove favorite", role: .destructive) { favorites.removeAll { $0.id == favorite.id }; saveFavorites() } }
                 }
             }
+            .orbitRow(tint: .yellow)
         }
         if let roots {
             if !roots.shortcuts.isEmpty {
                 Section("Quick access") {
                     ForEach(roots.shortcuts) { location in locationButton(location) }
                 }
+                .orbitRow()
             }
             Section("Drives") { ForEach(roots.roots) { location in locationButton(location) } }
+                .orbitRow()
             Section {
                 Label("Files stay on your PC until you open or download them. Transfers use your trusted encrypted connection.", systemImage: "lock.shield")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            .orbitRow()
         } else if loading {
-            Section { HStack { ProgressView(); Text("Reading PC locations…") } }
+            Section { HStack { ProgressView(); Text("Reading PC locations…") } }.orbitRow()
         }
     }
 
+    private func locationLabel(_ name: String, detail: String?, icon: String, tint: Color) -> some View {
+        HStack(spacing: 12) {
+            OrbitIconBadge(systemName: icon, tint: tint, size: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).foregroundStyle(.primary)
+                if let detail, detail != name {
+                    Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+    }
+
     private func locationButton(_ location: PCFileLocation) -> some View {
-        Button { open(location.path) } label: {
-            Label(location.name, systemImage: location.kind == "shortcut" ? "folder" : location.kind == "external" ? "externaldrive" : "internaldrive")
+        let icon = location.kind == "shortcut" ? folderIcon(for: location.name) : location.kind == "external" ? "externaldrive.fill" : "internaldrive.fill"
+        let tint: Color = location.kind == "shortcut" ? theme.accent : location.kind == "external" ? .orange : .blue
+        return Button { open(location.path) } label: {
+            locationLabel(location.name, detail: location.path, icon: icon, tint: tint)
         }.disabled(!enabled)
+    }
+
+    private func folderIcon(for name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("desktop") { return "menubar.dock.rectangle" }
+        if lower.contains("download") { return "arrow.down.circle.fill" }
+        if lower.contains("document") { return "doc.text.fill" }
+        if lower.contains("picture") || lower.contains("photo") { return "photo.fill" }
+        if lower.contains("video") || lower.contains("movie") { return "film.fill" }
+        if lower.contains("music") { return "music.note" }
+        return "folder.fill"
     }
 
     @ViewBuilder private func folderSection(_ path: String) -> some View {
         Section {
-            HStack {
-                Text(path).font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
+            HStack(spacing: 10) {
+                OrbitIconBadge(systemName: "folder.fill", tint: theme.accent, size: 30)
+                Text(path).font(.caption.monospaced()).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
                 Spacer(minLength: 0)
-                Button { toggleFavorite(path) } label: { Image(systemName: favorites.contains { $0.path == path } ? "star.fill" : "star") }
-                    .accessibilityLabel("Favorite folder")
+                Button {
+                    OrbitHaptics.selection()
+                    toggleFavorite(path)
+                } label: {
+                    Image(systemName: favorites.contains { $0.path == path } ? "star.fill" : "star")
+                        .foregroundStyle(favorites.contains { $0.path == path } ? .yellow : .secondary)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .accessibilityLabel("Favorite folder")
             }.buttonStyle(.borderless)
             if !selecting {
                 Button { download([folderEntry(path)], preview: false) } label: {
@@ -253,6 +326,7 @@ struct PCFilesView: View {
                 }.font(.caption)
             }
         }
+        .orbitRow(tint: theme.accent)
         Section {
             ForEach(entries) { entry in fileRow(entry) }
             if loading { HStack { Spacer(); ProgressView(); Spacer() } }
@@ -265,6 +339,7 @@ struct PCFilesView: View {
         } footer: {
             Text(truncated ? "This folder has more than 100,000 entries. Narrow your search or open a subfolder." : "\(total) item\(total == 1 ? "" : "s") · Windows account permissions apply")
         }
+        .orbitRow()
     }
 
     private func fileRow(_ entry: PCFileEntry) -> some View {
@@ -275,8 +350,8 @@ struct PCFilesView: View {
                 } else if entry.isDirectory { open(entry.path) } else { download([entry], preview: entry.canPreview) }
             } label: {
                 HStack(spacing: 12) {
-                    if selecting { Image(systemName: selected.contains(entry.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(.cyan) }
-                    Image(systemName: entry.symbol).font(.title3).foregroundStyle(entry.isDirectory ? .cyan : .secondary).frame(width: 28)
+                    if selecting { Image(systemName: selected.contains(entry.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(theme.accent) }
+                    OrbitIconBadge(systemName: entry.symbol, tint: entry.isDirectory ? theme.accent : entry.tint, size: 32)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(entry.name).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
                         if !entry.detail.isEmpty { Text(entry.detail).font(.caption2).foregroundStyle(.secondary) }
@@ -348,15 +423,43 @@ struct PCFilesView: View {
 
     private var transferSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack { Text(transferTitle ?? "Transfer").font(.subheadline).lineLimit(2); Spacer(); Button("Cancel", role: .cancel) { cancelTransfer() } }
-                if transferIndeterminate { ProgressView() } else { ProgressView(value: transferProgress) }
-                HStack {
-                    Text(transferIndeterminate ? transferPhase : "\(Int(transferProgress * 100))% · \(transferPhase)")
-                    Spacer()
-                    if transferSpeed > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(transferSpeed), countStyle: .file))/s") }
-                }.font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                ZStack {
+                    OrbitRingGauge(progress: transferIndeterminate ? nil : transferProgress, lineWidth: 4, tint: theme.accent)
+                        .frame(width: 44, height: 44)
+                    if transferIndeterminate {
+                        ProgressView().controlSize(.small).tint(theme.accent)
+                    } else {
+                        Text("\(Int(transferProgress * 100))")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(transferTitle ?? "Transfer").font(.subheadline.weight(.semibold)).lineLimit(2)
+                    HStack {
+                        Text(transferIndeterminate ? transferPhase : "\(Int(transferProgress * 100))% · \(transferPhase)")
+                        Spacer()
+                        if transferSpeed > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(transferSpeed), countStyle: .file))/s").monospacedDigit() }
+                    }.font(.caption).foregroundStyle(.secondary)
+                    if !transferIndeterminate {
+                        ProgressView(value: transferProgress).tint(theme.accent)
+                    }
+                }
+                Button {
+                    OrbitHaptics.warning()
+                    cancelTransfer()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .background(.white.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Cancel transfer")
             }
+            .padding(.vertical, 4)
         }
     }
 
@@ -380,6 +483,7 @@ struct PCFilesView: View {
                     Text("\(actionEntries.count) items will be moved. Existing files are never overwritten.").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .orbitListChrome()
             .navigationTitle(kind == .folder ? "New folder" : kind == .rename ? "Rename" : "Move items")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -389,7 +493,9 @@ struct PCFilesView: View {
                         .disabled(promptValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !enabled)
                 }
             }
-        }.presentationDetents([.medium, .large])
+        }
+        .orbitAppearance()
+        .presentationDetents([.medium, .large])
     }
 
     @MainActor private func refresh() async {

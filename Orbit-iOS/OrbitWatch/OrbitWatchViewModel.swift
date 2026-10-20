@@ -111,6 +111,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var isWaking: Bool = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
+    /// Theme accent synced from the iPhone (sRGB hex without "#").
+    @Published var accentHex: String = ""
+    @Published var secondaryHex: String = ""
 
     // Wrist Motion Air Mouse state
     @Published var isMotionCursorActive: Bool = false
@@ -831,6 +834,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         if let up = payload["uptimeSeconds"] as? Int { uptimeSeconds = up }
         if let ping = payload["pingMs"] as? Int { pingMs = ping }
         if let la = payload["isLiveActivityActive"] as? Bool { isLiveActivityActive = la }
+        if let hex = payload["themeAccentHex"] as? String, hex.count == 6 { accentHex = hex }
+        if let hex = payload["themeSecondaryHex"] as? String, hex.count == 6 { secondaryHex = hex }
 
         if let rawGames = payload["games"] as? [[String: String]] {
             games = rawGames.compactMap { dict in
@@ -903,7 +908,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             "broadcastAddress": broadcastAddress,
             "subnetMask": subnetMask,
             "wolPort": wolPort,
-            "lastKnownIPv4": lastKnownIPv4
+            "lastKnownIPv4": lastKnownIPv4,
+            "accentHex": accentHex,
+            "secondaryHex": secondaryHex
         ]
         store.set(snapshot, forKey: Self.snapshotKey)
         UserDefaults.standard.set(snapshot, forKey: Self.snapshotKey)
@@ -938,6 +945,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         subnetMask = snapshot["subnetMask"] as? String ?? "255.255.255.0"
         wolPort = snapshot["wolPort"] as? Int ?? 9
         lastKnownIPv4 = snapshot["lastKnownIPv4"] as? String ?? ""
+        accentHex = snapshot["accentHex"] as? String ?? ""
+        secondaryHex = snapshot["secondaryHex"] as? String ?? ""
     }
 }
 

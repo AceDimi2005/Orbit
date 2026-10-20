@@ -39,6 +39,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
 
     func buildSyncPayload() -> [String: Any] {
         guard let vm = viewModel else { return [:] }
+        let theme = OrbitTheme(rawValue: UserDefaults.standard.string(forKey: "orbit.theme") ?? "") ?? .ocean
         let ramPct = vm.metrics.ramTotalGB > 0 ? (vm.metrics.ramUsedGB / vm.metrics.ramTotalGB * 100.0) : 0.0
         let gamesList: [[String: String]] = vm.games.prefix(16).map {
             ["id": $0.id, "title": $0.title, "genre": $0.genre]
@@ -89,7 +90,10 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             "isLiveActivityActive": vm.isDynamicIslandActive,
             "statusLog": vm.statusLog,
             "games": gamesList,
-            "savedPCs": pcsList
+            "savedPCs": pcsList,
+            "theme": theme.rawValue,
+            "themeAccentHex": theme.accentHex,
+            "themeSecondaryHex": theme.secondaryHex
         ]
         if let cpuTemp = vm.metrics.cpuTemp { payload["cpuTemp"] = cpuTemp }
         if let gpuUsage = vm.metrics.gpuUsage { payload["gpuUsage"] = gpuUsage }

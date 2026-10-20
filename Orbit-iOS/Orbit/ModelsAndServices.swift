@@ -74,6 +74,65 @@ struct PCMetrics: Codable {
     }
 }
 
+/// Short rolling buffers that feed the dashboard sparklines. Only readings the
+/// agent actually reported are stored; a missing sensor leaves a gap instead of
+/// a fabricated value.
+struct MetricHistory: Equatable {
+    static let capacity = 40
+    var cpuUsage: [Double] = []
+    var gpuUsage: [Double] = []
+    var fps: [Double] = []
+    var cpuPower: [Double] = []
+    var gpuPower: [Double] = []
+    var ramUsed: [Double] = []
+    var vramUsed: [Double] = []
+    var cpuTemp: [Double] = []
+    var gpuTemp: [Double] = []
+    var download: [Double] = []
+    var diskRead: [Double] = []
+    var cpuClock: [Double] = []
+
+    mutating func append(_ m: PCMetrics) {
+        guard m.isOnline, m.telemetryAvailable != false else { return }
+        Self.push(&cpuUsage, m.cpuUsage)
+        Self.push(&gpuUsage, m.gpuUsage)
+        Self.push(&fps, m.fps)
+        Self.push(&cpuPower, m.cpuPowerWatts)
+        Self.push(&gpuPower, m.gpuPowerWatts)
+        Self.push(&ramUsed, m.ramTotalGB > 0 ? m.ramUsedGB : nil)
+        Self.push(&vramUsed, m.vramUsedGB)
+        Self.push(&cpuTemp, m.cpuTemp)
+        Self.push(&gpuTemp, m.gpuTemp)
+        Self.push(&download, m.networkDownloadMBps)
+        Self.push(&diskRead, m.diskReadMBps)
+        Self.push(&cpuClock, m.cpuClockMHz)
+    }
+
+    private static func push(_ buffer: inout [Double], _ value: Double?) {
+        guard let value, value.isFinite else { buffer.removeAll(); return }
+        buffer.append(value)
+        if buffer.count > capacity { buffer.removeFirst(buffer.count - capacity) }
+    }
+
+    func series(for metric: DashboardMetric) -> [Double] {
+        switch metric {
+        case .cpuLoad: return cpuUsage
+        case .gpuLoad: return gpuUsage
+        case .fps: return fps
+        case .cpuPower: return cpuPower
+        case .gpuPower: return gpuPower
+        case .memory: return ramUsed
+        case .vram: return vramUsed
+        case .cpuTemperature: return cpuTemp
+        case .gpuTemperature: return gpuTemp
+        case .network: return download
+        case .diskActivity: return diskRead
+        case .cpuClock: return cpuClock
+        default: return []
+        }
+    }
+}
+
 struct PCSpecs: Codable {
     struct CPU: Codable { var name: String?; var manufacturer: String?; var physicalCores: Int?; var logicalCores: Int?; var maxClockMHz: Double? }
     struct Motherboard: Codable { var manufacturer: String?; var model: String?; var biosVersion: String? }
@@ -243,6 +302,7 @@ final class OrbitViewModel: ObservableObject {
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding = false
     @Published var showOnboarding = false
     @Published var metrics = PCMetrics()
+    @Published var history = MetricHistory()
     @Published var specs: PCSpecs?
     @Published var specsError: String?
     @Published var isLoadingSpecs = false
@@ -331,7 +391,7 @@ final class OrbitViewModel: ObservableObject {
         generation += 1
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
-        metrics = PCMetrics(); specs = nil; games = []; lastUpdated = nil; pingMs = 0
+        metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; lastUpdated = nil; pingMs = 0
         widgetToken = nil; widgetSetupError = nil
         processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil; processGpuStatus = nil
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
@@ -385,6 +445,7 @@ final class OrbitViewModel: ObservableObject {
         resetConnection(); isDemoMode = enabled; loadOverrides(); loadDashboardConfiguration()
         if enabled {
             metrics = .demo; games = Self.demoGames; statusLog = "Preview • simulated data"; lastUpdated = Date()
+            history = MetricHistory(); for _ in 0..<12 { applyDemoJitter() }
             Task { await fetchSpecs() }
         } else { Task { await refreshMetrics() } }
     }
@@ -401,7 +462,11 @@ final class OrbitViewModel: ObservableObject {
     }
     func refreshMetrics() async {
         guard !isRefreshing, appActive else { return }
-        if isDemoMode { statusLog = "Preview • simulated data"; return }
+        if isDemoMode {
+            statusLog = "Preview • simulated data"
+            applyDemoJitter()
+            return
+        }
         guard hasCompletedOnboarding || hasSecureConnection else { statusLog = "Choose Find my PC to pair with the code shown on Windows."; return }
         guard isConfigured else { metrics.isOnline = false; statusLog = "Find and pair your PC in My PCs"; return }
         isRefreshing = true; defer { isRefreshing = false }
@@ -413,6 +478,7 @@ final class OrbitViewModel: ObservableObject {
             guard generation == version, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
             metrics = decoded
+            history.append(decoded)
             if savedPCs.isEmpty || selectedPCID.isEmpty { saveCurrentConnection() }
             if isDraggingVolume || volumeCommands.isSending || start <= lastVolumeChangeTime || Date().timeIntervalSince(lastVolumeChangeTime) < 2 { metrics.volume = sliderVolume }
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
@@ -438,6 +504,26 @@ final class OrbitViewModel: ObservableObject {
             await updateLiveActivity()
             OrbitWatchBridge.shared.pushStateToWatch()
         }
+    }
+    /// Demo mode is explicitly simulated, so a gentle drift keeps the preview
+    /// gauges and sparklines alive without pretending to be a sensor.
+    private func applyDemoJitter() {
+        guard isDemoMode, metrics.isOnline else { return }
+        func drift(_ value: Double, by amount: Double, in range: ClosedRange<Double>) -> Double {
+            min(range.upperBound, max(range.lowerBound, value + Double.random(in: -amount...amount)))
+        }
+        metrics.cpuUsage = drift(metrics.cpuUsage, by: 3, in: 6...92).rounded()
+        metrics.gpuUsage = metrics.gpuUsage.map { drift($0, by: 3, in: 10...96).rounded() }
+        metrics.fps = metrics.fps.map { drift($0, by: 4, in: 90...144).rounded() }
+        metrics.cpuPowerWatts = metrics.cpuPowerWatts.map { drift($0, by: 4, in: 35...110).rounded() }
+        metrics.gpuPowerWatts = metrics.gpuPowerWatts.map { drift($0, by: 8, in: 60...280).rounded() }
+        metrics.cpuTemp = metrics.cpuTemp.map { drift($0, by: 1, in: 40...70).rounded() }
+        metrics.gpuTemp = metrics.gpuTemp.map { drift($0, by: 1, in: 45...75).rounded() }
+        metrics.networkDownloadMBps = metrics.networkDownloadMBps.map { max(0.1, drift($0, by: 2.5, in: 0.1...60)) }
+        metrics.diskReadMBps = metrics.diskReadMBps.map { max(0.1, drift($0, by: 6, in: 0.1...200)) }
+        metrics.uptimeSeconds += 2
+        history.append(metrics)
+        lastUpdated = Date()
     }
     func fetchNetworkConfigFromPC() async {
         guard !isDemoMode else { return }

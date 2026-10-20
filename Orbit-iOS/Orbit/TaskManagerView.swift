@@ -26,9 +26,37 @@ struct TaskManagerView: View {
         }
     }
 
+    @Environment(\.orbitTheme) private var theme
+
+    private var topConsumer: PCProcess? {
+        vm.processes.max { ($0.cpuPercent ?? -1) < ($1.cpuPercent ?? -1) }
+    }
+
     var body: some View {
         List {
             Section {
+                HStack(spacing: 12) {
+                    OrbitIconBadge(systemName: "list.bullet.rectangle.portrait.fill", tint: .orange, size: 40, filled: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(vm.lastProcessesUpdated == nil ? "Processes" : "\(vm.processes.count) processes")
+                            .font(.headline.weight(.bold))
+                            .contentTransition(.numericText())
+                        if let updated = vm.lastProcessesUpdated {
+                            Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(vm.metrics.isOnline ? "Reading the process list…" : "Connect to your PC to list processes")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let top = topConsumer, let cpu = top.cpuPercent, cpu.isFinite {
+                            Text("Busiest: \(top.name) · \(String(format: "%.0f%% CPU", cpu))")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    if vm.isLoadingProcesses { ProgressView().tint(theme.accent) }
+                }
+                .padding(.vertical, 2)
                 if vm.isDemoMode {
                     Label("Preview processes · no PC actions", systemImage: "sparkles")
                         .font(.caption).foregroundStyle(.orange)
@@ -37,36 +65,35 @@ struct TaskManagerView: View {
                     ForEach(ProcessSortOrder.allCases) { order in Text(order.title).tag(order) }
                 }
                 .pickerStyle(.segmented)
-                if let updated = vm.lastProcessesUpdated {
-                    HStack {
-                        Text("\(vm.processes.count) processes")
-                        Spacer()
-                        Text(updated, style: .time)
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                }
+                .onChange(of: sortOrder) { _, _ in OrbitHaptics.selection() }
                 if let status = vm.processGpuStatus {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .orbitRow(tint: .orange)
             if let error = vm.processesError {
                 Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
+                    .orbitRow(tint: .orange)
             }
             if let status = vm.processActionStatus {
-                Section { Text(status).font(.caption).foregroundStyle(.mint) }
+                Section { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) }
+                    .orbitRow(tint: .mint)
             }
             Section("Running processes") {
                 if vm.isLoadingProcesses && vm.processes.isEmpty {
                     HStack { ProgressView(); Text("Reading running processes…").padding(.leading, 8) }
                 } else if sortedProcesses.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "No processes available" : "No matching processes",
-                                           systemImage: "list.bullet.rectangle",
-                                           description: Text(search.isEmpty ? "Keep Orbit Agent running on your PC." : "Try another name or PID."))
+                    OrbitEmptyState(icon: search.isEmpty ? "list.bullet.rectangle" : "magnifyingglass",
+                                    title: search.isEmpty ? "No processes available" : "No matching processes",
+                                    message: search.isEmpty ? "Keep Orbit Agent running on your PC." : "Try another name or PID.",
+                                    tint: .orange)
                 } else {
                     ForEach(sortedProcesses) { process in processRow(process) }
                 }
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Task Manager")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Application name or PID")
@@ -103,41 +130,71 @@ struct TaskManagerView: View {
     }
 
     private func processRow(_ process: PCProcess) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: process.canTerminate ? "app.fill" : "lock.shield")
-                    .foregroundStyle(process.canTerminate ? .cyan : .secondary)
-                    .frame(width: 24)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                OrbitIconBadge(systemName: process.canTerminate ? "app.fill" : "lock.shield.fill", tint: process.canTerminate ? theme.accent : .secondary, size: 34)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(process.name).font(.subheadline.weight(.medium)).lineLimit(2)
+                    Text(process.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text("PID \(process.pid) · \(process.status)").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 if vm.endingProcessID == process.pid {
                     ProgressView()
                 } else if process.canTerminate {
-                    Button("End task", role: .destructive) { selectedProcess = process }
-                        .font(.caption.weight(.medium))
-                        .buttonStyle(.bordered)
+                    Button("End task") { selectedProcess = process }
+                        .buttonStyle(OrbitGlassButtonStyle(tint: .red, cornerRadius: 18))
+                        .font(.caption.weight(.bold))
                         .disabled(vm.endingProcessID != nil || !vm.metrics.isOnline || vm.isDemoMode)
                         .accessibilityLabel("End task: \(process.name), PID \(process.pid)")
                 } else {
                     Text("Protected")
-                        .font(.caption2.weight(.medium))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.white.opacity(0.05), in: Capsule())
                 }
             }
-            HStack(spacing: 14) {
-                Text(process.cpuPercent.flatMap { $0.isFinite ? String(format: "CPU %.1f%%", $0) : nil } ?? "CPU —")
-                Text(process.gpuPercent.flatMap { $0.isFinite ? String(format: "GPU %.1f%%", $0) : nil } ?? "GPU —")
-                Text(process.memoryMB.flatMap { $0.isFinite ? String(format: "RAM %.0f MB", $0) : nil } ?? "RAM —")
+            HStack(spacing: 8) {
+                usageChip("CPU", value: process.cpuPercent, unit: "%", fraction: process.cpuPercent.map { $0 / 100 }, tint: .cyan)
+                usageChip("GPU", value: process.gpuPercent, unit: "%", fraction: process.gpuPercent.map { $0 / 100 }, tint: .mint)
+                usageChip("RAM", value: process.memoryMB, unit: " MB", fraction: process.memoryMB.flatMap { mb in vm.metrics.ramTotalGB > 0 ? mb / (vm.metrics.ramTotalGB * 1024) : nil }, tint: Color(red: 0.68, green: 0.65, blue: 0.98), digits: 0)
                 if let vram = process.vramMB, vram.isFinite, vram > 0 {
-                    Text(String(format: "VRAM %.0f MB", vram))
+                    usageChip("VRAM", value: vram, unit: " MB", fraction: vm.metrics.vramTotalGB.flatMap { total in total > 0 ? vram / (total * 1024) : nil }, tint: .orange, digits: 0)
                 }
             }
-            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private func usageChip(_ label: String, value: Double?, unit: String, fraction: Double?, tint: Color, digits: Int = 1) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+                Text(value.flatMap { $0.isFinite ? String(format: "%.\(digits)f", $0) + unit : nil } ?? "—")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.07))
+                    if let fraction, fraction.isFinite {
+                        Capsule().fill(tint.gradient)
+                            .frame(width: max(2, geo.size.width * min(1, max(0, fraction))))
+                    }
+                }
+            }
+            .frame(height: 3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -166,13 +223,20 @@ struct FPSSetupView: View {
     var body: some View {
         List {
             Section("MSI Afterburner + RTSS (Recommended)") {
-                Label("Automatic FPS & Sensor Reading", systemImage: "speedometer")
-                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 12) {
+                    OrbitIconBadge(systemName: "speedometer", tint: .mint, size: 36, filled: true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Automatic FPS & Sensor Reading").font(.subheadline.weight(.semibold))
+                        Text(vm.metrics.fps.map { String(format: "Live: %.0f FPS", $0) } ?? "No FPS reading yet")
+                            .font(.caption).foregroundStyle(vm.metrics.fps == nil ? .secondary : .mint)
+                    }
+                }
                 Text("Install MSI Afterburner with RivaTuner Statistics Server (RTSS) included, and keep both open on your PC.")
                     .font(.caption).foregroundStyle(.secondary)
                 Link("Download MSI Afterburner", destination: URL(string: "https://www.msi.com/Landing/afterburner/graphics-cards")!)
                     .font(.subheadline)
             }
+            .orbitRow(tint: .mint)
             Section("Quick Checklist") {
                 Label("1. In Afterburner → Settings → Monitoring, enable CPU/GPU Temp & Framerate.", systemImage: "1.circle.fill")
                     .font(.caption)
@@ -181,6 +245,7 @@ struct FPSSetupView: View {
                 Label("3. Enable Game frame rate in Customize Dashboard.", systemImage: "3.circle.fill")
                     .font(.caption)
             }
+            .orbitRow()
             Section {
                 DisclosureGroup("Advanced: PresentMon CSV fallback") {
                     Text("Use PresentMon if RTSS is blocked by anti-cheat.")
@@ -190,7 +255,9 @@ struct FPSSetupView: View {
                     command(agentCommand, id: "agent")
                 }
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Set up FPS")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -219,7 +286,15 @@ struct MonitoringSourcesView: View {
     var body: some View {
         List {
             Section("Windows Companion") {
-                LabeledContent("Connection", value: vm.isDemoMode ? "Simulated preview" : (vm.metrics.isOnline ? "Connected" : "Unavailable"))
+                HStack {
+                    Text("Connection")
+                    Spacer()
+                    OrbitStatusPill(
+                        text: vm.isDemoMode ? "Simulated preview" : (vm.metrics.isOnline ? "Connected" : "Unavailable"),
+                        tint: vm.metrics.isOnline && !vm.isDemoMode ? .mint : .orange,
+                        pulsing: vm.metrics.isOnline && !vm.isDemoMode
+                    )
+                }
                 LabeledContent("Version", value: vm.metrics.agentVersion ?? "Not connected")
                 if vm.metrics.telemetryAvailable == false {
                     Text("Agent reachable, waiting for telemetry sample.")
@@ -227,6 +302,7 @@ struct MonitoringSourcesView: View {
                 }
                 Button("Refresh connection", systemImage: "arrow.clockwise") { Task { await vm.refreshMetrics() } }
             }
+            .orbitRow()
             Section("Temperatures & Sensors") {
                 LabeledContent("CPU sensor", value: vm.metrics.sensorSource ?? "Not connected")
                 LabeledContent("GPU sensor", value: vm.metrics.gpuSource ?? "Not connected")
@@ -235,6 +311,7 @@ struct MonitoringSourcesView: View {
                 if let status = vm.metrics.sensorStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
                 NavigationLink { FPSSetupView(vm: vm) } label: { Label("Set up Afterburner & RTSS", systemImage: "slider.horizontal.3") }
             }
+            .orbitRow()
             Section("Network & Game FPS") {
                 LabeledContent("Adapter", value: vm.metrics.networkInterface ?? "Auto")
                 LabeledContent("Download", value: traffic(vm.metrics.networkDownloadMBps))
@@ -243,7 +320,9 @@ struct MonitoringSourcesView: View {
                 LabeledContent("FPS", value: vm.metrics.fps.map { String(format: "%.1f", $0) } ?? "Unavailable")
                 if let source = vm.metrics.fpsSource { LabeledContent("FPS source", value: source) }
             }
+            .orbitRow()
         }
+        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Monitoring Sources")
         .navigationBarTitleDisplayMode(.inline)
     }
