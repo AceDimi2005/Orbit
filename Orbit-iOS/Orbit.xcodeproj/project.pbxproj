@@ -77,6 +77,10 @@
 		A60000000000000000000014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000013 /* Assets.xcassets */; };
 		A60000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000015 /* PrivacyInfo.xcprivacy */; };
 		A60000000000000000000016 /* SRP in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* SRP */; };
+		A20000000000000000000071 /* OrbitCursorPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000071 /* OrbitCursorPipeline.swift */; };
+		A30000000000000000000071 /* OrbitCursorPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000071 /* OrbitCursorPipeline.swift */; };
+		A30000000000000000000072 /* OrbitWatchHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000072 /* OrbitWatchHTTPClient.swift */; };
+		A30000000000000000000073 /* VolumeCommandQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* VolumeCommandQueue.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -209,6 +213,8 @@
 		B60000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B60000000000000000000015 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B60000000000000000000016 /* OrbitMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OrbitMac.entitlements; sourceTree = "<group>"; };
+		B20000000000000000000071 /* OrbitCursorPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitCursorPipeline.swift; sourceTree = "<group>"; };
+		B20000000000000000000072 /* OrbitWatchHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchHTTPClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -329,6 +335,8 @@
 		C20000000000000000000002 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				B20000000000000000000072 /* OrbitWatchHTTPClient.swift */,
+				B20000000000000000000071 /* OrbitCursorPipeline.swift */,
 				B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */,
 				B20000000000000000000002 /* OrbitActivityAttributes.swift */,
 			);
@@ -615,6 +623,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000071 /* OrbitCursorPipeline.swift in Sources */,
 				A20000000000000000000010 /* OrbitPairing.swift in Sources */,
 				A20000000000000000000011 /* PCDiscoveryView.swift in Sources */,
 				A20000000000000000000012 /* Appearance.swift in Sources */,
@@ -653,6 +662,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000073 /* VolumeCommandQueue.swift in Sources */,
+				A30000000000000000000072 /* OrbitWatchHTTPClient.swift in Sources */,
+				A30000000000000000000071 /* OrbitCursorPipeline.swift in Sources */,
 				A30000000000000000000001 /* OrbitWatchApp.swift in Sources */,
 				A30000000000000000000002 /* OrbitWatchViewModel.swift in Sources */,
 				A30000000000000000000003 /* OrbitWatchViews.swift in Sources */,

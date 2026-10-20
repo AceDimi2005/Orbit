@@ -21,7 +21,7 @@ models = models.replace("import Foundation\n", "import Foundation\nstruct PCMetr
 models = "import Darwin\n" + models
 wake = source[source.index("final class WakeOnLANService"):source.index("private enum TokenStore")]
 profiles = (ROOT / "Orbit-iOS/Orbit/PCProfilesView.swift").read_text()
-saved_pc = profiles[profiles.index("struct SavedPC:"):profiles.index("enum PCProfileStore")]
+saved_pc = profiles[profiles.index("struct SavedPC:"):profiles.index("struct OrbitSyncedPCItem:")]
 models += wake + saved_pc
 
 with tempfile.TemporaryDirectory(prefix="orbit-protocol-") as directory:
@@ -77,8 +77,34 @@ var legacyProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
 legacyProfile.removeValue(forKey: "lastKnownIPv4")
 let migrated = try JSONDecoder().decode(SavedPC.self, from: JSONSerialization.data(withJSONObject: legacyProfile))
 precondition(migrated.name == "Legacy PC" && migrated.lastKnownIPv4 == nil)
-print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address and legacy PC profiles")
+var history = MetricHistory()
+var reading = extended
+reading.isOnline = true
+reading.telemetryAvailable = true
+reading.cpuUsage = 25
+reading.gpuUsage = 60
+for _ in 0..<(MetricHistory.capacity + 3) { history.append(reading) }
+precondition(history.series(for: .cpuLoad).count == MetricHistory.capacity)
+precondition(history.series(for: .gpuLoad).last == 60)
+reading.gpuUsage = nil
+history.append(reading)
+precondition(history.series(for: .gpuLoad).isEmpty)
+precondition(history.series(for: .cpuLoad).last == 25)
+let beforeOffline = history
+reading.isOnline = false
+reading.cpuUsage = 99
+history.append(reading)
+precondition(history == beforeOffline)
+reading.isOnline = true
+reading.telemetryAvailable = false
+history.append(reading)
+precondition(history == beforeOffline)
+reading.telemetryAvailable = true
+reading.cpuUsage = .nan
+history.append(reading)
+precondition(history.series(for: .cpuLoad).isEmpty)
+print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address, legacy PC profiles and bounded telemetry history with missing/invalid/offline readings")
 ''')
     binary = temporary / "protocol-check"
-    subprocess.run(["swiftc", str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
+    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary), str(temporary)], check=True)

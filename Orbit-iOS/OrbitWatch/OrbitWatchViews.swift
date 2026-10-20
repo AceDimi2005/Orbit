@@ -3,982 +3,1005 @@ import WatchKit
 
 enum OrbitWatchPalette {
     static let accent = Color(red: 0.25, green: 0.84, blue: 0.96)
-    static let secondary = Color(red: 0.42, green: 0.52, blue: 1.0)
     static let purple = Color(red: 0.71, green: 0.58, blue: 1.0)
     static let mint = Color(red: 0.35, green: 0.94, blue: 0.66)
     static let amber = Color(red: 1.0, green: 0.78, blue: 0.36)
     static let coral = Color(red: 1.0, green: 0.45, blue: 0.48)
-    static let cardBackground = Color.white.opacity(0.08)
-}
-
-private extension Color {
-    init?(watchHex hex: String) {
-        guard hex.count == 6, let value = UInt64(hex, radix: 16) else { return nil }
-        self.init(.sRGB,
-                  red: Double((value >> 16) & 0xFF) / 255,
-                  green: Double((value >> 8) & 0xFF) / 255,
-                  blue: Double(value & 0xFF) / 255,
-                  opacity: 1)
-    }
-}
-
-extension OrbitWatchViewModel {
-    /// Accent synced from the iPhone theme; falls back to Orbit cyan.
-    var accent: Color { Color(watchHex: accentHex) ?? OrbitWatchPalette.accent }
-    var secondaryAccent: Color { Color(watchHex: secondaryHex) ?? OrbitWatchPalette.secondary }
-}
-
-// MARK: - Shared watch primitives
-
-private struct WatchPageBackground: View {
-    var accent: Color
-    var secondary: Color
-    var isOnline: Bool
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.03, green: 0.05, blue: 0.09), .black],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            Circle()
-                .fill(accent.opacity(isOnline ? 0.30 : 0.14))
-                .frame(width: 180, height: 180)
-                .blur(radius: 48)
-                .offset(x: -70, y: -90)
-            Circle()
-                .fill(secondary.opacity(0.18))
-                .frame(width: 160, height: 160)
-                .blur(radius: 50)
-                .offset(x: 80, y: 110)
-        }
-        .ignoresSafeArea()
-    }
-}
-
-private extension View {
-    func watchPage(_ vm: OrbitWatchViewModel) -> some View {
-        containerBackground(for: .tabView) {
-            WatchPageBackground(accent: vm.accent, secondary: vm.secondaryAccent, isOnline: vm.isOnline)
-        }
-    }
-
-    func watchCard(_ tint: Color = .white, cornerRadius: CGFloat = 12) -> some View {
-        background(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.white.opacity(0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(LinearGradient(colors: [tint.opacity(0.10), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.8)
-                )
-        )
-    }
-}
-
-private struct WatchRing: View {
-    var progress: Double?
-    var tint: Color
-    var lineWidth: CGFloat = 5
-
-    var body: some View {
-        ZStack {
-            Circle().stroke(Color.white.opacity(0.10), lineWidth: lineWidth)
-            if let progress {
-                Circle()
-                    .trim(from: 0, to: min(1, max(0, progress)))
-                    .stroke(
-                        AngularGradient(colors: [tint.opacity(0.5), tint], center: .center, startAngle: .degrees(0), endAngle: .degrees(360 * min(1, max(0, progress)))),
-                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(-90))
-                    .shadow(color: tint.opacity(0.55), radius: 4)
-                    .animation(.snappy(duration: 0.4), value: progress)
-            }
-        }
-    }
-}
-
-private struct WatchGradientButton: View {
-    var title: String
-    var icon: String
-    var colors: [Color]
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .bold))
-                Text(title)
-                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .foregroundStyle(.black.opacity(0.85))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .background(
-                LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.25), lineWidth: 0.8))
-            .shadow(color: (colors.first ?? .clear).opacity(0.35), radius: 8, y: 4)
-        }
-        .buttonStyle(.plain)
-    }
+    static let cardBackground = Color.white.opacity(0.075)
 }
 
 struct OrbitWatchRootView: View {
     @ObservedObject var vm: OrbitWatchViewModel
 
     var body: some View {
-        NavigationStack {
-            TabView(selection: $vm.selectedTab) {
-                WatchCockpitPage(vm: vm)
-                    .tag(0)
-
-                WatchPowerDeckPage(vm: vm)
-                    .tag(1)
-
-                WatchMotionCursorPage(vm: vm)
-                    .tag(2)
-
-                WatchMediaAndGamesPage(vm: vm)
-                    .tag(3)
-            }
-            .tabViewStyle(.verticalPage)
+        TabView(selection: $vm.selectedTab) {
+            WatchCockpitPage(vm: vm).tag(0)
+            WatchPowerDeckPage(vm: vm).tag(1)
+            WatchMotionCursorPage(vm: vm).tag(2)
+            WatchMediaAndGamesPage(vm: vm).tag(3)
         }
-        .tint(vm.accent)
+        // Horizontal paging leaves the Digital Crown available to scroll each page.
+        .tabViewStyle(.page(indexDisplayMode: .automatic))
+        .background(Color.black)
         .onChange(of: vm.selectedTab) { _, newTab in
-            if newTab != 2 && vm.isMotionCursorActive {
-                vm.stopMotionCursor()
-            }
+            if newTab != 2 { vm.stopMotionCursor() }
         }
     }
 }
 
-// MARK: - Page 1: Live Cockpit & Smart Stack Live Activity
+// MARK: - Shared watch components
+
+private struct WatchPageHeading: View {
+    let title: String
+    let symbol: String
+    var tint: Color = OrbitWatchPalette.accent
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.headline)
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.headline.weight(.bold))
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .padding(.top, 2)
+    }
+}
+
+private struct WatchConnectionLine: View {
+    @ObservedObject var vm: OrbitWatchViewModel
+    var compact = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 3) {
+                if !compact {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(vm.isTelemetryFresh ? OrbitWatchPalette.mint : OrbitWatchPalette.amber)
+                            .frame(width: 5, height: 5)
+                            .accessibilityHidden(true)
+                        Text(vm.pcName)
+                            .font(.caption2.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+                HStack(spacing: 4) {
+                    if compact {
+                        Circle()
+                            .fill(vm.isTelemetryFresh ? OrbitWatchPalette.mint : OrbitWatchPalette.amber)
+                            .frame(width: 5, height: 5)
+                            .accessibilityHidden(true)
+                    }
+                    Text(freshness(at: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if vm.isTelemetryFresh && vm.pingMs > 0 {
+                        Text("· \(vm.pingMs) ms")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func freshness(at date: Date) -> String {
+        guard let updated = vm.lastTelemetryAt else {
+            return vm.hasDirectCredentials ? "Waiting for PC" : "Sync with iPhone"
+        }
+        let elapsed = max(0, Int(date.timeIntervalSince(updated)))
+        if vm.isTelemetryFresh { return "Live" }
+        if elapsed < 60 { return "Updated \(elapsed)s ago" }
+        if elapsed < 3600 { return "Updated \(elapsed / 60)m ago" }
+        return "Updated \(elapsed / 3600)h ago"
+    }
+}
+
+private struct WatchFeedback: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 4)
+    }
+}
+
+private struct WatchActionButton: View {
+    let title: String
+    let symbol: String
+    var tint: Color = OrbitWatchPalette.accent
+    var prominent = false
+    var enabled = true
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.body.weight(.semibold))
+                    .frame(width: 20)
+                Text(title)
+                    .font(.footnote.weight(.semibold))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(enabled ? tint : .secondary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(
+                prominent ? tint.opacity(enabled ? 0.20 : 0.05) : OrbitWatchPalette.cardBackground,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct WatchSectionLabel: View {
+    let title: String
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 7)
+            .padding(.leading, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private struct WatchOfflineHint: View {
+    @ObservedObject var vm: OrbitWatchViewModel
+
+    var body: some View {
+        if !vm.isOnline {
+            Label(
+                vm.hasDirectCredentials ? "Wake your PC or check its connection." : "Pair your PC in Orbit on iPhone, then open both apps to sync.",
+                systemImage: vm.hasDirectCredentials ? "wifi.exclamationmark" : "iphone.and.arrow.forward"
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+}
+
+// MARK: - Overview
 
 private struct WatchCockpitPage: View {
     @ObservedObject var vm: OrbitWatchViewModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showPCSwitcher = false
+
+    private var hasReadings: Bool { vm.isTelemetryFresh && vm.telemetryAvailable }
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 7), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                headerBar
+            VStack(alignment: .leading, spacing: 10) {
+                header
+                WatchConnectionLine(vm: vm, compact: true)
 
-                if let game = vm.activeGame, !game.isEmpty, vm.isOnline {
-                    HStack(spacing: 6) {
-                        Image(systemName: "gamecontroller.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(OrbitWatchPalette.mint)
-                        Text(game)
-                            .font(.system(size: 11.5, weight: .bold))
-                            .lineLimit(1)
-                        Spacer(minLength: 2)
-                        if let fps = vm.fps, fps > 0 {
-                            Text("\(Int(fps.rounded())) FPS")
-                                .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(OrbitWatchPalette.mint)
-                                .contentTransition(.numericText())
-                        }
+                if !vm.hasDirectCredentials && vm.savedPCs.isEmpty {
+                    pairingCard
+                } else {
+                    if let game = vm.activeGame, !game.isEmpty, hasReadings {
+                        gameCard(game)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .watchCard(OrbitWatchPalette.mint, cornerRadius: 11)
-                }
 
-                HStack(spacing: 8) {
-                    ringTile(
-                        title: "CPU",
-                        value: vm.isOnline && vm.telemetryAvailable ? "\(Int(vm.cpuUsage.rounded()))" : "—",
-                        unit: "%",
-                        detail: vm.cpuTemp.map { "\(Int($0.rounded()))°" } ?? "Load",
-                        progress: vm.isOnline && vm.telemetryAvailable ? vm.cpuUsage / 100.0 : nil,
-                        tint: vm.accent
-                    )
-                    ringTile(
-                        title: "GPU",
-                        value: vm.isOnline ? vm.gpuUsage.map { "\(Int($0.rounded()))" } ?? "—" : "—",
-                        unit: "%",
-                        detail: vm.gpuTemp.map { "\(Int($0.rounded()))°" } ?? "Graphics",
-                        progress: vm.isOnline ? vm.gpuUsage.map { $0 / 100.0 } : nil,
-                        tint: OrbitWatchPalette.purple
-                    )
-                }
-
-                HStack(spacing: 8) {
-                    barTile(
-                        title: "RAM",
-                        value: vm.isOnline && vm.ramTotalGB > 0 ? "\(Int(vm.ramUsagePercent.rounded()))%" : "—",
-                        detail: vm.ramTotalGB > 0 ? String(format: "%.1f / %.0f GB", vm.ramUsedGB, vm.ramTotalGB) : "Memory",
-                        progress: vm.isOnline ? vm.ramUsagePercent / 100.0 : nil,
-                        tint: OrbitWatchPalette.mint,
-                        icon: "memorychip"
-                    )
-                    barTile(
-                        title: "PWR",
-                        value: totalWattsText,
-                        detail: vm.isOnline ? "Up \(vm.formattedUptime)" : "Offline",
-                        progress: totalWattsProgress,
-                        tint: OrbitWatchPalette.amber,
-                        icon: "bolt.fill"
-                    )
-                }
-
-                HStack(spacing: 6) {
-                    Button {
-                        if vm.isOnline {
-                            vm.selectedTab = 2
-                        } else {
-                            Task { await vm.wakePC() }
-                        }
-                    } label: {
-                        Label(
-                            vm.isOnline ? "Air Mouse" : (vm.isWaking ? "Waking…" : "Power On"),
-                            systemImage: vm.isOnline ? "gyroscope" : "power"
-                        )
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(.black.opacity(0.85))
-                        .background(
-                            LinearGradient(colors: vm.isOnline ? [vm.accent, vm.secondaryAccent] : [OrbitWatchPalette.mint, Color(red: 0.36, green: 0.80, blue: 0.98)], startPoint: .leading, endPoint: .trailing),
-                            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        )
+                    LazyVGrid(columns: columns, spacing: 7) {
+                        metricTile("CPU", symbol: "cpu", value: hasReadings ? "\(Int(vm.cpuUsage.rounded()))%" : "—", detail: temperature(vm.cpuTemp), progress: hasReadings ? vm.cpuUsage / 100 : nil, tint: OrbitWatchPalette.accent)
+                        metricTile("GPU", symbol: "rectangle.3.group", value: percentage(vm.gpuUsage), detail: temperature(vm.gpuTemp), progress: hasReadings ? vm.gpuUsage.map { $0 / 100 } : nil, tint: OrbitWatchPalette.purple)
+                        metricTile("RAM", symbol: "memorychip", value: hasReadings ? "\(Int(vm.ramUsagePercent.rounded()))%" : "—", detail: hasReadings && vm.ramTotalGB > 0 ? String(format: "%.1f / %.0f GB", vm.ramUsedGB, vm.ramTotalGB) : "Memory", progress: hasReadings ? vm.ramUsagePercent / 100 : nil, tint: OrbitWatchPalette.mint)
+                        metricTile("Power", symbol: "bolt.fill", value: componentPower, detail: powerDetail, progress: nil, tint: OrbitWatchPalette.amber)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(vm.isWaking)
 
-                    Button {
-                        vm.togglePhoneLiveActivity()
-                    } label: {
-                        Image(systemName: vm.isLiveActivityActive ? "capsule.portrait.tophalf.filled" : "capsule.portrait")
-                            .font(.system(size: 13, weight: .bold))
-                            .frame(width: 36, height: 32)
-                            .background(
-                                (vm.isLiveActivityActive ? OrbitWatchPalette.mint : Color.white).opacity(vm.isLiveActivityActive ? 0.28 : 0.12),
-                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            )
-                            .foregroundStyle(vm.isLiveActivityActive ? OrbitWatchPalette.mint : .white)
+                    if vm.isOnline && !vm.telemetryAvailable {
+                        Text("PC connected. Monitoring data is not available yet.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Toggle Live Activity")
+                    WatchOfflineHint(vm: vm)
+
+                    WatchActionButton(title: vm.isOnline ? "Control your PC" : (vm.isWaking ? "Waking PC…" : "Wake PC"), symbol: vm.isOnline ? "cursorarrow.motionlines" : "power", tint: vm.isOnline ? OrbitWatchPalette.accent : OrbitWatchPalette.mint, prominent: true, enabled: !vm.isWaking) {
+                        if vm.isOnline { vm.selectedTab = 2 }
+                        else { Task { await vm.wakePC() } }
+                    }
                 }
 
-                Text(vm.statusMessage)
-                    .font(.system(size: 9.5, weight: .medium))
+                WatchSectionLabel(title: "Quick access")
+                HStack(spacing: 7) {
+                    quickLink("System", symbol: "power", tab: 1, tint: OrbitWatchPalette.mint)
+                    quickLink("Audio", symbol: "speaker.wave.2.fill", tab: 3, tint: OrbitWatchPalette.purple)
+                }
+
+                WatchActionButton(title: vm.isLiveActivityActive ? "Stop Live Activity" : "Start Live Activity", symbol: "waveform.path", tint: vm.isLiveActivityActive ? OrbitWatchPalette.mint : OrbitWatchPalette.accent, enabled: vm.isPhoneReachable) {
+                    vm.togglePhoneLiveActivity()
+                }
+                Text("Live Activity on your iPhone. Keep Orbit open there to refresh readings.")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .fixedSize(horizontal: false, vertical: true)
+                WatchFeedback(message: vm.statusMessage)
             }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.bottom, 22)
         }
-        .navigationTitle("Orbit")
-        .watchPage(vm)
-        .sheet(isPresented: $showPCSwitcher) {
+        .sheet(isPresented: $showPCSwitcher) { pcSwitcher }
+    }
+
+    private var header: some View {
+        HStack(spacing: 5) {
+            Button { showPCSwitcher = true } label: {
+                HStack(spacing: 5) {
+                    Text(vm.pcName)
+                        .font(.headline.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(OrbitWatchPalette.accent)
+                }
+                .frame(minHeight: 34, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Choose PC. Current PC: \(vm.pcName)")
+            Spacer(minLength: 0)
+            Button { Task { await vm.refreshTelemetry() } } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.footnote.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .background(OrbitWatchPalette.cardBackground, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Refresh PC readings")
+        }
+    }
+
+    private var pairingCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Image(systemName: "desktopcomputer.and.arrow.down")
+                .font(.title2)
+                .foregroundStyle(OrbitWatchPalette.accent)
+            Text("Your PC. On your wrist.")
+                .font(.headline)
+            Text("Pair your Windows PC in Orbit on iPhone. Open both apps nearby to bring your PCs to Apple Watch.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            WatchActionButton(title: "Sync from iPhone", symbol: "arrow.triangle.2.circlepath", prominent: true) {
+                vm.requestSyncFromPhone()
+            }
+        }
+        .padding(11)
+        .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var pcSwitcher: some View {
+        NavigationStack {
             List {
+                if vm.savedPCs.isEmpty {
+                    Text("Pair and save PCs in Orbit on iPhone, then sync them to your watch.")
+                        .font(.footnote)
+                }
                 ForEach(vm.savedPCs) { pc in
                     Button {
                         vm.selectPC(pc)
                         showPCSwitcher = false
                     } label: {
-                        HStack {
+                        HStack(spacing: 8) {
                             Image(systemName: "desktopcomputer")
-                                .foregroundStyle(pc.id == vm.selectedPCID ? vm.accent : .secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(pc.name)
-                                    .font(.footnote.weight(.bold))
-                                Text(pc.address)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                .foregroundStyle(OrbitWatchPalette.accent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(pc.name).font(.footnote.weight(.semibold))
+                                Text(pc.address).font(.caption2).foregroundStyle(.secondary)
                             }
-                            Spacer()
+                            Spacer(minLength: 0)
                             if pc.id == vm.selectedPCID {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(vm.accent)
+                                    .foregroundStyle(OrbitWatchPalette.mint)
                             }
                         }
+                        .padding(.vertical, 4)
                     }
                 }
+                Button("Sync from iPhone") { vm.requestSyncFromPhone() }
             }
-            .navigationTitle("Switch PC")
+            .navigationTitle("Your PCs")
         }
     }
 
-    private var headerBar: some View {
-        HStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(vm.isOnline ? OrbitWatchPalette.mint : Color.orange)
-                    .frame(width: 7, height: 7)
-                    .shadow(color: (vm.isOnline ? OrbitWatchPalette.mint : Color.orange).opacity(0.8), radius: 4)
-            }
-            Button {
-                if vm.savedPCs.count > 1 {
-                    showPCSwitcher = true
-                } else {
-                    Task { await vm.refreshTelemetry() }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(vm.pcName)
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-                    if vm.savedPCs.count > 1 {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    }
+    private func gameCard(_ game: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label("NOW PLAYING", systemImage: "gamecontroller.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(OrbitWatchPalette.mint)
+            Text(game)
+                .font(.footnote.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            if let fps = vm.fps, fps > 0 {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(Int(fps.rounded()))").font(.title2.weight(.bold)).monospacedDigit()
+                    Text("FPS").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .buttonStyle(.plain)
-
-            Spacer(minLength: 2)
-
-            if vm.isOnline && vm.pingMs > 0 {
-                Text("\(vm.pingMs) ms")
-                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-
-            Button {
-                Task { await vm.refreshTelemetry() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(5)
-                    .background(Color.white.opacity(0.10), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Refresh")
         }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(OrbitWatchPalette.mint.opacity(0.11), in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private var totalWattsText: String {
-        guard vm.isOnline else { return "—" }
-        guard vm.cpuPowerWatts != nil || vm.gpuPowerWatts != nil else { return "—" }
-        let total = (vm.cpuPowerWatts ?? 0) + (vm.gpuPowerWatts ?? 0)
-        return "\(Int(total.rounded()))W"
-    }
-
-    private var totalWattsProgress: Double? {
-        guard vm.isOnline, vm.cpuPowerWatts != nil || vm.gpuPowerWatts != nil else { return nil }
-        let total = (vm.cpuPowerWatts ?? 0) + (vm.gpuPowerWatts ?? 0)
-        return min(1.0, max(0.03, total / 450.0))
-    }
-
-    private func ringTile(title: String, value: String, unit: String, detail: String, progress: Double?, tint: Color) -> some View {
-        VStack(spacing: 4) {
-            ZStack {
-                WatchRing(progress: progress, tint: tint, lineWidth: 5)
-                VStack(spacing: -1) {
-                    HStack(alignment: .firstTextBaseline, spacing: 1) {
-                        Text(value)
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                        if value != "—" {
-                            Text(unit)
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text(title)
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(tint)
-                }
+    private func quickLink(_ title: String, symbol: String, tab: Int, tint: Color) -> some View {
+        Button { vm.selectedTab = tab } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Image(systemName: symbol).foregroundStyle(tint)
+                Text(title).font(.caption2.weight(.semibold))
             }
-            .frame(width: 58, height: 58)
-            Text(detail)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
-                .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 7)
-        .watchCard(tint)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title) \(value)\(unit) \(detail)")
+        .buttonStyle(.plain)
     }
 
-    private func barTile(title: String, value: String, detail: String, progress: Double?, tint: Color, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(tint)
+    private func metricTile(_ title: String, symbol: String, value: String, detail: String, progress: Double?, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 13)
                 Text(title)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.65))
-                Spacer(minLength: 0)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
+            .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(.system(.title3, design: .rounded).weight(.bold))
                 .monospacedDigit()
+                .minimumScaleFactor(0.8)
                 .lineLimit(1)
-                .contentTransition(.numericText())
             Text(detail)
-                .font(.system(size: 8.5, weight: .semibold))
-                .foregroundStyle(tint.opacity(0.9))
-                .lineLimit(1)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            if let progress {
+                GeometryReader { geometry in
                     Capsule().fill(Color.white.opacity(0.10))
-                    if let progress {
-                        Capsule()
-                            .fill(tint.gradient)
-                            .frame(width: max(3, geo.size.width * min(1, max(0, progress))))
-                            .shadow(color: tint.opacity(0.6), radius: 3)
-                    }
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(tint)
+                                .frame(width: geometry.size.width * min(1, max(0, progress)))
+                        }
                 }
+                .frame(height: 3)
+                .accessibilityHidden(true)
             }
-            .frame(height: 3)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 6)
-        .watchCard(tint)
+        .frame(maxWidth: .infinity, minHeight: 68, alignment: .topLeading)
+        .padding(9)
+        .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .combine)
+    }
+
+    private func percentage(_ value: Double?) -> String {
+        guard hasReadings, let value else { return "—" }
+        return "\(Int(value.rounded()))%"
+    }
+
+    private func temperature(_ value: Double?) -> String {
+        guard hasReadings, let value else { return "Temperature —" }
+        return "\(Int(value.rounded()))°C"
+    }
+
+    private var componentPower: String {
+        guard hasReadings, vm.cpuPowerWatts != nil || vm.gpuPowerWatts != nil else { return "—" }
+        return "\(Int(((vm.cpuPowerWatts ?? 0) + (vm.gpuPowerWatts ?? 0)).rounded())) W"
+    }
+
+    private var powerDetail: String {
+        guard hasReadings else { return "Component power" }
+        if vm.cpuPowerWatts != nil && vm.gpuPowerWatts != nil { return "CPU + GPU" }
+        if vm.cpuPowerWatts != nil { return "CPU only" }
+        if vm.gpuPowerWatts != nil { return "GPU only" }
+        return "Sensor unavailable"
     }
 }
 
-// MARK: - Page 2: Power & Desktop Shortcuts Deck
+// MARK: - Power and desktop shortcuts
 
 private struct WatchPowerDeckPage: View {
     @ObservedObject var vm: OrbitWatchViewModel
     @State private var confirmAction: String?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 6),
-        GridItem(.flexible(), spacing: 6)
-    ]
+    private var controlsEnabled: Bool { vm.canControlPC }
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 7), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("Power & System", systemImage: "bolt.shield.fill")
-                        .font(.system(size: 11.5, weight: .bold))
-                        .foregroundStyle(vm.accent)
-                    Spacer()
-                    Text(vm.isOnline ? "Online" : "Offline")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundStyle(vm.isOnline ? OrbitWatchPalette.mint : .orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background((vm.isOnline ? OrbitWatchPalette.mint : Color.orange).opacity(0.16), in: Capsule())
+            VStack(alignment: .leading, spacing: 9) {
+                WatchPageHeading(title: "System", symbol: "power", tint: OrbitWatchPalette.mint)
+                WatchConnectionLine(vm: vm)
+                WatchOfflineHint(vm: vm)
+                WatchActionButton(title: vm.isWaking ? "Waking PC…" : "Wake PC", symbol: "power", tint: OrbitWatchPalette.mint, prominent: true, enabled: !vm.isWaking && (!vm.macAddress.isEmpty || vm.isPhoneReachable)) {
+                    Task { await vm.wakePC() }
+                }
+                LazyVGrid(columns: columns, spacing: 7) {
+                    systemTile("Lock", symbol: "lock.fill", tint: OrbitWatchPalette.accent) { send("lock") }
+                    systemTile("Sleep", symbol: "moon.fill", tint: OrbitWatchPalette.purple) { confirmAction = "sleep" }
                 }
 
-                HStack(spacing: 6) {
-                    WatchGradientButton(title: vm.isWaking ? "Waking…" : "Power On", icon: "power", colors: [OrbitWatchPalette.mint, Color(red: 0.36, green: 0.80, blue: 0.98)]) {
-                        Task { await vm.wakePC() }
-                    }
-                    .disabled(vm.isWaking)
-                    WatchGradientButton(title: "Shut Down", icon: "power.circle.fill", colors: [OrbitWatchPalette.coral, Color(red: 1.0, green: 0.62, blue: 0.40)]) {
-                        confirmAction = "shutdown"
-                    }
-                }
+                WatchSectionLabel(title: "Desktop")
+                WatchActionButton(title: "Show desktop", symbol: "menubar.dock.rectangle", enabled: controlsEnabled) { send("show_desktop") }
+                WatchActionButton(title: "Switch app", symbol: "macwindow.on.rectangle", enabled: controlsEnabled) { send("alt_tab") }
+                WatchActionButton(title: "Task View", symbol: "rectangle.3.group", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("task_view") }
+                WatchActionButton(title: "Take screenshot", symbol: "camera.viewfinder", tint: OrbitWatchPalette.mint, enabled: controlsEnabled) { send("screenshot") }
 
-                LazyVGrid(columns: columns, spacing: 6) {
-                    actionTile("Sleep", icon: "moon.zzz.fill", tint: OrbitWatchPalette.amber) {
-                        await vm.sendPowerAction("sleep")
-                    }
-                    actionTile("Lock PC", icon: "lock.fill", tint: vm.accent) {
-                        await vm.sendPowerAction("lock")
-                    }
-                    actionTile("Restart", icon: "arrow.triangle.2.circlepath", tint: .orange) {
-                        confirmAction = "restart"
-                    }
-                    actionTile("Quit Game", icon: "xmark.octagon.fill", tint: OrbitWatchPalette.coral) {
-                        await vm.sendPowerAction("kill_game")
-                    }
-                }
+                WatchSectionLabel(title: "Display")
+                WatchActionButton(title: "Toggle HDR", symbol: "sun.max.fill", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { send("toggle_hdr") }
+                WatchActionButton(title: "Extend displays", symbol: "display.2", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("restore_display") }
 
-                Text("DESKTOP SHORTCUTS")
-                    .font(.system(size: 9, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
-
-                LazyVGrid(columns: columns, spacing: 6) {
-                    actionTile("Desktop", icon: "menubar.dock.rectangle", tint: vm.accent) {
-                        await vm.sendPowerAction("show_desktop")
-                    }
-                    actionTile("Task View", icon: "rectangle.3.group", tint: OrbitWatchPalette.purple) {
-                        await vm.sendPowerAction("task_view")
-                    }
-                    actionTile("Alt+Tab", icon: "macwindow.on.rectangle", tint: .cyan) {
-                        await vm.sendPowerAction("alt_tab")
-                    }
-                    actionTile("Screenshot", icon: "camera.viewfinder", tint: OrbitWatchPalette.mint) {
-                        await vm.sendPowerAction("screenshot")
-                    }
-                    actionTile("HDR", icon: "sun.max.fill", tint: OrbitWatchPalette.amber) {
-                        await vm.sendPowerAction("toggle_hdr")
-                    }
-                    actionTile("Display", icon: "display.2", tint: .indigo) {
-                        await vm.sendPowerAction("restore_display")
-                    }
-                }
-
-                Text(vm.statusMessage)
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                WatchSectionLabel(title: "Power controls")
+                WatchActionButton(title: "Quit current game", symbol: "xmark.app", tint: OrbitWatchPalette.coral, enabled: controlsEnabled && vm.activeGame != nil) { confirmAction = "kill_game" }
+                WatchActionButton(title: "Restart PC", symbol: "arrow.clockwise", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { confirmAction = "restart" }
+                WatchActionButton(title: "Shut down PC", symbol: "power.circle.fill", tint: OrbitWatchPalette.coral, enabled: controlsEnabled) { confirmAction = "shutdown" }
+                WatchFeedback(message: vm.statusMessage)
             }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.bottom, 22)
         }
-        .navigationTitle("Power")
-        .watchPage(vm)
-        .confirmationDialog(
-            confirmAction == "restart" ? "Restart your PC?" : "Shut down your PC?",
-            isPresented: Binding(get: { confirmAction != nil }, set: { if !$0 { confirmAction = nil } }),
-            titleVisibility: .visible
-        ) {
+        .confirmationDialog(confirmationTitle, isPresented: Binding(get: { confirmAction != nil }, set: { if !$0 { confirmAction = nil } }), titleVisibility: .visible) {
             if let action = confirmAction {
-                Button(action == "restart" ? "Restart PC" : "Shut Down PC", role: .destructive) {
+                Button(confirmationButton(action), role: action == "sleep" ? nil : .destructive) {
                     confirmAction = nil
-                    Task { await vm.sendPowerAction(action) }
+                    send(action)
                 }
             }
             Button("Cancel", role: .cancel) { confirmAction = nil }
+        } message: {
+            Text(confirmAction == "kill_game" ? "Unsaved game progress may be lost." : "This affects \(vm.pcName). Save your work first.")
         }
     }
 
-    private func actionTile(_ title: String, icon: String, tint: Color, action: @escaping () async -> Void) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(tint)
-                    .frame(width: 16)
-                Text(title)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 0)
+    private func send(_ action: String) { Task { await vm.sendPowerAction(action) } }
+
+    private func systemTile(_ title: String, symbol: String, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: symbol).font(.title3).foregroundStyle(controlsEnabled ? tint : .secondary)
+                Text(title).font(.footnote.weight(.semibold))
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
-            .watchCard(tint, cornerRadius: 11)
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .padding(.vertical, 5)
+            .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .disabled(!controlsEnabled)
+    }
+
+    private var confirmationTitle: String {
+        switch confirmAction {
+        case "sleep": "Put your PC to sleep?"
+        case "restart": "Restart your PC?"
+        case "kill_game": "Quit the current game?"
+        default: "Shut down your PC?"
+        }
+    }
+
+    private func confirmationButton(_ action: String) -> String {
+        switch action {
+        case "sleep": "Sleep PC"
+        case "restart": "Restart PC"
+        case "kill_game": "Quit Game"
+        default: "Shut Down PC"
+        }
     }
 }
 
-// MARK: - Page 3: Wrist Motion Air Mouse & Trackpad ("Gyro Cursor")
+// MARK: - Air Mouse and touchpad
 
 private struct WatchMotionCursorPage: View {
     @ObservedObject var vm: OrbitWatchViewModel
     @State private var lastTouchPoint: CGPoint?
+    @State private var showModes = false
+    @State private var showSettings = false
+    @State private var crownScrolling = false
     @FocusState private var isCrownFocused: Bool
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var controlsEnabled: Bool { vm.canControlPC }
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 7), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+    }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 6) {
-                HStack(spacing: 4) {
-                    Image(systemName: vm.motionMode.symbol)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(vm.accent)
-                    Text(vm.motionMode.rawValue)
-                        .font(.system(size: 11, weight: .bold))
-                    Spacer()
+            VStack(alignment: .leading, spacing: 9) {
+                WatchPageHeading(title: "Air Mouse", symbol: "cursorarrow.motionlines")
+                WatchConnectionLine(vm: vm)
+                WatchOfflineHint(vm: vm)
+
+                Button { showModes = true } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: vm.motionMode.symbol).foregroundStyle(OrbitWatchPalette.accent)
+                        Text(vm.motionMode.rawValue).font(.footnote.weight(.semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 44)
+                    .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cursor mode: \(vm.motionMode.rawValue). Choose mode")
+
+                if vm.motionMode != .touchPad {
+                    WatchActionButton(title: vm.isMotionCursorActive ? "Pause motion" : "Start motion", symbol: vm.isMotionCursorActive ? "pause.fill" : "gyroscope", tint: vm.isMotionCursorActive ? OrbitWatchPalette.amber : OrbitWatchPalette.accent, prominent: true, enabled: (controlsEnabled && vm.isMotionAvailable) || vm.isMotionCursorActive) {
+                        vm.toggleMotionCursor()
+                    }
+                }
+
+                if vm.motionMode != .touchPad && !vm.isMotionAvailable {
+                    Text("Wrist sensors are unavailable. Choose Touchpad to control your PC.")
+                        .font(.caption2)
+                        .foregroundStyle(OrbitWatchPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                cursorTransportStatus
+                cursorPad
+
+                if vm.isMotionCursorActive {
+                    WatchActionButton(title: "Recenter wrist", symbol: "scope", tint: OrbitWatchPalette.mint) {
+                        vm.calibrateWristCenter()
+                    }
+                    Text("Hold your wrist comfortably, then recenter.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                LazyVGrid(columns: columns, spacing: 7) {
+                    mouseButton("Left click", symbol: "cursorarrow.click") { vm.sendCursorPacket(click: "left") }
+                    mouseButton("Right click", symbol: "cursorarrow.and.square.on.square.dashed") { vm.sendCursorPacket(click: "right") }
+                    mouseButton("Double click", symbol: "cursorarrow.click.2") { vm.sendCursorPacket(click: "double") }
+                    mouseButton(vm.isDragLocked ? "Release drag" : "Hold to drag", symbol: vm.isDragLocked ? "hand.raised.fill" : "hand.point.up.left.fill", tint: vm.isDragLocked ? OrbitWatchPalette.amber : .white) { vm.toggleDragLock() }
+                }
+                if vm.isDragLocked {
+                    Label("Mouse button held. Tap Release drag when done.", systemImage: "hand.raised.fill")
+                        .font(.caption2)
+                        .foregroundStyle(OrbitWatchPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                WatchActionButton(title: crownScrolling ? "Done scrolling" : "Scroll with Crown", symbol: "digitalcrown.horizontal.arrow.counterclockwise", tint: crownScrolling ? OrbitWatchPalette.mint : OrbitWatchPalette.accent, enabled: controlsEnabled) {
+                    vm.resetCrownScroll()
+                    crownScrolling.toggle()
+                    isCrownFocused = crownScrolling
+                }
+                if crownScrolling {
+                    Text("Turn the Digital Crown to scroll your PC. Tap Done to scroll this page again.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                WatchActionButton(title: "Speed & help", symbol: "slider.horizontal.3", enabled: true) { showSettings = true }
+                WatchFeedback(message: vm.statusMessage)
+            }
+            .padding(.horizontal, 7)
+            .padding(.bottom, 22)
+        }
+        .sheet(isPresented: $showModes) { modePicker }
+        .sheet(isPresented: $showSettings) { cursorSettings }
+        .onDisappear {
+            lastTouchPoint = nil
+            crownScrolling = false
+            isCrownFocused = false
+            vm.stopMotionCursor()
+        }
+        .onChange(of: vm.selectedTab) { _, newValue in
+            if newValue != 2 {
+                crownScrolling = false
+                isCrownFocused = false
+                lastTouchPoint = nil
+            }
+        }
+        .onChange(of: controlsEnabled) { _, enabled in
+            if !enabled {
+                crownScrolling = false
+                isCrownFocused = false
+                lastTouchPoint = nil
+            }
+        }
+    }
+
+    private var cursorTransportStatus: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                if vm.isCursorSending {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.caption2)
+                        .foregroundStyle(OrbitWatchPalette.accent)
+                }
+                Text(vm.cursorRouteLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(OrbitWatchPalette.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(vm.cursorStatusMessage)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var cursorPad: some View {
+        GeometryReader { geometry in
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(OrbitWatchPalette.accent.opacity(vm.isMotionCursorActive ? 0.10 : 0.035))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(controlsEnabled ? OrbitWatchPalette.accent.opacity(0.38) : Color.white.opacity(0.10), lineWidth: 1)
+                    }
+                Path { path in
+                    let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    path.move(to: CGPoint(x: center.x, y: 14))
+                    path.addLine(to: CGPoint(x: center.x, y: geometry.size.height - 14))
+                    path.move(to: CGPoint(x: 14, y: center.y))
+                    path.addLine(to: CGPoint(x: geometry.size.width - 14, y: center.y))
+                }
+                .stroke(Color.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                Circle()
+                    .strokeBorder(OrbitWatchPalette.accent.opacity(0.20), lineWidth: 1)
+                    .frame(width: 36, height: 36)
+                Image(systemName: vm.isMotionCursorActive ? "cursorarrow" : "hand.draw.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(controlsEnabled ? OrbitWatchPalette.accent : .secondary)
+                    .offset(vm.isMotionCursorActive ? vm.cursorIndicatorOffset : .zero)
+                    .accessibilityHidden(true)
+                VStack {
+                    HStack(spacing: 4) {
+                        Circle().fill(vm.isMotionCursorActive ? OrbitWatchPalette.mint : Color.gray).frame(width: 4, height: 4)
+                        Text(vm.isMotionCursorActive ? "MOTION ON" : "TOUCHPAD")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                    Text("Swipe to move · Tap to click")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .padding(10)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .gesture(DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    guard controlsEnabled else { return }
+                    if let last = lastTouchPoint {
+                        let dx = Int(((value.location.x - last.x) * 2.4 * vm.sensitivity).rounded())
+                        let dy = Int(((value.location.y - last.y) * 2.4 * vm.sensitivity).rounded())
+                        if dx != 0 || dy != 0 { vm.sendCursorPacket(dx: dx, dy: dy) }
+                    }
+                    lastTouchPoint = value.location
+                }
+                .onEnded { _ in lastTouchPoint = nil }
+            )
+            .simultaneousGesture(TapGesture().onEnded {
+                if controlsEnabled { vm.sendCursorPacket(click: "left") }
+            })
+            .focusable(crownScrolling)
+            .focused($isCrownFocused)
+            .digitalCrownRotation($vm.crownScrollAccumulator, from: -1000, through: 1000, by: 0.5, sensitivity: .medium, isContinuous: true, isHapticFeedbackEnabled: true)
+            .onChange(of: vm.crownScrollAccumulator) { _, value in
+                if crownScrolling && controlsEnabled { vm.handleCrownScrollChange(value) }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("PC touchpad")
+            .accessibilityHint("Swipe to move the PC pointer. Tap to left click. Mouse buttons are below.")
+            .accessibilityAction(named: "Left click") { if controlsEnabled { vm.sendCursorPacket(click: "left") } }
+            .accessibilityAction(named: "Right click") { if controlsEnabled { vm.sendCursorPacket(click: "right") } }
+        }
+        .frame(height: dynamicTypeSize.isAccessibilitySize ? 150 : 112)
+    }
+
+    private var modePicker: some View {
+        NavigationStack {
+            List {
+                ForEach(WatchCursorMode.allCases) { mode in
                     Button {
-                        cycleMode()
+                        vm.setCursorMode(mode)
+                        WKInterfaceDevice.current().play(.click)
+                        showModes = false
                     } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 8, weight: .bold))
-                            Text("Mode")
-                                .font(.system(size: 9.5, weight: .bold))
-                        }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(vm.accent.opacity(0.20), in: Capsule())
-                        .foregroundStyle(vm.accent)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                // Radar / Trackpad Arena with live Wrist Motion Crosshair + Crown Scroll
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [vm.accent.opacity(vm.isMotionCursorActive ? 0.16 : 0.08), Color.white.opacity(0.04)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(
-                                    vm.isMotionCursorActive ? vm.accent : Color.white.opacity(0.14),
-                                    lineWidth: vm.isMotionCursorActive ? 1.4 : 0.8
-                                )
-                        )
-                        .shadow(color: vm.isMotionCursorActive ? vm.accent.opacity(0.4) : .clear, radius: 8)
-
-                    // Crosshair Grid Lines
-                    Path { path in
-                        path.move(to: CGPoint(x: 75, y: 8))
-                        path.addLine(to: CGPoint(x: 75, y: 66))
-                        path.move(to: CGPoint(x: 16, y: 37))
-                        path.addLine(to: CGPoint(x: 134, y: 37))
-                    }
-                    .stroke(Color.white.opacity(0.08), style: StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
-
-                    // Live Gyro / Touch Indicator Dot
-                    Circle()
-                        .fill(vm.isMotionCursorActive ? vm.accent : Color.white.opacity(0.45))
-                        .frame(width: 14, height: 14)
-                        .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1))
-                        .shadow(color: vm.isMotionCursorActive ? vm.accent.opacity(0.9) : .clear, radius: 7)
-                        .offset(vm.cursorIndicatorOffset)
-
-                    VStack {
-                        Spacer()
-                        Text(vm.isMotionCursorActive ? "Tilt wrist · Tap to click · Crown scrolls" : "Tap to click · Drag or Start Gyro")
-                            .font(.system(size: 8.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.55))
-                            .padding(.bottom, 4)
-                    }
-                }
-                .frame(height: 74)
-                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .gesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { value in
-                            if let last = lastTouchPoint {
-                                let dx = Int(((value.location.x - last.x) * 2.4 * vm.sensitivity).rounded())
-                                let dy = Int(((value.location.y - last.y) * 2.4 * vm.sensitivity).rounded())
-                                if dx != 0 || dy != 0 {
-                                    vm.sendCursorPacket(dx: dx, dy: dy)
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack(spacing: 7) {
+                                Image(systemName: mode.symbol).foregroundStyle(OrbitWatchPalette.accent)
+                                Text(mode.rawValue).font(.footnote.weight(.semibold))
+                                Spacer(minLength: 0)
+                                if mode == vm.motionMode {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(OrbitWatchPalette.mint)
                                 }
                             }
-                            lastTouchPoint = value.location
+                            Text(mode.subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .onEnded { _ in
-                            lastTouchPoint = nil
-                        }
-                )
-                .simultaneousGesture(
-                    TapGesture().onEnded {
-                        vm.sendCursorPacket(click: "left")
-                    }
-                )
-                .focusable(true)
-                .focused($isCrownFocused)
-                .digitalCrownRotation(
-                    $vm.crownScrollAccumulator,
-                    from: -1000,
-                    through: 1000,
-                    by: 0.5,
-                    sensitivity: .medium,
-                    isContinuous: true,
-                    isHapticFeedbackEnabled: true
-                )
-                .onChange(of: vm.crownScrollAccumulator) { _, newValue in
-                    vm.handleCrownScrollChange(newValue)
-                }
-
-                // Start/Stop Wrist Motion + Recenter Row
-                if vm.motionMode != .touchPad {
-                    HStack(spacing: 6) {
-                        Button {
-                            vm.toggleMotionCursor()
-                            isCrownFocused = true
-                        } label: {
-                            Label(
-                                vm.isMotionCursorActive ? "Stop Gyro" : "Start Gyro",
-                                systemImage: vm.isMotionCursorActive ? "pause.fill" : "gyroscope"
-                            )
-                            .font(.system(size: 10.5, weight: .bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 7)
-                            .foregroundStyle(.black.opacity(0.85))
-                            .background(
-                                LinearGradient(colors: vm.isMotionCursorActive ? [OrbitWatchPalette.mint, Color(red: 0.36, green: 0.80, blue: 0.98)] : [vm.accent, vm.secondaryAccent], startPoint: .leading, endPoint: .trailing),
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            vm.calibrateWristCenter()
-                        } label: {
-                            Image(systemName: "scope")
-                                .font(.system(size: 12, weight: .bold))
-                                .frame(width: 32, height: 30)
-                                .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Calibrate Wrist Center")
+                        .padding(.vertical, 6)
                     }
                 }
+            }
+            .navigationTitle("Cursor mode")
+        }
+    }
 
-                // Mouse Click & Drag Lock Buttons
-                HStack(spacing: 5) {
-                    clickButton("Left", icon: "computermouse.fill") {
-                        vm.sendCursorPacket(click: "left")
-                    }
-                    clickButton("Right", icon: "contextualmenu.and.cursorarrow") {
-                        vm.sendCursorPacket(click: "right")
-                    }
-                    clickButton("2x", icon: "cursorarrow.click.2") {
-                        vm.sendCursorPacket(click: "double")
-                    }
-                    Button {
-                        vm.toggleDragLock()
-                    } label: {
-                        VStack(spacing: 2) {
-                            Image(systemName: vm.isDragLocked ? "lock.fill" : "hand.point.up.left.fill")
-                                .font(.system(size: 10, weight: .bold))
-                            Text("Drag")
-                                .font(.system(size: 8.5, weight: .bold))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background(
-                            vm.isDragLocked ? OrbitWatchPalette.amber.opacity(0.30) : OrbitWatchPalette.cardBackground,
-                            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        )
-                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(vm.isDragLocked ? OrbitWatchPalette.amber.opacity(0.6) : .clear, lineWidth: 1))
-                        .foregroundStyle(vm.isDragLocked ? OrbitWatchPalette.amber : .white)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                // Sensitivity Selector
-                HStack(spacing: 4) {
-                    Text("Speed")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    ForEach([("Low", 0.7), ("Med", 1.2), ("Fast", 1.8), ("Max", 2.5)], id: \.0) { label, value in
+    private var cursorSettings: some View {
+        NavigationStack {
+            List {
+                Section("Pointer speed") {
+                    ForEach([("Precise", 0.7), ("Balanced", 1.2), ("Fast", 1.8), ("Very fast", 2.5)], id: \.0) { label, value in
                         Button {
-                            WKInterfaceDevice.current().play(.click)
                             vm.sensitivity = value
+                            WKInterfaceDevice.current().play(.click)
                         } label: {
-                            Text(label)
-                                .font(.system(size: 8.5, weight: .bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(
-                                    abs(vm.sensitivity - value) < 0.15 ? vm.accent.opacity(0.26) : Color.white.opacity(0.07),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(abs(vm.sensitivity - value) < 0.15 ? vm.accent : .white.opacity(0.7))
+                            HStack {
+                                Text(label).font(.footnote)
+                                Spacer(minLength: 0)
+                                if abs(vm.sensitivity - value) < 0.15 {
+                                    Image(systemName: "checkmark").foregroundStyle(OrbitWatchPalette.accent)
+                                }
+                            }
+                            .frame(minHeight: 30)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
+                Section("How to use") {
+                    helpRow("1", title: "Connect", detail: "Keep your PC and Orbit Companion running. Your watch connects directly or through Orbit on iPhone.")
+                    helpRow("2", title: "Find your center", detail: "Hold your wrist in a comfortable position. Start motion, then move your wrist gently. Recenter whenever you change position.")
+                    helpRow("3", title: "Choose your style", detail: "Gyro Glide moves the pointer with wrist motion. Laser Pointer maps your wrist position to the screen. Touchpad works with screen swipes.")
+                    helpRow("4", title: "Take a break", detail: "Pause motion before lowering your wrist. Leaving Air Mouse also pauses motion and releases drag.")
+                }
             }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
-        }
-        .navigationTitle("Air Mouse")
-        .watchPage(vm)
-        .onAppear {
-            isCrownFocused = true
+            .navigationTitle("Mouse settings")
         }
     }
 
-    private func cycleMode() {
-        WKInterfaceDevice.current().play(.click)
-        let all = WatchCursorMode.allCases
-        if let idx = all.firstIndex(of: vm.motionMode) {
-            let next = all[(idx + 1) % all.count]
-            vm.motionMode = next
-            if next == .touchPad {
-                vm.stopMotionCursor()
-            } else if vm.isMotionCursorActive {
-                vm.startMotionCursor()
-            }
+    private func helpRow(_ number: String, title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("\(number). \(title)").font(.footnote.weight(.semibold)).foregroundStyle(OrbitWatchPalette.accent)
+            Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.vertical, 5)
     }
 
-    private func clickButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func mouseButton(_ title: String, symbol: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .bold))
-                Text(title)
-                    .font(.system(size: 8.5, weight: .bold))
+            VStack(spacing: 5) {
+                Image(systemName: symbol).font(.body.weight(.semibold)).foregroundStyle(controlsEnabled ? tint : .secondary)
+                Text(title).font(.caption2.weight(.semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .padding(.horizontal, 4)
             .padding(.vertical, 5)
-            .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(vm.isDragLocked && title == "Release drag" ? OrbitWatchPalette.amber.opacity(0.13) : OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .disabled(!controlsEnabled && !(vm.isDragLocked && title == "Release drag"))
     }
 }
 
-// MARK: - Page 4: Crown Volume, Media & Sunshine Games
+// MARK: - Audio, media, and game launching
 
 private struct WatchMediaAndGamesPage: View {
     @ObservedObject var vm: OrbitWatchViewModel
     @State private var crownVolume: Double = 40
+    @State private var volumeControlActive = false
+    @State private var showGames = false
     @FocusState private var isVolumeCrownFocused: Bool
+
+    private var controlsEnabled: Bool { vm.canControlPC }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                // Digital Crown Volume Ring
-                HStack(spacing: 8) {
-                    ZStack {
-                        WatchRing(progress: crownVolume / 100.0, tint: vm.isMuted ? OrbitWatchPalette.coral : vm.accent, lineWidth: 5)
-                        VStack(spacing: 0) {
-                            Image(systemName: vm.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(vm.isMuted ? OrbitWatchPalette.coral : vm.accent)
-                            Text(vm.isMuted ? "Muted" : "\(Int(crownVolume.rounded()))")
-                                .font(.system(size: vm.isMuted ? 10 : 17, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                        }
-                    }
-                    .frame(width: 54, height: 54)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Crown Volume")
-                            .font(.system(size: 11, weight: .bold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Text(vm.isOnline ? "Turn the Crown" : "PC offline")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Button {
-                            Task { await vm.sendPowerAction("mute") }
-                        } label: {
-                            Text(vm.isMuted ? "Unmute" : "Mute")
-                                .font(.system(size: 9.5, weight: .bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background((vm.isMuted ? OrbitWatchPalette.coral : Color.white).opacity(vm.isMuted ? 0.24 : 0.12), in: Capsule())
-                                .foregroundStyle(vm.isMuted ? OrbitWatchPalette.coral : .white)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 10) {
+                WatchPageHeading(title: "Audio", symbol: "speaker.wave.2.fill", tint: OrbitWatchPalette.purple)
+                WatchConnectionLine(vm: vm)
+                WatchOfflineHint(vm: vm)
+
+                volumeCard
+                HStack(spacing: 7) {
+                    mediaButton("Previous track", symbol: "backward.end.fill") { await vm.sendPowerAction("media_prev") }
+                    mediaButton("Play or pause", symbol: "playpause.fill", tint: OrbitWatchPalette.accent, prominent: true) { await vm.sendPowerAction("media_play_pause") }
+                    mediaButton("Next track", symbol: "forward.end.fill") { await vm.sendPowerAction("media_next") }
                 }
-                .padding(8)
-                .watchCard(vm.accent)
-                .focusable(true)
-                .focused($isVolumeCrownFocused)
-                .digitalCrownRotation(
-                    $crownVolume,
-                    from: 0,
-                    through: 100,
-                    by: 2,
-                    sensitivity: .medium,
-                    isContinuous: false,
-                    isHapticFeedbackEnabled: true
-                )
-                .onChange(of: crownVolume) { _, newValue in
-                    vm.setPCVolume(newValue)
-                }
-                .onAppear {
-                    crownVolume = vm.volume
-                    isVolumeCrownFocused = true
-                }
-                .onChange(of: vm.volume) { _, newValue in
-                    if abs(crownVolume - newValue) >= 2 {
-                        crownVolume = newValue
-                    }
+                WatchActionButton(title: vm.isMuted ? "Unmute PC" : "Mute PC", symbol: vm.isMuted ? "speaker.wave.2.fill" : "speaker.slash.fill", tint: vm.isMuted ? OrbitWatchPalette.amber : OrbitWatchPalette.purple, enabled: controlsEnabled) {
+                    Task { await vm.sendPowerAction("mute") }
                 }
 
-                // Media Transport Row
-                HStack(spacing: 5) {
-                    mediaButton("backward.end.fill") { await vm.sendPowerAction("media_prev") }
-                    mediaButton("playpause.fill", tint: vm.accent, prominent: true) { await vm.sendPowerAction("media_play_pause") }
-                    mediaButton("forward.end.fill") { await vm.sendPowerAction("media_next") }
+                if let game = vm.activeGame, !game.isEmpty, vm.isOnline {
+                    WatchSectionLabel(title: "Playing on PC")
+                    Label(game, systemImage: "gamecontroller.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(OrbitWatchPalette.mint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(OrbitWatchPalette.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
                 }
-
-                if !vm.games.isEmpty {
-                    Text("SUNSHINE GAMES")
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-
-                    ForEach(vm.games.prefix(8)) { game in
-                        Button {
-                            vm.launchGame(game)
-                        } label: {
-                            HStack(spacing: 8) {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(LinearGradient(colors: [OrbitWatchPalette.mint.opacity(0.5), OrbitWatchPalette.mint.opacity(0.15)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                        .frame(width: 26, height: 26)
-                                    Image(systemName: "gamecontroller.fill")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.white)
-                                }
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(game.title)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .lineLimit(1)
-                                    Text(game.genre)
-                                        .font(.system(size: 8.5, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(OrbitWatchPalette.mint)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .watchCard(OrbitWatchPalette.mint, cornerRadius: 10)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    Text(vm.isOnline ? "No Sunshine apps on this PC yet." : "Connect to your PC to see Sunshine games.")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 4)
-                }
+                WatchActionButton(title: "PC game library", symbol: "gamecontroller.fill", tint: OrbitWatchPalette.mint, enabled: !vm.games.isEmpty) { showGames = true }
+                Text(vm.games.isEmpty ? "Configured Sunshine apps appear after syncing with Orbit on iPhone." : "Launch a configured Sunshine app on your PC.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                WatchFeedback(message: vm.statusMessage)
             }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.bottom, 22)
         }
-        .navigationTitle("Media")
-        .watchPage(vm)
+        .sheet(isPresented: $showGames) { gameLibrary }
+        .onAppear { crownVolume = vm.volume }
+        .onChange(of: vm.volume) { _, value in
+            if abs(crownVolume - value) >= 1 { crownVolume = value }
+        }
+        .onChange(of: vm.selectedTab) { _, value in
+            if value != 3 { finishVolumeControl() }
+        }
+        .onChange(of: controlsEnabled) { _, enabled in
+            if !enabled { finishVolumeControl() }
+        }
+        .onDisappear { finishVolumeControl() }
     }
 
-    private func mediaButton(_ icon: String, tint: Color = .white, prominent: Bool = false, action: @escaping () async -> Void) -> some View {
+    private var volumeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(vm.isMuted ? "Muted" : "PC volume")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(vm.isMuted ? OrbitWatchPalette.amber : .secondary)
+                Spacer(minLength: 0)
+                Image(systemName: vm.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.footnote)
+                    .foregroundStyle(OrbitWatchPalette.purple)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(controlsEnabled ? "\(Int(crownVolume.rounded()))" : "—")
+                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                Text("%").font(.footnote).foregroundStyle(.secondary)
+            }
+            GeometryReader { geometry in
+                Capsule().fill(Color.white.opacity(0.10))
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(OrbitWatchPalette.purple)
+                            .frame(width: geometry.size.width * min(1, max(0, crownVolume / 100)))
+                    }
+            }
+            .frame(height: 5)
+            .accessibilityHidden(true)
+            HStack(spacing: 7) {
+                volumeStep("Decrease volume", symbol: "minus", amount: -5)
+                volumeStep("Increase volume", symbol: "plus", amount: 5)
+            }
+            Button {
+                volumeControlActive.toggle()
+                isVolumeCrownFocused = volumeControlActive
+            } label: {
+                Label(volumeControlActive ? "Done adjusting" : "Adjust with Crown", systemImage: "digitalcrown.horizontal.arrow.counterclockwise")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(OrbitWatchPalette.purple)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+            }
+            .buttonStyle(.plain)
+            .disabled(!controlsEnabled)
+            if volumeControlActive {
+                Text("Turn the Crown to change PC volume. Tap Done when finished.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background(OrbitWatchPalette.purple.opacity(0.09), in: RoundedRectangle(cornerRadius: 18))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18).strokeBorder(OrbitWatchPalette.purple.opacity(volumeControlActive ? 0.5 : 0.10), lineWidth: 1)
+        }
+        .focusable(volumeControlActive)
+        .focused($isVolumeCrownFocused)
+        .digitalCrownRotation($crownVolume, from: 0, through: 100, by: 1, sensitivity: .medium, isContinuous: false, isHapticFeedbackEnabled: true)
+        .onChange(of: crownVolume) { _, value in
+            // Telemetry changes update the display without becoming another volume command.
+            if volumeControlActive && controlsEnabled && abs(value - vm.volume) >= 1 { vm.setPCVolume(value) }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("PC volume")
+        .accessibilityValue(controlsEnabled ? "\(Int(crownVolume.rounded())) percent" : "Unavailable")
+    }
+
+    private var gameLibrary: some View {
+        NavigationStack {
+            List(vm.games) { game in
+                Button {
+                    vm.launchGame(game)
+                    showGames = false
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "gamecontroller.fill").foregroundStyle(OrbitWatchPalette.mint)
+                        Text(game.title).font(.footnote.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Image(systemName: "play.fill").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 7)
+                }
+                .disabled(!controlsEnabled)
+            }
+            .navigationTitle("PC games")
+        }
+    }
+
+    private func finishVolumeControl() {
+        volumeControlActive = false
+        isVolumeCrownFocused = false
+    }
+
+    private func volumeStep(_ title: String, symbol: String, amount: Double) -> some View {
         Button {
-            Task { await action() }
+            let value = min(100, max(0, vm.volume + amount))
+            crownVolume = value
+            vm.setPCVolume(value)
+            WKInterfaceDevice.current().play(.click)
         } label: {
-            Image(systemName: icon)
-                .font(.system(size: prominent ? 14 : 12, weight: .bold))
-                .foregroundStyle(prominent ? .black.opacity(0.85) : tint)
-                .frame(maxWidth: .infinity, minHeight: 34)
-                .background(
-                    prominent
-                        ? AnyShapeStyle(LinearGradient(colors: [vm.accent, vm.secondaryAccent], startPoint: .leading, endPoint: .trailing))
-                        : AnyShapeStyle(OrbitWatchPalette.cardBackground),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                )
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
+        .disabled(!controlsEnabled)
+        .accessibilityLabel(title)
+    }
+
+    private func mediaButton(_ title: String, symbol: String, tint: Color = .white, prominent: Bool = false, action: @escaping () async -> Void) -> some View {
+        Button { Task { await action() } } label: {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(controlsEnabled ? tint : .secondary)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(prominent ? tint.opacity(0.18) : OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(!controlsEnabled)
+        .accessibilityLabel(title)
     }
 }

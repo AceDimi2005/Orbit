@@ -1,8 +1,5 @@
 import CoreMotion
-import CryptoKit
-import Darwin
 import Foundation
-import Security
 import SwiftUI
 import WatchConnectivity
 import WatchKit
@@ -88,6 +85,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var wolPort: Int = 9
     @Published var lastKnownIPv4: String = ""
 
+    @Published private(set) var lastTelemetryAt: Date?
     @Published var isOnline: Bool = false
     @Published var isPhoneReachable: Bool = false
     @Published var telemetryAvailable: Bool = false
@@ -111,14 +109,21 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var isWaking: Bool = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
-    /// Theme accent synced from the iPhone (sRGB hex without "#").
-    @Published var accentHex: String = ""
-    @Published var secondaryHex: String = ""
 
     // Wrist Motion Air Mouse state
     @Published var isMotionCursorActive: Bool = false
     @Published var motionMode: WatchCursorMode = .gyroGlide
-    @Published var sensitivity: Double = 1.2
+    @Published var sensitivity: Double = 1.2 {
+        didSet {
+            let safe = sensitivity.isFinite ? min(3, max(0.4, sensitivity)) : 1.2
+            if sensitivity != safe { sensitivity = safe }
+            UserDefaults.standard.set(safe, forKey: "Orbit.WatchSensitivity")
+        }
+    }
+    @Published private(set) var cursorStatusMessage = "Choose a mode to control your PC"
+    @Published private(set) var cursorRouteLabel = "Not connected"
+    @Published private(set) var lastCursorDeliveryAt: Date?
+    @Published private(set) var isCursorSending = false
     @Published var isDragLocked: Bool = false
     @Published var cursorIndicatorOffset: CGSize = .zero
     @Published var crownScrollAccumulator: Double = 0.0
@@ -136,9 +141,31 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var appActive: Bool = true
-    private var inputWebSocket: URLSessionWebSocketTask?
-    private var inputSession: URLSession?
-    private var inputDelegate: WatchPinnedTLSDelegate?
+    private var httpClient: OrbitWatchHTTPClient?
+    private var httpTarget: OrbitWatchControlTarget?
+    private var cursorQueue: OrbitCursorCommandQueue?
+    private var cursorTarget: OrbitWatchControlTarget?
+    // Retain this until retirement: a queued release can be cancelled while a
+    // previously dispatched press is still completing. UI drag state alone is insufficient.
+    private var cursorMayNeedRelease = false
+    private var volumeQueue: VolumeCommandQueue?
+    private var volumeTarget: OrbitWatchControlTarget?
+    private var avoidPhoneUntil: Date = .distantPast
+    private var lastPhoneContextAt: Double = 0
+    private var pendingSelection: (id: String, until: Date)?
+
+    private var target: OrbitWatchControlTarget {
+        OrbitWatchControlTarget(id: selectedPCID, host: host, agentPort: agentPort,
+                                securePort: securePort, fingerprint: certificateFingerprint, token: apiToken)
+    }
+    var isMotionAvailable: Bool { motionManager.isDeviceMotionAvailable }
+    var isTelemetryFresh: Bool {
+        isOnline && lastTelemetryAt.map { (0...12).contains(Date().timeIntervalSince($0)) } == true
+    }
+    var canControlPC: Bool { hasDirectCredentials || (phoneCanRelay && !selectedPCID.isEmpty) }
+    private var phoneCanRelay: Bool {
+        WCSession.isSupported() && WCSession.default.activationState == .activated && WCSession.default.isReachable
+    }
 
     private static let appGroupID = "group.com.dimitrie.orbit"
     private static let snapshotKey = "Orbit.WatchSnapshot.v1"
@@ -146,6 +173,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     override init() {
         super.init()
         loadCachedState()
+        if let mode = WatchCursorMode(rawValue: UserDefaults.standard.string(forKey: "Orbit.WatchCursorMode") ?? "") { motionMode = mode }
+        if let value = UserDefaults.standard.object(forKey: "Orbit.WatchSensitivity") as? Double { sensitivity = value }
         if WCSession.isSupported() {
             let session = WCSession.default
             session.delegate = self
@@ -175,6 +204,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             requestSyncFromPhone()
         } else {
             stopMotionCursor()
+            volumeQueue?.cancel()
             pollTask?.cancel()
             pollTask = nil
         }
@@ -214,7 +244,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         if !session.receivedApplicationContext.isEmpty {
             applyPhonePayload(session.receivedApplicationContext)
         }
-        if session.isReachable {
+        isPhoneReachable = phoneCanRelay
+        if phoneCanRelay {
             isPhoneReachable = true
             session.sendMessage(["cmd": "requestSync"]) { [weak self] reply in
                 Task { @MainActor in
@@ -227,6 +258,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     func refreshTelemetry() async {
         guard appActive else { return }
         if !hasDirectCredentials, let widgetConn = OrbitWidgetConnectionStore.defaultConnection() {
+            selectedPCID = widgetConn.id
             host = widgetConn.host
             securePort = widgetConn.port
             certificateFingerprint = widgetConn.certificateSHA256
@@ -242,10 +274,13 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
 
         if hasDirectCredentials {
+            let requestedTarget = target
             let start = Date()
             do {
                 let data = try await performPCRequest(path: "/api/watch/summary", method: "GET")
                 let summary = try JSONDecoder().decode(WatchSummaryResponse.self, from: data)
+                guard requestedTarget == target else { return }
+                lastTelemetryAt = Date()
                 isOnline = summary.isOnline ?? true
                 telemetryAvailable = summary.telemetryAvailable ?? true
                 if let name = summary.hostname, !name.isEmpty { pcName = name }
@@ -274,6 +309,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 // Fallback to /api/status for 4.1.0 PC Companion agents
                 if let data = try? await performPCRequest(path: "/api/status", method: "GET"),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    guard requestedTarget == target else { return }
+                    lastTelemetryAt = Date()
                     isOnline = true
                     telemetryAvailable = (json["telemetryAvailable"] as? Bool) ?? true
                     if let name = json["hostname"] as? String, !name.isEmpty { pcName = name }
@@ -302,8 +339,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             }
         }
 
-        // If direct LAN didn't respond, request fresh state via iPhone WatchConnectivity
-        if WCSession.isSupported() && WCSession.default.isReachable {
+        if !isTelemetryFresh { isOnline = false }
+        // A relay can still work when the last telemetry sample is stale.
+        if phoneCanRelay {
             requestSyncFromPhone()
         }
     }
@@ -326,31 +364,21 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         guard !isWaking else { return }
         isWaking = true
         defer { isWaking = false }
-        WKInterfaceDevice.current().play(.start)
-        statusMessage = "Sending Wake-on-LAN…"
-
-        // 1. Relay via iPhone if reachable
-        if WCSession.isSupported() && WCSession.default.isReachable {
-            WCSession.default.sendMessage(["cmd": "wake"], replyHandler: { [weak self] reply in
-                Task { @MainActor in self?.applyPhonePayload(reply) }
-            }, errorHandler: nil)
+        // watchOS does not permit BSD UDP sockets. The paired iPhone sends WoL.
+        guard phoneCanRelay else {
+            statusMessage = "Open Orbit on your nearby iPhone to wake this PC"
+            WKInterfaceDevice.current().play(.failure)
+            return
         }
-
-        // 2. Also send UDP Magic Packet directly from Watch over Wi-Fi / shared store
+        statusMessage = "Sending Wake-on-LAN via iPhone…"
         do {
-            _ = try await OrbitWidgetPowerService.wakePC(id: selectedPCID.isEmpty ? nil : selectedPCID)
-            statusMessage = "Magic Packet sent"
+            let reply = try await sendPhoneMessage(["cmd": "wake", "pcID": selectedPCID])
+            applyPhonePayload(reply)
+            statusMessage = "Wake requested via iPhone · waiting for PC"
             WKInterfaceDevice.current().play(.success)
         } catch {
-            if sendDirectMagicPacket() {
-                statusMessage = "Magic Packet sent"
-                WKInterfaceDevice.current().play(.success)
-            } else if WCSession.isSupported() && WCSession.default.isReachable {
-                statusMessage = "Wake sent via iPhone"
-            } else {
-                statusMessage = "Pair PC on iPhone first"
-                WKInterfaceDevice.current().play(.failure)
-            }
+            statusMessage = "Wake failed: \(error.localizedDescription)"
+            WKInterfaceDevice.current().play(.failure)
         }
     }
 
@@ -395,21 +423,29 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     }
 
     func setPCVolume(_ newVolume: Double) {
+        guard newVolume.isFinite, canControlPC else { return }
         let clamped = min(100, max(0, newVolume.rounded()))
         guard abs(clamped - volume) >= 1 else { return }
         volume = clamped
         lastVolumeSentAt = Date()
-
-        Task {
-            if hasDirectCredentials {
-                if (try? await performPCRequest(path: "/api/volume", method: "POST", query: [URLQueryItem(name: "level", value: "\(Int(clamped))")])) != nil {
-                    return
+        let destination = target
+        if volumeTarget != destination {
+            volumeQueue?.cancel()
+            volumeTarget = destination
+            volumeQueue = VolumeCommandQueue { [weak self] level in
+                guard let self, self.target == destination else { return }
+                do {
+                    _ = try await self.client(for: destination).data(path: "/api/volume", method: "POST",
+                        query: [URLQueryItem(name: "level", value: "\(Int(level))")])
+                } catch {
+                    guard self.target == destination else { return }
+                    do {
+                        _ = try await self.sendPhoneMessage(["cmd": "volume", "level": level, "pcID": destination.id])
+                    } catch { self.statusMessage = "Volume: \(error.localizedDescription)" }
                 }
             }
-            if WCSession.isSupported() && WCSession.default.isReachable {
-                WCSession.default.sendMessage(["cmd": "volume", "level": clamped], replyHandler: nil, errorHandler: nil)
-            }
         }
+        volumeQueue?.enqueue(clamped)
     }
 
     func togglePhoneLiveActivity() {
@@ -450,6 +486,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     func selectPC(_ profile: WatchPCProfile) {
         WKInterfaceDevice.current().play(.click)
+        retireCursorPipeline()
+        volumeQueue?.cancel()
+        lastTelemetryAt = nil
+        isOnline = false
+        pendingSelection = (profile.id, Date().addingTimeInterval(10))
         selectedPCID = profile.id
         pcName = profile.name
         host = profile.address
@@ -462,7 +503,6 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         wolPort = profile.wolPort
         lastKnownIPv4 = profile.lastKnownIPv4
         apiToken = profile.apiToken
-        resetInputWebSocket()
 
         if WCSession.isSupported() && WCSession.default.isReachable {
             WCSession.default.sendMessage(["cmd": "selectPC", "id": profile.id], replyHandler: { [weak self] reply in
@@ -483,13 +523,17 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     }
 
     func startMotionCursor() {
+        guard !isMotionCursorActive, canControlPC else {
+            if !canControlPC { cursorStatusMessage = "Pair your PC in Orbit on iPhone first" }
+            return
+        }
         guard motionMode != .touchPad else {
             isMotionCursorActive = false
             return
         }
         guard motionManager.isDeviceMotionAvailable else {
-            statusMessage = "Wrist sensors unavailable in Simulator; use Touchpad"
-            isMotionCursorActive = true
+            cursorStatusMessage = "Wrist sensors unavailable · use Touchpad"
+            isMotionCursorActive = false
             return
         }
         WKInterfaceDevice.current().play(.start)
@@ -499,25 +543,50 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         neutralYaw = nil
         smoothedDX = 0
         smoothedDY = 0
-        motionManager.deviceMotionUpdateInterval = 1.0 / 28.0
-        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
-            guard let self, let motion else { return }
+        lastMotionSentAt = .distantPast
+        motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
+            guard let self else { return }
+            if let error {
+                self.stopMotionCursor()
+                self.cursorStatusMessage = "Motion: \(error.localizedDescription)"
+                return
+            }
+            guard let motion else { return }
             self.processDeviceMotion(motion)
         }
-        statusMessage = "Wrist Cursor Active"
+        cursorStatusMessage = "Move your wrist · waiting for PC confirmation"
     }
 
     func stopMotionCursor() {
-        guard isMotionCursorActive else { return }
+        let wasActive = isMotionCursorActive
         motionManager.stopDeviceMotionUpdates()
         isMotionCursorActive = false
+        // Pause also cancels queued clicks/presses. Only a release may follow an
+        // in-flight request, so old input never catches up after leaving this page.
+        cursorQueue?.cancel()
         cursorIndicatorOffset = .zero
-        if isDragLocked {
-            isDragLocked = false
-            sendCursorPacket(drag: "up")
+        resetCrownScroll()
+        isDragLocked = false
+        if cursorMayNeedRelease {
+            cursorQueue?.enqueue(OrbitCursorPacket(drag: "up"))
         }
-        WKInterfaceDevice.current().play(.stop)
-        statusMessage = "Wrist Cursor Paused"
+        if wasActive {
+            WKInterfaceDevice.current().play(.stop)
+            cursorStatusMessage = "Cursor paused"
+        }
+    }
+
+    func setCursorMode(_ mode: WatchCursorMode) {
+        stopMotionCursor()
+        motionMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "Orbit.WatchCursorMode")
+        cursorStatusMessage = mode == .touchPad ? "Swipe the pad to move your PC cursor" : "Tap Start, then move your wrist"
+    }
+
+    func resetCrownScroll() {
+        lastCrownScrollValue = 0
+        crownScrollAccumulator = 0
     }
 
     func calibrateWristCenter() {
@@ -528,20 +597,22 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         smoothedDY = 0
         cursorIndicatorOffset = .zero
         WKInterfaceDevice.current().play(.click)
-        statusMessage = "Wrist Centered"
+        cursorStatusMessage = "Hold this position · wrist center reset"
         if motionMode == .laserPointer {
             sendCursorPacket(normX: 0.5, normY: 0.5)
         }
     }
 
     func toggleDragLock() {
+        guard canControlPC else { cursorStatusMessage = "Connect your PC first"; return }
         isDragLocked.toggle()
         WKInterfaceDevice.current().play(.directionUp)
         sendCursorPacket(drag: isDragLocked ? "down" : "up")
-        statusMessage = isDragLocked ? "Drag Lock ON" : "Drag Released"
+        cursorStatusMessage = isDragLocked ? "Holding left button · tap Release when done" : "Drag released"
     }
 
     func handleCrownScrollChange(_ newValue: Double) {
+        guard newValue.isFinite else { return }
         let delta = newValue - lastCrownScrollValue
         guard abs(delta) >= 0.35 else { return }
         lastCrownScrollValue = newValue
@@ -568,7 +639,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         let dYaw = shortestAngleDelta(from: neutralYaw ?? yaw, to: yaw)
 
         let now = Date()
-        guard now.timeIntervalSince(lastMotionSentAt) >= 0.036 else { return }
+        guard now.timeIntervalSince(lastMotionSentAt) >= 0.030 else { return }
 
         switch motionMode {
         case .gyroGlide:
@@ -629,213 +700,203 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     }
 
     func sendCursorPacket(
-        dx: Int = 0,
-        dy: Int = 0,
-        click: String = "",
-        scroll: Int = 0,
-        hscroll: Int = 0,
-        normX: Double? = nil,
-        normY: Double? = nil,
-        drag: String = ""
+        dx: Int = 0, dy: Int = 0, click: String = "", scroll: Int = 0, hscroll: Int = 0,
+        normX: Double? = nil, normY: Double? = nil, drag: String = ""
     ) {
-        if !click.isEmpty {
-            WKInterfaceDevice.current().play(.click)
-        }
-
-        var message: [String: Any] = [
-            "cmd": "cursor",
-            "dx": dx,
-            "dy": dy,
-            "click": click,
-            "scroll": scroll,
-            "hscroll": hscroll,
-            "drag": drag
-        ]
-        if let normX, let normY {
-            message["normX"] = normX
-            message["normY"] = normY
-        }
-
-        // 1. Try direct low-latency WebSocket / HTTP to PC if credentials exist
-        if hasDirectCredentials {
-            Task {
-                if await sendDirectWebSocketCursor(message) { return }
-                var query = [
-                    URLQueryItem(name: "dx", value: "\(dx)"),
-                    URLQueryItem(name: "dy", value: "\(dy)"),
-                    URLQueryItem(name: "click", value: click),
-                    URLQueryItem(name: "scroll", value: "\(scroll)"),
-                    URLQueryItem(name: "hscroll", value: "\(hscroll)"),
-                    URLQueryItem(name: "drag", value: drag)
-                ]
-                if let normX, let normY {
-                    query.append(URLQueryItem(name: "normX", value: String(format: "%.4f", normX)))
-                    query.append(URLQueryItem(name: "normY", value: String(format: "%.4f", normY)))
-                }
-                if (try? await performPCRequest(path: "/api/input/cursor", method: "POST", query: query)) != nil {
-                    return
-                }
-                if normX == nil && drag.isEmpty {
-                    _ = try? await performPCRequest(path: "/api/input/mouse", method: "POST", query: [
-                        URLQueryItem(name: "dx", value: "\(dx)"),
-                        URLQueryItem(name: "dy", value: "\(dy)"),
-                        URLQueryItem(name: "click", value: click),
-                        URLQueryItem(name: "scroll", value: "\(scroll)")
-                    ])
-                }
-            }
+        guard canControlPC else {
+            cursorStatusMessage = "Connect your PC or open Orbit on your nearby iPhone"
             return
         }
-
-        // 2. Relay via iPhone WatchConnectivity
-        if WCSession.isSupported() && WCSession.default.isReachable {
-            WCSession.default.sendMessage(message, replyHandler: nil, errorHandler: nil)
+        if !click.isEmpty { WKInterfaceDevice.current().play(.click) }
+        let destination = target
+        if cursorTarget != destination {
+            // Initializing the first queue must not stop the gyro that just started
+            // or clear a first drag press. Retire only an existing PC pipeline.
+            if cursorTarget != nil { retireCursorPipeline() }
+            cursorTarget = destination
+            // The destination is captured, so queued input can never move a newly selected PC.
+            cursorQueue = OrbitCursorCommandQueue(minimumInterval: .milliseconds(12), send: { [weak self] packet in
+                guard let self else { throw CancellationError() }
+                try await self.deliverCursor(packet, to: destination)
+            }, onFailure: { [weak self] error in
+                guard let self, self.target == destination else { return }
+                self.cursorQueue?.cancel()
+                self.stopMotionCursor()
+                self.cursorStatusMessage = "Cursor paused: \(error.localizedDescription)"
+                self.cursorRouteLabel = "Connection needs attention"
+                WKInterfaceDevice.current().play(.failure)
+            })
         }
+        if drag == "down" { cursorMayNeedRelease = true }
+        cursorQueue?.enqueue(OrbitCursorPacket(dx: dx, dy: dy, click: click, scroll: scroll,
+            hscroll: hscroll, normX: normX, normY: normY, drag: drag))
     }
 
-    // MARK: - Networking & Pinned TLS
-
-    private func resetInputWebSocket() {
-        inputWebSocket?.cancel(with: .goingAway, reason: nil)
-        inputWebSocket = nil
-        inputSession?.invalidateAndCancel()
-        inputSession = nil
+    private func retireCursorPipeline() {
+        motionManager.stopDeviceMotionUpdates()
+        isMotionCursorActive = false
+        cursorIndicatorOffset = .zero
+        if let queue = cursorQueue {
+            queue.cancel()
+            // Release on the old destination after any in-flight press completes.
+            if cursorMayNeedRelease { queue.enqueue(OrbitCursorPacket(drag: "up")) }
+            Task { await queue.flush() }
+        }
+        isDragLocked = false
+        cursorMayNeedRelease = false
+        cursorQueue = nil
+        cursorTarget = nil
+        isCursorSending = false
+        lastCursorDeliveryAt = nil
+        cursorRouteLabel = "Not connected"
+        resetCrownScroll()
     }
 
-    private func sendDirectWebSocketCursor(_ payload: [String: Any]) async -> Bool {
-        guard hasDirectCredentials else { return false }
-        if inputWebSocket == nil {
-            var comps = URLComponents()
-            comps.scheme = hasSecureTLS ? "wss" : "ws"
-            comps.host = host
-            comps.port = hasSecureTLS ? securePort : agentPort
-            comps.path = "/ws/input"
-            guard let url = comps.url else { return false }
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 3
-            let delegate = hasSecureTLS ? WatchPinnedTLSDelegate(fingerprint: certificateFingerprint) : nil
-            inputDelegate = delegate
-            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-            inputSession = session
-            let ws = session.webSocketTask(with: req)
-            inputWebSocket = ws
-            ws.resume()
-        }
-        guard let ws = inputWebSocket,
-              let data = try? JSONSerialization.data(withJSONObject: payload),
-              let text = String(data: data, encoding: .utf8) else { return false }
+    private func deliverCursor(_ packet: OrbitCursorPacket, to destination: OrbitWatchControlTarget) async throws {
+        if target == destination { isCursorSending = true }
+        defer { if target == destination { isCursorSending = false } }
+        // A reachable paired iPhone can relay over Bluetooth even when the Watch
+        // has no direct Wi-Fi route to the PC. Prefer that supported route first.
+        let usePhone = phoneCanRelay && Date() >= avoidPhoneUntil
         do {
-            try await ws.send(.string(text))
-            return true
+            let route: String
+            if usePhone {
+                route = "Via iPhone · confirmed"
+                try await relayCursor(packet, to: destination)
+            } else {
+                route = "Direct HTTP\(destination.hasSecureTLS ? "S" : "") · confirmed"
+                if !destination.hasCredentials, phoneCanRelay {
+                    try await relayCursor(packet, to: destination)
+                } else {
+                    try await client(for: destination).sendCursor(packet)
+                }
+            }
+            guard target == destination, !Task.isCancelled else { return }
+            lastCursorDeliveryAt = Date()
+            cursorRouteLabel = route
+            cursorStatusMessage = isMotionCursorActive ? "Controlling your PC · tap Pause to stop" : "PC confirmed your input"
         } catch {
-            resetInputWebSocket()
-            return false
+            // Do not replay an unacknowledged click: it might already have executed.
+            // Switch route for the next fresh command instead.
+            if usePhone { avoidPhoneUntil = Date().addingTimeInterval(10) }
+            else { avoidPhoneUntil = .distantPast }
+            // Button-up is idempotent and safe to deliver by the other route.
+            if packet.isReleaseOnly {
+                if usePhone { try await client(for: destination).sendCursor(packet); return }
+                if phoneCanRelay { try await relayCursor(packet, to: destination); return }
+            }
+            throw error
         }
+    }
+
+    private func relayCursor(_ packet: OrbitCursorPacket, to destination: OrbitWatchControlTarget) async throws {
+        guard phoneCanRelay else { throw WatchControlError("Open Orbit on your nearby iPhone") }
+        var message = try JSONSerialization.jsonObject(with: JSONEncoder().encode(packet)) as? [String: Any] ?? [:]
+        message["cmd"] = "cursor"
+        message["pcID"] = destination.id
+        message["host"] = destination.host
+        message["expiresAt"] = Date().addingTimeInterval(5).timeIntervalSince1970
+        let reply = try await sendPhoneMessage(message)
+        guard reply["status"] as? String == "sent" else {
+            throw WatchControlError(reply["message"] as? String ?? "Update Orbit on iPhone, then reconnect your PC")
+        }
+    }
+
+    // MARK: - Supported watchOS HTTP networking
+
+    private func client(for destination: OrbitWatchControlTarget) throws -> OrbitWatchHTTPClient {
+        if httpTarget != destination || httpClient == nil {
+            httpClient = try OrbitWatchHTTPClient(target: destination)
+            httpTarget = destination
+        }
+        return httpClient!
     }
 
     private func performPCRequest(path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
-        var comps = URLComponents()
-        comps.scheme = hasSecureTLS ? "https" : "http"
-        comps.host = host
-        comps.port = hasSecureTLS ? securePort : agentPort
-        comps.path = path
-        comps.queryItems = query.isEmpty ? nil : query
-        guard let url = comps.url else { throw URLError(.badURL) }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.timeoutInterval = 3.0
-        req.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 3.0
-        config.timeoutIntervalForResource = 4.0
-        let delegate = hasSecureTLS ? WatchPinnedTLSDelegate(fingerprint: certificateFingerprint) : nil
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-
-        let (data, response) = try await session.data(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-        return data
+        try await client(for: target).data(path: path, method: method, query: query)
     }
 
-    private func sendDirectMagicPacket() -> Bool {
-        let cleaned = macAddress.filter { !":-. ".contains($0) }
-        guard cleaned.count == 12 else { return false }
-        let chars = Array(cleaned)
-        var mac: [UInt8] = []
-        for i in stride(from: 0, to: 12, by: 2) {
-            guard let b = UInt8(String(chars[i...i + 1]), radix: 16) else { return false }
-            mac.append(b)
-        }
-        let packet = Array(repeating: UInt8(255), count: 6) + Array(repeating: mac, count: 16).flatMap { $0 }
-        let sock = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        guard sock >= 0 else { return false }
-        defer { Darwin.close(sock) }
-        var enabled: Int32 = 1
-        _ = setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &enabled, socklen_t(MemoryLayout<Int32>.size))
-        let targets = Set([broadcastAddress, lastKnownIPv4, host, "255.255.255.255"]).filter { !$0.isEmpty }
-        var sent = false
-        for target in targets {
-            var addr = sockaddr_in()
-            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = UInt16(max(1, min(65535, wolPort))).bigEndian
-            guard inet_pton(AF_INET, target, &addr.sin_addr) == 1 else { continue }
-            let count = packet.withUnsafeBytes { bytes in
-                withUnsafePointer(to: &addr) { ptr in
-                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        Darwin.sendto(sock, bytes.baseAddress, packet.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                    }
-                }
+    private func sendPhoneMessage(_ message: [String: Any]) async throws -> [String: Any] {
+        guard phoneCanRelay else { throw WatchControlError("Open Orbit on your nearby iPhone") }
+        return try await withCheckedThrowingContinuation { continuation in
+            let reply = WatchReplyWaiter(continuation)
+            WCSession.default.sendMessage(message, replyHandler: { payload in
+                Task { @MainActor in reply.finish(.success(payload)) }
+            }, errorHandler: { error in
+                Task { @MainActor in reply.finish(.failure(error)) }
+            })
+            reply.timeout = Task {
+                do { try await Task.sleep(for: .seconds(6)) } catch { return }
+                reply.finish(.failure(WatchControlError("iPhone did not confirm the command. Check its connection.")))
             }
-            sent = sent || (count == packet.count)
         }
-        return sent
     }
 
     // MARK: - Persistence & Complications Snapshot
 
     private func applyPhonePayload(_ payload: [String: Any]) {
         guard !payload.isEmpty else { return }
-        if let id = payload["selectedPCID"] as? String { selectedPCID = id }
+        let contextTime = payload["timestamp"] as? Double ?? 0
+        guard contextTime >= lastPhoneContextAt else { return }
+        let incomingID = payload["selectedPCID"] as? String ?? selectedPCID
+        if let pendingSelection, Date() < pendingSelection.until, incomingID != pendingSelection.id { return }
+        if incomingID == pendingSelection?.id { pendingSelection = nil }
+        lastPhoneContextAt = contextTime
+        let incomingTarget = OrbitWatchControlTarget(
+            id: incomingID, host: payload["host"] as? String ?? host,
+            agentPort: payload["agentPort"] as? Int ?? agentPort,
+            securePort: payload["securePort"] as? Int ?? securePort,
+            fingerprint: payload["certificateFingerprint"] as? String ?? certificateFingerprint,
+            token: payload["apiToken"] as? String ?? apiToken)
+        if incomingTarget != target {
+            retireCursorPipeline()
+            volumeQueue?.cancel()
+            lastTelemetryAt = nil
+            isOnline = false
+        }
+        selectedPCID = incomingID
         if let name = payload["pcName"] as? String, !name.isEmpty { pcName = name }
-        if let h = payload["host"] as? String, !h.isEmpty { host = h }
-        if let ap = payload["agentPort"] as? Int { agentPort = ap }
-        if let sp = payload["securePort"] as? Int { securePort = sp }
-        if let fp = payload["certificateFingerprint"] as? String { certificateFingerprint = fp }
-        if let tok = payload["apiToken"] as? String, !tok.isEmpty { apiToken = tok }
+        host = incomingTarget.host
+        agentPort = incomingTarget.agentPort
+        securePort = incomingTarget.securePort
+        certificateFingerprint = incomingTarget.fingerprint
+        apiToken = incomingTarget.token
         if let mac = payload["macAddress"] as? String { macAddress = mac }
         if let bc = payload["broadcastAddress"] as? String { broadcastAddress = bc }
         if let sm = payload["subnetMask"] as? String { subnetMask = sm }
         if let wp = payload["wolPort"] as? Int { wolPort = wp }
         if let ip = payload["lastKnownIPv4"] as? String { lastKnownIPv4 = ip }
-        if let online = payload["isOnline"] as? Bool { isOnline = online }
-        if let avail = payload["telemetryAvailable"] as? Bool { telemetryAvailable = avail }
-        if let cpu = payload["cpuUsage"] as? Double { cpuUsage = cpu }
-        cpuTemp = payload["cpuTemp"] as? Double
-        gpuUsage = payload["gpuUsage"] as? Double
-        gpuTemp = payload["gpuTemp"] as? Double
-        if let ramPct = payload["ramUsagePercent"] as? Double { ramUsagePercent = ramPct }
-        if let ru = payload["ramUsedGB"] as? Double { ramUsedGB = ru }
-        if let rt = payload["ramTotalGB"] as? Double { ramTotalGB = rt }
-        cpuPowerWatts = payload["cpuPowerWatts"] as? Double
-        gpuPowerWatts = payload["gpuPowerWatts"] as? Double
-        fps = payload["fps"] as? Double
-        activeGame = payload["activeGame"] as? String
-        if let vol = payload["volume"] as? Double, Date().timeIntervalSince(lastVolumeSentAt) > 2.0 {
-            volume = vol
-        }
-        if let muted = payload["isMuted"] as? Bool { isMuted = muted }
-        if let up = payload["uptimeSeconds"] as? Int { uptimeSeconds = up }
-        if let ping = payload["pingMs"] as? Int { pingMs = ping }
         if let la = payload["isLiveActivityActive"] as? Bool { isLiveActivityActive = la }
-        if let hex = payload["themeAccentHex"] as? String, hex.count == 6 { accentHex = hex }
-        if let hex = payload["themeSecondaryHex"] as? String, hex.count == 6 { secondaryHex = hex }
+
+        // Context delivery time does not make a cached PC sample fresh. Older phone
+        // samples must not overwrite a newer direct HTTPS response from the Watch.
+        let sampleTime = payload["telemetryTimestamp"] as? Double ?? 0
+        let sampleDate = Date(timeIntervalSince1970: sampleTime)
+        if payload["isDemoMode"] as? Bool != true,
+           sampleTime > 0, sampleDate <= Date().addingTimeInterval(3),
+           sampleDate >= (lastTelemetryAt ?? .distantPast) {
+            lastTelemetryAt = sampleDate
+            isOnline = (payload["isOnline"] as? Bool ?? false) && Date().timeIntervalSince(sampleDate) <= 12
+            telemetryAvailable = payload["telemetryAvailable"] as? Bool ?? false
+            cpuUsage = payload["cpuUsage"] as? Double ?? 0
+            cpuTemp = payload["cpuTemp"] as? Double
+            gpuUsage = payload["gpuUsage"] as? Double
+            gpuTemp = payload["gpuTemp"] as? Double
+            ramUsagePercent = payload["ramUsagePercent"] as? Double ?? 0
+            ramUsedGB = payload["ramUsedGB"] as? Double ?? 0
+            ramTotalGB = payload["ramTotalGB"] as? Double ?? 0
+            cpuPowerWatts = payload["cpuPowerWatts"] as? Double
+            gpuPowerWatts = payload["gpuPowerWatts"] as? Double
+            fps = payload["fps"] as? Double
+            activeGame = payload["activeGame"] as? String
+            if let vol = payload["volume"] as? Double, Date().timeIntervalSince(lastVolumeSentAt) > 2 {
+                volume = min(100, max(0, vol))
+            }
+            isMuted = payload["isMuted"] as? Bool ?? isMuted
+            uptimeSeconds = payload["uptimeSeconds"] as? Int ?? uptimeSeconds
+            pingMs = payload["pingMs"] as? Int ?? 0
+            checkThermalHapticAlert()
+        }
 
         if let rawGames = payload["games"] as? [[String: String]] {
             games = rawGames.compactMap { dict in
@@ -891,7 +952,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         let store = UserDefaults(suiteName: Self.appGroupID) ?? .standard
         let snapshot: [String: Any] = [
             "pcName": pcName,
-            "isOnline": isOnline,
+            "selectedPCID": selectedPCID,
+            "isOnline": isTelemetryFresh,
             "cpuUsage": cpuUsage,
             "cpuTemp": cpuTemp ?? -1,
             "gpuUsage": gpuUsage ?? -1,
@@ -899,7 +961,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             "ramUsagePercent": ramUsagePercent,
             "fps": fps ?? -1,
             "activeGame": activeGame ?? "",
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": lastTelemetryAt?.timeIntervalSince1970 ?? 0,
             "host": host,
             "agentPort": agentPort,
             "securePort": securePort,
@@ -908,9 +970,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             "broadcastAddress": broadcastAddress,
             "subnetMask": subnetMask,
             "wolPort": wolPort,
-            "lastKnownIPv4": lastKnownIPv4,
-            "accentHex": accentHex,
-            "secondaryHex": secondaryHex
+            "lastKnownIPv4": lastKnownIPv4
         ]
         store.set(snapshot, forKey: Self.snapshotKey)
         UserDefaults.standard.set(snapshot, forKey: Self.snapshotKey)
@@ -923,7 +983,10 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             return
         }
         pcName = snapshot["pcName"] as? String ?? "Your PC"
-        isOnline = snapshot["isOnline"] as? Bool ?? false
+        selectedPCID = snapshot["selectedPCID"] as? String ?? ""
+        let sampleTime = snapshot["timestamp"] as? Double ?? 0
+        lastTelemetryAt = sampleTime > 0 ? Date(timeIntervalSince1970: sampleTime) : nil
+        isOnline = (snapshot["isOnline"] as? Bool ?? false) && lastTelemetryAt.map { (0...12).contains(Date().timeIntervalSince($0)) } == true
         cpuUsage = snapshot["cpuUsage"] as? Double ?? 0
         let ct = snapshot["cpuTemp"] as? Double ?? -1
         cpuTemp = ct >= 0 ? ct : nil
@@ -945,8 +1008,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         subnetMask = snapshot["subnetMask"] as? String ?? "255.255.255.0"
         wolPort = snapshot["wolPort"] as? Int ?? 9
         lastKnownIPv4 = snapshot["lastKnownIPv4"] as? String ?? ""
-        accentHex = snapshot["accentHex"] as? String ?? ""
-        secondaryHex = snapshot["secondaryHex"] as? String ?? ""
+        if !selectedPCID.isEmpty { apiToken = (try? OrbitWidgetConnectionStore.controlToken(for: selectedPCID)) ?? "" }
     }
 }
 
@@ -986,31 +1048,23 @@ extension OrbitWatchViewModel: WCSessionDelegate {
     }
 }
 
-private final class WatchPinnedTLSDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
-    let fingerprint: String
 
-    init(fingerprint: String) {
-        self.fingerprint = fingerprint.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
-    }
+private struct WatchControlError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
 
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let certificate = chain.first else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        let der = SecCertificateCopyData(certificate) as Data
-        let received = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
-        guard received == fingerprint,
-              SecTrustSetPolicies(trust, SecPolicyCreateBasicX509()) == errSecSuccess,
-              SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
-              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
-              SecTrustEvaluateWithError(trust, nil) else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: trust))
+@MainActor
+private final class WatchReplyWaiter {
+    private var continuation: CheckedContinuation<[String: Any], Error>?
+    var timeout: Task<Void, Never>?
+    init(_ continuation: CheckedContinuation<[String: Any], Error>) { self.continuation = continuation }
+    func finish(_ result: Result<[String: Any], Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeout?.cancel()
+        timeout = nil
+        continuation.resume(with: result)
     }
 }

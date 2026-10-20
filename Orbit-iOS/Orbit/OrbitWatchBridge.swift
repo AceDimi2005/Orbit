@@ -16,9 +16,17 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
 
     weak var viewModel: OrbitViewModel?
     private var lastContextPushTime: Date = .distantPast
-    private var inputSocket: URLSessionWebSocketTask?
     private var inputClient: OrbitAPIClient?
-    private var inputSocketHost: String = ""
+    private var inputClientIdentity: CursorRelayIdentity?
+
+    private struct CursorRelayIdentity: Equatable {
+        let pcID: String
+        let host: String
+        let agentPort: Int
+        let securePort: Int
+        let token: String
+        let fingerprint: String
+    }
 
     private override init() {
         super.init()
@@ -39,7 +47,6 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
 
     func buildSyncPayload() -> [String: Any] {
         guard let vm = viewModel else { return [:] }
-        let theme = OrbitTheme(rawValue: UserDefaults.standard.string(forKey: "orbit.theme") ?? "") ?? .ocean
         let ramPct = vm.metrics.ramTotalGB > 0 ? (vm.metrics.ramUsedGB / vm.metrics.ramTotalGB * 100.0) : 0.0
         let gamesList: [[String: String]] = vm.games.prefix(16).map {
             ["id": $0.id, "title": $0.title, "genre": $0.genre]
@@ -64,6 +71,8 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         var payload: [String: Any] = [
             "type": "stateSync",
             "timestamp": Date().timeIntervalSince1970,
+            "telemetryTimestamp": vm.lastUpdated?.timeIntervalSince1970 ?? 0,
+            "isDemoMode": vm.isDemoMode,
             "selectedPCID": vm.selectedPCID,
             "pcName": vm.selectedPCName,
             "host": vm.cleanHost(),
@@ -90,10 +99,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             "isLiveActivityActive": vm.isDynamicIslandActive,
             "statusLog": vm.statusLog,
             "games": gamesList,
-            "savedPCs": pcsList,
-            "theme": theme.rawValue,
-            "themeAccentHex": theme.accentHex,
-            "themeSecondaryHex": theme.secondaryHex
+            "savedPCs": pcsList
         ]
         if let cpuTemp = vm.metrics.cpuTemp { payload["cpuTemp"] = cpuTemp }
         if let gpuUsage = vm.metrics.gpuUsage { payload["gpuUsage"] = gpuUsage }
@@ -128,49 +134,102 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         #endif
     }
 
-    func forwardCursorCommand(_ message: [String: Any]) async {
-        guard let vm = viewModel, vm.metrics.isOnline, !vm.isDemoMode else { return }
-        let dx = message["dx"] as? Int ?? 0
-        let dy = message["dy"] as? Int ?? 0
-        let click = message["click"] as? String ?? ""
-        let scroll = message["scroll"] as? Int ?? 0
-        let hscroll = message["hscroll"] as? Int ?? 0
-        let drag = message["drag"] as? String ?? ""
-        let normX = message["normX"] as? Double
-        let normY = message["normY"] as? Double
-
-        let hostKey = "\(vm.cleanHost()):\(vm.securePort):\(vm.agentPort)"
-        if inputSocket == nil || inputSocketHost != hostKey {
-            inputSocket?.cancel(with: .goingAway, reason: nil)
-            inputSocket = nil
-            inputClient = nil
-            inputSocketHost = hostKey
-            if vm.hasSecureConnection, let client = try? vm.companionClient(), let ws = try? client.inputWebSocket() {
-                inputClient = client
-                inputSocket = ws
-                ws.resume()
+    /// A reply confirms the PC accepted this command, not merely that the phone
+    /// received a WatchConnectivity message. The target is frozen before awaiting.
+    func forwardCursorCommand(_ message: [String: Any]) async -> [String: Any] {
+        do {
+            guard let vm = viewModel else {
+                throw OrbitError(message: "Open Orbit on your iPhone and reconnect your PC.")
             }
-        }
-
-        if let ws = inputSocket {
-            var json: [String: Any] = ["dx": dx, "dy": dy, "click": click, "scroll": scroll, "hscroll": hscroll, "drag": drag]
-            if let normX, let normY {
-                json["normX"] = normX
-                json["normY"] = normY
+            guard !vm.isDemoMode else {
+                throw OrbitError(message: "Exit Demo Mode on iPhone to control a real PC.")
             }
-            if let data = try? JSONSerialization.data(withJSONObject: json),
-               let text = String(data: data, encoding: .utf8) {
-                do {
-                    try await ws.send(.string(text))
-                    return
-                } catch {
-                    inputSocket?.cancel(with: .goingAway, reason: nil)
-                    inputSocket = nil
+            let packetData = try JSONSerialization.data(withJSONObject: message)
+            let packet = try JSONDecoder().decode(OrbitCursorPacket.self, from: packetData).validated()
+            let now = Date().timeIntervalSince1970
+            let deadline = message["expiresAt"] as? Double
+            if !packet.isReleaseOnly {
+                guard let deadline, deadline.isFinite, deadline > now else {
+                    throw OrbitError(message: "The cursor command expired. Try again.")
                 }
             }
-        }
+            guard let pcID = message["pcID"] as? String, !pcID.isEmpty,
+                  let requestedHost = message["host"] as? String, !requestedHost.isEmpty,
+                  let profile = vm.savedPCs.first(where: {
+                      $0.id == pcID && Self.normalizedHost($0.address) == Self.normalizedHost(requestedHost)
+                  }) else {
+                throw OrbitError(message: "The Watch PC is no longer saved on iPhone. Sync Orbit again.")
+            }
+            let isCurrentPC = vm.selectedPCID == pcID
+                && Self.normalizedHost(vm.cleanHost()) == Self.normalizedHost(requestedHost)
+            guard isCurrentPC || packet.isReleaseOnly else {
+                throw OrbitError(message: "The selected PC changed on iPhone. Sync Orbit before moving the cursor.")
+            }
 
-        await vm.sendCursorInput(dx: dx, dy: dy, click: click, scroll: scroll, hscroll: hscroll, normX: normX, normY: normY, drag: drag)
+            let identity: CursorRelayIdentity
+            if isCurrentPC {
+                identity = CursorRelayIdentity(pcID: pcID, host: vm.cleanHost(), agentPort: vm.agentPort,
+                                               securePort: vm.securePort, token: vm.apiToken,
+                                               fingerprint: OrbitAPIClient.normalizedFingerprint(vm.certificateFingerprint))
+            } else {
+                // Only release a previously held button on an old saved PC. Never
+                // reinterpret an old motion/click as input for the newly selected PC.
+                identity = CursorRelayIdentity(pcID: pcID, host: profile.address, agentPort: profile.agentPort,
+                                               securePort: profile.securePort, token: PCProfileStore.token(profile.id),
+                                               fingerprint: OrbitAPIClient.normalizedFingerprint(profile.certificateFingerprint))
+            }
+            let client: OrbitAPIClient
+            if let cached = inputClient, inputClientIdentity == identity {
+                client = cached
+            } else {
+                client = try isCurrentPC ? vm.companionClient() : OrbitAPIClient(
+                    host: identity.host, port: identity.securePort, token: identity.token, fingerprint: identity.fingerprint)
+                inputClient = client
+                inputClientIdentity = identity
+            }
+            var query = [
+                URLQueryItem(name: "dx", value: String(packet.dx)),
+                URLQueryItem(name: "dy", value: String(packet.dy)),
+                URLQueryItem(name: "click", value: packet.click),
+                URLQueryItem(name: "scroll", value: String(packet.scroll)),
+                URLQueryItem(name: "hscroll", value: String(packet.hscroll)),
+                URLQueryItem(name: "drag", value: packet.drag)
+            ]
+            if let x = packet.normX, let y = packet.normY {
+                query.append(URLQueryItem(name: "normX", value: String(x)))
+                query.append(URLQueryItem(name: "normY", value: String(y)))
+            }
+            // iPhone polling can be suspended while it relays Watch commands, so
+            // stale telemetry must not gate a genuine, authenticated HTTP attempt.
+            let remaining = packet.isReleaseOnly ? 4 : min(4, (deadline ?? now) - Date().timeIntervalSince1970)
+            guard remaining > 0 else { throw OrbitError(message: "The cursor command expired. Try again.") }
+            let data = try await Self.sendCursorRequest(client: client, query: query, timeout: remaining)
+            let result = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard result?["status"] as? String == "sent" else {
+                throw OrbitError(message: "The PC did not confirm the cursor command. Update the Orbit PC Companion.")
+            }
+            return ["status": "sent", "pcID": pcID]
+        } catch {
+            return ["status": "failed", "message": error.localizedDescription]
+        }
+    }
+
+    private static func normalizedHost(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+    }
+
+    private static func sendCursorRequest(client: OrbitAPIClient, query: [URLQueryItem], timeout: Double) async throws -> Data {
+        try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await client.data("/api/input/cursor", method: "POST", query: query) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw OrbitError(message: "The PC did not respond to cursor control. Check the companion and local network.")
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw CancellationError() }
+            return result
+        }
     }
 
     private func handleIncomingWatchMessage(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)? = nil) {
@@ -206,8 +265,11 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             }
         case "cursor":
             Task {
-                await forwardCursorCommand(message)
-                replyHandler?(["status": "ok"])
+                let result = await forwardCursorCommand(message)
+                replyHandler?(result)
+                if result["status"] as? String == "failed", let failure = result["message"] as? String {
+                    vm.statusLog = "Watch cursor: \(failure)"
+                }
             }
         case "toggleLiveActivity":
             vm.toggleDynamicIsland()
