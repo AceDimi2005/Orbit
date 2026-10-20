@@ -21,7 +21,10 @@ struct MacFilesView: View {
     @State private var appliedSearchPath: String?
 
     var body: some View {
-        Group {
+        // A ZStack (not Group) hosts the modifiers below: modifiers on a Group attach to the
+        // active branch, so every offline/online flip would restart `.task`, reset the
+        // `.onChange` baselines and tear down an open alert or sheet.
+        ZStack {
             if vm.currentPC == nil && !vm.isDemoMode {
                 stateCard(tint: theme.accent) { notPairedState }
             } else if vm.isDemoMode {
@@ -83,7 +86,9 @@ struct MacFilesView: View {
 
     private var canModify: Bool { vm.filesEnabled && vm.filePath != nil && vm.transfer == nil }
     private var selectedEntries: [MacFileEntry] { vm.fileEntries.filter { selection.contains($0.id) } }
-    private var hasMore: Bool { vm.fileTruncated || vm.fileEntries.count < vm.fileTotal }
+    /// Mirrors the guard in `vm.loadMoreFiles()`; `fileTruncated` alone means the agent capped
+    /// the listing at 100,000 entries, which another page cannot fix.
+    private var hasMore: Bool { vm.fileEntries.count < vm.fileTotal }
     private var crumbs: [MacFilesCrumb] { vm.filePath.map(MacFilesCrumb.crumbs(for:)) ?? [] }
     private var currentFolderName: String {
         guard let path = vm.filePath else { return "Computer" }
@@ -556,7 +561,7 @@ struct MacFilesView: View {
                 Image(systemName: "arrow.down.doc.fill")
                     .font(.system(size: 30, weight: .semibold))
                     .foregroundStyle(theme.accent)
-                Text(canModify ? "Drop to upload to \(currentFolderName)" : "Open a folder first")
+                Text(canModify ? "Drop to upload to \(currentFolderName)" : "Wait for the current transfer to finish")
                     .font(.headline.weight(.semibold))
             }
         }
@@ -576,6 +581,9 @@ struct MacFilesView: View {
                     Button { Task { await vm.loadMoreFiles() } } label: { Label("Show more", systemImage: "chevron.down") }
                         .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
                         .disabled(vm.isLoadingFiles)
+                } else if vm.filePath != nil, vm.fileTruncated {
+                    Text("Over 100,000 entries · narrow the search or open a subfolder")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

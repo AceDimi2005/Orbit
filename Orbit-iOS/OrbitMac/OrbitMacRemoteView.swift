@@ -104,14 +104,24 @@ struct MacRemoteView: View {
         .macGlass(cornerRadius: 20, tint: isCapturing ? .orange : theme.accent, elevated: true)
     }
 
+    private var volumeChipValue: String {
+        vm.metrics.volumeAvailable == false ? "—" : MacFormat.percent(vm.metrics.volume)
+    }
+    private var volumeChipIcon: String {
+        vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+    }
+    private var linkChipValue: String {
+        vm.currentPC?.isSecure == true ? "Encrypted" : "—"
+    }
+
     private var heroChips: some View {
         HStack(spacing: 8) {
             if isLive {
                 MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
+                MacStatChip(label: "Link", value: linkChipValue, icon: "lock.fill")
             }
             if isReady {
-                MacStatChip(label: "Volume", value: vm.metrics.volumeAvailable == false ? "—" : MacFormat.percent(vm.metrics.volume), icon: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                MacStatChip(label: "Volume", value: volumeChipValue, icon: volumeChipIcon)
             }
             if let game = vm.metrics.activeGame, !game.isEmpty {
                 MacStatChip(label: "Playing", value: game, icon: "gamecontroller.fill", tint: .mint)
@@ -165,10 +175,11 @@ struct MacRemoteView: View {
     private var offlineOverlay: some View {
         let name = vm.currentPC?.name ?? "PC"
         let canWake = !(vm.currentPC?.macAddress.isEmpty ?? true)
+        let progressTitle: String = vm.isWaking ? "Waking \(name)…" : "Connecting to \(name)…"
         return VStack(spacing: 0) {
             if isConnecting || vm.isWaking {
                 ProgressView().controlSize(.regular).padding(.top, 28)
-                Text(vm.isWaking ? "Waking \(name)…" : "Connecting to \(name)…")
+                Text(progressTitle)
                     .font(.headline.weight(.bold))
                     .padding(.top, 12)
                 Text("Remote controls unlock as soon as Orbit Agent replies.")
@@ -214,29 +225,37 @@ struct MacRemoteView: View {
         return "Relative pointer control over the encrypted input socket"
     }
 
+    private var captureToggleHelp: String {
+        isLive ? "Lock the Mac pointer inside the pad and forward keystrokes · press ⎋ to release" : "Available when a real PC is connected"
+    }
+
     private var trackpadColumn: some View {
         VStack(alignment: .leading, spacing: 12) {
             MacSectionHeader("Trackpad", subtitle: trackpadSubtitle, icon: "hand.point.up.left.fill") {
-                HStack(spacing: 10) {
-                    if captureEnabled {
-                        Button {
-                            releaseCapture()
-                        } label: {
-                            Label("Release", systemImage: "escape")
-                        }
-                        .buttonStyle(MacHoverButtonStyle(tint: .orange))
-                        .help("Release the pointer (⎋)")
-                    }
-                    Toggle("Capture pointer", isOn: $captureEnabled)
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .disabled(!isLive)
-                        .help(isLive ? "Lock the Mac pointer inside the pad and forward keystrokes · press ⎋ to release" : "Available when a real PC is connected")
-                }
+                captureControls
             }
             trackpadSurface
             mouseBar
+        }
+    }
+
+    private var captureControls: some View {
+        HStack(spacing: 10) {
+            if captureEnabled {
+                Button {
+                    releaseCapture()
+                } label: {
+                    Label("Release", systemImage: "escape")
+                }
+                .buttonStyle(MacHoverButtonStyle(tint: .orange))
+                .help("Release the pointer (⎋)")
+            }
+            Toggle("Capture pointer", isOn: $captureEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .disabled(!isLive)
+                .help(captureToggleHelp)
         }
     }
 
@@ -293,12 +312,18 @@ struct MacRemoteView: View {
         return "Click, right-click, drag and scroll like a laptop trackpad"
     }
 
+    private var hintTitle: String {
+        if isCapturing { return "Pointer captured" }
+        if vm.isDemoMode { return "Demo trackpad" }
+        return "Move here to control the PC pointer"
+    }
+
     private func surfaceHint(tint: Color) -> some View {
         VStack(spacing: 10) {
             Image(systemName: isCapturing ? "cursorarrow.rays" : "cursorarrow.motionlines")
                 .font(.system(size: 34, weight: .medium))
                 .foregroundStyle(tint)
-            Text(isCapturing ? "Pointer captured" : (vm.isDemoMode ? "Demo trackpad" : "Move here to control the PC pointer"))
+            Text(hintTitle)
                 .font(.system(.headline, design: .rounded, weight: .bold))
             Text(hintDetail)
                 .font(.caption)
@@ -402,20 +427,26 @@ struct MacRemoteView: View {
                     .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
                 Spacer(minLength: 6)
                 mediaButton("Volume down", icon: "speaker.minus.fill", action: "volume_down")
-                Button {
-                    Task { await vm.sendAction("mute") }
-                } label: {
-                    Image(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                }
-                .buttonStyle(MacIconButtonStyle(tint: vm.metrics.isMuted ? .orange : .white, size: 34))
-                .help(vm.metrics.isMuted ? "Unmute PC" : "Mute PC")
-                .accessibilityLabel(vm.metrics.isMuted ? "Unmute" : "Mute")
+                muteButton
                 mediaButton("Volume up", icon: "speaker.plus.fill", action: "volume_up")
             }
             volumeRow
         }
         .padding(16)
         .macGlass(cornerRadius: 18)
+    }
+
+    private var muteButton: some View {
+        let muted = vm.metrics.isMuted
+        let tint: Color = muted ? .orange : .white
+        return Button {
+            Task { await vm.sendAction("mute") }
+        } label: {
+            Image(systemName: volumeChipIcon)
+        }
+        .buttonStyle(MacIconButtonStyle(tint: tint, size: 34))
+        .help(muted ? "Unmute PC" : "Mute PC")
+        .accessibilityLabel(muted ? "Unmute" : "Mute")
     }
 
     private func mediaButton(_ title: String, icon: String, action: String) -> some View {
@@ -461,9 +492,14 @@ struct MacRemoteView: View {
         ]
     }
 
+    private var quickActionsSubtitle: String {
+        if let game = vm.metrics.activeGame, !game.isEmpty { return "Quit Game ends \(game)" }
+        return "Sleep asks for confirmation"
+    }
+
     private var quickActionsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Quick actions", subtitle: hasActiveGame ? "Quit Game ends \(vm.metrics.activeGame ?? "the active game")" : "Sleep asks for confirmation", icon: "bolt.fill")
+            MacSectionHeader("Quick actions", subtitle: quickActionsSubtitle, icon: "bolt.fill")
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 ForEach(quickActions) { item in
                     MacActionTile(title: item.title, icon: item.icon, tint: item.tint, isActive: item.id == "kill_game" && hasActiveGame) {
@@ -760,6 +796,8 @@ final class MacRemoteTrackpadView: NSView {
     deinit {
         flushTask?.cancel()
         worker?.cancel()
+        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         let hidden = cursorHidden
         let capturing = isCapturing
         Task { @MainActor in
@@ -910,14 +948,16 @@ final class MacRemoteTrackpadView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard isEnabled, pointerInside || isCapturing else { super.scrollWheel(with: event); return }
+        let deltaY = Double(event.scrollingDeltaY)
+        let deltaX = Double(event.scrollingDeltaX)
         if event.hasPreciseScrollingDeltas {
             // Trackpads report points; roughly one wheel step per 14 pt.
-            pendingScroll += event.scrollingDeltaY / 14
-            pendingHScroll -= event.scrollingDeltaX / 14
+            pendingScroll += deltaY / 14
+            pendingHScroll -= deltaX / 14
         } else {
             // Wheels report whole lines. AppKit and Windows both treat positive as "up".
-            pendingScroll += event.scrollingDeltaY.rounded(.awayFromZero)
-            pendingHScroll -= event.scrollingDeltaX.rounded(.awayFromZero)
+            pendingScroll += deltaY.rounded(.awayFromZero)
+            pendingHScroll -= deltaX.rounded(.awayFromZero)
         }
         scheduleFlush()
     }
@@ -953,8 +993,8 @@ final class MacRemoteTrackpadView: NSView {
 
     private func accumulate(_ event: NSEvent) {
         guard isEnabled, pointerInside || isCapturing else { return }
-        pendingDX += event.deltaX * pointerSpeed
-        pendingDY += event.deltaY * pointerSpeed
+        pendingDX += Double(event.deltaX) * pointerSpeed
+        pendingDY += Double(event.deltaY) * pointerSpeed
         scheduleFlush()
     }
 
