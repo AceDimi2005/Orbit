@@ -57,6 +57,11 @@ struct OrbitMacApp: App {
                     .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                     .disabled(!viewModel.metrics.isOnline)
                 Divider()
+                Button("Stream Desktop") { viewModel.selectedSection = .library; viewModel.pendingStreamAction = .desktop }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                    .disabled(!viewModel.metrics.isOnline || viewModel.isDemoMode)
+                Button("Stream Settings…") { viewModel.selectedSection = .library; viewModel.pendingStreamAction = .settings }
+                Divider()
                 Button(viewModel.isStreaming ? "Stop Desktop Preview" : "Start Desktop Preview") {
                     if viewModel.isStreaming { viewModel.stopPreview() } else { viewModel.selectedSection = .preview; viewModel.startPreview() }
                 }
@@ -145,7 +150,7 @@ struct OrbitMacApp: App {
         switch url.host?.lowercased() {
         case "remote": viewModel.selectedSection = .remote
         case "files": viewModel.selectedSection = .files
-        case "library": viewModel.selectedSection = .library
+        case "library", "stream": viewModel.selectedSection = .library
         case "preview": viewModel.selectedSection = .preview
         case "settings", "pcs": viewModel.selectedSection = .pcs
         case "wake": Task { await viewModel.wakePC() }

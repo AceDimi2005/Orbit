@@ -639,7 +639,7 @@ enum MacSection: String, CaseIterable, Identifiable, Codable {
         case .audio: "Audio Mixer"
         case .clipboard: "Clipboard"
         case .sessions: "Sessions"
-        case .library: "Library"
+        case .library: "Stream"
         case .pcs: "My PCs"
         }
     }
@@ -653,7 +653,7 @@ enum MacSection: String, CaseIterable, Identifiable, Codable {
         case .audio: "slider.vertical.3"
         case .clipboard: "doc.on.clipboard.fill"
         case .sessions: "chart.xyaxis.line"
-        case .library: "gamecontroller.fill"
+        case .library: "play.rectangle.fill"
         case .pcs: "desktopcomputer"
         }
     }
@@ -703,4 +703,9 @@ enum MacFormat {
         guard let value else { return "—" }
         return ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
+}
+
+/// Queued by menu commands (⇧⌘S, Stream Settings…); the Stream section runs it once it is on screen.
+enum MacStreamAction: Equatable {
+    case desktop, settings
 }

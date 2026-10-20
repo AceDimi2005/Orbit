@@ -6,6 +6,7 @@ struct MacRootView: View {
     @Environment(\.macTheme) private var theme
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var pendingPower: MacPowerConfirmation?
+    @ObservedObject private var stream = MoonlightStreamController.shared
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -72,6 +73,8 @@ struct MacRootView: View {
                 Spacer()
                 if section == .preview && vm.isStreaming {
                     Circle().fill(.red).frame(width: 7, height: 7)
+                } else if section == .library, stream.isPresented {
+                    Circle().fill(theme.accent).frame(width: 7, height: 7)
                 } else if section == .sessions, vm.historyList?.activeSession != nil {
                     Circle().fill(.red).frame(width: 7, height: 7)
                 } else if section == .files, vm.transfer != nil {

@@ -52,6 +52,8 @@ final class OrbitMacViewModel: ObservableObject {
     @Published var menuBarMetric: String = UserDefaults.standard.string(forKey: "mac.menuBarMetric") ?? "cpu" {
         didSet { if oldValue != menuBarMetric { UserDefaults.standard.set(menuBarMetric, forKey: "mac.menuBarMetric") } }
     }
+    /// Set by menu commands; `MacLibraryView` consumes it as soon as the Stream section shows.
+    @Published var pendingStreamAction: MacStreamAction?
     @Published var selectedSection: MacSection = MacSection(rawValue: UserDefaults.standard.string(forKey: "mac.section") ?? "") ?? .overview {
         didSet { UserDefaults.standard.set(selectedSection.rawValue, forKey: "mac.section") }
     }
