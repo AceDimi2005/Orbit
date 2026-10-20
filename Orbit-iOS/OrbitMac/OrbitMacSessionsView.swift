@@ -36,6 +36,11 @@ struct MacSessionsView: View {
         guard let selectedID else { return nil }
         return sortedSessions.first { $0.id == selectedID }
     }
+    /// Pinned to `String` so `confirmationDialog` resolves its `StringProtocol` overload instead of
+    /// inferring the literal as `LocalizedStringKey`.
+    private var deleteDialogTitle: String {
+        pendingDelete.map { "Delete “\($0.name)”?" } ?? "Delete recording?"
+    }
 
     // MARK: Body
 
@@ -76,7 +81,7 @@ struct MacSessionsView: View {
         .task(id: vm.historyList?.activeSession?.id) { await pollWhileRecording() }
         .task(id: selectedID) { await loadSelectedDetail() }
         .confirmationDialog(
-            pendingDelete.map { "Delete “\($0.name)”?" } ?? "Delete recording?",
+            deleteDialogTitle,
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
             titleVisibility: .visible
         ) {
@@ -426,59 +431,72 @@ struct MacSessionsView: View {
                         .lineLimit(1)
                     MacStatusPill(text: session.statusLabel, tint: statusTint(session), pulsing: session.isRecording)
                 }
-                HStack(spacing: 8) {
-                    MacStatChip(label: "Started", value: session.startedDate.formatted(.dateTime.day().month().year().hour().minute()), icon: "calendar")
-                    MacStatChip(label: "Duration", value: session.durationSeconds > 0 ? session.durationLabel : "—", icon: "clock")
-                    MacStatChip(label: "Samples", value: session.sampleCount > 0 ? "\(session.sampleCount)" : "—", icon: "waveform.path.ecg")
-                    if let detail, detail.session.id == session.id {
-                        if detail.sampleIntervalSeconds > 0 {
-                            MacStatChip(label: "Interval", value: "\(MacFormat.decimal(detail.sampleIntervalSeconds, digits: detail.sampleIntervalSeconds < 10 ? 1 : 0)) s", icon: "metronome")
-                        }
-                        if detail.downsampled {
-                            MacStatChip(label: "Plotted", value: "\(detail.samples.count)", icon: "arrow.down.right.and.arrow.up.left")
-                        }
-                    }
-                    if let process = session.gameProcess, !process.isEmpty {
-                        MacStatChip(label: "Game", value: process, icon: "gamecontroller.fill")
-                    }
-                }
-                .lineLimit(1)
+                detailChips(session)
             }
             Spacer(minLength: 8)
-            HStack(spacing: 8) {
-                if isLoadingDetail {
-                    ProgressView().controlSize(.small).frame(width: 28, height: 28)
-                } else {
-                    Button {
-                        Task { await loadSelectedDetail() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(MacIconButtonStyle(size: 28))
-                    .disabled(!vm.metrics.isOnline)
-                    .help("Reload samples")
-                    .accessibilityLabel("Reload samples")
+            detailActions(session)
+        }
+    }
+
+    private func detailChips(_ session: MacHistorySession) -> some View {
+        HStack(spacing: 8) {
+            MacStatChip(label: "Started", value: session.startedDate.formatted(.dateTime.day().month().year().hour().minute()), icon: "calendar")
+            MacStatChip(label: "Duration", value: session.durationSeconds > 0 ? session.durationLabel : "—", icon: "clock")
+            MacStatChip(label: "Samples", value: session.sampleCount > 0 ? "\(session.sampleCount)" : "—", icon: "waveform.path.ecg")
+            if let detail, detail.session.id == session.id {
+                if detail.sampleIntervalSeconds > 0 {
+                    MacStatChip(label: "Interval", value: Self.intervalLabel(detail.sampleIntervalSeconds), icon: "metronome")
                 }
-                Button {
-                    exportCSV()
-                } label: {
-                    Label("Export CSV", systemImage: "square.and.arrow.up")
+                if detail.downsampled {
+                    MacStatChip(label: "Plotted", value: "\(detail.samples.count)", icon: "arrow.down.right.and.arrow.up.left")
                 }
-                .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
-                .disabled(detail == nil || detail?.samples.isEmpty == true)
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .help("Export every sample with all metric columns (⇧⌘E)")
-                Button(role: .destructive) {
-                    pendingDelete = session
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(MacIconButtonStyle(tint: .orange, size: 28))
-                .disabled(!canRecord)
-                .keyboardShortcut(.delete, modifiers: .command)
-                .help("Delete recording… (⌘⌫)")
-                .accessibilityLabel("Delete recording")
             }
+            if let process = session.gameProcess, !process.isEmpty {
+                MacStatChip(label: "Game", value: process, icon: "gamecontroller.fill")
+            }
+        }
+        .lineLimit(1)
+    }
+
+    private static func intervalLabel(_ seconds: Double) -> String {
+        let digits = seconds < 10 ? 1 : 0
+        return "\(MacFormat.decimal(seconds, digits: digits)) s"
+    }
+
+    private func detailActions(_ session: MacHistorySession) -> some View {
+        HStack(spacing: 8) {
+            if isLoadingDetail {
+                ProgressView().controlSize(.small).frame(width: 28, height: 28)
+            } else {
+                Button {
+                    Task { await loadSelectedDetail() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(MacIconButtonStyle(size: 28))
+                .disabled(!vm.metrics.isOnline)
+                .help("Reload samples")
+                .accessibilityLabel("Reload samples")
+            }
+            Button {
+                exportCSV()
+            } label: {
+                Label("Export CSV", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
+            .disabled(detail == nil || detail?.samples.isEmpty == true)
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .help("Export every sample with all metric columns (⇧⌘E)")
+            Button(role: .destructive) {
+                pendingDelete = session
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(MacIconButtonStyle(tint: .orange, size: 28))
+            .disabled(!canRecord)
+            .keyboardShortcut(.delete, modifiers: .command)
+            .help("Delete recording… (⌘⌫)")
+            .accessibilityLabel("Delete recording")
         }
     }
 
@@ -529,14 +547,16 @@ struct MacSessionsView: View {
 
     private func chart(_ points: [MacSessionsChartPoint], hovered: MacSessionsChartPoint?) -> some View {
         let metric = selectedMetric
+        let areaFill = LinearGradient(colors: [metric.color.opacity(0.34), metric.color.opacity(0.02)], startPoint: .top, endPoint: .bottom)
+        let strokeStyle = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
         return Chart {
             ForEach(points) { point in
                 AreaMark(x: .value("Time", point.date), y: .value(metric.title, point.value), series: .value("Segment", point.segment), stacking: .unstacked)
-                    .foregroundStyle(LinearGradient(colors: [metric.color.opacity(0.34), metric.color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                    .foregroundStyle(areaFill)
                     .interpolationMethod(.monotone)
                 LineMark(x: .value("Time", point.date), y: .value(metric.title, point.value), series: .value("Segment", point.segment))
                     .foregroundStyle(metric.color)
-                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .lineStyle(strokeStyle)
                     .interpolationMethod(.monotone)
             }
             if let hovered {
@@ -706,7 +726,9 @@ struct MacSessionsView: View {
         loadToken = token
         if showsSpinner { isLoadingDetail = true }
         detailError = nil
-        defer { if showsSpinner, loadToken == token { isLoadingDetail = false } }
+        // Whichever load is the latest clears the spinner, so a silent refresh that supersedes a
+        // spinner load (recording just ended) cannot leave `isLoadingDetail` stuck at true.
+        defer { if loadToken == token { isLoadingDetail = false } }
         do {
             let loaded = try await vm.loadSessionDetail(session)
             guard loadToken == token, !Task.isCancelled else { return }

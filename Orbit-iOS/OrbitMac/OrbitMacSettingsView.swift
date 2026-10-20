@@ -279,19 +279,21 @@ private struct MacSettingsAppearanceTab: View {
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
     @AppStorage("mac.monochromeMetrics") private var monochrome = false
 
-    private let columns = [GridItem(.adaptive(minimum: 92, maximum: 130), spacing: 10)]
+    /// Eager grid: a lazy container inside a `List`-backed grouped `Form` row can
+    /// measure a zero height on macOS, so the swatches are laid out in fixed rows.
+    private static let swatchColumns = 4
+    private var themeRows: [[MacTheme]] {
+        let all = MacTheme.allCases
+        return stride(from: 0, to: all.count, by: Self.swatchColumns).map { start in
+            Array(all[start..<min(start + Self.swatchColumns, all.count)])
+        }
+    }
 
     var body: some View {
         Form {
             Section {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(MacTheme.allCases) { option in
-                        MacSettingsThemeSwatch(option: option, isSelected: option == selectedTheme) {
-                            withAnimation(.snappy(duration: 0.25)) { selectedTheme = option }
-                        }
-                    }
-                }
-                .padding(.vertical, 6)
+                themeGrid
+                    .padding(.vertical, 6)
             } header: {
                 Text("Theme")
             } footer: {
@@ -318,8 +320,32 @@ private struct MacSettingsAppearanceTab: View {
         .formStyle(.grouped)
     }
 
+    private var themeGrid: some View {
+        Grid(horizontalSpacing: 10, verticalSpacing: 12) {
+            ForEach(themeRows.indices, id: \.self) { rowIndex in
+                GridRow {
+                    ForEach(themeRows[rowIndex]) { option in
+                        MacSettingsThemeSwatch(option: option, isSelected: option == selectedTheme) {
+                            withAnimation(.snappy(duration: 0.25)) { selectedTheme = option }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Only live readings feed the preview; stale values linger in `metrics` after
+    // the PC drops offline, so everything is gated on `hasTelemetry`.
     private var cpuLoad: Double? { vm.metrics.hasTelemetry ? vm.metrics.cpuUsage : nil }
     private var gpuLoad: Double? { vm.metrics.hasTelemetry ? vm.metrics.gpuUsage : nil }
+    private var cpuTemperatureText: String? {
+        guard vm.metrics.hasTelemetry, let temp = vm.metrics.cpuTemp else { return nil }
+        return "\(Int(temp.rounded()))°C"
+    }
+    private var gpuTemperatureText: String? {
+        guard vm.metrics.hasTelemetry, let temp = vm.metrics.gpuTemp else { return nil }
+        return "\(Int(temp.rounded()))°C"
+    }
 
     private var statusText: String {
         if vm.isDemoMode { return "Demo" }
@@ -344,10 +370,10 @@ private struct MacSettingsAppearanceTab: View {
             }
             HStack(spacing: 10) {
                 MacMetricCard(title: MacMetric.cpuLoad.title, subtitle: vm.metrics.cpuName, valueText: MacFormat.percent(cpuLoad), progress: cpuLoad.map { $0 / 100 },
-                              icon: MacMetric.cpuLoad.symbol, accent: MacMetric.cpuLoad.accent, detail: vm.metrics.cpuTemp.map { "\(Int($0.rounded()))°C" },
+                              icon: MacMetric.cpuLoad.symbol, accent: MacMetric.cpuLoad.accent, detail: cpuTemperatureText,
                               history: vm.history.values(for: .cpuLoad), showsRing: true)
                 MacMetricCard(title: MacMetric.gpuLoad.title, subtitle: vm.metrics.gpuName, valueText: MacFormat.percent(gpuLoad), progress: gpuLoad.map { $0 / 100 },
-                              icon: MacMetric.gpuLoad.symbol, accent: MacMetric.gpuLoad.accent, detail: vm.metrics.gpuTemp.map { "\(Int($0.rounded()))°C" },
+                              icon: MacMetric.gpuLoad.symbol, accent: MacMetric.gpuLoad.accent, detail: gpuTemperatureText,
                               history: vm.history.values(for: .gpuLoad), showsRing: true)
             }
         }

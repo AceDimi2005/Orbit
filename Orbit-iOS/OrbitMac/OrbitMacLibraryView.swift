@@ -19,11 +19,15 @@ struct MacLibraryView: View {
 
     private static let refreshFailurePrefix = "Could not refresh the Sunshine library"
     private static let launchWarningPrefixes = ["Could not", "Launch stopped", "Moonlight is not installed"]
-    private static let nowPlayingGradient = LinearGradient(
-        colors: [Color.mint.opacity(0.16), Color.mint.opacity(0.03), .clear],
-        startPoint: .leading,
-        endPoint: .trailing
-    )
+    /// Computed rather than a stored static so no non-Sendable value lives in
+    /// static storage under strict concurrency checking.
+    private static var nowPlayingGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color.mint.opacity(0.16), Color.mint.opacity(0.03), .clear],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
     private static let moonlightSite = "https://moonlight-stream.org"
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)]
 
@@ -43,6 +47,11 @@ struct MacLibraryView: View {
             launchStatus = nil
             loadError = nil
             Task { await refresh() }
+        }
+        // The view model also refreshes the library on its own (first poll after
+        // reconnecting), so drop a stale failure notice once apps arrive that way.
+        .onChange(of: vm.games) { _, games in
+            if !games.isEmpty { loadError = nil }
         }
         .confirmationDialog("Stop the running game?", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("Stop Game", role: .destructive) { Task { await vm.sendAction("kill_game") } }
@@ -500,8 +509,10 @@ struct MacLibraryView: View {
         launchStatus = nil
         Task { @MainActor in
             await vm.launchGame(game)
-            guard vm.selectedPCID == pcID, vm.isDemoMode == demo else { return }
+            // Always release the busy flag, even when the outcome is discarded
+            // below, so the tiles never stay disabled after a PC/demo switch.
             if launchingID == game.id { launchingID = nil }
+            guard vm.selectedPCID == pcID, vm.isDemoMode == demo else { return }
             launchStatus = vm.statusBanner
         }
     }

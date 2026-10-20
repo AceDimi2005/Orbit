@@ -65,8 +65,17 @@ struct MacProcessesView: View {
     private var canEndSelection: Bool {
         !selectedProcesses.isEmpty && selectedProcesses.allSatisfy(\.canTerminate) && vm.endingProcessID == nil
     }
-    private var canWake: Bool { !(vm.currentPC?.macAddress.isEmpty ?? true) }
+    /// Demo mode simulates Wake-on-LAN in `vm.wakePC()`, so it can always "wake".
+    private var canWake: Bool { vm.isDemoMode || !(vm.currentPC?.macAddress.isEmpty ?? true) }
     private var isLive: Bool { autoRefresh && vm.metrics.isOnline && !vm.isDemoMode }
+    private var statusPillText: String { vm.isDemoMode ? "Demo" : (isLive ? "Live" : "Paused") }
+    private var statusPillTint: Color {
+        if vm.isDemoMode { return .orange }
+        return isLive ? .mint : .secondary
+    }
+    private var capturedText: String {
+        vm.processesCapturedAt.map { $0.formatted(date: .omitted, time: .standard) } ?? "—"
+    }
 
     private var cpuTotal: Double? {
         let values = vm.processes.compactMap(\.cpuPercent).filter(\.isFinite)
@@ -113,6 +122,21 @@ struct MacProcessesView: View {
         if selectedProcesses.isEmpty { return "Select a process to end it (⌘⌫)" }
         if !selectedProcesses.allSatisfy(\.canTerminate) { return "The selection includes a protected process that cannot be ended" }
         return "End the selected task (⌘⌫)"
+    }
+
+    private var emptyMessage: String {
+        vm.isDemoMode ? "The simulated process list is empty." : "The PC did not report any running applications. Refresh to ask again."
+    }
+    private var emptyActionTitle: String? { vm.isDemoMode ? nil : "Refresh" }
+
+    private var offlineTitle: String { vm.isWaking ? "Waking \(pcName)…" : "\(pcName) is offline" }
+    private var offlineMessage: String {
+        if canWake { return "Send a Wake-on-LAN packet to see what is running on the PC, or retry the connection from the Overview." }
+        return "Connect to your PC to see its running applications. Orbit saves the MAC address for Wake-on-LAN after the first connection."
+    }
+    private var offlineActionTitle: String? {
+        if vm.isWaking { return nil }
+        return canWake ? "Power On" : "Retry"
     }
 
     // MARK: - Async helpers
@@ -235,7 +259,8 @@ struct MacProcessesView: View {
     private var header: some View {
         MacSectionHeader("Running applications", subtitle: headerSubtitle, icon: "list.bullet.rectangle.portrait.fill") {
             HStack(spacing: 8) {
-                MacStatusPill(text: vm.isDemoMode ? "Demo" : (isLive ? "Live" : "Paused"), tint: vm.isDemoMode ? .orange : (isLive ? .mint : .secondary), pulsing: isLive)
+                MacStatusPill(text: statusPillText, tint: statusPillTint, pulsing: isLive)
+                    .id(isLive) // MacStatusPill only starts its pulse onAppear; re-create it when Live toggles.
                 searchField
                 Toggle(isOn: $autoRefresh) { Text("Auto") }
                     .toggleStyle(.switch)
@@ -351,7 +376,7 @@ struct MacProcessesView: View {
                     MacStatChip(label: "CPU", value: MacFormat.percent(cpuTotal), icon: "cpu", tint: MacMetric.cpuLoad.accent)
                     MacStatChip(label: "Memory", value: Self.memoryLabel(memoryTotalMB), icon: "memorychip", tint: MacMetric.memory.accent)
                     MacStatChip(label: "Top", value: topProcess?.name ?? "—", icon: "flame.fill", tint: .orange)
-                    MacStatChip(label: "Captured", value: vm.processesCapturedAt.map { $0.formatted(date: .omitted, time: .standard) } ?? "—", icon: "clock")
+                    MacStatChip(label: "Captured", value: capturedText, icon: "clock")
                 }
                 .padding(.horizontal, 2)
             }
@@ -455,9 +480,9 @@ struct MacProcessesView: View {
             MacEmptyState(
                 icon: "list.bullet.rectangle.portrait",
                 title: "No processes reported",
-                message: vm.isDemoMode ? "The simulated process list is empty." : "The PC did not report any running applications. Refresh to ask again.",
+                message: emptyMessage,
                 tint: theme.accent,
-                actionTitle: vm.isDemoMode ? nil : "Refresh"
+                actionTitle: emptyActionTitle
             ) {
                 Task { await vm.refreshProcesses() }
             }
@@ -621,12 +646,10 @@ struct MacProcessesView: View {
             VStack(spacing: 6) {
                 MacEmptyState(
                     icon: "power",
-                    title: vm.isWaking ? "Waking \(pcName)…" : "\(pcName) is offline",
-                    message: canWake
-                        ? "Send a Wake-on-LAN packet to see what is running on the PC, or retry the connection from the Overview."
-                        : "Connect to your PC to see its running applications. Orbit saves the MAC address for Wake-on-LAN after the first connection.",
+                    title: offlineTitle,
+                    message: offlineMessage,
                     tint: .orange,
-                    actionTitle: vm.isWaking ? nil : (canWake ? "Power On" : "Retry")
+                    actionTitle: offlineActionTitle
                 ) {
                     performOfflineAction()
                 }
