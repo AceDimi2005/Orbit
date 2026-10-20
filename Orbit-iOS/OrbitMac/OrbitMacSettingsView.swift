@@ -390,38 +390,22 @@ private struct MacSettingsThemeSwatch: View {
     let action: () -> Void
     @State private var hovered = false
 
+    private var borderColor: Color {
+        if isSelected { return Color.white.opacity(0.95) }
+        return Color.white.opacity(hovered ? 0.35 : 0.12)
+    }
+    private var glowOpacity: Double { (isSelected || hovered) ? 0.35 : 0 }
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                ZStack(alignment: .topTrailing) {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(option.heroGradient)
-                        .frame(height: 56)
-                        .overlay(alignment: .bottomLeading) {
-                            Circle()
-                                .fill(option.background)
-                                .frame(width: 14, height: 14)
-                                .overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 1))
-                                .padding(7)
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(isSelected ? Color.white.opacity(0.95) : Color.white.opacity(hovered ? 0.35 : 0.12), lineWidth: isSelected ? 2 : 1)
-                        )
-                        .shadow(color: option.accent.opacity(isSelected || hovered ? 0.35 : 0), radius: 10, y: 4)
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 15, weight: .bold))
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(Color.white, Color.black.opacity(0.55))
-                            .padding(5)
-                    }
-                }
+                tile
                 Text(option.title)
                     .font(.caption.weight(isSelected ? .bold : .medium))
                     .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                     .lineLimit(1)
             }
+            .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
             .scaleEffect(hovered ? 1.03 : 1)
             .animation(.easeOut(duration: 0.15), value: hovered)
@@ -431,6 +415,35 @@ private struct MacSettingsThemeSwatch: View {
         .help(option.title)
         .accessibilityLabel(option.title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var tile: some View {
+        ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(option.heroGradient)
+                .frame(height: 56)
+                .overlay(alignment: .bottomLeading) { backgroundDot }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(borderColor, lineWidth: isSelected ? 2 : 1)
+                )
+                .shadow(color: option.accent.opacity(glowOpacity), radius: 10, y: 4)
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 15, weight: .bold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.white, Color.black.opacity(0.55))
+                    .padding(5)
+            }
+        }
+    }
+
+    private var backgroundDot: some View {
+        Circle()
+            .fill(option.background)
+            .frame(width: 14, height: 14)
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
+            .padding(7)
     }
 }
 
@@ -549,7 +562,7 @@ private struct MacSettingsConnectionTab: View {
                         .disabled(pc.certificateFingerprint.isEmpty)
                 }
             }
-            LabeledContent("Agent version", value: vm.metrics.agentVersion ?? "—")
+            LabeledContent("Agent version", value: agentVersionText)
             LabeledContent("Pairing token", value: vm.token(for: pc).isEmpty ? "Not stored" : "Stored in Keychain")
         } header: {
             Text("Paired PC")
@@ -658,6 +671,12 @@ private struct MacSettingsConnectionTab: View {
         if vm.isDemoMode { return .orange }
         return vm.metrics.isOnline ? .mint : .orange
     }
+    /// `metrics` keeps the last reading after the PC drops offline, so the version
+    /// is only shown while the agent is actually reachable.
+    private var agentVersionText: String {
+        guard vm.metrics.isOnline, let version = vm.metrics.agentVersion, !version.isEmpty else { return "—" }
+        return version
+    }
 
     private func load(force: Bool = false) {
         guard let pc = vm.currentPC else {
@@ -722,7 +741,7 @@ private struct MacSettingsConnectionTab: View {
     private func openPCs() {
         vm.selectedSection = .pcs
         openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 }
 
@@ -739,6 +758,11 @@ private struct MacSettingsAboutTab: View {
     private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
     private var buildNumber: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—" }
     private var copyright: String { Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String ?? "© Orbit" }
+    /// Live value only; the last reading lingers in `metrics` after the PC goes offline.
+    private var installedAgentVersion: String {
+        guard vm.metrics.isOnline, let version = vm.metrics.agentVersion, !version.isEmpty else { return "—" }
+        return version
+    }
 
     var body: some View {
         Form {
@@ -788,7 +812,7 @@ private struct MacSettingsAboutTab: View {
 
     private var agentSection: some View {
         Section {
-            LabeledContent("Installed on PC", value: vm.metrics.agentVersion ?? "—")
+            LabeledContent("Installed on PC", value: installedAgentVersion)
             LabeledContent("Latest release", value: vm.agentLatestVersion ?? "—")
             HStack(spacing: 10) {
                 Button { Task { await vm.checkAgentUpdate() } } label: { Label("Check for Agent Update", systemImage: "arrow.triangle.2.circlepath") }

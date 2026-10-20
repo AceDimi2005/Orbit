@@ -211,8 +211,8 @@ struct MacPCsView: View {
         VStack(alignment: .leading, spacing: 12) {
             MacSectionHeader("Manual", subtitle: "Pair by address when Bonjour is blocked (VLANs, guest Wi-Fi, firewalls)", icon: "number")
             HStack(alignment: .bottom, spacing: 10) {
-                MacPcsField(title: "Host or IPv4", placeholder: "192.168.1.50", text: $manualHost, monospaced: true, submit: probeManual)
-                MacPcsField(title: "Discovery port", placeholder: "\(MacPcsFormat.defaultDiscoveryPort)", text: $manualPort, monospaced: true, width: 130, submit: probeManual)
+                MacPcsField(title: "Host or IPv4", placeholder: "192.168.1.50", text: $manualHost, monospaced: true, submit: { probeManual() })
+                MacPcsField(title: "Discovery port", placeholder: "\(MacPcsFormat.defaultDiscoveryPort)", text: $manualPort, monospaced: true, width: 130, submit: { probeManual() })
                 Button { probeManual() } label: {
                     HStack(spacing: 6) {
                         if vm.isProbing {
@@ -350,6 +350,7 @@ private struct MacPcsSavedCard: View {
         if vm.isDemoMode { return (text: "Demo", tint: Color.orange, pulsing: false) }
         if vm.isWaking { return (text: "Waking…", tint: Color.orange, pulsing: true) }
         if vm.metrics.isOnline { return (text: "Online", tint: Color.mint, pulsing: true) }
+        if vm.connectionError == nil { return (text: "Connecting…", tint: theme.accent, pulsing: true) }
         return (text: "Offline", tint: Color.orange, pulsing: false)
     }
 
@@ -389,7 +390,7 @@ private struct MacPcsSavedCard: View {
         }
         .onHover { hovered = $0 }
         .macHoverLift()
-        .onAppear(perform: loadDrafts)
+        .onAppear { loadDrafts() }
         .onChange(of: pc) { _, _ in if !wolExpanded { loadDrafts() } }
     }
 
@@ -728,7 +729,7 @@ private struct MacPcsPairingSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .buttonStyle(MacHoverButtonStyle())
             Spacer()
-            if (vm.pairingExpiresAt == nil || expired) && !vm.isPairing, let target {
+            if (vm.pairingExpiresAt == nil || expired) && !vm.isPairing, let target = vm.pairingTarget ?? target {
                 Button { pin = ""; Task { await vm.beginPairing(with: target) } } label: { Label("Request New Code", systemImage: "arrow.clockwise") }
                     .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
             }
