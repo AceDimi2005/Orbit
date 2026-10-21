@@ -24,6 +24,7 @@ SWIFT = r'''
 import Foundation
 struct OrbitError: LocalizedError {
     let message: String
+    var statusCode: Int? = nil
     var errorDescription: String? { message }
 }
 @main struct Probe {

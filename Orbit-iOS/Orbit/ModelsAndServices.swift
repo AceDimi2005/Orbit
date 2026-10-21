@@ -214,6 +214,8 @@ enum SmartLaunchStep: String {
 
 struct OrbitError: LocalizedError {
     let message: String
+    /// HTTP status from the PC when the error is a reply (409 = name taken, 401 = token rejected…).
+    var statusCode: Int? = nil
     var errorDescription: String? { message }
 }
 

@@ -43,6 +43,7 @@ import Foundation
 import CryptoKit
 struct OrbitError: LocalizedError {
     let message: String
+    var statusCode: Int? = nil
     var errorDescription: String? { message }
 }
 private struct Status: Decodable { var agentVersion: String? }
@@ -64,6 +65,20 @@ private struct Result: Decodable { var ok: Bool }
         let uploaded = try await client.upload(path: "/api/files/upload", query: ["directory": directory, "name": "roundtrip.bin"], file: source, progress: { value in precondition(value >= 0 && value <= 1) })
         let upload = try JSONDecoder().decode(UploadReply.self, from: uploaded)
         precondition(upload.sizeBytes == expected.count)
+        let second = try await client.uploadAvoidingConflicts(directory: directory, name: "roundtrip.bin", file: source, progress: { _ in })
+        precondition(second == "roundtrip (2).bin", "duplicate upload must be renamed, got \(second)")
+        let third = try await client.uploadAvoidingConflicts(directory: directory, name: "roundtrip.bin", file: source, progress: { _ in })
+        precondition(third == "roundtrip (3).bin", "second duplicate must be renamed, got \(third)")
+        let listed: FilePage = try await client.get(path: "/api/files/list", query: ["path": directory])
+        precondition(listed.total == 3)
+        precondition(OrbitFileNames.windowsSafe("a:b*c?.jpg") == "a_b_c_.jpg")
+        precondition(OrbitFileNames.windowsSafe("CON.txt") == "_CON.txt")
+        precondition(OrbitFileNames.windowsSafe("photo. ") == "photo")
+        precondition(OrbitFileNames.windowsSafe("...") == nil)
+        precondition(OrbitFileNames.windowsSafe(String(repeating: "x", count: 300) + ".heic")!.count <= 180)
+        precondition(OrbitFileNames.windowsSafe(String(repeating: "x", count: 300) + ".heic")!.hasSuffix(".heic"))
+        precondition(OrbitFileNames.numbered("IMG_0001.JPG", attempt: 4) == "IMG_0001 (4).JPG")
+        precondition(OrbitFileNames.numbered("README", attempt: 2) == "README (2)")
         let local = try await client.download(path: "/api/files/download", query: ["path": directory + "/roundtrip.bin"], progress: { value in precondition(value >= 0 && value <= 1) })
         let actual = try Data(contentsOf: local)
         precondition(SHA256.hash(data: expected) == SHA256.hash(data: actual))
@@ -79,7 +94,7 @@ private struct Result: Decodable { var ok: Bool }
             let _: Status = try await wrong.get("/api/status")
             fatalError("Wrong certificate fingerprint was accepted")
         } catch { }
-        print("PASS: native Swift pinned HTTPS, 5 MiB streamed upload/download and SHA256 match, mutation, refused redirect, rejected certificate")
+        print("PASS: native Swift pinned HTTPS, 5 MiB streamed upload/download and SHA256 match, duplicate names renamed instead of overwritten, Windows-safe names, mutation, refused redirect, rejected certificate")
     }
 }
 '''

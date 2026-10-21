@@ -127,6 +127,12 @@ struct PCFilesView: View {
     @State private var confirmTrash = false
     @State private var showImporter = false
     @State private var photos: [PhotosPickerItem] = []
+    /// The photo picker is presented from the List, not from inside the toolbar menu: a picker
+    /// living in a Menu is torn down with the menu and never appears.
+    @State private var showPhotoPicker = false
+    /// Off (default, like iOS's "Transfer to Mac or PC: Automatic"): JPEG and H.264 that open
+    /// anywhere on Windows. On: the untouched HEIC/HEVC originals.
+    @AppStorage("orbit.files.keepOriginalPhotos") private var keepOriginalPhotos = false
     @State private var previewURL: URL?
     @State private var shareURLs: [URL] = []
     @State private var showShare = false
@@ -206,6 +212,8 @@ struct PCFilesView: View {
             case .failure(let failure): error = failure.localizedDescription
             }
         }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photos, maxSelectionCount: 50, selectionBehavior: .ordered,
+                      matching: .any(of: [.images, .videos]), preferredItemEncoding: keepOriginalPhotos ? .current : .compatible)
         .confirmationDialog("Move to Recycle Bin?", isPresented: $confirmTrash, titleVisibility: .visible) {
             Button("Recycle \(actionEntries.count) item\(actionEntries.count == 1 ? "" : "s")", role: .destructive) { recycleSelection() }
             Button("Cancel", role: .cancel) { actionEntries = [] }
@@ -587,9 +595,14 @@ struct PCFilesView: View {
                     Section("Add to \(folderName(currentPath))") {
                         Button("New folder", systemImage: "folder.badge.plus") { actionEntries = []; promptValue = ""; prompt = .folder }
                         Button("Upload from Files", systemImage: "square.and.arrow.up") { showImporter = true }
-                        PhotosPicker(selection: $photos, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
-                            Label("Upload photos or videos", systemImage: "photo")
+                        Button("Upload photos or videos", systemImage: "photo.on.rectangle.angled") { showPhotoPicker = true }
+                    }
+                    Section("Photo & video format") {
+                        Picker("Photo & video format", selection: $keepOriginalPhotos) {
+                            Text("Windows-ready (JPEG / H.264)").tag(false)
+                            Text("Originals (HEIC / HEVC)").tag(true)
                         }
+                        .pickerStyle(.inline)
                     }
                     Button("Refresh", systemImage: "arrow.clockwise") { refreshID = UUID() }
                 } label: { Image(systemName: "plus.circle") }
@@ -910,7 +923,7 @@ struct PCFilesView: View {
                                          progress: progressHandler(identifier, generation: generation))
     }
 
-    private func uploadFiles(_ urls: [URL], securityScoped: Bool) {
+    private func uploadFiles(_ urls: [URL], securityScoped: Bool, unreadable: Int = 0) {
         guard enabled, let directory = currentPath, !urls.isEmpty, transferTitle == nil else { return }
         let client: OrbitAPIClient
         do { client = try vm.companionClient() } catch { self.error = error.localizedDescription; return }
@@ -919,8 +932,15 @@ struct PCFilesView: View {
         transferTitle = "Preparing upload…"; transferProgress = 0; error = nil; notice = nil
         transferTask = Task { @MainActor in
             var completed = 0
+            var renamed = 0
             defer {
-                if !securityScoped { for url in urls { try? FileManager.default.removeItem(at: url) } }
+                if !securityScoped {
+                    for url in urls {
+                        try? FileManager.default.removeItem(at: url)
+                        let folder = url.deletingLastPathComponent()
+                        if folder.lastPathComponent.hasPrefix("OrbitPhotos-") { try? FileManager.default.removeItem(at: folder) }
+                    }
+                }
                 if transferID == identifier { transferTitle = nil; transferTask = nil; refreshID = UUID() }
             }
             do {
@@ -933,37 +953,75 @@ struct PCFilesView: View {
                         throw NSError(domain: "Orbit.Files", code: 1, userInfo: [NSLocalizedDescriptionKey: "Select files rather than folders. Folder uploads are not supported."])
                     }
                     beginProgress(size: Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
-                    transferTitle = "Uploading \(url.lastPathComponent) · \(index + 1)/\(urls.count)"
-                    _ = try await client.upload(path: "/api/files/upload", query: ["directory": directory, "name": url.lastPathComponent], file: url, progress: progressHandler(identifier, generation: generation))
+                    let name = OrbitFileNames.windowsSafe(url.lastPathComponent) ?? "Upload \(index + 1)"
+                    transferTitle = "Uploading \(name) · \(index + 1)/\(urls.count)"
+                    // A name that is already taken on the PC becomes "name (2).ext": nothing is overwritten.
+                    let saved = try await client.uploadAvoidingConflicts(directory: directory, name: name, file: url,
+                                                                         progress: progressHandler(identifier, generation: generation))
+                    if saved != name { renamed += 1 }
                     completed += 1
                 }
-                if generation == vm.connectionID && transferID == identifier { notice = "Uploaded \(completed) file\(completed == 1 ? "" : "s")." }
+                if generation == vm.connectionID && transferID == identifier {
+                    var parts = ["Uploaded \(completed) file\(completed == 1 ? "" : "s") to \(folderName(directory))."]
+                    if renamed > 0 { parts.append("\(renamed) renamed because the name was already taken.") }
+                    if unreadable > 0 { parts.append("\(unreadable) item\(unreadable == 1 ? "" : "s") could not be exported from Photos.") }
+                    notice = parts.joined(separator: " ")
+                }
             } catch is CancellationError { } catch {
                 if generation == vm.connectionID && transferID == identifier { self.error = "\(completed > 0 ? "\(completed) file(s) uploaded. " : "")\(error.localizedDescription)" }
             }
         }
     }
 
+    private static let photoStampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return formatter
+    }()
+
+    /// Items picked in Photos: each one is exported (JPEG / H.264 unless originals are chosen), given a
+    /// Windows-safe name and then uploaded exactly like files from the Files app.
     private func uploadPhotos(_ items: [PhotosPickerItem]) {
-        guard enabled, !items.isEmpty, transferTitle == nil else { return }
+        guard !items.isEmpty else { return }
+        guard enabled, currentPath != nil, transferTitle == nil else { photos = []; return }
         let generation = vm.connectionID
         let identifier = UUID(); transferID = identifier
-        transferTitle = "Preparing photos…"; transferProgress = 0; error = nil
+        transferTitle = "Preparing \(items.count) item\(items.count == 1 ? "" : "s") from Photos"
+        transferProgress = 0; transferSpeed = 0; transferIndeterminate = true
+        transferPhase = keepOriginalPhotos ? "Reading originals…" : "Converting to JPEG / H.264…"
+        error = nil; notice = nil
+        let stamp = Self.photoStampFormatter.string(from: Date())
         transferTask = Task { @MainActor in
             var prepared: [URL] = []
-            defer { if generation == vm.connectionID { photos = [] }; if transferID == identifier { transferTask = nil; transferTitle = nil } }
+            var unreadable = 0
+            defer {
+                photos = []
+                if transferID == identifier { transferTask = nil; transferTitle = nil; transferIndeterminate = false }
+            }
             do {
-                for item in items {
+                for (index, item) in items.enumerated() {
                     try Task.checkCancellation()
-                    guard generation == vm.connectionID else { throw CancellationError() }
-                    if let transfer = try await item.loadTransferable(type: PCPhotoTransfer.self) { prepared.append(transfer.url) }
+                    guard generation == vm.connectionID, transferID == identifier else { throw CancellationError() }
+                    transferPhase = "Exporting \(index + 1) of \(items.count) from Photos…"
+                    guard let exported = try? await item.loadTransferable(type: PCPhotoTransfer.self) else { unreadable += 1; continue }
+                    let name = PCPhotoTransfer.uploadName(for: exported.url, index: index, count: items.count, stamp: stamp)
+                    let destination = exported.url.deletingLastPathComponent().appendingPathComponent(name)
+                    if destination != exported.url { try FileManager.default.moveItem(at: exported.url, to: destination) }
+                    prepared.append(destination)
                 }
-                guard generation == vm.connectionID && transferID == identifier else { throw CancellationError() }
-                temporaryFiles += prepared
-                transferTask = nil; transferTitle = nil
-                uploadFiles(prepared, securityScoped: false)
-            } catch is CancellationError { for url in prepared { try? FileManager.default.removeItem(at: url) } }
-            catch { if generation == vm.connectionID && transferID == identifier { self.error = error.localizedDescription } }
+                try Task.checkCancellation()
+                guard generation == vm.connectionID, transferID == identifier else { throw CancellationError() }
+                guard !prepared.isEmpty else {
+                    throw OrbitError(message: "Photos could not export the selected item\(items.count == 1 ? "" : "s"). If they are kept in iCloud, check the internet connection and try again.")
+                }
+                temporaryFiles += prepared.map { $0.deletingLastPathComponent() }
+                transferTask = nil; transferTitle = nil; transferIndeterminate = false
+                uploadFiles(prepared, securityScoped: false, unreadable: unreadable)
+            } catch {
+                for url in prepared { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+                if !(error is CancellationError), generation == vm.connectionID, transferID == identifier { self.error = error.localizedDescription }
+            }
         }
     }
 
@@ -1026,15 +1084,34 @@ private struct PCFileShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) { }
 }
 
+/// One item exported from the Photos picker into its own temporary folder. Videos are matched first,
+/// so a Live Photo arrives as its still image rather than as a bundle.
 private struct PCPhotoTransfer: Transferable {
     let url: URL
+
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .data) { received in
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("OrbitPhotos-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent(received.file.lastPathComponent)
-            try FileManager.default.copyItem(at: received.file, to: destination)
-            return PCPhotoTransfer(url: destination)
-        }
+        FileRepresentation(importedContentType: .movie) { received in try store(received.file) }
+        FileRepresentation(importedContentType: .image) { received in try store(received.file) }
+    }
+
+    private static func store(_ file: URL) throws -> PCPhotoTransfer {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("OrbitPhotos-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(file.lastPathComponent.isEmpty ? "item" : file.lastPathComponent)
+        do { try FileManager.default.moveItem(at: file, to: destination) } catch { try FileManager.default.copyItem(at: file, to: destination) }
+        return PCPhotoTransfer(url: destination)
+    }
+
+    /// Keeps a meaningful original name ("IMG_1234.JPG") with Windows-invalid characters replaced; a
+    /// generated or empty one becomes "Photo 2026-10-21 19.41.12.jpg", numbered when several were picked.
+    static func uploadName(for file: URL, index: Int, count: Int, stamp: String) -> String {
+        let ext = file.pathExtension
+        let base = file.deletingPathExtension().lastPathComponent
+        let type = UTType(filenameExtension: ext)
+        let generic = base.isEmpty || ext.isEmpty || base.hasPrefix("public.") || base.contains("=")
+            || UUID(uuidString: base) != nil || base.count > 120
+        let kind = type?.conforms(to: .movie) == true ? "Video" : "Photo"
+        let fallback = "\(kind) \(stamp)\(count > 1 ? " \(index + 1)" : "")" + (ext.isEmpty ? "" : ".\(ext)")
+        return OrbitFileNames.windowsSafe(generic ? fallback : file.lastPathComponent) ?? fallback
     }
 }

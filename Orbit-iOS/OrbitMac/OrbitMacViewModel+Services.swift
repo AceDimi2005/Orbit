@@ -641,6 +641,7 @@ extension OrbitMacViewModel {
         filesError = nil
         filesNotice = nil
         var completed = 0
+        var renamed = 0
         do {
             for (index, url) in urls.enumerated() {
                 try Task.checkCancellation()
@@ -651,12 +652,16 @@ extension OrbitMacViewModel {
                     throw OrbitError(message: "Select files rather than folders. Folder uploads are not supported.")
                 }
                 beginProgress(size: Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
-                transfer?.title = "Uploading \(url.lastPathComponent) · \(index + 1)/\(urls.count)"
-                _ = try await apiClient.upload(path: "/api/files/upload", query: ["directory": directory, "name": url.lastPathComponent], file: url, progress: progressHandler(identifier, generation: version))
+                let name = OrbitFileNames.windowsSafe(url.lastPathComponent) ?? "Upload \(index + 1)"
+                transfer?.title = "Uploading \(name) · \(index + 1)/\(urls.count)"
+                // A taken name becomes "name (2).ext" instead of failing the rest of the batch.
+                let saved = try await apiClient.uploadAvoidingConflicts(directory: directory, name: name, file: url,
+                                                                        progress: progressHandler(identifier, generation: version))
+                if saved != name { renamed += 1 }
                 completed += 1
             }
             guard version == generation, transferID == identifier else { return }
-            filesNotice = "Uploaded \(completed) file\(completed == 1 ? "" : "s")."
+            filesNotice = "Uploaded \(completed) file\(completed == 1 ? "" : "s")." + (renamed > 0 ? " \(renamed) renamed because the name was already taken." : "")
         } catch is CancellationError {
         } catch {
             if version == generation, transferID == identifier {

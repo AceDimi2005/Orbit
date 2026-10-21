@@ -59,7 +59,8 @@ final class OrbitAPIClient: @unchecked Sendable {
         guard let response = response as? HTTPURLResponse else { throw OrbitError(message: "The PC did not return a valid response.") }
         guard (200..<300).contains(response.statusCode) else {
             let detail = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["detail"] as? String
-            throw OrbitError(message: detail ?? (response.statusCode == 401 ? "Pairing token rejected. Update this PC in My PCs." : "PC returned error \(response.statusCode)."))
+            throw OrbitError(message: detail ?? (response.statusCode == 401 ? "Pairing token rejected. Update this PC in My PCs." : "PC returned error \(response.statusCode)."),
+                             statusCode: response.statusCode)
         }
     }
     private func transportError(_ error: Error, transfer: OrbitPinnedDelegate? = nil) -> Error {
@@ -183,5 +184,61 @@ private final class OrbitTransferDelegate: OrbitPinnedDelegate, URLSessionDownlo
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
         if totalBytesExpectedToSend > 0 { progress(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend))) }
+    }
+}
+
+extension OrbitAPIClient {
+    /// Uploads `file` into `directory` on the PC. When the name is already taken (HTTP 409) the
+    /// next free "name (2).ext", "name (3).ext"… is used, so a batch never stops halfway on a
+    /// duplicate and nothing on the PC is overwritten. Returns the name the file was saved under.
+    func uploadAvoidingConflicts(directory: String, name: String, file: URL,
+                                 progress: @escaping @Sendable (Double) -> Void) async throws -> String {
+        var attempt = 1
+        while true {
+            let candidate = OrbitFileNames.numbered(name, attempt: attempt)
+            do {
+                _ = try await upload(path: "/api/files/upload", query: ["directory": directory, "name": candidate], file: file, progress: progress)
+                return candidate
+            } catch let error as OrbitError where error.statusCode == 409 && attempt < 200 {
+                attempt += 1
+            }
+        }
+    }
+}
+
+/// File names the Windows companion accepts.
+enum OrbitFileNames {
+    private static let reserved: Set<String> = Set(["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        + (1...9).map { "COM\($0)" } + (1...9).map { "LPT\($0)" })
+
+    /// "IMG_0001.jpg" → attempt 2: "IMG_0001 (2).jpg".
+    static func numbered(_ name: String, attempt: Int) -> String {
+        guard attempt > 1 else { return name }
+        let ext = (name as NSString).pathExtension
+        let base = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+        return ext.isEmpty ? "\(base) (\(attempt))" : "\(base) (\(attempt)).\(ext)"
+    }
+
+    /// Replaces characters Windows rejects (`<>:"/\|?*` and control characters), drops trailing dots
+    /// and spaces, prefixes reserved device names and keeps the name under 180 characters with its
+    /// extension. Returns nil when nothing usable is left.
+    static func windowsSafe(_ name: String) -> String? {
+        var cleaned = String(String.UnicodeScalarView(name.unicodeScalars.map { scalar in
+            scalar.value < 32 || "<>:\"/\\|?*".unicodeScalars.contains(scalar) ? "_" : scalar
+        }))
+        cleaned = cleaned.trimmingCharacters(in: .whitespaces)
+        while let last = cleaned.last, last == "." || last == " " { cleaned.removeLast() }
+        guard !cleaned.isEmpty, cleaned.contains(where: { $0 != "." && $0 != "_" }) else { return nil }
+        let stem = String(cleaned.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+            .trimmingCharacters(in: .whitespaces).uppercased()
+        if reserved.contains(stem) { cleaned = "_" + cleaned }
+        if cleaned.count > 180 {
+            let ext = (cleaned as NSString).pathExtension
+            let keep = ext.isEmpty || ext.count > 16 ? 180 : 179 - ext.count
+            let base = String((ext.isEmpty || ext.count > 16 ? cleaned : (cleaned as NSString).deletingPathExtension).prefix(keep))
+                .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            cleaned = ext.isEmpty || ext.count > 16 ? base : "\(base).\(ext)"
+        }
+        return cleaned
     }
 }
