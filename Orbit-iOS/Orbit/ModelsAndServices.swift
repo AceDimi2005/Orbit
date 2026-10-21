@@ -45,6 +45,8 @@ struct PCMetrics: Codable {
     var volume: Double = 0
     var isMuted: Bool = false
     var hdrEnabled: Bool? = nil
+    /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
+    var sessionLocked: Bool? = nil
     var fps: Double? = nil
     var fpsSource: String? = nil
     var fpsUnavailableReason: String? = nil
@@ -257,7 +259,45 @@ final class WakeOnLANService {
         guard inet_ntop(AF_INET, &broadcast, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { return "" }
         return String(cString: buffer)
     }
-    static func sendMagicPacket(macAddress: String, pcIP: String, targetBroadcastIP: String, subnetMask: String, port: UInt16) async throws {
+    /// Resolves `host` or `host:port` (IPv4 or a DNS / Tailscale MagicDNS name) to socket addresses.
+    static func resolve(_ target: String, defaultPort: UInt16) -> [sockaddr_in] {
+        var host = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        var port = defaultPort
+        if let colon = host.lastIndex(of: ":"), host.filter({ $0 == ":" }).count == 1, let parsed = UInt16(host[host.index(after: colon)...]) {
+            port = parsed
+            host = String(host[..<colon])
+        }
+        guard !host.isEmpty else { return [] }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        if inet_pton(AF_INET, host, &address.sin_addr) == 1 { return [address] }
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        var list: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &list) == 0, let first = list else { return [] }
+        defer { freeaddrinfo(first) }
+        var results: [sockaddr_in] = []
+        var cursor: UnsafeMutablePointer<addrinfo>? = first
+        while let entry = cursor {
+            if entry.pointee.ai_family == AF_INET, let raw = entry.pointee.ai_addr {
+                raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { resolved in
+                    address.sin_addr = resolved.pointee.sin_addr
+                    results.append(address)
+                }
+            }
+            cursor = entry.pointee.ai_next
+        }
+        return results
+    }
+
+    /// Sends the magic packet to every address that can plausibly reach the PC: the configured
+    /// or calculated subnet broadcast, the PC's own IPv4 (works through a Tailscale subnet router
+    /// while the router still knows the PC), the limited broadcast, and an optional relay such
+    /// as a router reachable over the VPN.
+    static func sendMagicPacket(macAddress: String, pcIP: String, targetBroadcastIP: String, subnetMask: String, port: UInt16, relay: String = "") async throws {
         let cleaned = macAddress.filter { !":-. ".contains($0) }
         guard cleaned.count == 12, port > 0 else { throw OrbitError(message: "Enter a valid MAC address and UDP port (1–65535).") }
         let chars = Array(cleaned)
@@ -275,13 +315,15 @@ final class WakeOnLANService {
         guard setsockopt(socket, SOL_SOCKET, SO_BROADCAST, &enabled, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw OrbitError(message: "Could not enable network broadcast.") }
         let calculated = calculateBroadcastAddress(ip: pcIP, subnetMask: subnetMask)
         let primary = targetBroadcastIP.isEmpty ? calculated : targetBroadcastIP
-        guard !primary.isEmpty else { throw OrbitError(message: "Check the PC IPv4 address and subnet mask.") }
+        guard !primary.isEmpty || !relay.isEmpty else { throw OrbitError(message: "Check the PC IPv4 address and subnet mask.") }
+        var targets: [sockaddr_in] = []
+        for target in [primary, calculated, pcIP, "255.255.255.255"] where !target.isEmpty { targets += resolve(target, defaultPort: port) }
+        if !relay.isEmpty { targets += resolve(relay, defaultPort: port) }
         var sent = false
-        for target in Set([primary, calculated, pcIP]) where !target.isEmpty {
-            var addr = sockaddr_in()
-            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET); addr.sin_port = port.bigEndian
-            guard inet_pton(AF_INET, target, &addr.sin_addr) == 1 else { continue }
+        var seen = Set<String>()
+        for var addr in targets {
+            let key = "\(addr.sin_addr.s_addr):\(addr.sin_port)"
+            guard seen.insert(key).inserted else { continue }
             for _ in 0..<3 {
                 let count = packet.withUnsafeBytes { bytes in
                     withUnsafePointer(to: &addr) { pointer in
@@ -924,7 +966,8 @@ final class OrbitViewModel: ObservableObject {
         recalculateBroadcastIfNeeded()
         do {
             let address = WakeOnLANService.ipv4ForWake(host: cleanHost(), knownAddress: lastKnownPCIPv4)
-            try await WakeOnLANService.sendMagicPacket(macAddress: pcMAC, pcIP: address, targetBroadcastIP: wolTargetIP, subnetMask: subnetMask, port: UInt16(wolPort))
+            let relay = savedPCs.first(where: { $0.id == selectedPCID })?.wolRelay ?? ""
+            try await WakeOnLANService.sendMagicPacket(macAddress: pcMAC, pcIP: address, targetBroadcastIP: wolTargetIP, subnetMask: subnetMask, port: UInt16(wolPort), relay: relay)
             statusLog = "Wake packet sent • waiting for PC"
             for _ in 0..<15 {
                 try await Task.sleep(for: .seconds(2))

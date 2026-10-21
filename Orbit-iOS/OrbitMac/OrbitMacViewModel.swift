@@ -9,30 +9,52 @@ import SwiftUI
 import UserNotifications
 
 /// Keychain storage for per-PC pairing tokens (one generic-password item per PC id).
+///
+/// Items live in the data-protection keychain, which belongs to the app itself (team + bundle
+/// id) and never shows the "OrbitMac wants to use your confidential information" password
+/// prompt. Tokens that an earlier version stored in the login keychain are moved over on first
+/// read, so the prompt can appear one last time at most.
 enum MacTokenStore {
     private static let service = "OrbitMac.PairedPC.v1"
 
-    private static func query(_ id: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
+    private static func query(_ id: String, protected: Bool = true) -> [String: Any] {
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
+        if protected { query[kSecUseDataProtectionKeychain as String] = true }
+        return query
     }
-    static func token(for id: String) -> String {
-        var q = query(id)
+
+    private static func read(_ id: String, protected: Bool) -> String? {
+        var q = query(id, protected: protected)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
     }
+
+    static func token(for id: String) -> String {
+        if let token = read(id, protected: true) { return token }
+        // Older builds kept the token in the login keychain; move it into the app's own keychain.
+        guard let legacy = read(id, protected: false), !legacy.isEmpty else { return "" }
+        save(legacy, for: id)
+        SecItemDelete(query(id, protected: false) as CFDictionary)
+        return legacy
+    }
+
     static func save(_ value: String, for id: String) {
         let data = Data(value.utf8)
         if SecItemUpdate(query(id) as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
             var item = query(id)
             item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             SecItemAdd(item as CFDictionary, nil)
         }
     }
-    static func remove(_ id: String) { SecItemDelete(query(id) as CFDictionary) }
+
+    static func remove(_ id: String) {
+        SecItemDelete(query(id) as CFDictionary)
+        SecItemDelete(query(id, protected: false) as CFDictionary)
+    }
 }
 
 /// Central state for the Mac app. Every network call captures the connection
@@ -535,12 +557,10 @@ final class OrbitMacViewModel: ObservableObject {
             targets.insert(Self.broadcast(ip: pc.lastKnownIPv4, mask: pc.subnetMask))
         }
         var sent = false
-        for target in targets where !target.isEmpty {
-            var addr = sockaddr_in()
-            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = UInt16(max(1, min(65535, pc.wolPort))).bigEndian
-            guard inet_pton(AF_INET, target, &addr.sin_addr) == 1 else { continue }
+        let port = UInt16(max(1, min(65535, pc.wolPort)))
+        var addresses = targets.compactMap { OrbitWakeTargets.resolve($0, defaultPort: port).first }
+        if !pc.wolRelay.isEmpty { addresses += OrbitWakeTargets.resolve(pc.wolRelay, defaultPort: port) }
+        for var addr in addresses {
             for _ in 0..<3 {
                 let count = packet.withUnsafeBytes { bytes in
                     withUnsafePointer(to: &addr) { pointer in

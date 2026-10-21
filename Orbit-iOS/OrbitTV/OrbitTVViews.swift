@@ -431,7 +431,7 @@ struct TVDashboardTab: View {
                         secondaryBadge: vm.metrics.networkUploadMBps.map { String(format: "↑ %.1f MB/s", $0) } ?? "—",
                         subtitle: "Download · Upload",
                         footerLeft: vm.metrics.isOnline && !vm.isDemoMode ? "Ping \(max(1, vm.pingMs)) ms" : (vm.isDemoMode ? "Preview" : "—"),
-                        footerRight: vm.metrics.isOnline ? "Active" : "Standby",
+                        footerRight: vm.metrics.isOnline ? (vm.metrics.sessionLocked == true ? "Locked" : "Active") : "Standby",
                         accent: TVPalette.accent,
                         progress: vm.metrics.networkDownloadMBps.map { min(1.0, $0 / 100.0) },
                         sparkline: []

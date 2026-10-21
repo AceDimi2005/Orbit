@@ -69,6 +69,7 @@ private struct MacSettingsGeneralTab: View {
     @AppStorage("mac.previewAutoStart") private var previewAutoStart = true
     @AppStorage("mac.pointerSpeed") private var pointerSpeed: Double = 1.4
     @AppStorage("mac.autoOpenMoonlight") private var autoOpenMoonlight = false
+    @AppStorage(MacStreamBackend.storageKey) private var streamBackendRaw = MacStreamBackend.orbit.rawValue
     @State private var launchAtLogin = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
@@ -191,6 +192,9 @@ private struct MacSettingsGeneralTab: View {
                         .font(.callout.monospacedDigit())
                         .frame(width: 40, alignment: .trailing)
                 }
+            }
+            Picker("Stream with", selection: $streamBackendRaw) {
+                ForEach(MacStreamBackend.allCases) { backend in Text(backend.title).tag(backend.rawValue) }
             }
             Toggle("Open Moonlight after launching a game", isOn: $autoOpenMoonlight)
         } header: {

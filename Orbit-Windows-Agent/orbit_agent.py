@@ -59,6 +59,9 @@ AGENT_PORT = int(os.getenv("ORBIT_PORT", "8765"))
 SECURE_PORT = int(os.getenv("ORBIT_TLS_PORT", "8766"))
 PAIRING_MANAGER = None
 ADVERTISEMENT = None
+# True when started by the boot task (before anyone signs in): no tray icon, hands over to the
+# per-user instance once that starts.
+BOOT_MODE = False
 CERTIFICATE_FINGERPRINT = ""
 import sys as _sys
 _RUNTIME_DIR = Path(_sys.executable).resolve().parent if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent
@@ -94,7 +97,7 @@ STATE = {
     "gpuUsage": None, "gpuPowerWatts": None, "vramUsedGB": None, "vramTotalGB": None,
     "ramUsedGB": 0.0, "ramTotalGB": 0.0, "ssdUsedTB": 0.0, "ssdTotalTB": 0.0,
     "uptimeSeconds": 0, "activeGame": None, "activeGameProcess": None,
-    "volume": 0.0, "isMuted": False, "volumeAvailable": False, "hdrEnabled": None,
+    "volume": 0.0, "isMuted": False, "volumeAvailable": False, "hdrEnabled": None, "sessionLocked": None,
     "fps": None, "fpsSource": None, "fpsUnavailableReason": "Waiting for telemetry",
     "telemetryAvailable": False, "lastUpdated": None,
     "cpuPowerWatts": None, "cpuClockMHz": None, "cpuClockSource": None,
@@ -257,7 +260,7 @@ def telemetry_worker():
                           activeGameProcess=game["process"] if game else None)
             update.update(read_fps(game))
             update.update(audio_metrics())
-            update.update(telemetryAvailable=True, lastUpdated=timestamp())
+            update.update(sessionLocked=session_locked(), telemetryAvailable=True, lastUpdated=timestamp())
             with STATE_LOCK:
                 STATE.update(update)
                 LAST_TELEMETRY = time.monotonic()
@@ -269,6 +272,16 @@ def telemetry_worker():
                 for key in LIVE_OPTIONAL_FIELDS:
                     STATE[key] = None
             record_history({"telemetryAvailable": False})
+
+
+def session_locked():
+    """True while Windows shows the sign-in or lock screen (LogonUI is only alive then); None elsewhere."""
+    if os.name != "nt":
+        return None
+    try:
+        return any((proc.info.get("name") or "").lower() == "logonui.exe" for proc in psutil.process_iter(["name"]))
+    except Exception:
+        return None
 
 
 def record_history(metrics):
@@ -968,6 +981,49 @@ async def websocket_video_stream(websocket: WebSocket):
             pass
 
 
+@app.post("/api/internal/handover")
+def api_handover(request: Request, authorization: str = Header(None)):
+    """Asks this instance to exit so another one on the same PC can take the ports.
+
+    Used by the per-user companion when it starts after the boot-time instance (which runs
+    before anyone signs in and cannot reach the desktop). Loopback only, token required.
+    """
+    verify_token(authorization)
+    client = (request.client.host if request.client else "") or ""
+    if client not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Hand-over is only accepted from this PC")
+    threading.Timer(0.5, STOP_EVENT.set).start()
+    return {"status": "stopping", "bootMode": BOOT_MODE}
+
+
+def takeover_running_instance(token, port=None, timeout=20.0):
+    """If another companion already serves this PC's ports (the boot-time instance), ask it to
+    stop and wait until the port is free. Returns True when a hand-over happened."""
+    port = port or AGENT_PORT
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"{base}/api/discover"), timeout=2) as response:
+            if json.loads(response.read() or b"{}").get("service") != "orbit-agent":
+                return False
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    try:
+        request = urllib.request.Request(f"{base}/api/internal/handover", data=b"", method="POST",
+                                         headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+    except (urllib.error.URLError, OSError):
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                return True
+        time.sleep(0.5)
+    return False
+
+
 @app.get("/api/update/check")
 def api_check_for_updates(authorization: str = Header(None)):
     verify_token(authorization)
@@ -1054,10 +1110,11 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2))
         raise SystemExit(0)
 
+    BOOT_MODE = "--boot" in args
     log_file = ensure_background_stdio()
     mutex = _acquire_single_instance_mutex()
     if mutex is False:
-        if os.name == "nt" and "--background" not in args:
+        if os.name == "nt" and "--background" not in args and not BOOT_MODE:
             ctypes.windll.user32.MessageBoxW(
                 None,
                 "Orbit PC Companion is already running in the system tray (bottom-right notification area).\n\n"
@@ -1080,6 +1137,11 @@ if __name__ == "__main__":
             )
         raise
 
+    # The boot-time instance (started before sign-in) runs in another session, where the
+    # single-instance mutex is not visible: ask it to hand the ports over to this one.
+    if not BOOT_MODE and takeover_running_instance(API_TOKEN):
+        print("Took over from the boot-time Orbit Companion instance.")
+
     CERTIFICATE_FINGERPRINT = fingerprint
     PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
     ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
@@ -1093,16 +1155,20 @@ if __name__ == "__main__":
     print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
 
     STOP_EVENT.clear()
-    tray = OrbitTrayIcon(
-        status_provider=tray_status_snapshot,
-        on_stop=STOP_EVENT.set,
-        token_provider=lambda: API_TOKEN,
-        log_path=log_file,
-        notify_on_start=("--tray" in args),
-    )
-    tray.start()
-    if ("--background" in args or "--tray" in args) and "--console" not in args:
-        tray.set_console_visible(False)
+    tray = None
+    if BOOT_MODE:
+        print("Boot-time instance: no tray icon; hands over to the signed-in companion when it starts.")
+    else:
+        tray = OrbitTrayIcon(
+            status_provider=tray_status_snapshot,
+            on_stop=STOP_EVENT.set,
+            token_provider=lambda: API_TOKEN,
+            log_path=log_file,
+            notify_on_start=("--tray" in args),
+        )
+        tray.start()
+        if ("--background" in args or "--tray" in args) and "--console" not in args:
+            tray.set_console_visible(False)
     try:
         asyncio.run(serve_both(
             app,
@@ -1117,4 +1183,5 @@ if __name__ == "__main__":
         pass
     finally:
         STOP_EVENT.set()
-        tray.close()
+        if tray is not None:
+            tray.close()

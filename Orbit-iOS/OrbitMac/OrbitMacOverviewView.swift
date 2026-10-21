@@ -51,6 +51,7 @@ struct MacOverviewView: View {
         if vm.isDemoMode { return "Demo" }
         if vm.isWaking { return "Waking…" }
         if vm.currentPC == nil { return "Not paired" }
+        if vm.metrics.isOnline, vm.metrics.sessionLocked == true { return "Locked" }
         return vm.metrics.isOnline ? "Online" : "Offline"
     }
 

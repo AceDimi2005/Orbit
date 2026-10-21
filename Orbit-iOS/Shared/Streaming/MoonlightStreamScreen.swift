@@ -81,12 +81,15 @@ private struct MoonlightSessionLayer: View {
     let onReconnect: () -> Void
     @State private var hideTask: Task<Void, Never>?
     @State private var confirmEnd = false
+    @State private var captureHintVisible = false
+    @State private var captureHintTask: Task<Void, Never>?
 
     private var isStreaming: Bool { session.phase == .streaming }
 
     var body: some View {
         ZStack {
-            MoonlightStreamSurface(session: session, settings: request.settings, handle: handle) { toggleOverlay() }
+            MoonlightStreamSurface(session: session, settings: request.settings, handle: handle, onToggleOverlay: { toggleOverlay() },
+                                   onEndStream: { onEnd(false) })
                 .ignoresSafeArea()
 
             switch session.phase {
@@ -127,12 +130,42 @@ private struct MoonlightSessionLayer: View {
                 .animation(.spring(response: 0.32, dampingFraction: 1), value: overlayVisible)
                 .animation(.spring(response: 0.32, dampingFraction: 1), value: statsVisible)
             }
+
+            #if os(macOS)
+            if isStreaming, captureHintVisible {
+                VStack {
+                    Spacer()
+                    Text("Mouse and keyboard captured  ·  ⌃⌥⇧Z releases them  ·  ⌃⌥⇧Q ends the stream")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
+                        .padding(.bottom, 28)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
+            #endif
         }
+        .animation(.spring(response: 0.3, dampingFraction: 1), value: captureHintVisible)
         .onChange(of: session.phase) { _, phase in
             if phase == .streaming { overlayVisible = true; scheduleHide() } else { hideTask?.cancel(); overlayVisible = true }
         }
         .onChange(of: handle.mouseCaptured) { _, captured in
-            if captured { overlayVisible = false } else { overlayVisible = true; scheduleHide() }
+            if captured {
+                overlayVisible = false
+                captureHintVisible = true
+                captureHintTask?.cancel()
+                captureHintTask = Task {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    captureHintVisible = false
+                }
+            } else {
+                captureHintVisible = false
+                overlayVisible = true
+                scheduleHide()
+            }
         }
         .confirmationDialog("End the stream?", isPresented: $confirmEnd, titleVisibility: .visible) {
             Button("Disconnect") { onEnd(false) }
@@ -177,7 +210,7 @@ private struct MoonlightSessionLayer: View {
             #if os(iOS)
             Text(request.settings.touchMode == .trackpad ? "Drag to move · tap to click · two fingers scroll · hold to drag · three-finger tap for controls" : "Touch the screen directly · three-finger tap for controls")
             #elseif os(macOS)
-            Text(handle.mouseCaptured ? "⌃⌥⇧Z releases the mouse and keyboard" : "Click the video to capture mouse and keyboard")
+            Text(handle.mouseCaptured ? "⌃⌥⇧Z releases the mouse and keyboard · ⌃⌥⇧Q ends the stream" : "Click the video to capture mouse and keyboard · ⌃⌥⇧Q or the ✕ button ends the stream")
             #else
             Text("Touch surface moves the pointer · click selects · play/pause right-clicks · Menu leaves the stream")
             #endif

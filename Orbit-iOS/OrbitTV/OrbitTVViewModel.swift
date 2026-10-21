@@ -45,6 +45,8 @@ struct TVPCMetrics: Codable {
     var fps: Double? = nil
     var fpsSource: String? = nil
     var telemetryAvailable: Bool? = nil
+    /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
+    var sessionLocked: Bool? = nil
 
     var formattedUptime: String {
         guard uptimeSeconds > 0 else { return "0h 0m" }
@@ -119,6 +121,8 @@ struct TVSavedPC: Codable, Identifiable, Equatable {
     var bonjourHost: String? = nil
     /// Seconds since 1970 of the last edit; newer copies win when devices sync through iCloud.
     var updatedAt: Double? = nil
+    /// Extra Wake-on-LAN target (`host` or `host:port`), synced from the iPhone or Mac.
+    var wolRelay: String = ""
 
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
 
@@ -126,7 +130,8 @@ struct TVSavedPC: Codable, Identifiable, Equatable {
         OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4, apiToken: token,
-                          isSelected: selected, bonjourHost: bonjourHost, updatedAt: updatedAt, origin: "Apple TV")
+                          isSelected: selected, bonjourHost: bonjourHost, updatedAt: updatedAt, origin: "Apple TV",
+                          wolRelay: wolRelay.isEmpty ? nil : wolRelay)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -134,6 +139,7 @@ struct TVSavedPC: Codable, Identifiable, Equatable {
         certificateFingerprint = item.certificateFingerprint; macAddress = item.macAddress; subnetMask = item.subnetMask
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; lastKnownIPv4 = item.lastKnownIPv4
         bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
+        wolRelay = item.wolRelay ?? ""
     }
 
     init(name: String, address: String) {
@@ -556,12 +562,10 @@ final class OrbitTVViewModel: ObservableObject {
 
         let targets = Set([pc.broadcastAddress, pc.lastKnownIPv4, pc.address, "255.255.255.255"]).filter { !$0.isEmpty }
         var sent = false
-        for target in targets {
-            var addr = sockaddr_in()
-            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = UInt16(max(1, min(65535, pc.wolPort))).bigEndian
-            guard inet_pton(AF_INET, target, &addr.sin_addr) == 1 else { continue }
+        let port = UInt16(max(1, min(65535, pc.wolPort)))
+        var addresses = targets.compactMap { OrbitWakeTargets.resolve($0, defaultPort: port).first }
+        if !pc.wolRelay.isEmpty { addresses += OrbitWakeTargets.resolve(pc.wolRelay, defaultPort: port) }
+        for var addr in addresses {
             for _ in 0..<3 {
                 let count = packet.withUnsafeBytes { bytes in
                     withUnsafePointer(to: &addr) { ptr in

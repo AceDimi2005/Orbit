@@ -96,6 +96,50 @@ class StartupManagerTests(unittest.TestCase):
             self.assertTrue(manager.is_enabled())
 
 
+class BootTaskManagerTests(unittest.TestCase):
+    def test_register_script_runs_agent_in_boot_mode_as_the_user_without_a_password(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            script = root / "orbit_agent.py"
+            script.write_text("# agent\n", encoding="utf-8")
+            venv_scripts = root / ".venv" / "Scripts"
+            venv_scripts.mkdir(parents=True)
+            pythonw = venv_scripts / "pythonw.exe"
+            pythonw.write_bytes(b"MZ")
+            elevated = []
+            queries = []
+            manager = tray.BootTaskManager(script_path=script, user_name="PC2\\dimi", runner=lambda args: queries.append(args) or 1,
+                                           elevated_runner=lambda exe, params: elevated.append((exe, params)))
+            self.assertFalse(manager.is_installed())
+            self.assertEqual(queries[-1], ["schtasks", "/Query", "/TN", tray.BOOT_TASK_NAME])
+            self.assertTrue(manager.toggle())
+            exe, params = elevated[-1]
+            self.assertEqual(exe, "powershell.exe")
+            self.assertIn("-LogonType S4U", params)
+            self.assertIn("-RunLevel Highest", params)
+            self.assertIn("'PC2\\dimi'", params)
+            self.assertIn("-AtStartup", params)
+            self.assertIn("--boot", params)
+            self.assertIn(str(pythonw.resolve()), params)
+            self.assertIn(str(script.resolve()), params)
+            self.assertIn(f"-TaskName '{tray.BOOT_TASK_NAME}'", params)
+            self.assertNotIn("/RP", params)
+            self.assertFalse(manager.set_installed(False))
+            self.assertIn("Unregister-ScheduledTask", elevated[-1][1])
+
+    def test_boot_item_appears_in_menu_and_toggle_reports_errors(self):
+        boot = MagicMock()
+        boot.is_installed.return_value = True
+        boot.toggle.side_effect = RuntimeError("Windows did not grant administrator rights")
+        icon = tray.OrbitTrayIcon(status_provider=lambda: {}, on_stop=lambda: None, boot_task=boot)
+        item = next(i for i in icon.build_menu_items() if i.get("id") == tray.ID_TOGGLE_BOOT)
+        self.assertTrue(item["checked"])
+        self.assertIn("before Windows sign-in", item["label"])
+        with patch.object(icon, "_async_message_box") as box:
+            self.assertEqual(icon.execute_command(tray.ID_TOGGLE_BOOT), "boot_toggled")
+            box.assert_called_once()
+
+
 class IconTests(unittest.TestCase):
     def test_bundled_orbit_ico_contains_tray_and_hidpi_frames(self):
         self.assertTrue(tray.ICON_PATH.is_file())

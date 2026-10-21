@@ -20,6 +20,15 @@ struct OrbitMacApp: App {
             MoonlightIdentityStore.reset()
             print(MoonlightIdentityStore.diagnostics())
             exit(0)
+        case "kvs":
+            // State of iCloud Key-Value Storage as this Mac sees it.
+            let store = NSUbiquitousKeyValueStore.default
+            let synced = store.synchronize()
+            let items = OrbitPCCloudSync.cloudItems()
+            print("synchronize: \(synced); keys: \(store.dictionaryRepresentation.keys.sorted())")
+            print("synced PCs: \(items.count)" + items.map { " · \($0.name) \($0.address) origin=\($0.origin ?? "legacy") token=\($0.apiToken.isEmpty ? "no" : "yes")" }.joined())
+            print("removed: \(OrbitPCCloudSync.removed())")
+            exit(0)
         case "export":
             print((try? MoonlightIdentityStore.currentCertificatePEM()) ?? "no identity")
             exit(0)

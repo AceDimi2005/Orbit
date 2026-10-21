@@ -339,6 +339,7 @@ private struct MacPcsSavedCard: View {
     @State private var macDraft = ""
     @State private var broadcastDraft = ""
     @State private var wolPortDraft = ""
+    @State private var wolRelayDraft = ""
     @State private var wolExpanded = false
     @State private var hovered = false
 
@@ -369,6 +370,7 @@ private struct MacPcsSavedCard: View {
         macDraft.trimmingCharacters(in: .whitespacesAndNewlines) != pc.macAddress
             || broadcastDraft.trimmingCharacters(in: .whitespacesAndNewlines) != pc.broadcastAddress
             || wolPortDraft.trimmingCharacters(in: .whitespaces) != "\(pc.wolPort)"
+            || wolRelayDraft.trimmingCharacters(in: .whitespacesAndNewlines) != pc.wolRelay
     }
 
     var body: some View {
@@ -468,6 +470,7 @@ private struct MacPcsSavedCard: View {
                     MacPcsField(title: "Broadcast", placeholder: pc.autoCalcBroadcast ? "Automatic" : "192.168.1.255", text: $broadcastDraft, monospaced: true)
                     MacPcsField(title: "UDP port", placeholder: "9", text: $wolPortDraft, monospaced: true, width: 84)
                 }
+                MacPcsField(title: "Wake relay over Tailscale/VPN (optional)", placeholder: "router.tail1234.ts.net or 100.64.0.1:9", text: $wolRelayDraft, monospaced: true)
                 Text(wakeHint)
                     .font(.caption)
                     .foregroundStyle(macValid && portValid ? Color.secondary : Color.orange)
@@ -512,6 +515,7 @@ private struct MacPcsSavedCard: View {
         macDraft = pc.macAddress
         broadcastDraft = pc.broadcastAddress
         wolPortDraft = "\(pc.wolPort)"
+        wolRelayDraft = pc.wolRelay
     }
 
     private func saveWake() {
@@ -526,10 +530,12 @@ private struct MacPcsSavedCard: View {
         if let port = Int(wolPortDraft.trimmingCharacters(in: .whitespaces)), (1...65535).contains(port) {
             updated.wolPort = port
         }
+        updated.wolRelay = wolRelayDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         vm.savePC(updated, token: nil, select: false)
         macDraft = updated.macAddress
         broadcastDraft = updated.broadcastAddress
         wolPortDraft = "\(updated.wolPort)"
+        wolRelayDraft = updated.wolRelay
     }
 }
 

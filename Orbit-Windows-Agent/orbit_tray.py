@@ -81,6 +81,9 @@ ID_COPY_TOKEN = 1004
 ID_OPEN_LOG = 1005
 ID_EXIT = 1006
 ID_CHECK_UPDATES = 1007
+ID_TOGGLE_BOOT = 1008
+
+BOOT_TASK_NAME = "Orbit PC Companion (boot)"
 
 IDYES = 6
 IDNO = 7
@@ -282,6 +285,92 @@ def resolve_pythonw_executable(script_path=None, python_executable=None):
     return current
 
 
+class BootTaskManager:
+    """Scheduled task that starts the companion when Windows boots, before anyone signs in.
+
+    The task runs under the user's own account with the S4U logon type (no password stored,
+    same %LOCALAPPDATA%, so the TLS identity and history are the ones the phone already trusts)
+    and the ``--boot`` flag: no tray icon, and it hands the ports over to the normal tray
+    instance as soon as the user signs in. Creating or removing the task needs administrator
+    rights, so those run through a UAC-elevated PowerShell.
+    """
+
+    def __init__(self, script_path=None, python_executable=None, frozen_executable=None, runner=None,
+                 elevated_runner=None, task_name=BOOT_TASK_NAME, user_name=None):
+        self.script_path = Path(script_path).resolve() if script_path is not None else Path(__file__).resolve().with_name("orbit_agent.py")
+        self.python_executable = python_executable
+        self.frozen_executable = (
+            Path(frozen_executable).resolve()
+            if frozen_executable is not None
+            else (Path(sys.executable).resolve() if getattr(sys, "frozen", False) else None)
+        )
+        self.task_name = task_name
+        self.runner = runner or self._run
+        self.elevated_runner = elevated_runner or self._run_elevated
+        self.user_name = user_name or self._current_user()
+
+    @staticmethod
+    def _current_user():
+        domain = os.environ.get("USERDOMAIN") or os.environ.get("COMPUTERNAME") or "."
+        user = os.environ.get("USERNAME") or ""
+        return f"{domain}\\{user}" if user else ""
+
+    @staticmethod
+    def _run(arguments):
+        return subprocess.run(arguments, capture_output=True, text=True, creationflags=0x08000000 if os.name == "nt" else 0).returncode
+
+    @staticmethod
+    def _run_elevated(executable, parameters):
+        if os.name != "nt":
+            raise RuntimeError("The boot task can only be configured on Windows.")
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, parameters, None, 0)
+        if result <= 32:
+            raise RuntimeError("Windows did not grant administrator rights (ShellExecute %s)." % result)
+        return result
+
+    def executable_and_arguments(self):
+        if self.frozen_executable is not None:
+            return str(self.frozen_executable), "--boot"
+        executable = resolve_pythonw_executable(self.script_path, self.python_executable)
+        return str(executable), f'"{self.script_path}" --boot'
+
+    def is_installed(self):
+        try:
+            return self.runner(["schtasks", "/Query", "/TN", self.task_name]) == 0
+        except OSError:
+            return False
+
+    def register_script(self):
+        executable, arguments = self.executable_and_arguments()
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        return (
+            f"$action = New-ScheduledTaskAction -Execute {quote(executable)} -Argument {quote(arguments)} -WorkingDirectory {quote(self.script_path.parent)}; "
+            "$trigger = New-ScheduledTaskTrigger -AtStartup; $trigger.Delay = 'PT20S'; "
+            f"$principal = New-ScheduledTaskPrincipal -UserId {quote(self.user_name)} -LogonType S4U -RunLevel Highest; "
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable "
+            "-ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); "
+            f"Register-ScheduledTask -TaskName {quote(self.task_name)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null"
+        )
+
+    def unregister_script(self):
+        return f"Unregister-ScheduledTask -TaskName '{self.task_name}' -Confirm:$false"
+
+    @staticmethod
+    def powershell_parameters(script):
+        return '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "' + script.replace('"', '\\"') + '"'
+
+    def set_installed(self, enabled):
+        if enabled and not self.user_name:
+            raise RuntimeError("Could not determine the Windows user name for the boot task.")
+        script = self.register_script() if enabled else self.unregister_script()
+        self.elevated_runner("powershell.exe", self.powershell_parameters(script))
+        return enabled
+
+    def toggle(self):
+        return self.set_installed(not self.is_installed())
+
+
 class StartupManager:
     """Manage per-user Windows login startup under HKCU\\...\\CurrentVersion\\Run."""
 
@@ -432,10 +521,11 @@ class OrbitTrayIcon:
     def __init__(self, *, status_provider, on_stop, startup_manager=None,
                  token_provider=None, update_checker=None, update_installer=None,
                  release_page_opener=None, icon_path=ICON_PATH, log_path=None,
-                 notify_on_start=False, apis=None):
+                 notify_on_start=False, apis=None, boot_task=None):
         self.status_provider = status_provider
         self.on_stop = on_stop
         self.startup = startup_manager or StartupManager()
+        self.boot_task = boot_task or BootTaskManager()
         self.token_provider = token_provider
         self.update_checker = update_checker
         self.update_installer = update_installer
@@ -513,6 +603,7 @@ class OrbitTrayIcon:
             {"id": 0, "label": f"Game: {game}" if game else "Status: Online in background", "enabled": False, "checked": False},
             {"separator": True},
             {"id": ID_TOGGLE_STARTUP, "label": "Run at Windows startup", "enabled": True, "checked": startup_enabled},
+            {"id": ID_TOGGLE_BOOT, "label": "Start before Windows sign-in (boot task)", "enabled": True, "checked": self.boot_task.is_installed()},
         ]
         if self.has_console_window():
             items.append({
@@ -553,6 +644,23 @@ class OrbitTrayIcon:
                     0x00000030,
                 )
             return "startup_toggled"
+        if command_id == ID_TOGGLE_BOOT:
+            try:
+                enabled = self.boot_task.toggle()
+                self.show_notification(
+                    "Orbit PC Companion",
+                    "Orbit will start with Windows, before anyone signs in, so your phone can connect right after power-on."
+                    if enabled else
+                    "The boot-time start has been removed; Orbit starts when you sign in.",
+                )
+            except Exception as error:
+                LOGGER.exception("Could not update the boot task")
+                self._async_message_box(
+                    f"Could not update the boot task (administrator rights are needed):\n{error}",
+                    "Orbit · Start before sign-in",
+                    0x00000030,
+                )
+            return "boot_toggled"
         if command_id == ID_TOGGLE_CONSOLE:
             self.set_console_visible(not self.is_console_visible())
             return "console_toggled"

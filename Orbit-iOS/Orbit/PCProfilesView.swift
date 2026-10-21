@@ -19,6 +19,8 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var bonjourHost: String? = nil
     /// Seconds since 1970 of the last edit; newer copies win when devices sync through iCloud.
     var updatedAt: Double? = nil
+    /// Extra Wake-on-LAN target (`host` or `host:port`), for example a router reachable over Tailscale.
+    var wolRelay: String = ""
 
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
 
@@ -27,7 +29,7 @@ struct SavedPC: Codable, Identifiable, Equatable {
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4 ?? "",
                           apiToken: token, isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast,
-                          updatedAt: updatedAt, origin: "iPhone")
+                          updatedAt: updatedAt, origin: "iPhone", wolRelay: wolRelay.isEmpty ? nil : wolRelay)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -35,6 +37,7 @@ struct SavedPC: Codable, Identifiable, Equatable {
         certificateFingerprint = item.certificateFingerprint; macAddress = item.macAddress; subnetMask = item.subnetMask
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
         lastKnownIPv4 = item.lastKnownIPv4.isEmpty ? nil : item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
+        wolRelay = item.wolRelay ?? ""
     }
 
     init(name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "", macAddress: String = "",
@@ -521,6 +524,9 @@ private struct PCProfileEditor: View {
                         TextField("Broadcast address", text: $profile.broadcastAddress).keyboardType(.decimalPad)
                         TextField("Wake port", value: $profile.wolPort, format: .number.grouping(.never)).keyboardType(.numberPad)
                         Toggle("Calculate broadcast automatically", isOn: $profile.autoCalcBroadcast)
+                        TextField("Wake relay (Tailscale/VPN host or host:port)", text: $profile.wolRelay).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Text("Away from home the broadcast cannot leave your Wi-Fi. Enter the router or always-on device that Tailscale reaches (its 100.x address or MagicDNS name, optional :port) and Orbit also sends the wake packet there.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .orbitRow()

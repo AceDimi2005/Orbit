@@ -296,6 +296,7 @@ struct DashboardView: View {
     private var statusText: String {
         if vm.isDemoMode { return "Demo" }
         if vm.isWakingUp { return "Waking…" }
+        if vm.metrics.isOnline, vm.metrics.sessionLocked == true { return "Locked" }
         return vm.metrics.isOnline ? "Online" : "Offline"
     }
 
@@ -2095,7 +2096,9 @@ struct SettingsView: View {
                                 .font(.headline.weight(.bold))
                                 .lineLimit(1)
                             HStack(spacing: 6) {
-                                OrbitStatusPill(text: vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? "Online" : "Offline"), tint: vm.metrics.isOnline && !vm.isDemoMode ? .mint : .orange, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
+                                OrbitStatusPill(text: vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? (vm.metrics.sessionLocked == true ? "Locked" : "Online") : "Offline"),
+                                                tint: vm.metrics.isOnline && !vm.isDemoMode ? (vm.metrics.sessionLocked == true ? .yellow : .mint) : .orange,
+                                                pulsing: vm.metrics.isOnline && !vm.isDemoMode)
                                 if vm.metrics.isOnline, let version = vm.metrics.agentVersion {
                                     Text("Agent \(version)")
                                         .font(.caption)

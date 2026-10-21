@@ -372,12 +372,15 @@ public struct MoonlightStreamSurface: UIViewRepresentable {
     public var settings: MoonlightStreamSettings
     public var handle: MoonlightSurfaceHandle
     public var onToggleOverlay: () -> Void
+    public var onEndStream: (() -> Void)?
 
-    public init(session: MoonlightStreamSession, settings: MoonlightStreamSettings, handle: MoonlightSurfaceHandle, onToggleOverlay: @escaping () -> Void) {
+    public init(session: MoonlightStreamSession, settings: MoonlightStreamSettings, handle: MoonlightSurfaceHandle,
+                onToggleOverlay: @escaping () -> Void, onEndStream: (() -> Void)? = nil) {
         self.session = session
         self.settings = settings
         self.handle = handle
         self.onToggleOverlay = onToggleOverlay
+        self.onEndStream = onEndStream
     }
 
     public func makeUIView(context: Context) -> MoonlightStreamSurfaceView {
@@ -405,6 +408,8 @@ import AppKit
 public final class MoonlightStreamSurfaceView: NSView {
     weak var handle: MoonlightSurfaceHandle?
     var onToggleOverlay: (() -> Void)?
+    /// ⌃⌥⇧Q while captured: end the stream without hunting for the overlay.
+    var onEndStream: (() -> Void)?
     public var session: MoonlightStreamSession? { didSet { attachLayer() } }
     public var settings = MoonlightStreamSettings()
     public private(set) var isCaptured = false
@@ -537,9 +542,9 @@ public final class MoonlightStreamSurfaceView: NSView {
 
     public override func keyDown(with event: NSEvent) {
         guard isCaptured else { super.keyDown(with: event); return }
-        if event.keyCode == 0x06, event.modifierFlags.contains([.control, .option, .shift]) {
-            releaseCapture()
-            return
+        if event.modifierFlags.contains([.control, .option, .shift]) {
+            if event.keyCode == 0x06 { releaseCapture(); return }          // Z: give the mouse and keyboard back
+            if event.keyCode == 0x0C { releaseCapture(); onEndStream?(); return }   // Q: end the stream
         }
         guard let virtualKey = MoonlightVirtualKey.fromMacKeyCode(event.keyCode) else { return }
         session?.sendKey(virtualKey: virtualKey, pressed: true, modifiers: Self.modifiers(event.modifierFlags))
@@ -582,12 +587,15 @@ public struct MoonlightStreamSurface: NSViewRepresentable {
     public var settings: MoonlightStreamSettings
     public var handle: MoonlightSurfaceHandle
     public var onToggleOverlay: () -> Void
+    public var onEndStream: (() -> Void)?
 
-    public init(session: MoonlightStreamSession, settings: MoonlightStreamSettings, handle: MoonlightSurfaceHandle, onToggleOverlay: @escaping () -> Void) {
+    public init(session: MoonlightStreamSession, settings: MoonlightStreamSettings, handle: MoonlightSurfaceHandle,
+                onToggleOverlay: @escaping () -> Void, onEndStream: (() -> Void)? = nil) {
         self.session = session
         self.settings = settings
         self.handle = handle
         self.onToggleOverlay = onToggleOverlay
+        self.onEndStream = onEndStream
     }
 
     public func makeNSView(context: Context) -> MoonlightStreamSurfaceView {
@@ -596,6 +604,7 @@ public struct MoonlightStreamSurface: NSViewRepresentable {
         view.session = session
         view.settings = settings
         view.onToggleOverlay = onToggleOverlay
+        view.onEndStream = onEndStream
         handle.view = view
         return view
     }
@@ -603,6 +612,7 @@ public struct MoonlightStreamSurface: NSViewRepresentable {
     public func updateNSView(_ view: MoonlightStreamSurfaceView, context: Context) {
         view.settings = settings
         view.onToggleOverlay = onToggleOverlay
+        view.onEndStream = onEndStream
         if view.session !== session { view.session = session }
     }
 }

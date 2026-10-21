@@ -25,6 +25,8 @@ struct OrbitSyncedPCItem: Codable, Equatable {
     var updatedAt: Double? = nil
     /// Device that last edited the item ("iPhone", "Apple TV", "Mac").
     var origin: String? = nil
+    /// Extra Wake-on-LAN target (`host` or `host:port`), e.g. a router reachable over Tailscale.
+    var wolRelay: String? = nil
 }
 
 /// Minimal surface of `NSUbiquitousKeyValueStore`, so the merge logic can run against an
@@ -168,5 +170,42 @@ enum OrbitPCCloudSync {
             items.map { var copy = $0; copy.isSelected = false; return copy }.sorted { identity(of: $0) < identity(of: $1) }
         }
         return canonical(lhs) == canonical(rhs)
+    }
+}
+
+/// Turns a Wake-on-LAN target (`host` or `host:port`, numeric IPv4 or a DNS / Tailscale MagicDNS
+/// name) into IPv4 socket addresses.
+enum OrbitWakeTargets {
+    static func resolve(_ target: String, defaultPort: UInt16) -> [sockaddr_in] {
+        var host = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        var port = defaultPort
+        if let colon = host.lastIndex(of: ":"), host.filter({ $0 == ":" }).count == 1, let parsed = UInt16(host[host.index(after: colon)...]) {
+            port = parsed
+            host = String(host[..<colon])
+        }
+        guard !host.isEmpty else { return [] }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        if inet_pton(AF_INET, host, &address.sin_addr) == 1 { return [address] }
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        var list: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &list) == 0, let first = list else { return [] }
+        defer { freeaddrinfo(first) }
+        var results: [sockaddr_in] = []
+        var cursor: UnsafeMutablePointer<addrinfo>? = first
+        while let entry = cursor {
+            if entry.pointee.ai_family == AF_INET, let raw = entry.pointee.ai_addr {
+                raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { resolved in
+                    address.sin_addr = resolved.pointee.sin_addr
+                    results.append(address)
+                }
+            }
+            cursor = entry.pointee.ai_next
+        }
+        return results
     }
 }

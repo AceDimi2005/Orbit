@@ -269,6 +269,75 @@ class APITests(unittest.TestCase):
                 agent.post_sunshine_pin(("admin", "x"), "1111", "Orbit")
             self.assertEqual(denied.exception.status_code, 401)
 
+    def test_handover_requires_token_and_loopback(self):
+        self.assertEqual(self.client.post("/api/internal/handover").status_code, 401)
+        with patch.object(agent.STOP_EVENT, "set") as stop:
+            # Starlette's test client reports "testclient" as the peer: not loopback.
+            self.assertEqual(self.client.post("/api/internal/handover", headers=AUTH).status_code, 403)
+            stop.assert_not_called()
+        with patch.object(agent.STOP_EVENT, "set") as stop, patch.object(agent.threading, "Timer") as timer:
+            local = TestClient(agent.app, client=("127.0.0.1", 50000))
+            response = local.post("/api/internal/handover", headers=AUTH)
+            local.close()
+            self.assertEqual(response.json(), {"status": "stopping", "bootMode": False})
+            timer.assert_called_once()
+            self.assertIs(timer.call_args.args[1], agent.STOP_EVENT.set)
+
+    def test_takeover_asks_running_instance_to_stop_and_waits_for_the_port(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout):
+            url = request.full_url if hasattr(request, "full_url") else request
+            calls.append((url, getattr(request, "method", "GET"), getattr(request, "headers", {})))
+            return FakeResponse(b'{"service": "orbit-agent"}' if url.endswith("/api/discover") else b"{}")
+
+        probes = iter([0, 0, 111])
+        class FakeSocket:
+            def __init__(self, *args):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def settimeout(self, value):
+                pass
+            def connect_ex(self, address):
+                return next(probes)
+
+        with patch.object(agent.urllib.request, "urlopen", fake_urlopen), patch.object(agent.socket, "socket", FakeSocket), \
+             patch.object(agent.time, "sleep"):
+            self.assertTrue(agent.takeover_running_instance(TOKEN, port=8765, timeout=5))
+        self.assertEqual(calls[0][0], "http://127.0.0.1:8765/api/discover")
+        self.assertEqual(calls[1][0], "http://127.0.0.1:8765/api/internal/handover")
+        self.assertEqual(calls[1][1], "POST")
+        self.assertEqual(calls[1][2].get("Authorization"), f"Bearer {TOKEN}")
+
+        def nobody(request, timeout):
+            raise agent.urllib.error.URLError("refused")
+        with patch.object(agent.urllib.request, "urlopen", nobody):
+            self.assertFalse(agent.takeover_running_instance(TOKEN, port=8765, timeout=1))
+
+    def test_session_locked_reads_logonui_presence(self):
+        with patch.object(agent.os, "name", "nt"), \
+             patch.object(agent.psutil, "process_iter", return_value=[SimpleNamespace(info={"name": "LogonUI.exe"})]):
+            self.assertTrue(agent.session_locked())
+        with patch.object(agent.os, "name", "nt"), \
+             patch.object(agent.psutil, "process_iter", return_value=[SimpleNamespace(info={"name": "explorer.exe"})]):
+            self.assertFalse(agent.session_locked())
+        with patch.object(agent.os, "name", "posix"):
+            self.assertIsNone(agent.session_locked())
+        self.assertIn("sessionLocked", agent.STATE)
+
     def test_start_sunshine_launches_installed_binary_once(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "sunshine.exe"

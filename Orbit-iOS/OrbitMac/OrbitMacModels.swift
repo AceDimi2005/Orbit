@@ -49,6 +49,8 @@ struct MacPCMetrics: Codable {
     var volume: Double = 0
     var isMuted: Bool = false
     var hdrEnabled: Bool? = nil
+    /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
+    var sessionLocked: Bool? = nil
     var fps: Double? = nil
     var fpsSource: String? = nil
     var fpsUnavailableReason: String? = nil
@@ -595,6 +597,8 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
     var bonjourHost: String? = nil
     /// Seconds since 1970 of the last edit; newer copies win when devices sync through iCloud.
     var updatedAt: Double? = nil
+    /// Extra Wake-on-LAN target (`host` or `host:port`), for example a router reachable over Tailscale.
+    var wolRelay: String = ""
 
     var isSecure: Bool { OrbitAPIClient.validFingerprint(certificateFingerprint) }
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
@@ -603,7 +607,8 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
         OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4, apiToken: token,
-                          isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast, updatedAt: updatedAt, origin: "Mac")
+                          isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast, updatedAt: updatedAt, origin: "Mac",
+                          wolRelay: wolRelay.isEmpty ? nil : wolRelay)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -611,6 +616,7 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
         certificateFingerprint = item.certificateFingerprint; macAddress = item.macAddress; subnetMask = item.subnetMask
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
         lastKnownIPv4 = item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
+        wolRelay = item.wolRelay ?? ""
     }
 
     init(id: String = UUID().uuidString, name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "",
@@ -722,4 +728,12 @@ enum MacFormat {
 /// Queued by menu commands (⇧⌘S, Stream Settings…); the Stream section runs it once it is on screen.
 enum MacStreamAction: Equatable {
     case desktop, settings
+}
+
+/// Where "Stream" opens a session on the Mac: inside Orbit, or in the separate Moonlight app.
+enum MacStreamBackend: String, CaseIterable, Identifiable {
+    case orbit, moonlight
+    var id: String { rawValue }
+    var title: String { self == .orbit ? "Orbit" : "Moonlight app" }
+    static let storageKey = "mac.streamBackend"
 }
