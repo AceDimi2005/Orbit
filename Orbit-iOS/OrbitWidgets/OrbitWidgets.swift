@@ -75,7 +75,7 @@ private struct OrbitShortcutsView: View {
     var body: some View {
         switch family {
         case .accessoryCircular:
-            Button(intent: OrbitWakePCIntent()) {
+            OrbitProPowerButton(intent: OrbitWakePCIntent()) {
                 ZStack {
                     AccessoryWidgetBackground()
                     Image(systemName: "power")
@@ -93,13 +93,13 @@ private struct OrbitShortcutsView: View {
                 }
                 .font(.caption.weight(.bold))
                 HStack(spacing: 6) {
-                    Button(intent: OrbitWakePCIntent()) {
+                    OrbitProPowerButton(intent: OrbitWakePCIntent()) {
                         Label("Wake", systemImage: "power")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     Text("·").foregroundStyle(.secondary)
-                    Button(intent: OrbitShutdownPCIntent()) {
+                    OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
                         Label("Off", systemImage: "power.circle.fill")
                             .font(.system(size: 10, weight: .semibold))
                     }
@@ -141,7 +141,7 @@ private struct OrbitShortcutsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 header
                 Spacer(minLength: 0)
-                Button(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
                     HStack(spacing: 8) {
                         Image(systemName: "power")
                             .font(.system(size: 13, weight: .bold))
@@ -160,7 +160,7 @@ private struct OrbitShortcutsView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
                     HStack(spacing: 8) {
                         Image(systemName: "power.circle.fill")
                             .font(.system(size: 13, weight: .bold))
@@ -205,7 +205,7 @@ private struct OrbitShortcutsView: View {
     }
 
     private func powerActionButton<I: AppIntent>(title: String, subtitle: String, symbol: String, tint: Color, intent: I) -> some View {
-        Button(intent: intent) {
+        OrbitProPowerButton(intent: intent) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     ZStack {
@@ -623,7 +623,7 @@ private struct OrbitLiveActivityPanel: View {
             }
 
             HStack(spacing: 6) {
-                Button(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
                     Label("Power On", systemImage: "power")
                         .font(.system(size: 10, weight: .bold))
                         .frame(maxWidth: .infinity)
@@ -633,7 +633,7 @@ private struct OrbitLiveActivityPanel: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
                     Label("Shut Down", systemImage: "power.circle.fill")
                         .font(.system(size: 10, weight: .bold))
                         .frame(maxWidth: .infinity)
@@ -790,7 +790,7 @@ private struct OrbitLiveActivityPanel: View {
                         .padding(.vertical, 4)
                         .background(accent.opacity(0.16), in: Capsule())
                 }
-                Button(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
                     Label("On", systemImage: "power")
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -798,7 +798,7 @@ private struct OrbitLiveActivityPanel: View {
                         .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
                 }
                 .buttonStyle(.plain)
-                Button(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
                     Label("Off", systemImage: "power.circle.fill")
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -840,6 +840,36 @@ private struct WatchAwareLiveActivityContainer<WatchContent: View, StandardConte
             watchContent()
         } else {
             standardContent()
+        }
+    }
+}
+
+
+// MARK: - Orbit Pro gate for interactive power buttons
+
+/// Runs the power intent with Orbit Pro; without it the same label opens Orbit's upgrade sheet.
+struct OrbitProPowerButton<I: AppIntent, Label: View>: View {
+    let intent: I
+    let label: Label
+
+    init(intent: I, @ViewBuilder label: () -> Label) {
+        self.intent = intent
+        self.label = label()
+    }
+
+    var body: some View {
+        if OrbitProEntitlement.cachedIsUnlocked {
+            Button(intent: intent) { label }
+        } else {
+            Link(destination: OrbitProEntitlement.upgradeURL) {
+                label.overlay(alignment: .topTrailing) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.black)
+                        .padding(2.5)
+                        .background(Color.yellow, in: Circle())
+                }
+            }
         }
     }
 }

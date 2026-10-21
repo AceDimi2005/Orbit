@@ -183,7 +183,8 @@ struct MacRootView: View {
         case .processes: MacProcessesView()
         case .audio: MacAudioView()
         case .clipboard: MacClipboardView()
-        case .sessions: MacSessionsView()
+        case .sessions:
+            if OrbitProStore.shared.isProUnlocked { MacSessionsView() } else { MacProLockedPage(title: "Sessions", message: "Recorded sessions with FPS, temperature and power graphs are part of Orbit Pro.") }
         case .library: MacLibraryView()
         case .pcs: MacPCsView()
         }
@@ -249,5 +250,38 @@ enum MacPowerConfirmation: String {
     }
     var message: String {
         self == .sleep ? "Wake-on-LAN must be enabled to wake the PC remotely." : "Save your open work on the PC before continuing."
+    }
+}
+
+
+// MARK: - Orbit Pro locked page
+
+struct MacProLockedPage: View {
+    let title: String
+    let message: String
+    @ObservedObject private var store = OrbitProStore.shared
+    @Environment(\.macTheme) private var theme
+    @State private var showsPaywall = false
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 34, weight: .bold))
+                .foregroundStyle(.yellow)
+            Text(title).font(.title2.weight(.bold))
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Button {
+                showsPaywall = true
+            } label: {
+                Label("Unlock with Orbit Pro", systemImage: "crown.fill")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $showsPaywall) { OrbitProUnlockView(accent: theme.accent) { showsPaywall = false } }
     }
 }

@@ -3,7 +3,21 @@ import AppKit
 
 // MARK: - Theme
 
+/// Puts the free theme back when Orbit Pro is not (or no longer) owned, e.g. after a refund.
+enum MacProLockdown {
+    @MainActor static func enforce() {
+        let store = OrbitProStore.shared
+        guard store.hasVerifiedEntitlements, !store.isProUnlocked else { return }
+        if let raw = UserDefaults.standard.string(forKey: "mac.theme"), MacTheme(rawValue: raw)?.isPro == true {
+            UserDefaults.standard.set(MacTheme.noir.rawValue, forKey: "mac.theme")
+        }
+    }
+}
+
 enum MacTheme: String, CaseIterable, Identifiable {
+    /// The six exclusive themes are part of Orbit Pro, as on iPhone.
+    var isPro: Bool { [.cyberpunk, .solarGold, .crimson, .matrix, .arctic, .sakura].contains(self) }
+
     case noir, ocean, aurora, violet, ember, graphite, cyberpunk, solarGold, crimson, matrix, arctic, sakura
 
     var id: String { rawValue }

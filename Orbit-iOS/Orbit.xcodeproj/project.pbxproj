@@ -32,6 +32,7 @@
 		A20000000000000000000012 /* Appearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* Appearance.swift */; };
 		A20000000000000000000013 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
 		A20000000000000000000014 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
+		A20000000000000000000088 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
 		A20000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000015 /* PrivacyInfo.xcprivacy */; };
 		A20000000000000000000016 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000016 /* PrivacyInfo.xcprivacy */; };
 		A20000000000000000000017 /* OrbitWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000017 /* OrbitWatchBridge.swift */; };
@@ -41,6 +42,8 @@
 		A20000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
 		A20000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
 		A20000000000000000000085 /* OrbitPCSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000085 /* OrbitPCSync.swift */; };
+		A20000000000000000000089 /* OrbitProStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000089 /* OrbitProStore.swift */; };
+		A20000000000000000000087 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
 		A20000000000000000000086 /* OrbitAcknowledgements.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000086 /* OrbitAcknowledgements.swift */; };
 		A20000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
 		A20000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
@@ -71,6 +74,8 @@
 		A50000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
 		A50000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
 		A50000000000000000000085 /* OrbitPCSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000085 /* OrbitPCSync.swift */; };
+		A50000000000000000000089 /* OrbitProStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000089 /* OrbitProStore.swift */; };
+		A50000000000000000000087 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
 		A50000000000000000000086 /* OrbitAcknowledgements.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000086 /* OrbitAcknowledgements.swift */; };
 		A50000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
 		A50000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
@@ -101,6 +106,8 @@
 		A60000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
 		A60000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
 		A60000000000000000000085 /* OrbitPCSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000085 /* OrbitPCSync.swift */; };
+		A60000000000000000000089 /* OrbitProStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000089 /* OrbitProStore.swift */; };
+		A60000000000000000000087 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
 		A60000000000000000000086 /* OrbitAcknowledgements.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000086 /* OrbitAcknowledgements.swift */; };
 		A60000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000082 /* MoonlightStreamLauncher.swift */; };
 		A60000000000000000000083 /* MoonlightStreamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000083 /* MoonlightStreamScreen.swift */; };
@@ -202,6 +209,8 @@
 		B20000000000000000000080 /* MoonlightClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightClient.swift; sourceTree = "<group>"; };
 		B20000000000000000000081 /* MoonlightViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000085 /* OrbitPCSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPCSync.swift; sourceTree = "<group>"; };
+		B20000000000000000000087 /* OrbitProEntitlement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitProEntitlement.swift; sourceTree = "<group>"; };
+		B20000000000000000000089 /* OrbitProStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitProStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000086 /* OrbitAcknowledgements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitAcknowledgements.swift; sourceTree = "<group>"; };
 		B20000000000000000000082 /* MoonlightStreamLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamLauncher.swift; sourceTree = "<group>"; };
 		B20000000000000000000083 /* MoonlightStreamScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamScreen.swift; sourceTree = "<group>"; };
@@ -376,6 +385,8 @@
 				B20000000000000000000080 /* MoonlightClient.swift */,
 				B20000000000000000000081 /* MoonlightViews.swift */,
 				B20000000000000000000085 /* OrbitPCSync.swift */,
+				B20000000000000000000087 /* OrbitProEntitlement.swift */,
+				B20000000000000000000089 /* OrbitProStore.swift */,
 				B20000000000000000000086 /* OrbitAcknowledgements.swift */,
 				C20000000000000000000003 /* Streaming */,
 			);
@@ -680,6 +691,8 @@
 				A20000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A20000000000000000000081 /* MoonlightViews.swift in Sources */,
 				A20000000000000000000085 /* OrbitPCSync.swift in Sources */,
+				A20000000000000000000089 /* OrbitProStore.swift in Sources */,
+				A20000000000000000000087 /* OrbitProEntitlement.swift in Sources */,
 				A20000000000000000000086 /* OrbitAcknowledgements.swift in Sources */,
 				A20000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
 				A20000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
@@ -712,6 +725,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A20000000000000000000014 /* OrbitWidgetConnectionStore.swift in Sources */,
+				A20000000000000000000088 /* OrbitProEntitlement.swift in Sources */,
 				A20000000000000000000003 /* OrbitActivityAttributes.swift in Sources */,
 				A20000000000000000000004 /* OrbitWidgets.swift in Sources */,
 				A20000000000000000000007 /* OrbitTelemetryWidgets.swift in Sources */,
@@ -753,6 +767,8 @@
 				A50000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A50000000000000000000081 /* MoonlightViews.swift in Sources */,
 				A50000000000000000000085 /* OrbitPCSync.swift in Sources */,
+				A50000000000000000000089 /* OrbitProStore.swift in Sources */,
+				A50000000000000000000087 /* OrbitProEntitlement.swift in Sources */,
 				A50000000000000000000086 /* OrbitAcknowledgements.swift in Sources */,
 				A50000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
 				A50000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
@@ -786,6 +802,8 @@
 				A60000000000000000000080 /* MoonlightClient.swift in Sources */,
 				A60000000000000000000081 /* MoonlightViews.swift in Sources */,
 				A60000000000000000000085 /* OrbitPCSync.swift in Sources */,
+				A60000000000000000000089 /* OrbitProStore.swift in Sources */,
+				A60000000000000000000087 /* OrbitProEntitlement.swift in Sources */,
 				A60000000000000000000086 /* OrbitAcknowledgements.swift in Sources */,
 				A60000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
 				A60000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,

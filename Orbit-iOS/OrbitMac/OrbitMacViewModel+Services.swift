@@ -865,6 +865,7 @@ extension OrbitMacViewModel {
             profile.subnetMask = credentials.subnetMask
             profile.broadcastAddress = credentials.broadcastAddress
             profile.lastKnownIPv4 = credentials.ipAddress
+            guard savedPCs.contains(where: { $0.id == profile.id }) || canAddNewPC else { throw OrbitProPCLimitError() }
             handshake = nil
             pairingExpiresAt = nil
             justPaired = true
@@ -965,6 +966,7 @@ extension OrbitMacViewModel {
                 savedPCs[index] = profile
             } else {
                 guard !item.apiToken.isEmpty else { continue }
+                guard canAddNewPC else { continue }
                 var profile = MacSavedPC(from: item)
                 profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint)
                 if profile.name.isEmpty { profile.name = "PC \(profile.address)" }

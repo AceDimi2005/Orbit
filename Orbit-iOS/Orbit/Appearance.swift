@@ -188,120 +188,67 @@ enum OrbitAppIcon: String, CaseIterable, Identifiable {
 
 // MARK: - StoreKit 2 Manager for Orbit Pro (One-Time Lifetime Unlock)
 
-@MainActor
-final class OrbitProStore: ObservableObject {
-    static let shared = OrbitProStore()
-    static let productID = "com.dimitrie.orbit.pro"
-    static let isComingSoon = true
+// Orbit Pro purchase logic lives in Shared/OrbitProStore.swift (shared with tvOS and macOS).
 
-    @Published private(set) var isProUnlocked: Bool = true
-    @Published private(set) var product: Product?
-    @Published private(set) var isPurchasing = false
-    @Published var statusMessage: String?
-    @Published var errorMessage: String?
-
-    private var updatesTask: Task<Void, Never>?
-
-    var displayPrice: String {
-        if Self.isComingSoon { return "Coming Soon" }
-        return product?.displayPrice ?? "25,00 lei"
-    }
-
-    private init() {
-        isProUnlocked = true
-    }
-
-    func loadProducts() async {
-        guard !Self.isComingSoon else { return }
-        do {
-            let fetched = try await Product.products(for: [Self.productID])
-            product = fetched.first
-        } catch {}
-    }
-
-    func refreshEntitlements() async {
-        guard !Self.isComingSoon else { return }
-        for await result in Transaction.currentEntitlements {
-            if case .verified(let transaction) = result,
-               transaction.productID == Self.productID,
-               transaction.revocationDate == nil {
-                unlockPro()
-                return
-            }
+/// Puts free-tier choices back when Orbit Pro is not (or no longer) owned, e.g. after a refund.
+enum OrbitProLockdown {
+    @MainActor static func enforce() {
+        let store = OrbitProStore.shared
+        guard store.hasVerifiedEntitlements, !store.isProUnlocked else { return }
+        let defaults = UserDefaults.standard
+        if let raw = defaults.string(forKey: "orbit.theme"), OrbitTheme(rawValue: raw)?.isPro == true {
+            defaults.set(OrbitTheme.noir.rawValue, forKey: "orbit.theme")
+            NSUbiquitousKeyValueStore.default.set(OrbitTheme.noir.rawValue, forKey: "orbit.theme")
+        }
+        if let raw = defaults.string(forKey: "orbit.activity.accent"), OrbitTheme(rawValue: raw)?.isPro == true {
+            defaults.set(OrbitTheme.noir.rawValue, forKey: "orbit.activity.accent")
+        }
+        if let raw = defaults.string(forKey: "orbit.appIcon"), OrbitAppIcon(rawValue: raw)?.isPro == true {
+            defaults.set(OrbitAppIcon.classic.rawValue, forKey: "orbit.appIcon")
+        }
+        if UIApplication.shared.supportsAlternateIcons,
+           let current = UIApplication.shared.alternateIconName,
+           OrbitAppIcon(rawValue: current)?.isPro == true {
+            UIApplication.shared.setAlternateIconName(nil)
         }
     }
+}
 
-    func purchase() async {
-        if Self.isComingSoon {
-            statusMessage = "All Pro features are unlocked for free right now! Paid version coming soon."
-            return
-        }
-        guard !isPurchasing else { return }
-        isPurchasing = true
-        errorMessage = nil
-        statusMessage = nil
-        defer { isPurchasing = false }
+/// Shows `content` with Orbit Pro, otherwise an explanation and an unlock button.
+struct OrbitProGate<Content: View>: View {
+    let title: String
+    let message: String
+    @ViewBuilder var content: () -> Content
+    @ObservedObject private var store = OrbitProStore.shared
+    @State private var showsPaywall = false
 
-        if product == nil {
-            await loadProducts()
-        }
-
-        guard let product else {
-            statusMessage = "Orbit Pro will be available in an upcoming update!"
-            return
-        }
-
-        do {
-            let result = try await product.purchase()
-            switch result {
-            case .success(let verification):
-                if case .verified(let transaction) = verification {
-                    unlockPro()
-                    statusMessage = "Thank you! Orbit Pro is now permanently unlocked."
-                    await transaction.finish()
-                } else {
-                    errorMessage = "Purchase could not be verified by the App Store."
+    var body: some View {
+        if store.isProUnlocked {
+            content()
+        } else {
+            ZStack {
+                OrbitAmbientBackground(isOnline: true)
+                VStack(spacing: 16) {
+                    OrbitIconBadge(systemName: "lock.fill", tint: .yellow, size: 56)
+                    Text(title).font(.title3.weight(.bold)).foregroundStyle(.white)
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        showsPaywall = true
+                    } label: {
+                        Label("Unlock with Orbit Pro", systemImage: "crown.fill")
+                    }
+                    .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
                 }
-            case .pending:
-                statusMessage = "Purchase is pending approval."
-            case .userCancelled:
-                break
-            @unknown default:
-                break
+                .frame(maxWidth: 420)
+                .padding(28)
             }
-        } catch {
-            errorMessage = error.localizedDescription
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showsPaywall) { OrbitProPaywallView() }
         }
-    }
-
-    func restorePurchases() async {
-        if Self.isComingSoon {
-            statusMessage = "Orbit Pro purchases are coming soon in an upcoming update."
-            return
-        }
-        guard !isPurchasing else { return }
-        isPurchasing = true
-        errorMessage = nil
-        statusMessage = nil
-        defer { isPurchasing = false }
-        do {
-            try await AppStore.sync()
-            await refreshEntitlements()
-            if isProUnlocked {
-                statusMessage = "Orbit Pro restored successfully."
-            } else {
-                statusMessage = "No previous Orbit Pro purchase found for this Apple Account."
-            }
-        } catch {
-            errorMessage = "Could not restore purchases: \(error.localizedDescription)"
-        }
-    }
-
-    private func unlockPro() {
-        isProUnlocked = true
-        UserDefaults.standard.set(true, forKey: "orbit.pro.unlocked")
-        NSUbiquitousKeyValueStore.default.set(true, forKey: "orbit.pro.unlocked")
-        NSUbiquitousKeyValueStore.default.synchronize()
     }
 }
 
@@ -417,17 +364,17 @@ struct AppearanceSettingsView: View {
                     HStack(spacing: 12) {
                         OrbitIconBadge(systemName: "crown.fill", tint: .yellow, size: 36)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(OrbitProStore.isComingSoon ? "Orbit Pro · Coming Soon" : "Orbit Pro")
+                            Text("Orbit Pro")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.white)
-                            Text(OrbitProStore.isComingSoon
-                                 ? "All Pro themes & icons are unlocked for free right now"
+                            Text(proStore.isProUnlocked
+                                 ? "Unlocked on all your devices"
                                  : "Exclusive themes, app icons, widgets & session graphs")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text(OrbitProStore.isComingSoon ? "SOON" : proStore.displayPrice)
+                        Text(proStore.isProUnlocked ? "ACTIVE" : (proStore.displayPrice ?? "PRO"))
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -698,9 +645,7 @@ struct OrbitProPaywallView: View {
                                 .font(.system(size: 30, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text(OrbitProStore.isComingSoon
-                                 ? "Coming Soon · Exclusive themes, icons & advanced packs"
-                                 : "One-time purchase · Exclusive themes, icons & advanced packs")
+                            Text("One-time purchase · iPhone, iPad, Apple TV and Mac")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -735,7 +680,17 @@ struct OrbitProPaywallView: View {
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)
 
-                        if let status = store.statusMessage {
+                        if store.isProUnlocked {
+                            Label("Orbit Pro is active on this Apple Account", systemImage: "checkmark.seal.fill")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.green)
+                        }
+                        if let error = store.errorMessage {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.orange)
+                                .multilineTextAlignment(.center)
+                        } else if let status = store.statusMessage {
                             Label(status, systemImage: "sparkles")
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(.yellow)
@@ -743,25 +698,29 @@ struct OrbitProPaywallView: View {
                         }
 
                         VStack(spacing: 12) {
-                            Button {
-                                OrbitHaptics.press()
-                                Task { await store.purchase() }
-                            } label: {
-                                Label(OrbitProStore.isComingSoon ? "Orbit Pro — Coming Soon" : "Unlock Orbit Pro · \(store.displayPrice)",
-                                      systemImage: OrbitProStore.isComingSoon ? "clock.badge.sparkles.fill" : "crown.fill")
-                            }
-                            .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
-
-                            if !OrbitProStore.isComingSoon {
+                            if !store.isProUnlocked {
                                 Button {
-                                    Task { await store.restorePurchases() }
+                                    OrbitHaptics.press()
+                                    Task { await store.purchase() }
                                 } label: {
-                                    Label("Restore Purchases", systemImage: "arrow.clockwise")
+                                    if store.isPurchasing {
+                                        HStack(spacing: 8) { ProgressView().tint(.black); Text("Purchasing…") }
+                                    } else {
+                                        Label(purchaseTitle, systemImage: "crown.fill")
+                                    }
                                 }
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .disabled(store.isPurchasing)
+                                .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
+                                .disabled(store.isPurchasing || store.product == nil)
                             }
+
+                            Button {
+                                Task { await store.restorePurchases() }
+                            } label: {
+                                Label("Restore Purchases", systemImage: "arrow.clockwise")
+                            }
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .disabled(store.isPurchasing)
 
                             Button("Privacy & Terms") {
                                 showPrivacy = true
@@ -784,8 +743,19 @@ struct OrbitProPaywallView: View {
             .sheet(isPresented: $showPrivacy) {
                 OrbitPrivacyPolicyView()
             }
+            .task {
+                if store.product == nil { await store.loadProducts() }
+            }
         }
         .orbitAppearance()
+    }
+
+    private var purchaseTitle: String {
+        switch store.productState {
+        case .loaded: return "Unlock Orbit Pro · \(store.displayPrice ?? "")"
+        case .unavailable: return "Orbit Pro is unavailable right now"
+        case .idle, .loading: return "Loading price…"
+        }
     }
 
     private func proFeatureRow(icon: String, tint: Color, title: String, subtitle: String) -> some View {
@@ -933,7 +903,7 @@ struct LiveActivitySettingsView: View {
                 }
 
                 Picker("Theme Accent", selection: $accent) {
-                    ForEach(OrbitTheme.allCases) { item in
+                    ForEach(OrbitProStore.shared.isProUnlocked ? OrbitTheme.allCases : OrbitTheme.freeThemes) { item in
                         HStack {
                             Circle().fill(item.accent).frame(width: 10, height: 10)
                             Text(item.title)

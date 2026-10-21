@@ -1707,6 +1707,7 @@ struct TVPCsAndPairingTab: View {
     @State private var showPortAlert: Bool = false
     @State private var showPINAlert: Bool = false
     @State private var showsAcknowledgements: Bool = false
+    @State private var showsProPaywall: Bool = false
 
     var body: some View {
         ScrollView {
@@ -1729,6 +1730,9 @@ struct TVPCsAndPairingTab: View {
         }
         .sheet(isPresented: $showsAcknowledgements) {
             OrbitAcknowledgementsView(accent: TVPalette.accent) { showsAcknowledgements = false }
+        }
+        .sheet(isPresented: $showsProPaywall) {
+            OrbitProUnlockView(accent: TVPalette.accent) { showsProPaywall = false }
         }
         .alert("Enter PC IPv4 Address", isPresented: $showIPAlert) {
             TextField("e.g. 192.168.1.50", text: $manualHost)
@@ -1808,6 +1812,11 @@ struct TVPCsAndPairingTab: View {
                 )
             }
             .buttonStyle(TVActionPillStyle(tint: TVPalette.purple, isProminent: vm.isDemoMode))
+
+            Button { showsProPaywall = true } label: {
+                Label(OrbitProStore.shared.isProUnlocked ? "Orbit Pro · Active" : "Orbit Pro", systemImage: "crown.fill")
+            }
+            .buttonStyle(TVActionPillStyle(tint: .yellow))
 
             Button { showsAcknowledgements = true } label: {
                 Label("Acknowledgements & Licenses", systemImage: "doc.text")

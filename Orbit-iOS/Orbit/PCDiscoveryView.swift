@@ -189,6 +189,7 @@ struct PCDiscoveryView: View {
     @State private var task: Task<Void, Never>?
     @State private var attempt = UUID()
     @State private var paired = false
+    @State private var showsProPaywall = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.orbitTheme) private var theme
     @FocusState private var pinFocused: Bool
@@ -199,6 +200,17 @@ struct PCDiscoveryView: View {
                 OrbitAmbientBackground(isOnline: true)
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
+                        if !vm.canAddNewPC {
+                            VStack(alignment: .leading, spacing: 10) {
+                                OrbitNotice(title: "One PC in the free version", message: "You can re-pair the PC you already saved. To add another one, remove it in My PCs or unlock Orbit Pro.", icon: "lock.fill", tint: .yellow)
+                                Button {
+                                    showsProPaywall = true
+                                } label: {
+                                    Label("Unlock Orbit Pro", systemImage: "crown.fill")
+                                }
+                                .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
+                            }
+                        }
                         if let candidate {
                             pairingCard(candidate)
                         } else {
@@ -223,6 +235,7 @@ struct PCDiscoveryView: View {
                     .animation(.snappy, value: error)
                     .animation(.snappy, value: discovery.computers)
                 }
+                .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
                 .scrollDismissesKeyboard(.interactively)
             }
             .navigationTitle(candidate == nil ? "Connect a PC" : "Pair securely")

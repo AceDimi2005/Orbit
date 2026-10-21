@@ -12,7 +12,9 @@ struct OrbitTVApp: App {
                 .preferredColorScheme(.dark)
                 .onChange(of: scenePhase) { _, newPhase in
                     viewModel.setAppActive(newPhase == .active)
+                    if newPhase == .active { OrbitProStore.shared.refreshIfNeeded() }
                 }
+                .onAppear { OrbitProStore.shared.start() }
         }
     }
 }

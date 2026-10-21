@@ -1,0 +1,39 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1;
+ classes = {};
+ objectVersion = 56;
+ objects = {
+  C1000000000000000000000A = {isa = PBXBuildFile; fileRef = C2000000000000000000000A; };
+  C1000000000000000000000B = {isa = PBXBuildFile; fileRef = C2000000000000000000000B; };
+  C1000000000000000000000C = {isa = PBXBuildFile; fileRef = C2000000000000000000000C; };
+  C1000000000000000000000D = {isa = PBXBuildFile; fileRef = C2000000000000000000000D; };
+  C1000000000000000000000E = {isa = PBXBuildFile; fileRef = C2000000000000000000000E; };
+  C2000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProHostApp.swift; sourceTree = "<group>"; };
+  C2000000000000000000000B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OrbitProEntitlement.swift; path = "../../Shared/OrbitProEntitlement.swift"; sourceTree = SOURCE_ROOT; };
+  C2000000000000000000000C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OrbitProStore.swift; path = "../../Shared/OrbitProStore.swift"; sourceTree = SOURCE_ROOT; };
+  C2000000000000000000000D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProStoreTests.swift; sourceTree = "<group>"; };
+  C2000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = text; name = Orbit.storekit; path = "../../Orbit.storekit"; sourceTree = SOURCE_ROOT; };
+  C2000000000000000000001A = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+  C2000000000000000000001B = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ProStoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+  C3000000000000000000000A = {isa = PBXGroup; children = (C3000000000000000000000B, C3000000000000000000000C, C3000000000000000000000D); sourceTree = "<group>"; };
+  C3000000000000000000000B = {isa = PBXGroup; children = (C2000000000000000000000A, C2000000000000000000000B, C2000000000000000000000C); path = ProHost; sourceTree = "<group>"; };
+  C3000000000000000000000C = {isa = PBXGroup; children = (C2000000000000000000000D, C2000000000000000000000E); path = ProStoreTests; sourceTree = "<group>"; };
+  C3000000000000000000000D = {isa = PBXGroup; children = (C2000000000000000000001A, C2000000000000000000001B); name = Products; sourceTree = "<group>"; };
+  C4000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C1000000000000000000000A, C1000000000000000000000B, C1000000000000000000000C); runOnlyForDeploymentPostprocessing = 0; };
+  C4000000000000000000000B = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C1000000000000000000000D); runOnlyForDeploymentPostprocessing = 0; };
+  C4000000000000000000000C = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (C1000000000000000000000E); runOnlyForDeploymentPostprocessing = 0; };
+  C5000000000000000000000A = {isa = PBXNativeTarget; buildConfigurationList = C7000000000000000000000B; buildPhases = (C4000000000000000000000A); buildRules = (); dependencies = (); name = ProHost; productName = ProHost; productReference = C2000000000000000000001A; productType = "com.apple.product-type.application"; };
+  C5000000000000000000000B = {isa = PBXNativeTarget; buildConfigurationList = C7000000000000000000000C; buildPhases = (C4000000000000000000000B, C4000000000000000000000C); buildRules = (); dependencies = (C8000000000000000000000A); name = ProStoreTests; productName = ProStoreTests; productReference = C2000000000000000000001B; productType = "com.apple.product-type.bundle.unit-test"; };
+  C8000000000000000000000A = {isa = PBXTargetDependency; target = C5000000000000000000000A; targetProxy = C9000000000000000000000A; };
+  C9000000000000000000000A = {isa = PBXContainerItemProxy; containerPortal = C6000000000000000000000A; proxyType = 1; remoteGlobalIDString = C5000000000000000000000A; remoteInfo = ProHost; };
+  C6000000000000000000000A = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2710; TargetAttributes = {C5000000000000000000000B = {TestTargetID = C5000000000000000000000A; }; }; }; buildConfigurationList = C7000000000000000000000A; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = C3000000000000000000000A; productRefGroup = C3000000000000000000000D; projectDirPath = ""; projectRoot = ""; targets = (C5000000000000000000000A, C5000000000000000000000B); };
+  C7000000000000000000000A = {isa = XCConfigurationList; buildConfigurations = (C8100000000000000000000A); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+  C7000000000000000000000B = {isa = XCConfigurationList; buildConfigurations = (C8100000000000000000000B); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+  C7000000000000000000000C = {isa = XCConfigurationList; buildConfigurations = (C8100000000000000000000C); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+  C8100000000000000000000A = {isa = XCBuildConfiguration; buildSettings = {SWIFT_VERSION = 5.0; SDKROOT = auto; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator appletvos appletvsimulator macosx"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; TVOS_DEPLOYMENT_TARGET = 17.0; MACOSX_DEPLOYMENT_TARGET = 14.0; TARGETED_DEVICE_FAMILY = "1,2,3"; CODE_SIGNING_ALLOWED = NO; CODE_SIGN_IDENTITY = "-"; ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; GCC_PREPROCESSOR_DEFINITIONS = "DEBUG=1"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; ENABLE_TESTABILITY = YES; }; name = Debug; };
+  C8100000000000000000000B = {isa = XCBuildConfiguration; buildSettings = {GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; PRODUCT_BUNDLE_IDENTIFIER = com.orbit.prohost; PRODUCT_NAME = "$(TARGET_NAME)"; }; name = Debug; };
+  C8100000000000000000000C = {isa = XCBuildConfiguration; buildSettings = {GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.orbit.prohost.tests; PRODUCT_NAME = "$(TARGET_NAME)"; BUNDLE_LOADER = "$(TEST_HOST)"; "TEST_HOST[sdk=iphonesimulator*]" = "$(BUILT_PRODUCTS_DIR)/ProHost.app/ProHost"; "TEST_HOST[sdk=appletvsimulator*]" = "$(BUILT_PRODUCTS_DIR)/ProHost.app/ProHost"; "TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/ProHost.app/Contents/MacOS/ProHost"; }; name = Debug; };
+ };
+ rootObject = C6000000000000000000000A;
+}

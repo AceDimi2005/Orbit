@@ -880,7 +880,7 @@ private struct OrbitTelemetryWidgetView: View {
             }
             if family == .systemMedium || family == .systemLarge || family == .systemSmall {
                 HStack(spacing: 6) {
-                    Button(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
+                    OrbitProPowerButton(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
                         Label("Power On", systemImage: "power")
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 9)
@@ -890,7 +890,7 @@ private struct OrbitTelemetryWidgetView: View {
                     }
                     .buttonStyle(.plain)
                     if family != .systemSmall {
-                        Button(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
+                        OrbitProPowerButton(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
                             Label("Shut Down", systemImage: "power.circle.fill")
                                 .font(.system(size: 10, weight: .bold))
                                 .padding(.horizontal, 9)
@@ -924,7 +924,7 @@ private struct OrbitTelemetryWidgetView: View {
             }
             Spacer(minLength: 4)
             if family == .systemMedium || family == .systemLarge {
-                Button(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
+                OrbitProPowerButton(intent: OrbitWakePCIntent(pcID: entry.pc?.id)) {
                     HStack(spacing: 3) {
                         Image(systemName: "power")
                         Text("On")
@@ -937,7 +937,7 @@ private struct OrbitTelemetryWidgetView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
+                OrbitProPowerButton(intent: OrbitShutdownPCIntent(pcID: entry.pc?.id)) {
                     HStack(spacing: 3) {
                         Image(systemName: "power.circle.fill")
                         Text("Off")

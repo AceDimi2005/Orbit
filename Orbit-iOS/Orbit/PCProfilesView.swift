@@ -188,6 +188,7 @@ extension OrbitViewModel {
         profile.subnetMask = credentials.subnetMask; profile.broadcastAddress = credentials.broadcastAddress
         profile.lastKnownIPv4 = credentials.ipAddress
         profile.autoCalcBroadcast = true
+        guard savedPCs.contains(where: { $0.id == profile.id }) || canAddNewPC else { throw OrbitProPCLimitError() }
         savePC(profile, token: credentials.apiToken)
         widgetToken = credentials.widgetToken
         do {
@@ -234,6 +235,7 @@ extension OrbitViewModel {
                 changed += 1
             } else {
                 guard !item.apiToken.isEmpty, !item.address.isEmpty else { continue }
+                guard OrbitProEntitlement.canAddPC(existingCount: profiles.count, isUnlocked: OrbitProStore.shared.isProUnlocked) else { continue }
                 let profile = SavedPC(from: item)
                 PCProfileStore.saveToken(item.apiToken, for: profile.id, publish: false)
                 profiles.append(profile)
@@ -267,7 +269,17 @@ extension OrbitViewModel {
         guard !isDemoMode else { throw OrbitError(message: "Connect a real PC to use Files, clipboard, mixer and session history.") }
         return try OrbitAPIClient(host: cleanHost(), port: securePort, token: apiToken, fingerprint: certificateFingerprint)
     }
-    func savePC(_ profile: SavedPC, token: String, select: Bool = true) {
+    /// Free users can keep one PC; Orbit Pro removes the limit.
+    var canAddNewPC: Bool {
+        OrbitProEntitlement.canAddPC(existingCount: savedPCs.count, isUnlocked: OrbitProStore.shared.isProUnlocked)
+    }
+
+    @discardableResult
+    func savePC(_ profile: SavedPC, token: String, select: Bool = true) -> Bool {
+        guard savedPCs.contains(where: { $0.id == profile.id }) || canAddNewPC else {
+            statusLog = OrbitProPCLimitError().errorDescription ?? ""
+            return false
+        }
         if select { persistSelectedPC() }
         var profile = profile
         profile.address = profile.address.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -294,6 +306,7 @@ extension OrbitViewModel {
         )
         if select { selectPC(profile, persistCurrent: false) }
         OrbitWatchBridge.shared.pushStateToWatch(force: true)
+        return true
     }
     func persistSelectedPC() {
         guard let index = savedPCs.firstIndex(where: { $0.id == selectedPCID && $0.address == cleanHost() && $0.agentPort == agentPort }) else { return }
@@ -370,6 +383,7 @@ struct PCProfilesView: View {
     @State private var editing: SavedPC?
     @State private var removing: SavedPC?
     @State private var showsDiscovery = false
+    @State private var showsProPaywall = false
     @Environment(\.orbitTheme) private var theme
 
     var body: some View {
@@ -394,9 +408,14 @@ struct PCProfilesView: View {
                         .fontWeight(.semibold)
                 }
                 Button {
-                    editing = SavedPC(name: "", address: "")
+                    if vm.canAddNewPC { editing = SavedPC(name: "", address: "") } else { showsProPaywall = true }
                 } label: {
-                    Label("Add manually", systemImage: "plus")
+                    Label("Add manually", systemImage: vm.canAddNewPC ? "plus" : "lock.fill")
+                }
+                if !vm.canAddNewPC {
+                    Text("The free version keeps one PC. Orbit Pro saves as many as you like.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .orbitRow(tint: theme.accent)
@@ -430,6 +449,7 @@ struct PCProfilesView: View {
         .navigationTitle("My PCs")
         .sheet(item: $editing) { profile in PCProfileEditor(vm: vm, profile: profile) }
         .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
+        .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
         .confirmationDialog("Remove \(removing?.name ?? "this PC")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             if let profile = removing { Button("Remove saved PC", role: .destructive) { vm.removePC(profile); removing = nil } }
         } message: { Text("This removes its saved connection from this phone. It does not change files on the PC.") }

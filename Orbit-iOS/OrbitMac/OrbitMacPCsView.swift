@@ -17,6 +17,7 @@ struct MacPCsView: View {
     @State private var showsForget = false
     @State private var forgetTarget: MacSavedPC?
     @State private var lastPairingTarget: MacDiscoveredPC?
+    @State private var showsProPaywall = false
 
     private var cardColumns: [GridItem] { [GridItem(.adaptive(minimum: 360, maximum: 620), spacing: 12, alignment: .top)] }
 
@@ -31,6 +32,7 @@ struct MacPCsView: View {
         MacPage {
             VStack(alignment: .leading, spacing: 22) {
                 if vm.isDemoMode { demoBanner }
+                if !vm.canAddNewPC { proLimitBanner }
                 savedSection
                 nearbySection
                 manualSection
@@ -61,6 +63,23 @@ struct MacPCsView: View {
         } message: { pc in
             Text("Removes \(pc.name) and its pairing token from this Mac. Pair again or import from your iPhone to restore it.")
         }
+    }
+
+    // MARK: Orbit Pro limit
+
+    private var proLimitBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.fill").foregroundStyle(.yellow)
+            Text("The free version keeps one PC. You can re-pair it any time; Orbit Pro saves as many PCs as you like.")
+                .font(.caption.weight(.semibold))
+            Spacer()
+            Button("Orbit Pro…") { showsProPaywall = true }
+                .buttonStyle(MacHoverButtonStyle(tint: .yellow))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .macGlass(cornerRadius: 14, tint: .yellow)
+        .sheet(isPresented: $showsProPaywall) { OrbitProUnlockView(accent: theme.accent) { showsProPaywall = false } }
     }
 
     // MARK: Demo banner

@@ -460,6 +460,9 @@ struct OrbitWakePCIntent: AppIntent {
     init(pcID: String?) { self.pcID = pcID }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        #if os(iOS)
+        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
+        #endif
         let result = try await OrbitWidgetPowerService.wakePC(id: pcID)
         return .result(dialog: IntentDialog(stringLiteral: result))
     }
@@ -477,6 +480,9 @@ struct OrbitShutdownPCIntent: AppIntent {
     init(pcID: String?) { self.pcID = pcID }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        #if os(iOS)
+        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
+        #endif
         let result = try await OrbitWidgetPowerService.sendPowerAction("shutdown", id: pcID)
         return .result(dialog: IntentDialog(stringLiteral: result))
     }
@@ -494,6 +500,9 @@ struct OrbitSleepPCIntent: AppIntent {
     init(pcID: String?) { self.pcID = pcID }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        #if os(iOS)
+        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
+        #endif
         let result = try await OrbitWidgetPowerService.sendPowerAction("sleep", id: pcID)
         return .result(dialog: IntentDialog(stringLiteral: result))
     }
@@ -511,6 +520,9 @@ struct OrbitRestartPCIntent: AppIntent {
     init(pcID: String?) { self.pcID = pcID }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        #if os(iOS)
+        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
+        #endif
         let result = try await OrbitWidgetPowerService.sendPowerAction("restart", id: pcID)
         return .result(dialog: IntentDialog(stringLiteral: result))
     }

@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
+    @State private var isShowingProFromURL = false
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @AppStorage("orbit.theme") private var rootTheme: OrbitTheme = .noir
@@ -61,11 +62,19 @@ struct ContentView: View {
         .onAppear {
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
+            OrbitProStore.shared.start()
         }
-        .onChange(of: scenePhase) { _, phase in vm.setAppActive(phase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            vm.setAppActive(phase == .active)
+            if phase == .active { OrbitProStore.shared.refreshIfNeeded() }
+        }
+        .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in OrbitProLockdown.enforce() }
+        .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in OrbitProLockdown.enforce() }
+        .sheet(isPresented: $isShowingProFromURL) { OrbitProPaywallView() }
         .onOpenURL { url in
             guard url.scheme?.lowercased() == "orbit" else { return }
             switch url.host?.lowercased() {
+            case "pro": isShowingProFromURL = true
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3
@@ -2141,9 +2150,9 @@ struct SettingsView: View {
                         isShowingProPaywall = true
                     } label: {
                         HStack {
-                            settingsRow("Orbit Pro · Coming Soon", icon: "crown.fill", tint: .yellow)
+                            settingsRow("Orbit Pro", icon: "crown.fill", tint: .yellow)
                             Spacer()
-                            Text("SOON")
+                            Text(proStore.isProUnlocked ? "ACTIVE" : (proStore.displayPrice ?? "PRO"))
                                 .font(.caption2.weight(.bold))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)

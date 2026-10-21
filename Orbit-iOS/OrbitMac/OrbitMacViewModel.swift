@@ -249,7 +249,16 @@ final class OrbitMacViewModel: ObservableObject {
         OrbitPCCloudSync.publish(local: items, removing: removing)
     }
 
+    /// Free users can keep one PC; Orbit Pro removes the limit.
+    var canAddNewPC: Bool {
+        OrbitProEntitlement.canAddPC(existingCount: savedPCs.count, isUnlocked: OrbitProStore.shared.isProUnlocked)
+    }
+
     func savePC(_ profile: MacSavedPC, token: String?, select: Bool = true) {
+        guard savedPCs.contains(where: { $0.id == profile.id }) || canAddNewPC else {
+            statusBanner = OrbitProPCLimitError().errorDescription ?? ""
+            return
+        }
         var cleaned = profile
         cleaned.name = cleaned.name.trimmingCharacters(in: .whitespacesAndNewlines)
         cleaned.address = cleaned.address.trimmingCharacters(in: .whitespacesAndNewlines)

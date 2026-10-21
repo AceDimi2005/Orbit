@@ -44,7 +44,11 @@ struct CompanionToolsView: View {
 
                         OrbitSectionHeader("Diagnostics & History", icon: "waveform.path.ecg")
                         LazyVGrid(columns: columns, spacing: 12) {
-                            NavigationLink { SessionHistoryView(vm: vm) } label: {
+                            NavigationLink {
+                                OrbitProGate(title: "Session Graphs", message: "Recorded sessions with FPS, temperature and power history are part of Orbit Pro.") {
+                                    SessionHistoryView(vm: vm)
+                                }
+                            } label: {
                                 toolTile("Session Graphs", subtitle: "History, averages & peaks", icon: "chart.xyaxis.line", tint: .mint)
                             }
                             NavigationLink { FullSpecsView(vm: vm) } label: {
@@ -174,16 +178,16 @@ struct CompanionToolsView: View {
             HStack(spacing: 13) {
                 OrbitIconBadge(systemName: "crown.fill", tint: .yellow, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Orbit Pro · Coming Soon")
+                    Text("Orbit Pro")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)
-                    Text("All 11 themes & 6 Home Screen icons unlocked for free testing")
+                    Text(proStore.isProUnlocked ? "Unlocked on all your devices" : "Themes, icons, power widgets, unlimited PCs & graphs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Text("SOON")
+                Text(proStore.isProUnlocked ? "ACTIVE" : (proStore.displayPrice ?? "PRO"))
                     .font(.caption2.weight(.bold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)

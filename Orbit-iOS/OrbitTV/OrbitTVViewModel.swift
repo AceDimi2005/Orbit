@@ -860,6 +860,7 @@ final class OrbitTVViewModel: ObservableObject {
                 savedPCs[idx] = profile
             } else {
                 guard !item.apiToken.isEmpty else { continue }
+                guard canAddNewPC else { continue }
                 var profile = TVSavedPC(from: item)
                 profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(item.certificateFingerprint)
                 saveToken(item.apiToken, for: profile.id)
@@ -1014,6 +1015,7 @@ final class OrbitTVViewModel: ObservableObject {
             profile.subnetMask = creds.subnetMask
             profile.broadcastAddress = creds.broadcastAddress
             profile.lastKnownIPv4 = creds.ipAddress
+            guard savedPCs.contains(where: { $0.id == profile.id }) || canAddNewPC else { throw OrbitProPCLimitError() }
 
             saveToken(creds.apiToken, for: profile.id)
             if let idx = savedPCs.firstIndex(where: { $0.id == profile.id }) {
@@ -1030,6 +1032,11 @@ final class OrbitTVViewModel: ObservableObject {
         } catch {
             pairingErrorMessage = error.localizedDescription
         }
+    }
+
+    /// Free users can keep one PC; Orbit Pro removes the limit.
+    var canAddNewPC: Bool {
+        OrbitProEntitlement.canAddPC(existingCount: savedPCs.count, isUnlocked: OrbitProStore.shared.isProUnlocked)
     }
 
     func selectPC(_ profile: TVSavedPC) {

@@ -64,7 +64,13 @@ struct OrbitMacApp: App {
                 .environmentObject(viewModel)
                 .macAppearance()
                 .frame(minWidth: 980, minHeight: 640)
-                .onChange(of: scenePhase) { _, phase in viewModel.setAppActive(phase != .background) }
+                .onChange(of: scenePhase) { _, phase in
+                    viewModel.setAppActive(phase != .background)
+                    if phase == .active { OrbitProStore.shared.refreshIfNeeded() }
+                }
+                .onAppear { OrbitProStore.shared.start() }
+                .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in MacProLockdown.enforce() }
+                .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in MacProLockdown.enforce() }
                 .onOpenURL { url in handle(url) }
         }
         .windowStyle(.hiddenTitleBar)
