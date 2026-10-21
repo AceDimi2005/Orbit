@@ -417,15 +417,17 @@ struct AppearanceSettingsView: View {
                     HStack(spacing: 12) {
                         OrbitIconBadge(systemName: "crown.fill", tint: .yellow, size: 36)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Orbit Pro · Coming Soon")
+                            Text(OrbitProStore.isComingSoon ? "Orbit Pro · Coming Soon" : "Orbit Pro")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.white)
-                            Text("All Pro themes & icons are unlocked for free right now")
+                            Text(OrbitProStore.isComingSoon
+                                 ? "All Pro themes & icons are unlocked for free right now"
+                                 : "Exclusive themes, app icons, widgets & session graphs")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text("SOON")
+                        Text(OrbitProStore.isComingSoon ? "SOON" : proStore.displayPrice)
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -696,7 +698,9 @@ struct OrbitProPaywallView: View {
                                 .font(.system(size: 30, weight: .bold))
                                 .foregroundStyle(.white)
 
-                            Text("Coming Soon · Exclusive themes, icons & advanced packs")
+                            Text(OrbitProStore.isComingSoon
+                                 ? "Coming Soon · Exclusive themes, icons & advanced packs"
+                                 : "One-time purchase · Exclusive themes, icons & advanced packs")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -710,7 +714,7 @@ struct OrbitProPaywallView: View {
                                 subtitle: "Cyberpunk, Solar Gold, Crimson, Matrix, Arctic, and Sakura across app, widgets & Apple Watch."
                             )
                             proFeatureRow(
-                                icon: "app.badge.sparkles",
+                                icon: "app.badge.checkmark",
                                 tint: Color(red: 0.99, green: 0.82, blue: 0.32),
                                 title: "5 Custom Home Screen App Icons",
                                 subtitle: "Switch your iPhone Home Screen icon between Neon, Gold, Crimson, Matrix, and Titanium."
@@ -743,9 +747,21 @@ struct OrbitProPaywallView: View {
                                 OrbitHaptics.press()
                                 Task { await store.purchase() }
                             } label: {
-                                Label("Orbit Pro — Coming Soon", systemImage: "clock.badge.sparkles.fill")
+                                Label(OrbitProStore.isComingSoon ? "Orbit Pro — Coming Soon" : "Unlock Orbit Pro · \(store.displayPrice)",
+                                      systemImage: OrbitProStore.isComingSoon ? "clock.badge.sparkles.fill" : "crown.fill")
                             }
                             .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
+
+                            if !OrbitProStore.isComingSoon {
+                                Button {
+                                    Task { await store.restorePurchases() }
+                                } label: {
+                                    Label("Restore Purchases", systemImage: "arrow.clockwise")
+                                }
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .disabled(store.isPurchasing)
+                            }
 
                             Button("Privacy & Terms") {
                                 showPrivacy = true
