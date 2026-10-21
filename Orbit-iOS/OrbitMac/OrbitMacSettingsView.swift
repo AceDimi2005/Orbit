@@ -749,6 +749,7 @@ private struct MacSettingsAboutTab: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
     @State private var confirmInstall = false
+    @State private var showsAcknowledgements = false
 
     private static let repositoryURL = "https://github.com/AceDimi2005/Orbit"
     private static let companionURL = "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip"
@@ -774,6 +775,9 @@ private struct MacSettingsAboutTab: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showsAcknowledgements) {
+            OrbitAcknowledgementsView(accent: theme.accent) { showsAcknowledgements = false }
+        }
         .confirmationDialog("Install the agent update on \(vm.currentPC?.name ?? "your PC")?", isPresented: $confirmInstall, titleVisibility: .visible) {
             Button("Install Update") { Task { await vm.applyAgentUpdate() } }
             Button("Cancel", role: .cancel) {}
@@ -847,6 +851,8 @@ private struct MacSettingsAboutTab: View {
         Section {
             Button { open(Self.repositoryURL) } label: { Label("Orbit on GitHub", systemImage: "link") }
             Button { open(Self.companionURL) } label: { Label("Download Windows Companion (.zip)", systemImage: "arrow.down.doc") }
+            Button { open(OrbitThirdPartyNotices.sunshineDownloadURL.absoluteString) } label: { Label("Download Sunshine for Windows (game streaming)", systemImage: "sun.max") }
+            Button { showsAcknowledgements = true } label: { Label("Acknowledgements & Licenses", systemImage: "doc.text") }
         } header: {
             Text("Links")
         }

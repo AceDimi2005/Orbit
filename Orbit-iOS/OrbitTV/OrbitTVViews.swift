@@ -1697,6 +1697,7 @@ struct TVPCsAndPairingTab: View {
     @State private var showIPAlert: Bool = false
     @State private var showPortAlert: Bool = false
     @State private var showPINAlert: Bool = false
+    @State private var showsAcknowledgements: Bool = false
 
     var body: some View {
         ScrollView {
@@ -1716,6 +1717,9 @@ struct TVPCsAndPairingTab: View {
         }
         .onDisappear {
             vm.stopDiscovery()
+        }
+        .sheet(isPresented: $showsAcknowledgements) {
+            OrbitAcknowledgementsView(accent: TVPalette.accent) { showsAcknowledgements = false }
         }
         .alert("Enter PC IPv4 Address", isPresented: $showIPAlert) {
             TextField("e.g. 192.168.1.50", text: $manualHost)
@@ -1795,6 +1799,11 @@ struct TVPCsAndPairingTab: View {
                 )
             }
             .buttonStyle(TVActionPillStyle(tint: TVPalette.purple, isProminent: vm.isDemoMode))
+
+            Button { showsAcknowledgements = true } label: {
+                Label("Acknowledgements & Licenses", systemImage: "doc.text")
+            }
+            .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)

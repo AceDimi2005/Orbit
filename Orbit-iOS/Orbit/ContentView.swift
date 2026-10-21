@@ -2081,6 +2081,7 @@ struct SettingsView: View {
     @State private var isShowingDiscovery = false
     @State private var isShowingProPaywall = false
     @State private var isShowingPrivacy = false
+    @State private var isShowingAcknowledgements = false
     @FocusState private var focusedField: Bool
 
     var body: some View {
@@ -2192,6 +2193,11 @@ struct SettingsView: View {
                     } label: {
                         settingsRow("Privacy Policy & Terms", icon: "hand.raised.fill", tint: .gray)
                     }
+                    Button {
+                        isShowingAcknowledgements = true
+                    } label: {
+                        settingsRow("Acknowledgements & Licenses", icon: "doc.text.fill", tint: .gray)
+                    }
                 }
                 .orbitRow()
             }
@@ -2208,6 +2214,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $isShowingPrivacy) {
                 OrbitPrivacyPolicyView()
+            }
+            .sheet(isPresented: $isShowingAcknowledgements) {
+                OrbitAcknowledgementsView(accent: theme.accent)
             }
             .alert("Live Activity unavailable", isPresented: Binding(get: { vm.liveActivityError != nil }, set: { if !$0 { vm.liveActivityError = nil } })) {
                 Button("OK") { vm.liveActivityError = nil }

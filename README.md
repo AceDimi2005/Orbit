@@ -395,3 +395,9 @@ python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
 This includes SRP pairing and encrypted credentials, ZIP archives/cancellation, files/transfers, clipboard, audio sessions, SQLite history, and TLS identity, alongside Afterburner/RTSS shared memory, HTTP/WMI sensors, FPS CSV formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.
+
+## Licență / License
+
+Orbit este software liber: aplicațiile Apple sunt distribuite sub **GNU GPLv3 cu App Store Distribution Exception** (vezi `LICENSE`), pentru că includ motorul de streaming Moonlight (`moonlight-common-c`, GPLv3). Codul scris pentru Orbit este disponibil și sub MIT. Lista completă a componentelor terțe și licențele lor: `THIRD_PARTY_NOTICES.md`. Streaming-ul are nevoie de [Sunshine](https://app.lizardbyte.dev/Sunshine/) (LizardByte, GPLv3) pe PC.
+
+Orbit is free software: the Apple apps are distributed under the **GNU GPLv3 with the App Store Distribution Exception** (see `LICENSE`) because they bundle the Moonlight streaming engine (`moonlight-common-c`, GPLv3). Code written for Orbit is also available under MIT. The full list of third-party components and licenses is in `THIRD_PARTY_NOTICES.md`. Streaming requires [Sunshine](https://app.lizardbyte.dev/Sunshine/) (LizardByte, GPLv3) on the PC.
