@@ -626,6 +626,7 @@ def watch_summary(authorization: str = Header(None)):
         "volume": status.get("volume") or 0.0,
         "isMuted": bool(status.get("isMuted")),
         "uptimeSeconds": status.get("uptimeSeconds") or 0,
+        "sessionLocked": status.get("sessionLocked"),
         "lastUpdated": status.get("lastUpdated"),
     }
 

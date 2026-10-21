@@ -1,4 +1,5 @@
 import Foundation
+import MoonlightCore
 import SwiftUI
 #if canImport(WatchConnectivity)
 import WatchConnectivity
@@ -87,6 +88,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             "wolPort": vm.wolPort,
             "lastKnownIPv4": vm.lastKnownPCIPv4,
             "isOnline": vm.metrics.isOnline,
+            "sessionLocked": vm.metrics.sessionLocked == true,
             "telemetryAvailable": vm.metrics.telemetryAvailable ?? false,
             "cpuUsage": vm.metrics.cpuUsage,
             "ramUsagePercent": ramPct,
@@ -293,6 +295,33 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         } catch { return ["status": "failed", "message": error.localizedDescription] }
     }
 
+    /// The Watch asked to sign in to the locked PC: the password it sent is typed through a short
+    /// headless Sunshine stream (the only channel that reaches the Windows sign-in screen) and
+    /// then forgotten.
+    @MainActor
+    private func unlockPC(_ message: [String: Any]) async -> [String: Any] {
+        guard let vm = viewModel, !vm.isDemoMode else { return ["status": "failed", "message": "Connect a real PC first."] }
+        guard let password = message["password"] as? String, !password.isEmpty, password.count <= 256 else {
+            return ["status": "failed", "message": "Enter the Windows password on the watch."]
+        }
+        #if canImport(UIKit)
+        let task = UIApplication.shared.beginBackgroundTask(withName: "OrbitUnlockPC")
+        defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        #endif
+        let host = MoonlightHostCoordinator()
+        host.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+                       httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        guard host.isPaired else {
+            return ["status": "failed", "message": "Pair Orbit with Sunshine on the iPhone first; the sign-in goes through the stream."]
+        }
+        do {
+            try await host.unlockThroughStream(password: password, settings: MoonlightStreamSettingsStore.shared.settings)
+            return ["status": "sent", "pcID": vm.selectedPCID]
+        } catch {
+            return ["status": "failed", "message": (error as? MoonlightError)?.message ?? error.localizedDescription]
+        }
+    }
+
     private func handleIncomingWatchMessage(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)? = nil) {
         guard let cmd = message["cmd"] as? String, let vm = viewModel else {
             replyHandler?(["status": "unavailable"])
@@ -309,6 +338,14 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                 replyHandler?(result)
                 if result["status"] as? String == "failed", let failure = result["message"] as? String {
                     vm.statusLog = "Watch: \(failure)"
+                }
+            }
+        case "unlockPC":
+            Task {
+                let result = await unlockPC(message)
+                replyHandler?(result)
+                if result["status"] as? String == "failed", let failure = result["message"] as? String {
+                    vm.statusLog = "Watch unlock: \(failure)"
                 }
             }
         case "cursor":

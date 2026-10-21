@@ -50,6 +50,7 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $stream.isPresented) {
             MoonlightStreamScreen(controller: stream, accent: rootTheme.accent)
         }
+        .onChange(of: vm.metrics.sessionLocked, initial: true) { _, locked in stream.pcLocked = locked == true }
         .sheet(isPresented: $vm.showOnboarding) {
             OnboardingView(vm: vm)
                 .interactiveDismissDisabled(!vm.hasCompletedOnboarding)
@@ -1222,6 +1223,21 @@ struct GameLibraryView: View {
                     .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
                     .accessibilityLabel("Stream settings")
 
+                    if vm.metrics.sessionLocked == true {
+                        Button {
+                            OrbitHaptics.press()
+                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
+                        } label: {
+                            Image(systemName: "lock.open.fill")
+                                .font(.subheadline.weight(.bold))
+                                .frame(width: 46)
+                                .padding(.vertical, 12)
+                        }
+                        .buttonStyle(OrbitGlassButtonStyle(tint: .yellow, cornerRadius: 16))
+                        .disabled(!canStream || sunshine.desktopApp == nil)
+                        .accessibilityLabel("Unlock the PC through the stream")
+                    }
+
                     if sunshine.isBusy {
                         Button {
                             OrbitHaptics.warning()
@@ -1267,8 +1283,8 @@ struct GameLibraryView: View {
         }
     }
 
-    private func startStream(_ app: MoonlightApp) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings))
+    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, promptUnlock: promptUnlock))
     }
 }
 

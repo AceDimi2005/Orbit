@@ -85,6 +85,53 @@ extension MoonlightHostCoordinator {
     }
 }
 
+extension MoonlightHostCoordinator {
+    /// Signs in to a PC that sits at its lock screen without showing any video: a short headless
+    /// stream session carries Enter, the password as keystrokes and Enter again, then ends. Used by
+    /// the Apple Watch (through the iPhone), which has no stream of its own. The password only
+    /// lives in memory for the duration of the call.
+    @MainActor
+    func unlockThroughStream(password: String, settings: MoonlightStreamSettings, timeout: TimeInterval = 25) async throws {
+        guard !password.isEmpty else { throw MoonlightError(message: "Enter the Windows password.") }
+        if apps.isEmpty { await refresh() }
+        guard let app = desktopApp else { throw MoonlightError(message: "Sunshine publishes no app to open the sign-in screen with.") }
+        let controller = MoonlightStreamController.shared
+        if let live = controller.session, live.isActive, live.phase == .streaming {
+            // A visible stream is already running: type into it instead of opening a second session.
+            try await Self.typeSignIn(password, into: live)
+            return
+        }
+        guard controller.session == nil || controller.session?.isActive != true else {
+            throw MoonlightError(message: "A stream is starting right now; try again in a moment.")
+        }
+        var fast = settings
+        fast.hdr = false
+        fast.framePacing = false
+        let parameters = try await prepareStream(app: app, settings: fast, quitRunningApp: false)
+        let session = MoonlightStreamSession(settings: fast)
+        session.start(parameters: parameters, settings: fast, headless: true)
+        defer { session.stop() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while session.phase != .streaming {
+            if case .failed(let message) = session.phase { throw MoonlightError(message: message) }
+            if case .ended(let message) = session.phase { throw MoonlightError(message: message ?? "The connection ended before signing in.") }
+            guard Date() < deadline else { throw MoonlightError(message: "The PC did not answer in time.") }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try await Self.typeSignIn(password, into: session)
+        try await Task.sleep(nanoseconds: 800_000_000)
+    }
+
+    @MainActor
+    private static func typeSignIn(_ password: String, into session: MoonlightStreamSession) async throws {
+        session.tapKey(virtualKey: MoonlightVirtualKey.enter)   // leave the lock screen's clock
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        session.sendText(password)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        session.tapKey(virtualKey: MoonlightVirtualKey.enter)
+    }
+}
+
 /// App-wide stream state: one request at a time, presented full screen by the root view.
 @MainActor
 final class MoonlightStreamController: ObservableObject {
@@ -97,9 +144,13 @@ final class MoonlightStreamController: ObservableObject {
         let pcName: String
         var settings: MoonlightStreamSettings
         var quitRunningApp = false
+        /// Open the sign-in prompt as soon as the stream runs (the PC sits at its lock screen).
+        var promptUnlock = false
     }
 
     @Published var isPresented = false
+    /// Mirrors the agent's `sessionLocked`, so the stream overlay can offer "Unlock PC".
+    @Published var pcLocked = false
     @Published private(set) var request: Request?
     @Published private(set) var session: MoonlightStreamSession?
     @Published private(set) var launchError: String?

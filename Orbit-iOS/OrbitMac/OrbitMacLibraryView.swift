@@ -317,6 +317,14 @@ struct MacLibraryView: View {
                 } else if sunshine.isPaired {
                     streamDesktopButton
                     streamSettingsButton
+                    if vm.metrics.sessionLocked == true {
+                        Button {
+                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
+                        } label: { Label("Unlock PC…", systemImage: "lock.open.fill") }
+                            .buttonStyle(MacHoverButtonStyle(tint: .yellow))
+                            .disabled(!canStream || sunshine.desktopApp == nil)
+                            .help("Open the stream at the sign-in screen and type the Windows password there (nothing is saved)")
+                    }
                     if sunshine.isBusy {
                         Button { Task { await sunshine.quitRunningApp() } } label: { Label("Quit Session", systemImage: "stop.fill") }
                             .buttonStyle(MacHoverButtonStyle(tint: .orange))
@@ -711,8 +719,8 @@ struct MacLibraryView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func startStream(_ app: MoonlightApp) {
-        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings))
+    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
+        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, promptUnlock: promptUnlock))
         openWindow(id: "stream")
     }
 

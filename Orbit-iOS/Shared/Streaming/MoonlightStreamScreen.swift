@@ -15,7 +15,7 @@ struct MoonlightStreamScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let session = controller.session, let request = controller.request {
-                MoonlightSessionLayer(session: session, request: request, handle: handle, accent: accent,
+                MoonlightSessionLayer(session: session, request: request, handle: handle, accent: accent, pcLocked: controller.pcLocked,
                                       overlayVisible: $overlayVisible, statsVisible: $statsVisible,
                                       onEnd: { quit in controller.end(quitApp: quit) }, onReconnect: { controller.retry() })
             } else {
@@ -75,6 +75,7 @@ private struct MoonlightSessionLayer: View {
     let request: MoonlightStreamController.Request
     @ObservedObject var handle: MoonlightSurfaceHandle
     let accent: Color
+    let pcLocked: Bool
     @Binding var overlayVisible: Bool
     @Binding var statsVisible: Bool
     let onEnd: (Bool) -> Void
@@ -83,6 +84,8 @@ private struct MoonlightSessionLayer: View {
     @State private var confirmEnd = false
     @State private var captureHintVisible = false
     @State private var captureHintTask: Task<Void, Never>?
+    @State private var showsUnlock = false
+    @State private var unlockPrompted = false
 
     private var isStreaming: Bool { session.phase == .streaming }
 
@@ -150,6 +153,16 @@ private struct MoonlightSessionLayer: View {
         .animation(.spring(response: 0.3, dampingFraction: 1), value: captureHintVisible)
         .onChange(of: session.phase) { _, phase in
             if phase == .streaming { overlayVisible = true; scheduleHide() } else { hideTask?.cancel(); overlayVisible = true }
+            if phase == .streaming, request.promptUnlock, !unlockPrompted {
+                unlockPrompted = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    showsUnlock = true
+                }
+            }
+        }
+        .sheet(isPresented: $showsUnlock) {
+            MoonlightUnlockSheet(session: session, pcName: request.pcName, accent: accent)
         }
         .onChange(of: handle.mouseCaptured) { _, captured in
             if captured {
@@ -191,6 +204,9 @@ private struct MoonlightSessionLayer: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
+                if pcLocked || request.promptUnlock {
+                    overlayButton("lock.open.fill", label: "Unlock PC", active: false, tint: .yellow) { showsUnlock = true }
+                }
                 overlayButton("chart.bar.xaxis", label: "Statistics", active: statsVisible) { statsVisible.toggle(); scheduleHide() }
                 #if os(iOS)
                 overlayButton("keyboard", label: "Keyboard", active: handle.keyboardVisible) { handle.toggleKeyboard(); scheduleHide() }
@@ -247,6 +263,78 @@ private struct MoonlightSessionLayer: View {
             #endif
             overlayVisible = false
         }
+    }
+}
+
+// MARK: - Unlock
+
+/// Sign-in helper for a PC sitting at its lock screen: what is typed here goes to the PC as
+/// keystrokes over the encrypted stream (Sunshine accepts input on the sign-in screen), framed by
+/// two Enter presses. Nothing is stored anywhere.
+private struct MoonlightUnlockSheet: View {
+    let session: MoonlightStreamSession
+    let pcName: String
+    let accent: Color
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var sending = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("Windows password", text: $password)
+                        .focused($focused)
+                        #if os(iOS) || os(tvOS)
+                        .textContentType(.password)
+                        #endif
+                        .onSubmit { Task { await unlock() } }
+                } header: {
+                    Text("Sign in to \(pcName)")
+                } footer: {
+                    Text("Orbit presses Enter to reach the sign-in field, sends what you type here as keystrokes over the encrypted stream, then presses Enter again. The password is not saved on any device.")
+                }
+                Section {
+                    Button {
+                        Task { await unlock() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if sending { ProgressView().controlSize(.small) }
+                            Text(sending ? "Signing in…" : "Unlock")
+                        }
+                    }
+                    .disabled(password.isEmpty || sending)
+                }
+            }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
+            .navigationTitle("Unlock PC")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { password = ""; dismiss() } }
+            }
+        }
+        .tint(accent)
+        #if os(macOS)
+        .frame(width: 440, height: 280)
+        #endif
+        .onAppear { focused = true }
+    }
+
+    @MainActor
+    private func unlock() async {
+        guard !password.isEmpty, !sending else { return }
+        sending = true
+        let text = password
+        session.tapKey(virtualKey: MoonlightVirtualKey.enter)   // dismiss the lock screen's clock
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        session.sendText(text)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        session.tapKey(virtualKey: MoonlightVirtualKey.enter)
+        password = ""
+        sending = false
+        dismiss()
     }
 }
 

@@ -11,6 +11,37 @@ enum OrbitWatchPalette {
     static let cardBackground = Color.white.opacity(0.09)
 }
 
+/// Asks for the Windows password and hands it to the iPhone, which types it through the stream.
+struct WatchUnlockSheet: View {
+    @ObservedObject var vm: OrbitWatchViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Sign in to \(vm.pcName)")
+                    .font(.headline)
+                SecureField("Windows password", text: $password)
+                Text("Typed on the PC's sign-in screen through your iPhone and the encrypted stream. Not saved anywhere.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                WatchActionButton(title: vm.isUnlocking ? "Signing in…" : "Unlock", symbol: "lock.open.fill", tint: OrbitWatchPalette.mint, prominent: true, enabled: !password.isEmpty && !vm.isUnlocking) {
+                    let typed = password
+                    password = ""
+                    Task {
+                        await vm.unlockPC(password: typed)
+                        dismiss()
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+        .navigationTitle("Unlock PC")
+    }
+}
+
 struct OrbitWatchRootView: View {
     @ObservedObject var vm: OrbitWatchViewModel
 
@@ -188,6 +219,7 @@ private struct WatchOfflineHint: View {
 // MARK: - Overview
 
 private struct WatchCockpitPage: View {
+    @State private var showUnlock = false
     @ObservedObject var vm: OrbitWatchViewModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showPCSwitcher = false
@@ -228,6 +260,12 @@ private struct WatchCockpitPage: View {
                     WatchActionButton(title: vm.isOnline ? "Control your PC" : (vm.isWaking ? "Waking PC…" : "Wake PC"), symbol: vm.isOnline ? "cursorarrow.motionlines" : "power", tint: vm.isOnline ? OrbitWatchPalette.accent : OrbitWatchPalette.mint, prominent: true, enabled: !vm.isWaking) {
                         if vm.isOnline { vm.selectedTab = 2 }
                         else { Task { await vm.wakePC() } }
+                    }
+                    if vm.isOnline && vm.sessionLocked {
+                        WatchActionButton(title: vm.isUnlocking ? "Signing in…" : "Unlock PC", symbol: "lock.open.fill", tint: OrbitWatchPalette.mint, prominent: true, enabled: !vm.isUnlocking && vm.isPhoneReachable) {
+                            showUnlock = true
+                        }
+                        .sheet(isPresented: $showUnlock) { WatchUnlockSheet(vm: vm) }
                     }
                 }
 

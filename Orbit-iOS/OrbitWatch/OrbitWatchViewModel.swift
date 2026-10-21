@@ -63,6 +63,8 @@ struct WatchSummaryResponse: Decodable {
     var cpuPowerWatts: Double?
     var gpuPowerWatts: Double?
     var activeGame: String?
+    /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
+    var sessionLocked: Bool?
     var fps: Double?
     var volume: Double?
     var isMuted: Bool?
@@ -107,6 +109,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var isLiveActivityActive: Bool = false
     @Published var statusMessage: String = "Ready"
     @Published var isWaking: Bool = false
+    /// True while the PC shows its sign-in or lock screen (agent 4.3+).
+    @Published var sessionLocked: Bool = false
+    @Published var isUnlocking: Bool = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
 
@@ -283,6 +288,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 guard requestedTarget == target else { return }
                 lastTelemetryAt = Date()
                 isOnline = summary.isOnline ?? true
+                sessionLocked = summary.sessionLocked ?? false
                 telemetryAvailable = summary.telemetryAvailable ?? true
                 if let name = summary.hostname, !name.isEmpty { pcName = name }
                 cpuUsage = summary.cpuUsage ?? 0
@@ -381,6 +387,36 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             WKInterfaceDevice.current().play(.success)
         } catch {
             statusMessage = "Wake failed: \(error.localizedDescription)"
+            WKInterfaceDevice.current().play(.failure)
+        }
+    }
+
+    /// Signs in to the locked PC: the password goes to the iPhone over the encrypted Watch link,
+    /// which types it through a short Sunshine stream (the only channel that reaches the Windows
+    /// sign-in screen). Nothing is stored on either device.
+    func unlockPC(password: String) async {
+        guard !isUnlocking, !password.isEmpty else { return }
+        isUnlocking = true
+        defer { isUnlocking = false }
+        guard phoneCanRelay else {
+            statusMessage = "Open Orbit on your nearby iPhone to unlock this PC"
+            WKInterfaceDevice.current().play(.failure)
+            return
+        }
+        statusMessage = "Signing in through iPhone…"
+        do {
+            let destination = target
+            var message: [String: Any] = ["cmd": "unlockPC", "password": password]
+            message["pcID"] = destination.id
+            message["host"] = destination.host
+            let reply = try await sendPhoneMessage(message, timeout: 40)
+            guard reply["status"] as? String == "sent" else {
+                throw WatchControlError(reply["message"] as? String ?? "iPhone could not sign in to the PC.")
+            }
+            statusMessage = "Sign-in sent · the PC should unlock"
+            WKInterfaceDevice.current().play(.success)
+        } catch {
+            statusMessage = "Unlock failed: \(error.localizedDescription)"
             WKInterfaceDevice.current().play(.failure)
         }
     }
@@ -831,7 +867,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         return reply
     }
 
-    private func sendPhoneMessage(_ message: [String: Any]) async throws -> [String: Any] {
+    private func sendPhoneMessage(_ message: [String: Any], timeout: TimeInterval = 6) async throws -> [String: Any] {
         guard phoneCanRelay else { throw WatchControlError("Open Orbit on your nearby iPhone") }
         return try await withCheckedThrowingContinuation { continuation in
             let reply = WatchReplyWaiter(continuation)
@@ -841,7 +877,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 Task { @MainActor in reply.finish(.failure(error)) }
             })
             reply.timeout = Task {
-                do { try await Task.sleep(for: .seconds(6)) } catch { return }
+                do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
                 reply.finish(.failure(WatchControlError("iPhone did not confirm the command. Check its connection.")))
             }
         }
@@ -892,6 +928,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
            sampleDate >= (lastTelemetryAt ?? .distantPast) {
             lastTelemetryAt = sampleDate
             isOnline = (payload["isOnline"] as? Bool ?? false) && Date().timeIntervalSince(sampleDate) <= 12
+            sessionLocked = payload["sessionLocked"] as? Bool ?? false
             telemetryAvailable = payload["telemetryAvailable"] as? Bool ?? false
             cpuUsage = payload["cpuUsage"] as? Double ?? 0
             cpuTemp = payload["cpuTemp"] as? Double

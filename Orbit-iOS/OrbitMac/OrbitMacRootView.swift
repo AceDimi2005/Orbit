@@ -25,6 +25,7 @@ struct MacRootView: View {
             .toolbar { toolbarContent }
         }
         .background(theme.background)
+        .onChange(of: vm.metrics.sessionLocked, initial: true) { _, locked in stream.pcLocked = locked == true }
         .onReceive(NotificationCenter.default.publisher(for: .macConfirmPower)) { note in
             if let raw = note.object as? String, let action = MacPowerConfirmation(rawValue: raw) { pendingPower = action }
         }

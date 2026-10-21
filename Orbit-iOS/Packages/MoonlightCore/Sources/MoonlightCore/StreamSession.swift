@@ -113,7 +113,9 @@ public final class MoonlightStreamSession: ObservableObject {
 
     // MARK: Lifecycle
 
-    public func start(parameters: MoonlightConnectionParameters, settings: MoonlightStreamSettings) {
+    /// `headless` runs the connection without decoding video, playing audio or forwarding
+    /// controllers: enough to carry keyboard input (for example signing in to a locked PC).
+    public func start(parameters: MoonlightConnectionParameters, settings: MoonlightStreamSettings, headless: Bool = false) {
         guard core == nil else { return }
         self.settings = settings
         self.parameters = parameters
@@ -166,14 +168,14 @@ public final class MoonlightStreamSession: ObservableObject {
 
         LiInitializeAudioCallbacks(&box.audioCallbacks)
         box.audioCallbacks.`init` = { _, configuration, _, _ in
-            guard let configuration else { return -1 }
-            return MoonlightSessionCore.current?.audio.initialize(configuration.pointee) ?? -1
+            guard let configuration, let core = MoonlightSessionCore.current else { return -1 }
+            return core.headless ? 0 : core.audio.initialize(configuration.pointee)
         }
-        box.audioCallbacks.start = { MoonlightSessionCore.current?.audio.start() }
-        box.audioCallbacks.stop = { MoonlightSessionCore.current?.audio.stop() }
-        box.audioCallbacks.cleanup = { MoonlightSessionCore.current?.audio.cleanup() }
+        box.audioCallbacks.start = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.start() } }
+        box.audioCallbacks.stop = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.stop() } }
+        box.audioCallbacks.cleanup = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.cleanup() } }
         box.audioCallbacks.decodeAndPlaySample = { data, length in
-            MoonlightSessionCore.current?.audio.decodeAndPlay(data, length: length)
+            if let core = MoonlightSessionCore.current, !core.headless { core.audio.decodeAndPlay(data, length: length) }
         }
         box.audioCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION
 
@@ -192,11 +194,13 @@ public final class MoonlightStreamSession: ObservableObject {
             MoonlightSessionCore.current?.log(String(cString: message))
         }
 
-        let core = MoonlightSessionCore(session: self, renderer: renderer, box: box, framePacing: settings.framePacing)
+        let core = MoonlightSessionCore(session: self, renderer: renderer, box: box, framePacing: settings.framePacing, headless: headless)
         self.core = core
         MoonlightSessionCore.setCurrent(core)
-        core.controllers.start()
-        setKeepAwake(true)
+        if !headless {
+            core.controllers.start()
+            setKeepAwake(true)
+        }
 
         let thread = Thread {
             // The library is a singleton: make sure any previous connection is fully torn down.
@@ -388,15 +392,18 @@ final class MoonlightSessionCore: @unchecked Sendable {
     let counters = MoonlightFrameCounters()
     let box: MoonlightConnectionBox
     let framePacing: Bool
+    /// No decoding, audio or controllers; frames are acknowledged and dropped.
+    let headless: Bool
     private let lock = NSLock()
     private var renderThread: MoonlightRenderThread?
     private var failureMessage: String?
 
-    init(session: MoonlightStreamSession, renderer: MoonlightVideoRenderer, box: MoonlightConnectionBox, framePacing: Bool) {
+    init(session: MoonlightStreamSession, renderer: MoonlightVideoRenderer, box: MoonlightConnectionBox, framePacing: Bool, headless: Bool = false) {
         self.session = session
         self.renderer = renderer
         self.box = box
         self.framePacing = framePacing
+        self.headless = headless
     }
 
     private func onMain(_ body: @escaping @MainActor (MoonlightStreamSession) -> Void) {
@@ -408,14 +415,14 @@ final class MoonlightSessionCore: @unchecked Sendable {
 
     // Video
     func rendererSetup(format: Int32, width: Int32, height: Int32, frameRate: Int32) -> Int32 {
-        renderer.setup(videoFormat: format, width: width, height: height, frameRate: frameRate, framePacing: framePacing)
+        if !headless { renderer.setup(videoFormat: format, width: width, height: height, frameRate: frameRate, framePacing: framePacing) }
         counters.reset()
         return 0
     }
     func rendererStart() {
         lock.lock()
         renderThread?.stop()
-        let thread = MoonlightRenderThread(renderer: renderer, counters: counters)
+        let thread = MoonlightRenderThread(renderer: headless ? nil : renderer, counters: counters)
         renderThread = thread
         lock.unlock()
         thread.start()
@@ -427,7 +434,7 @@ final class MoonlightSessionCore: @unchecked Sendable {
         lock.unlock()
         thread?.stop()
     }
-    func rendererCleanup() { renderer.reset() }
+    func rendererCleanup() { if !headless { renderer.reset() } }
 
     // Connection
     func stageStarting(_ stage: Int32) {
@@ -491,13 +498,14 @@ final class MoonlightConnectionBox: @unchecked Sendable {
 
 /// Pulls decoded units from the library and hands them to the renderer.
 final class MoonlightRenderThread: Thread {
-    private let renderer: MoonlightVideoRenderer
+    /// nil in headless sessions: frames are completed as "rendered" and dropped.
+    private let renderer: MoonlightVideoRenderer?
     private let counters: MoonlightFrameCounters
     private let completion = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var running = true
 
-    init(renderer: MoonlightVideoRenderer, counters: MoonlightFrameCounters) {
+    init(renderer: MoonlightVideoRenderer?, counters: MoonlightFrameCounters) {
         self.renderer = renderer
         self.counters = counters
         super.init()
@@ -520,7 +528,7 @@ final class MoonlightRenderThread: Thread {
                 continue
             }
             counters.record(unit.pointee)
-            LiCompleteVideoFrame(handle, renderer.submit(unit))
+            LiCompleteVideoFrame(handle, renderer?.submit(unit) ?? 0)
         }
         completion.signal()
     }

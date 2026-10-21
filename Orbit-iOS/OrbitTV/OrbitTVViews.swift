@@ -302,6 +302,7 @@ struct OrbitTVRootView: View {
         .fullScreenCover(isPresented: $stream.isPresented) {
             MoonlightStreamScreen(controller: stream, accent: TVPalette.accent)
         }
+        .onChange(of: vm.metrics.sessionLocked, initial: true) { _, locked in stream.pcLocked = locked == true }
         .confirmationDialog(
             "Shut Down \(vm.metrics.hostname)?",
             isPresented: $showShutdownConfirm,
@@ -866,8 +867,8 @@ struct TVControlsAndGamesTab: View {
 
     private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
 
-    private func startStream(_ app: MoonlightApp) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings))
+    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings, promptUnlock: promptUnlock))
     }
 
     /// Generates the PIN and has the Orbit agent type it into Sunshine (login saved from iPhone or Mac).
@@ -1144,6 +1145,14 @@ struct TVControlsAndGamesTab: View {
                     }
                     .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
                     .disabled(!canStream || sunshine.desktopApp == nil)
+
+                    if vm.metrics.sessionLocked == true {
+                        Button {
+                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
+                        } label: { Label("Unlock PC", systemImage: "lock.open.fill") }
+                            .buttonStyle(TVActionPillStyle(tint: TVPalette.amber))
+                            .disabled(!canStream || sunshine.desktopApp == nil)
+                    }
 
                     Button { showsStreamSettings = true } label: { Label("Stream Settings", systemImage: "slider.horizontal.3") }
                         .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
