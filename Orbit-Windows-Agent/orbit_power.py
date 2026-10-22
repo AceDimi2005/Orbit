@@ -77,6 +77,12 @@ def iso(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def seconds_until(target, now):
+    """Whole seconds left, rounded up. Rounded to milliseconds first: when start + 120 crosses a
+    power of two, (start + 120) - start comes out a hair over 120 and would read as 121."""
+    return max(0, math.ceil(round(target - now, 3)))
+
+
 class WindowsPower:
     """The real Windows calls. Every method raises PowerUnavailable off Windows."""
 
@@ -324,7 +330,7 @@ class PowerScheduler:
                 return None
             fires = timer.get("firesAt")
             return {"id": timer["id"], "action": timer["action"], "when": timer["when"], "state": timer["state"],
-                    "firesAt": iso(fires), "remainingSeconds": max(0, math.ceil(fires - self.clock())) if fires else None,
+                    "firesAt": iso(fires), "remainingSeconds": seconds_until(fires, self.clock()) if fires else None,
                     "createdAt": iso(timer["createdAt"]), "requestedBy": timer.get("requestedBy"), "game": timer.get("game")}
 
     def public_keep_awake(self):
@@ -335,7 +341,7 @@ class PowerScheduler:
             until = keep.get("until")
             return {"since": iso(keep["since"]), "until": iso(until), "display": bool(keep.get("display")),
                     "requestedBy": keep.get("requestedBy"),
-                    "remainingSeconds": max(0, math.ceil(until - self.clock())) if until else None}
+                    "remainingSeconds": seconds_until(until, self.clock()) if until else None}
 
     # MARK: timers
 
@@ -416,7 +422,7 @@ class PowerScheduler:
             if not timer.get("warned") and timer["firesAt"] - now <= WARNING_SECONDS + lead:
                 timer["warned"] = True
                 self._save()
-                remaining = max(1, math.ceil(timer["firesAt"] - now))
+                remaining = max(1, seconds_until(timer["firesAt"], now))
                 self.notify("Orbit · Power", f"The PC will {words[0]} in {_duration(remaining)} "
                                              f"(requested from {timer.get('requestedBy') or 'a paired device'}). Cancel it in Orbit.")
             if now < timer["firesAt"] - lead:
@@ -426,7 +432,7 @@ class PowerScheduler:
             if action in COUNTDOWN_ACTIONS:
                 timer["state"] = "countdown"
                 self._save()
-                seconds = max(0, math.ceil(timer["firesAt"] - now))
+                seconds = seconds_until(timer["firesAt"], now)
             else:
                 self.timer = None
                 self._save()

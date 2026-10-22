@@ -136,8 +136,10 @@ class PairingManager:
             for session in self._sessions.values():
                 if session["expires"] > now:
                     client = session.get("client") or {}
+                    # Rounded first: with Windows' coarse clock `now` can equal the start time,
+                    # and (start + 120) - start may come out as 120.00000000000001.
                     return {"name": client.get("name"), "kind": client.get("kind"), "code": session.get("pin"),
-                            "expiresIn": max(0, math.ceil(session["expires"] - now))}
+                            "expiresIn": max(0, math.ceil(round(session["expires"] - now, 3)))}
         return None
 
     def start(self, peer, name, public, platform=None, model=None):

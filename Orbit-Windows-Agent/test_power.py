@@ -64,6 +64,15 @@ class FakeBackend:
         self.states.append(flags)
 
 
+class SecondsUntilTests(unittest.TestCase):
+    def test_rounds_up_whole_seconds_without_float_noise(self):
+        start = 16379.42857142857  # start + 120 crosses 2**14
+        self.assertGreater((start + 120) - start, 120)
+        self.assertEqual(power.seconds_until(start + 120, start), 120)
+        self.assertEqual(power.seconds_until(10.2, 10), 1)
+        self.assertEqual(power.seconds_until(5, 10), 0)
+
+
 class PlanParsingTests(unittest.TestCase):
     def test_english_and_localized_powercfg_output(self):
         self.assertEqual(power.parse_power_plans(PLANS_EN), [

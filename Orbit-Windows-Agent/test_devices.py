@@ -560,6 +560,15 @@ class PairingDeviceTests(unittest.TestCase):
         manager.close()
         self.assertIsNone(manager.pending())
 
+    def test_pending_countdown_ignores_float_noise_of_a_coarse_clock(self):
+        # On Windows the clock can read the same value at start and right after;
+        # (16379.43 + 120) - 16379.43 is a hair over 120 in floating point.
+        manager = pairing.PairingManager(self.FINGERPRINT, lambda host: {}, show_pin=self.show,
+                                         clock=lambda: 16379.42857142857)
+        self.addCleanup(manager.close)
+        manager.start("192.0.2.10", "Orbit on iPad", SRPClientSession(pairing.PairingContext("x")).public)
+        self.assertEqual(manager.pending()["expiresIn"], pairing.PIN_SECONDS)
+
     def test_router_accepts_platform_and_model(self):
         from fastapi import FastAPI
         manager = self.manager()
