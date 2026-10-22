@@ -498,18 +498,25 @@ class APITests(unittest.TestCase):
                 self.assertEqual(unavailable.exception.code, 1011)
 
     def test_lifespan_loads_token_and_joins_workers(self):
-        with patch.object(agent, "load_api_token", return_value=TOKEN), \
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(agent, "DEVICES_PATH", Path(folder) / "devices.json"), \
+             patch.object(agent, "load_api_token", return_value=TOKEN), \
              patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
              patch.object(agent, "inventory_worker") as inventory, \
              patch.object(agent, "telemetry_worker") as telemetry, \
              patch.object(agent, "SessionRecorder"), \
              patch.object(agent, "sensor_worker") as sensors:
             with TestClient(agent.app) as client:
+                # The master token keeps working as the migrated legacy device.
                 self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)
+                self.assertIsNotNone(agent.DEVICE_REGISTRY)
             inventory.assert_called_once()
             telemetry.assert_called_once()
             sensors.assert_called_once()
             self.assertTrue(agent.STOP_EVENT.is_set())
+            self.assertIsNone(agent.DEVICE_REGISTRY)
+            saved = __import__("json").loads((Path(folder) / "devices.json").read_text())
+            self.assertEqual([device["name"] for device in saved["devices"]], ["Legacy device"])
 
 
 class TokenTests(unittest.TestCase):

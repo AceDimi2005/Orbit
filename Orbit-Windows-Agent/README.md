@@ -21,13 +21,37 @@ PC-ul este anunțat prin Bonjour ca serviciu `_orbit._tcp.local.`. Asocierea fol
 
 După asociere, aplicația folosește **HTTPS/WSS pe 8766** și verifică certificatul exact al PC-ului. Nu revine la HTTP dacă verificarea eșuează. **Files, Clipboard, Audio mixer și Sessions & graphs cer HTTPS**. Widgeturile noi folosesc tot HTTPS, cu acces separat numai pentru citire. Portul **8765** păstrează API-ul HTTP/WebSocket pentru clienți locali vechi; traficul pe acest port nu este criptat. Nu publica porturile agentului pe Internet.
 
-Rutele publice sunt `GET /api/discover` (metadate publice de descoperire) și `POST /api/pair/start`, `POST /api/pair/finish` (asociere numai prin HTTPS). Datele și comenzile cer `Authorization: Bearer <token>`, inclusiv WebSocket. Tokenurile în URL nu sunt acceptate. Widgeturile folosesc un token separat, fără drepturi asupra fișierelor, clipboardului, mixerului sau istoricului.
+Rutele publice sunt `GET /api/discover` (metadate publice de descoperire) și `POST /api/pair/start`, `POST /api/pair/finish` (asociere numai prin HTTPS). Datele și comenzile cer `Authorization: Bearer <token>`, inclusiv WebSocket. Tokenurile în URL nu sunt acceptate. Widgeturile folosesc un token separat, fără drepturi asupra fișierelor, clipboardului, mixerului sau istoricului. De la 5.0 fiecare dispozitiv are propriul token și propriile permisiuni; vezi [Dispozitive și permisiuni](#dispozitive-și-permisiuni).
 
 **Configurare manuală avansată:** în **Manual configuration** din onboarding sau **My PCs → Add manually**, introdu adresa PC-ului, tokenul copiat cu **Copy manual pairing token** din meniul tray și **Certificate SHA-256** (din **Connection details...**), apoi testează conexiunea. Tokenul nu este scris niciodată în jurnalul `agent.log`; o consolă deschisă interactiv afișează doar ultimele patru caractere. Adresa se introduce fără `https://` și fără port. Portul securizat implicit este **8766**, configurabil din **Custom agent port**. Această variantă rămâne disponibilă când Bonjour este blocat sau nu traversează rețeaua/VPN-ul.
 
 Certificatul și cheia se generează automat în **`%LOCALAPPDATA%\Orbit\tls\server-cert.pem`** și **`server-key.pem`**. Aceste fișiere persistă între actualizări și nu trebuie copiate în arhive sau pe alte PC-uri. O identitate existentă incompletă sau invalidă produce o eroare explicită; schimbarea intenționată a certificatului cere asociere din nou pe telefon. Dacă adresa IP se schimbă prin DHCP, actualizează adresa din profil; amprenta aceluiași certificat rămâne valabilă și nu trebuie regenerată doar pentru noul IP. O amprentă diferită este refuzată înainte de trimiterea tokenului; verifică identitatea pe PC înainte de reasociere.
 
-Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repornește. Reasociază PC-ul cu un cod nou sau actualizează configurația manuală. Nu distribui fișierul sau capturi ale tokenului.
+Pentru a scoate un singur telefon, Mac sau Apple TV, folosește lista de dispozitive (vezi mai jos); celelalte rămân asociate. Regenerarea tokenului principal (oprește agentul, șterge `.orbit-token`, repornește) retrage doar **Legacy device**, adică aplicațiile asociate înainte de 5.0 care încă folosesc tokenul vechi. Nu distribui fișierul sau capturi ale tokenului.
+
+## Dispozitive și permisiuni
+
+Începând cu **5.0**, fiecare dispozitiv asociat prin cod primește **propriul token**. Agentul păstrează doar amprenta SHA-256 a tokenului, în **`%LOCALAPPDATA%\Orbit\devices.json`** (protejat ca celelalte secrete, inaccesibil prin Files API). Fiecare dispozitiv are un nume, platforma (iOS, iPadOS, macOS, tvOS, watchOS), modelul, data ultimei conexiuni și ultima adresă IP, plus un set de permisiuni (**scopes**):
+
+| Scope | Ce permite |
+| --- | --- |
+| `read` | Starea și senzorii, inventarul, istoricul, Task Manager (citire), biblioteca, alimentarea și mixerul (citire), configurarea widgeturilor |
+| `control` | Comenzile PC (lock, sleep, restart, shutdown, media, HDR), volumul și mixerul, ieșirile audio, pornirea aplicațiilor și jocurilor, Sunshine (PIN, pornire), oprirea proceselor, înregistrarea sesiunilor |
+| `input` | Mouse, tastatură, butoane gamepad, `/ws/input`, previzualizarea ecranului `/ws/stream` și clipboardul |
+| `files` | Tot ce este sub `/api/files` (numai HTTPS) |
+| `admin` | Lista de dispozitive, setările, actualizările și login-ul Sunshine (numai HTTPS) |
+
+**Compatibilitate:** la prima pornire a versiunii 5.0, tokenul principal existent (`.orbit-token`) devine dispozitivul **Legacy device**, cu toate permisiunile. Aplicațiile asociate azi funcționează în continuare, fără reasociere, până când îl ștergi din listă. Asocierea nouă prin cod întoarce în răspunsul criptat `deviceID`, `deviceToken` și `scopes`, iar `apiToken` este chiar tokenul dispozitivului, deci și aplicațiile mai vechi primesc automat un token propriu. `POST /api/pair/start` acceptă opțional `platform` și `model`; dialogul de pe PC numește tipul dispozitivului („Enter this code on your Mac”). Un dispozitiv asociat prin cod primește toate permisiunile, ca înainte; un Apple Watch primește `read`, `control` și `input`. **Copy manual pairing token** din tray creează acum un dispozitiv nou, „Manual setup”, în locul tokenului principal; un token manual nefolosit este înlocuit de următorul, iar dispozitivele care nu se conectează niciodată în 24 de ore dispar din listă.
+
+API (toate cer HTTPS):
+
+- `GET /api/capabilities` (orice dispozitiv) → `{"apiVersion": 2, "agentVersion": "5.0.0", "scopes": ["read", …], "features": ["devices", …], "deviceID": "…", "deviceName": "…"}`. Aplicațiile verifică `features`, nu numărul versiunii.
+- `GET /api/devices` (`admin`) → `{"devices": [{"id", "name", "platform", "model", "scopes", "createdAt", "lastSeenAt", "lastAddress", "legacy", "current"}], "scopes": [...], "scopeDescriptions": {...}}`; `current` marchează dispozitivul care întreabă.
+- `POST /api/devices` (`admin`) cu `{"name", "platform"?, "model"?, "scopes"?}` → **201** `{"device": {...}, "token": "…"}`: token pentru alt dispozitiv al proprietarului (de exemplu Apple Watch), afișat o singură dată și cel mult cu permisiunile celui care îl creează.
+- `PATCH /api/devices/{id}` (`admin`) cu `{"name"?, "scopes"?}` → dispozitivul actualizat.
+- `DELETE /api/devices/{id}` → `{"status": "revoked", "id": "…"}`; `admin` poate scoate orice dispozitiv, iar orice dispozitiv se poate scoate pe sine („Forget this PC”).
+
+Erorile sunt citibile de aplicații și păstrează mesajul `detail`: **401** `{"code": "invalid_token"}` sau `{"code": "device_revoked"}` (dispozitivul a fost scos: asociază-l din nou), **403** `{"code": "scope_missing", "scope": "files"}`, **426** `{"code": "https_required"}`. Fiecare rută are o permisiune explicită într-un singur tabel (`orbit_access.py`); o rută fără intrare cere `admin` prin HTTPS. Tokenul de widget rămâne numai pentru citire și nu este niciodată un token de dispozitiv.
 
 ## Actualizare și diagnosticare
 

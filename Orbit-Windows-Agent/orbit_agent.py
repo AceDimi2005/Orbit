@@ -23,11 +23,15 @@ from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from fastapi import FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field
 
 import orbit_paths
+from orbit_access import AccessMiddleware, current_principal, error_response, note, websocket_principal
+from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
+                           invalid_token, scope_missing)
 from orbit_processes import collect_processes, terminate_process
+from orbit_tls import data_directory
 from orbit_screen import FrameSource, NoDisplay, StreamSlots, stream_frames
 from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
 from orbit_files import create_files_router
@@ -81,8 +85,13 @@ if os.getenv("ORBIT_SUNSHINE_CONF"):
     SUNSHINE_CONF_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_CONF"]))
 # Sunshine's web UI login, saved from the app so Orbit can enter pairing PINs itself.
 SUNSHINE_CREDENTIALS_PATH = Path(os.getenv("ORBIT_SUNSHINE_LOGIN_FILE", str(_RUNTIME_DIR / ".orbit-sunshine-login")))
-for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH):
+# Paired devices (token hashes and scopes) live with the TLS identity in %LOCALAPPDATA%\Orbit.
+DEVICES_PATH = Path(os.getenv("ORBIT_DEVICES_FILE") or str(data_directory() / "devices.json"))
+DEVICE_REGISTRY = None
+for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH):
     orbit_paths.protect_path(_secret)
+# What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
+FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive"]
 SUNSHINE_EXECUTABLE_PATHS = [
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
     Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
@@ -167,14 +176,52 @@ def load_widget_token(path=WIDGET_TOKEN_PATH):
     return token
 
 
+def bearer_token(authorization):
+    if isinstance(authorization, str) and authorization[:7].lower() == "bearer ":
+        return authorization[7:].strip() or None
+    return None
+
+
+def _same_secret(candidate, secret):
+    # Bytes, so a header with non-ASCII characters is simply wrong, never a server error.
+    return bool(candidate and secret and hmac.compare_digest(candidate.encode("utf-8", "surrogateescape"),
+                                                             secret.encode("utf-8")))
+
+
+def authenticate(authorization, address=None):
+    """The paired device behind a bearer token. Until the device list is loaded (unit tests,
+    tools that skip the lifespan), the master token stands for the legacy device."""
+    token = bearer_token(authorization)
+    registry = DEVICE_REGISTRY
+    if registry is not None:
+        return registry.authenticate(token, address)
+    if _same_secret(token, API_TOKEN):
+        return LEGACY_PRINCIPAL
+    raise invalid_token()
+
+
 def authorized(authorization):
-    return bool(API_TOKEN and isinstance(authorization, str)
-                and hmac.compare_digest(authorization, f"Bearer {API_TOKEN}"))
+    try:
+        authenticate(authorization)
+        return True
+    except AccessError:
+        return False
 
 
 def verify_token(authorization: str = Header(None)):
-    if not authorized(authorization):
-        raise HTTPException(status_code=401, detail="Invalid Orbit token", headers={"WWW-Authenticate": "Bearer"})
+    """Any paired device; the access middleware has already checked the route's scope."""
+    return authenticate(authorization)
+
+
+def caller(request, authorization=None):
+    """The device behind this request (set by the access middleware)."""
+    principal = getattr(request.state, "orbit_principal", None) if request is not None else None
+    return principal or current_principal() or authenticate(authorization)
+
+
+def require_scope(principal, scope):
+    if not principal.has(scope):
+        raise scope_missing(scope)
 
 
 def require_windows():
@@ -324,11 +371,19 @@ def record_history(metrics):
             LOGGER.exception("Could not save this session sample")
 
 
+def open_device_registry(master_token):
+    registry = DeviceRegistry(DEVICES_PATH)
+    registry.migrate_legacy(master_token)
+    registry.start()
+    return registry
+
+
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER
+    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY
     API_TOKEN = load_api_token()
     WIDGET_TOKEN = load_widget_token()
+    DEVICE_REGISTRY = open_device_registry(API_TOKEN)
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
     STOP_EVENT.clear()
@@ -351,10 +406,27 @@ async def lifespan(application):
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
     if recorder is not None:
         recorder.close()
+    registry, DEVICE_REGISTRY = DEVICE_REGISTRY, None
+    if registry is not None:
+        registry.close()
 
 
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def activity_observer(context, status):
+    """Called after every authenticated request (activity log; see orbit_activity)."""
+    return None
+
+
+app.add_middleware(AccessMiddleware, authenticate=lambda authorization, address: authenticate(authorization, address),
+                   observer=lambda context, status: activity_observer(context, status))
+
+
+@app.exception_handler(AccessError)
+async def access_error_handler(request, error):
+    return error_response(error)
 app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
@@ -367,6 +439,100 @@ def discover():
     return {"service": "orbit-agent", "version": 3, "agentVersion": AGENT_VERSION,
             "name": socket.gethostname(), "securePort": SECURE_PORT,
             "fingerprint": CERTIFICATE_FINGERPRINT, "pairingAvailable": PAIRING_MANAGER is not None}
+
+
+@app.get("/api/capabilities")
+def get_capabilities(request: Request, authorization: str = Header(None)):
+    """What this agent supports and what the calling device may do."""
+    principal = caller(request, authorization)
+    return {"apiVersion": 2, "agentVersion": AGENT_VERSION,
+            "scopes": [scope for scope in SCOPES if principal.has(scope)],
+            "features": list(FEATURES), "deviceID": principal.device_id, "deviceName": principal.name}
+
+
+def require_registry():
+    if DEVICE_REGISTRY is None:
+        raise HTTPException(status_code=503, detail="The device list is not ready. Restart Orbit PC Companion.")
+    return DEVICE_REGISTRY
+
+
+DEVICE_ID = PathParameter(pattern=r"^[0-9a-f]{32}$")
+
+
+class DeviceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=60)
+    platform: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=60)
+    scopes: list[str] | None = Field(default=None, max_length=len(SCOPES))
+
+
+class DeviceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    scopes: list[str] | None = Field(default=None, max_length=len(SCOPES))
+
+
+@app.get("/api/devices")
+def list_devices(request: Request, authorization: str = Header(None)):
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    return {"devices": require_registry().list(principal.device_id), "scopes": list(SCOPES),
+            "scopeDescriptions": dict(SCOPE_DESCRIPTIONS)}
+
+
+@app.post("/api/devices", status_code=201)
+def create_device(body: DeviceCreate, request: Request, authorization: str = Header(None)):
+    """A token for another device of the owner (for example an Apple Watch), shown once."""
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    scopes = body.scopes
+    try:
+        if scopes is not None and not set(scopes) <= set(SCOPES):
+            raise ValueError(f"Use only these scopes: {', '.join(SCOPES)}.")
+        if scopes is not None and not all(principal.has(scope) for scope in scopes):
+            raise scope_missing(next(scope for scope in scopes if not principal.has(scope)))
+        device, token = require_registry().register(body.name, body.platform, body.model, scopes)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    note(summary=f"Added {device['name']}", target=device["id"])
+    on_device_paired(device, None)
+    return {"device": device, "token": token}
+
+
+@app.patch("/api/devices/{device_id}")
+def update_device(body: DeviceUpdate, request: Request, device_id: str = DEVICE_ID, authorization: str = Header(None)):
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    if body.name is None and body.scopes is None:
+        raise HTTPException(status_code=422, detail="Send a new name or scopes.")
+    try:
+        device = require_registry().update(device_id, body.name, body.scopes, current_id=principal.device_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This device is not paired with the PC.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    changes = [f"renamed to {device['name']}" if body.name is not None else None,
+               f"access: {', '.join(device['scopes']) or 'none'}" if body.scopes is not None else None]
+    note(summary=f"Changed {device['name']} ({'; '.join(change for change in changes if change)})", target=device_id)
+    return device
+
+
+@app.delete("/api/devices/{device_id}")
+def revoke_device(request: Request, device_id: str = DEVICE_ID, authorization: str = Header(None)):
+    """Admin devices remove any device; every device may remove itself ("Forget this PC")."""
+    principal = caller(request, authorization)
+    own = principal.device_id is not None and principal.device_id == device_id
+    if not own:
+        require_scope(principal, "admin")
+    registry = require_registry()
+    try:
+        name = registry.get(device_id)["name"]
+        registry.revoke(device_id, "Removed itself" if own else f"Removed from {principal.name}")
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This device is not paired with the PC.") from error
+    note(summary=f"{name} removed itself" if own else f"Removed {name}", target=device_id)
+    return {"status": "revoked", "id": device_id}
 
 
 def get_local_network_details(preferred_ip=None):
@@ -403,6 +569,36 @@ def get_local_network_details(preferred_ip=None):
 def pairing_payload(host):
     return {**get_local_network_details(host), "securePort": SECURE_PORT,
             "apiToken": API_TOKEN, "widgetToken": WIDGET_TOKEN, "agentVersion": AGENT_VERSION}
+
+
+def register_paired_device(client, peer):
+    """A PIN pairing just succeeded: give the device its own token. `apiToken` carries it
+    too, so apps that know nothing about devices keep working."""
+    registry = DEVICE_REGISTRY
+    if registry is None:
+        return {}
+    device, token = registry.register(client.get("name"), client.get("platform"), client.get("model"))
+    on_device_paired(device, peer)
+    return {"apiToken": token, "deviceToken": token, "deviceID": device["id"], "scopes": device["scopes"]}
+
+
+def on_device_paired(device, peer):
+    """Hook for notifications and the activity log (see orbit_activity)."""
+    return None
+
+
+MANUAL_DEVICE_NAME = "Manual setup"
+
+
+def mint_manual_token():
+    """For "Copy manual pairing token": a new device token for manual setup in the app.
+    A previous manual token that was never used is retired, so the list stays clean."""
+    registry = DEVICE_REGISTRY
+    if registry is None:
+        return None
+    device, token = registry.register(MANUAL_DEVICE_NAME, None, None, replace_unused_named=MANUAL_DEVICE_NAME)
+    on_device_paired(device, None)
+    return token
 
 
 @app.get("/api/network-info")
@@ -604,7 +800,7 @@ def cursor_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, hsc
 
 @app.websocket("/ws/input")
 async def websocket_input_stream(websocket: WebSocket):
-    if not authorized(websocket.headers.get("authorization")):
+    if websocket_principal(websocket, "/ws/input", authenticate) is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -1091,7 +1287,7 @@ def screen_frame_source():
 
 @app.websocket("/ws/stream")
 async def websocket_video_stream(websocket: WebSocket):
-    if not authorized(websocket.headers.get("authorization")):
+    if websocket_principal(websocket, "/ws/stream", authenticate) is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -1128,9 +1324,11 @@ def api_handover(request: Request, authorization: str = Header(None)):
     """Asks this instance to exit so another one on the same PC can take the ports.
 
     Used by the per-user companion when it starts after the boot-time instance (which runs
-    before anyone signs in and cannot reach the desktop). Loopback only, token required.
+    before anyone signs in and cannot reach the desktop). Loopback only, and only with the
+    PC's own master token (`.orbit-token`), which device tokens never replace.
     """
-    verify_token(authorization)
+    if not _same_secret(bearer_token(authorization), API_TOKEN):
+        raise invalid_token()
     client = (request.client.host if request.client else "") or ""
     if client not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(status_code=403, detail="Hand-over is only accepted from this PC")
@@ -1292,6 +1490,7 @@ if __name__ == "__main__":
     try:
         API_TOKEN = load_api_token()
         certificate, private_key, fingerprint = ensure_tls_identity()
+        DeviceRegistry(DEVICES_PATH)  # An unreadable device list is reported here, not swallowed.
     except Exception as startup_error:
         if os.name == "nt" and ("--background" in args or "--tray" in args):
             ctypes.windll.user32.MessageBoxW(
@@ -1308,7 +1507,7 @@ if __name__ == "__main__":
         print("Took over from the boot-time Orbit Companion instance.")
 
     CERTIFICATE_FINGERPRINT = fingerprint
-    PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
+    PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload, register_device=register_paired_device)
     ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
     for line in startup_banner(get_local_network_details(), API_TOKEN, fingerprint, orbit_paths.interactive_console()):
         print(line)
@@ -1321,7 +1520,7 @@ if __name__ == "__main__":
         tray = OrbitTrayIcon(
             status_provider=tray_status_snapshot,
             on_stop=STOP_EVENT.set,
-            token_provider=lambda: API_TOKEN,
+            token_provider=mint_manual_token,
             log_path=log_file,
             notify_on_start=("--tray" in args),
         )

@@ -8,7 +8,9 @@ import base64
 import ctypes
 import hashlib
 import hmac
+import inspect
 import json
+import math
 import os
 import re
 import secrets
@@ -25,6 +27,7 @@ from pydantic import BaseModel, Field
 from srptools import SRPContext, SRPServerSession, constants
 
 import orbit_paths
+from orbit_devices import AccessError, device_kind, normalize_platform
 
 USERNAME = "orbit-pairing"
 PROTOCOL = "orbit-srp6a-sha256-2048-v1"
@@ -54,10 +57,14 @@ class PairingContext(SRPContext):
         return self.hash(self.pad(client_public), session_key_proof, session_key, as_bytes=True)
 
 
-def display_pin(name, pin):
-    message = (f"Pair {name} with Orbit\n\nCode: {pin}\n\n"
-               "Enter this code on your iPhone. It expires in 2 minutes and works once.\n"
-               "If you did not request this connection, ignore the code.")
+def pin_message(name, pin, kind="device"):
+    return (f"Pair {name} with Orbit\n\nCode: {pin}\n\n"
+            f"Enter this code on your {kind}. It expires in 2 minutes and works once.\n"
+            "If you did not request this connection, ignore the code.")
+
+
+def display_pin(name, pin, kind="device"):
+    message = pin_message(name, pin, kind)
     # The code is only for the person at this PC: never into the background log file.
     if os.name != "nt" or orbit_paths.interactive_console():
         print("\n" + message + "\n", flush=True)
@@ -68,7 +75,7 @@ def display_pin(name, pin):
             # The dialog owns a timer in its own message loop, so ignoring a
             # code cannot accumulate permanent windows or waiting threads.
             user32 = ctypes.WinDLL("user32", use_last_error=True)
-            title = "Orbit · Pair your iPhone · " + secrets.token_hex(6)
+            title = f"Orbit · Pair your {kind} · " + secrets.token_hex(6)
             timer_proc = ctypes.WINFUNCTYPE(None, wintypes.HWND, wintypes.UINT, ctypes.c_size_t, wintypes.DWORD)
             user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
             user32.FindWindowW.restype = wintypes.HWND
@@ -99,18 +106,41 @@ def display_pin(name, pin):
     return cancelled.set
 
 
+def _accepts_kind(function):
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(parameter.name == "kind" or parameter.kind == parameter.VAR_KEYWORD for parameter in parameters)
+
+
 class PairingManager:
-    def __init__(self, fingerprint, payload, show_pin=display_pin, clock=time.monotonic):
+    """`register_device(client, peer)` (optional) adds a per-device token to the encrypted
+    credentials once the PIN proof succeeded; `client` holds name, platform and model."""
+
+    def __init__(self, fingerprint, payload, show_pin=display_pin, clock=time.monotonic, register_device=None):
         self.fingerprint = fingerprint.replace(":", "").lower()
         self.payload = payload
         self.show_pin = show_pin
         self.clock = clock
+        self.register_device = register_device
         self._lock = threading.Lock()
         self._sessions = {}
         self._starts = defaultdict(deque)
         self._global_starts = deque()
 
-    def start(self, peer, name, public):
+    def pending(self):
+        """The code waiting on this PC, for the companion window on the PC itself only."""
+        now = self.clock()
+        with self._lock:
+            for session in self._sessions.values():
+                if session["expires"] > now:
+                    client = session.get("client") or {}
+                    return {"name": client.get("name"), "kind": client.get("kind"), "code": session.get("pin"),
+                            "expiresIn": max(0, math.ceil(session["expires"] - now))}
+        return None
+
+    def start(self, peer, name, public, platform=None, model=None):
         if not re.fullmatch(r"[0-9a-fA-F]{1,512}", public):
             raise HTTPException(400, "Invalid pairing key")
         context = PairingContext()
@@ -118,6 +148,9 @@ class PairingManager:
         if value <= 0 or value >= context._prime:
             raise HTTPException(400, "Invalid pairing key")
         name = "".join(c for c in name if c.isprintable()).strip()[:60] or "iPhone"
+        platform = normalize_platform(platform, name)
+        model = "".join(c for c in (model or "") if c.isprintable()).strip()[:60] or None
+        kind = device_kind(platform)
         now = self.clock()
         with self._lock:
             for key in list(self._sessions):
@@ -146,11 +179,12 @@ class PairingManager:
             server = SRPServerSession(context, f"{verifier:x}", private=secrets.token_hex(32))
             server.process(public, salt.hex())
             identifier = secrets.token_urlsafe(24)
-            self._sessions[identifier] = {"server": server, "peer": peer, "expires": now + PIN_SECONDS}
+            self._sessions[identifier] = {"server": server, "peer": peer, "expires": now + PIN_SECONDS, "pin": pin,
+                                          "client": {"name": name, "platform": platform, "model": model, "kind": kind}}
             result = {"id": identifier, "protocol": PROTOCOL, "salt": salt.hex(),
                       "serverPublic": server.public.zfill(512), "expiresIn": PIN_SECONDS}
         try:
-            dismiss = self.show_pin(name, pin)
+            dismiss = self.show_pin(name, pin, kind=kind) if _accepts_kind(self.show_pin) else self.show_pin(name, pin)
             with self._lock:
                 if identifier in self._sessions:
                     self._sessions[identifier]["dismiss"] = dismiss
@@ -182,6 +216,17 @@ class PairingManager:
         raw_key = bytes.fromhex(server.key.decode("ascii") if isinstance(server.key, bytes) else server.key)
         key = HKDF(algorithm=hashes.SHA256(), length=32, salt=identifier.encode(), info=KEY_INFO).derive(raw_key)
         payload = dict(self.payload(host))
+        if self.register_device is not None:
+            # Only after the PIN proof: a device of its own, with `apiToken` set to its token
+            # so apps that predate per-device access keep working unchanged.
+            try:
+                payload.update(self.register_device(dict(session.get("client") or {}), peer) or {})
+            except AccessError as error:
+                raise HTTPException(error.status, error.detail) from error
+            except HTTPException:
+                raise
+            except Exception as error:
+                raise HTTPException(503, "Could not add this device on the PC. Try pairing again.") from error
         payload["certificateFingerprint"] = self.fingerprint
         nonce = secrets.token_bytes(12)
         ciphertext = AESGCM(key).encrypt(nonce, json.dumps(payload).encode(), identifier.encode())
@@ -205,6 +250,9 @@ class PairingManager:
 class StartPairing(BaseModel):
     name: str = Field(default="iPhone", max_length=80)
     clientPublic: str = Field(min_length=1, max_length=512)
+    # Optional since 5.0: "iOS", "iPadOS", "macOS", "tvOS", "watchOS"… and the hardware model.
+    platform: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=60)
 
 
 class FinishPairing(BaseModel):
@@ -226,7 +274,8 @@ def create_pairing_router(manager):
     @router.post("/start")
     def start(body: StartPairing, request: Request):
         from fastapi.responses import JSONResponse
-        result = service(request).start(request.client.host, body.name, body.clientPublic)
+        result = service(request).start(request.client.host, body.name, body.clientPublic,
+                                        platform=body.platform, model=body.model)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @router.post("/finish")
