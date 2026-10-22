@@ -20,6 +20,7 @@ import urllib.request
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
+import sys
 
 import psutil
 import uvicorn
@@ -32,9 +33,11 @@ from orbit_access import AccessMiddleware, current_principal, error_response, no
 from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
 from orbit_power import (ACTION_WORDS, COUNTDOWN_SECONDS, GUID as POWER_PLAN_ID, NothingToCancel, PowerScheduler,
                          PowerUnavailable, TIMER_ACTIONS, WindowsPower, shutdown_comment)
+from orbit_diagnostics import Diagnostics
 from orbit_input import InputBlocked, InputError, send_keyboard
 from orbit_library import GAME_ID, GameLibrary
 from orbit_settings import Settings, SettingsError
+from orbit_window import WindowSessions, create_window_app, open_app_window, WINDOW_PORT
 from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
                            invalid_token, scope_missing)
 from orbit_processes import collect_processes, terminate_process
@@ -108,7 +111,7 @@ for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICE
 FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
             "activity", "notifications", "power.countdown", "power.cancel", "library",
             "power.timer", "power.keepAwake", "power.plans", "audio.default", "audio.microphone",
-            "input.unicode", "input.shortcuts"]
+            "input.unicode", "input.shortcuts", "settings", "window"]
 POWER = WindowsPower()
 INPUT_SESSIONS = InputSessions()
 
@@ -449,7 +452,9 @@ def open_activity_log():
 
 
 def open_settings():
-    return Settings(SETTINGS_PATH)
+    settings = Settings(SETTINGS_PATH)
+    settings.apply_environment()
+    return settings
 
 
 @asynccontextmanager
@@ -704,7 +709,10 @@ def on_device_paired(device, peer):
     """A new device can use this PC: log it and tell the person at the PC."""
     from orbit_devices import device_kind
     manual = device.get("name") == MANUAL_DEVICE_NAME and not device.get("platform")
-    summary = "Created a manual pairing token" if manual else f"Paired {device['name']} ({device_kind(device.get('platform'))})"
+    kind = device_kind(device.get("platform"))
+    # "Paired Apple TV", "Paired Living room (Apple TV)": the kind only when the name does not say it.
+    named = kind == "device" or kind.split()[-1].casefold() in device["name"].casefold()
+    summary = "Created a manual pairing token" if manual else f"Paired {device['name']}" + ("" if named else f" ({kind})")
     actor = current_principal()
     log = ACTIVITY
     if log is not None:
@@ -722,15 +730,20 @@ def on_device_paired(device, peer):
 MANUAL_DEVICE_NAME = "Manual setup"
 
 
-def mint_manual_token():
-    """For "Copy manual pairing token": a new device token for manual setup in the app.
+def create_manual_device():
+    """A new "Manual setup" device and its token, for manual configuration in the app.
     A previous manual token that was never used is retired, so the list stays clean."""
     registry = DEVICE_REGISTRY
     if registry is None:
-        return None
+        return None, None
     device, token = registry.register(MANUAL_DEVICE_NAME, None, None, replace_unused_named=MANUAL_DEVICE_NAME)
     on_device_paired(device, None)
-    return token
+    return device, token
+
+
+def mint_manual_token():
+    """For the tray's "Copy manual pairing token"."""
+    return create_manual_device()[1]
 
 
 @app.get("/api/network-info")
@@ -1284,6 +1297,94 @@ def require_settings():
     return SETTINGS
 
 
+def settings_summary(changes):
+    words = []
+    if "runAtStartup" in changes:
+        words.append(f"turned {'on' if changes['runAtStartup'] else 'off'} Start with Windows")
+    if "notifications" in changes:
+        words.append("notifications: " + ", ".join(f"{key} {'on' if value else 'off'}" for key, value in changes["notifications"].items()))
+    if "monitoring" in changes:
+        words.append("monitoring: " + ", ".join(changes["monitoring"]))
+    if "updates" in changes:
+        words.append(f"turned {'on' if changes['updates'].get('checkAutomatically') else 'off'} daily update checks")
+    text = "; ".join(words)
+    return (text[:1].upper() + text[1:]) if text else "Changed settings"
+
+
+def current_settings():
+    from orbit_tray import BootTaskManager, StartupManager
+    settings = require_settings()
+    return {"runAtStartup": StartupManager().is_enabled(), "startBeforeSignIn": BootTaskManager().is_installed(),
+            "bootTaskAvailable": os.name == "nt",
+            "notifications": settings.notifications(), "monitoring": settings.monitoring(),
+            "updates": {**settings.updates(), "version": AGENT_VERSION, "frozen": orbit_paths.is_frozen()}}
+
+
+def apply_settings(changes):
+    """Validate everything first, then change: a rejected value leaves every setting as it was."""
+    from orbit_settings import MONITORING_ENVIRONMENT, clean_monitoring_value
+    from orbit_tray import StartupManager
+    settings = require_settings()
+    if "notifications" in changes:
+        unknown = set(changes["notifications"]) - set(settings.notifications())
+        if unknown or not changes["notifications"] or not all(isinstance(value, bool) for value in changes["notifications"].values()):
+            raise SettingsError("Notification settings are true or false: " + ", ".join(sorted(settings.notifications())) + ".")
+    if "monitoring" in changes:
+        if not isinstance(changes["monitoring"], dict) or not changes["monitoring"]:
+            raise SettingsError("Send at least one monitoring setting.")
+        for key, value in changes["monitoring"].items():
+            if key not in MONITORING_ENVIRONMENT:
+                raise SettingsError(f"Unknown monitoring setting: {key}.")
+            clean_monitoring_value(key, value)
+    if "updates" in changes and (set(changes["updates"]) != {"checkAutomatically"}
+                                 or not isinstance(changes["updates"]["checkAutomatically"], bool)):
+        raise SettingsError("The update setting is checkAutomatically, true or false.")
+    if "runAtStartup" in changes:
+        try:
+            StartupManager().set_enabled(bool(changes["runAtStartup"]))
+        except (RuntimeError, OSError) as error:
+            raise OSError(f"Windows did not change the startup setting: {error}") from error
+    if "notifications" in changes:
+        settings.update_notifications(changes["notifications"])
+    if "monitoring" in changes:
+        settings.update_monitoring(changes["monitoring"])
+    if "updates" in changes:
+        settings.update_updates(changes["updates"])
+    return current_settings()
+
+
+class SettingsChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runAtStartup: StrictBool | None = None
+    notifications: dict | None = None
+    monitoring: dict | None = None
+    updates: dict | None = None
+
+
+@app.get("/api/settings")
+def get_settings(authorization: str = Header(None)):
+    """Startup, notifications, monitoring and update settings (monitoring replaces the old
+    environment variables; values Windows' environment still sets are listed as managed)."""
+    verify_token(authorization)
+    return current_settings()
+
+
+@app.patch("/api/settings")
+def change_settings(body: SettingsChangeRequest, authorization: str = Header(None)):
+    verify_token(authorization)
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Send at least one setting.")
+    try:
+        result = apply_settings(changes)
+    except SettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    note(summary=settings_summary(changes))
+    return result
+
+
 @app.get("/api/settings/notifications")
 def get_notification_settings(authorization: str = Header(None)):
     verify_token(authorization)
@@ -1364,6 +1465,19 @@ def sunshine_credentials():
 
 def sunshine_executable():
     return next((path for path in SUNSHINE_EXECUTABLE_PATHS if path.is_file()), None)
+
+
+def sunshine_summary():
+    config = sunshine_config()
+    base = sunshine_base_port()
+    try:
+        app_count = len(sunshine_entries())
+        installed = any(path.is_file() for path in SUNSHINE_APPS_PATHS) or bool(config)
+    except HTTPException:
+        app_count, installed = 0, True
+    return {"installed": installed, "running": sunshine_running(), "httpPort": base, "httpsPort": base - 5,
+            "webUIPort": base + 1, "name": config.get("sunshine_name") or socket.gethostname(), "appCount": app_count,
+            "canSubmitPin": sunshine_credentials() is not None, "canStart": sunshine_executable() is not None}
 
 
 @app.get("/api/sunshine/info")
@@ -1795,6 +1909,188 @@ def api_apply_update(request: Request, authorization: str = Header(None)):
     }
 
 
+DIAGNOSTICS = Diagnostics(secure_port=SECURE_PORT, legacy_port=AGENT_PORT,
+                          address=lambda: get_local_network_details().get("ipAddress") or None,
+                          sunshine=sunshine_summary)
+
+
+class AgentWindowBackend:
+    """What the companion window on this PC may read and change (see orbit_window).
+    Everything it changes is recorded in Activity as done by "This PC"."""
+
+    def overview(self):
+        registry = require_registry()
+        devices = registry.list()
+        now = time.time()
+        online = sum(1 for device in devices if device.get("lastSeenAt") and now - (parse_timestamp(device["lastSeenAt"]) or 0) < 90)
+        network = get_local_network_details()
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        log = ACTIVITY
+        scheduler = POWER_SCHEDULER
+        with STATE_LOCK:
+            game = STATE.get("activeGame") if time.monotonic() - LAST_TELEMETRY <= 10 else None
+        return {"pc": {"name": network.get("hostname") or socket.gethostname(), "address": network.get("ipAddress") or None,
+                       "securePort": SECURE_PORT, "agentPort": AGENT_PORT, "version": AGENT_VERSION,
+                       "fingerprint": CERTIFICATE_FINGERPRINT or None, "bootMode": BOOT_MODE},
+                "pairing": PAIRING_MANAGER.pending() if PAIRING_MANAGER is not None else None,
+                "devices": devices,
+                "counts": {"devices": len(devices), "online": online, "actionsToday": log.count_since(midnight) if log else 0},
+                "activity": log.entries(limit=5)["entries"] if log else [],
+                "power": {"timer": scheduler.public_timer() if scheduler else None,
+                          "keepAwake": scheduler.public_keep_awake() if scheduler else None},
+                "game": game}
+
+    def devices(self):
+        return {"devices": require_registry().list(), "scopes": list(SCOPES)}
+
+    def update_device(self, device_id, name=None, scopes=None):
+        device = require_registry().update(device_id, name, scopes)
+        record_event(None, "devices", "device.update", f"Changed {device['name']} (access: {', '.join(device['scopes']) or 'none'})")
+        return device
+
+    def remove_device(self, device_id):
+        registry = require_registry()
+        name = registry.get(device_id)["name"]
+        registry.revoke(device_id, "Removed on this PC")
+        record_event(None, "devices", "device.revoke", f"Removed {name}")
+        return {"status": "revoked", "id": device_id}
+
+    def add_manual_device(self):
+        device, token = create_manual_device()
+        if token is None:
+            raise OSError("The device list is not ready. Restart Orbit PC Companion.")
+        try:
+            from orbit_desktop import copy_private_text
+            copy_private_text(token)
+            copied = True
+        except Exception:
+            copied = False
+        return {"device": device, "token": token, "copied": copied}
+
+    def activity(self, before=None, category=None, limit=50):
+        if category is not None and category not in ACTIVITY_CATEGORIES:
+            raise ValueError("Unknown kind of activity.")
+        if ACTIVITY is None:
+            raise OSError("The activity log is not ready.")
+        return ACTIVITY.entries(before=before, limit=limit, category=category)
+
+    def settings(self):
+        return current_settings()
+
+    def update_settings(self, changes):
+        result = apply_settings(changes)
+        record_event(None, "settings", "settings.change", settings_summary(changes))
+        return result
+
+    def set_boot_task(self, enabled):
+        from orbit_tray import BootTaskManager
+        try:
+            BootTaskManager().set_installed(bool(enabled))
+        except (RuntimeError, OSError) as error:
+            raise OSError(str(error)) from error
+        record_event(None, "settings", "settings.bootTask",
+                     "Asked Windows to start Orbit before sign-in" if enabled else "Asked Windows to stop starting Orbit before sign-in")
+        return {"status": "requested", "startBeforeSignIn": bool(enabled)}
+
+    def diagnostics(self, force=False):
+        return DIAGNOSTICS.report(force=force)
+
+    def fix(self, kind, interface_index=None):
+        if kind == "firewall":
+            DIAGNOSTICS.fix_firewall()
+            record_event(None, "settings", "network.firewall", "Asked Windows to add Orbit's firewall rules")
+        elif kind == "privateNetwork":
+            DIAGNOSTICS.make_private(interface_index)
+            record_event(None, "settings", "network.private", "Asked Windows to make this network Private")
+        else:
+            raise ValueError("Unknown fix.")
+        return {"status": "requested"}
+
+    def check_updates(self):
+        from orbit_updater import check_for_updates
+        try:
+            return check_for_updates(AGENT_VERSION)
+        except Exception as error:
+            raise OSError(str(error)) from error
+
+    def install_update(self):
+        from orbit_updater import FrozenBuildError, apply_update, check_for_updates
+        if orbit_paths.is_frozen():
+            raise PermissionError(FrozenBuildError.MESSAGE)
+        try:
+            info = check_for_updates(AGENT_VERSION)
+        except Exception as error:
+            raise OSError(str(error)) from error
+        if not info.get("updateAvailable") or not info.get("downloadUrl"):
+            return {"status": "up_to_date", "currentVersion": AGENT_VERSION, "latestVersion": info.get("latestVersion")}
+        try:
+            result = apply_update(info["downloadUrl"])
+        except FrozenBuildError as error:
+            raise PermissionError(str(error)) from error
+        except Exception as error:
+            raise OSError(f"Could not apply the update: {error}") from error
+        record_event(None, "update", "update.apply", f"Updated Orbit PC Companion to {info.get('latestVersion')}")
+        return {"status": "updated", "latestVersion": info.get("latestVersion"), "updatedFiles": result.files,
+                "dependencies": result.dependencies}
+
+    def restart(self):
+        restart_companion()
+        return {"status": "restarting"}
+
+
+def parse_timestamp(text):
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def restart_command(pid=None):
+    """How to start this companion again in the tray, after process `pid` has exited."""
+    pid = pid or os.getpid()
+    if orbit_paths.is_frozen():
+        return [sys.executable, "--after", str(pid), "--tray"]
+    from orbit_tray import resolve_pythonw_executable
+    script = orbit_paths.runtime_directory() / "orbit_agent.py"
+    return [str(resolve_pythonw_executable(script)), str(script), "--after", str(pid), "--tray"]
+
+
+def restart_companion(launcher=None, delay=0.8):
+    """Start a new companion that waits for this one to exit, then stop this one."""
+    launch = launcher or (lambda command: subprocess.Popen(command, close_fds=True,
+                                                           creationflags=0x00000008 | 0x00000200 if os.name == "nt" else 0))
+    launch(restart_command())
+    threading.Timer(delay, STOP_EVENT.set).start()
+
+
+def wait_for_previous(pid, timeout=30.0):
+    """--after <pid>: let the previous companion release the ports and the mutex first."""
+    try:
+        psutil.Process(int(pid)).wait(timeout=timeout)
+    except (psutil.Error, ValueError, TypeError):
+        pass
+
+
+def update_watch_worker(first_delay=600, interval=24 * 3600):
+    """Once a day (when allowed), say so on the PC if a newer companion is out. Never installs."""
+    told = set()
+    delay = first_delay
+    while not STOP_EVENT.wait(delay):
+        delay = interval
+        settings = SETTINGS
+        if settings is None or not settings.updates().get("checkAutomatically", True) or NOTIFIER.show is None:
+            continue
+        try:
+            from orbit_updater import check_for_updates
+            info = check_for_updates(AGENT_VERSION)
+        except Exception:
+            continue
+        latest = info.get("latestVersion")
+        if info.get("updateAvailable") and latest and latest not in told:
+            told.add(latest)
+            NOTIFIER.notify("updates", "Orbit · Update", f"Orbit PC Companion {latest} is available. Open Orbit to install it.")
+
+
 def tray_status_snapshot():
     network = get_local_network_details()
     with STATE_LOCK:
@@ -1841,8 +2137,16 @@ def _acquire_single_instance_mutex():
         return None
 
 
+WINDOW_SESSIONS = WindowSessions()
+
+
+def open_companion_window():
+    """Tray left click: a one-time code exchanged for the window's session cookie."""
+    code = WINDOW_SESSIONS.issue_launch_code()
+    return open_app_window(f"http://127.0.0.1:{WINDOW_PORT}/open?code={code}")
+
+
 if __name__ == "__main__":
-    import sys
     from orbit_tls import ensure_tls_identity, serve_both
     from orbit_tray import OrbitTrayIcon, StartupManager, ensure_background_stdio
 
@@ -1862,6 +2166,10 @@ if __name__ == "__main__":
 
     BOOT_MODE = "--boot" in args
     POWER.interactive = not BOOT_MODE
+    if "--after" in args:
+        position = [arg.strip().lower() for arg in sys.argv].index("--after")
+        if position + 1 < len(sys.argv):
+            wait_for_previous(sys.argv[position + 1])
     log_file = ensure_background_stdio()
     mutex = _acquire_single_instance_mutex()
     if mutex is False:
@@ -1896,7 +2204,8 @@ if __name__ == "__main__":
 
     CERTIFICATE_FINGERPRINT = fingerprint
     PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload, register_device=register_paired_device)
-    ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
+    # --no-discovery: no Bonjour advert (development and CI runs stay invisible to "Find my PC").
+    ADVERTISEMENT = None if "--no-discovery" in args else OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
     for line in startup_banner(get_local_network_details(), API_TOKEN, fingerprint, orbit_paths.interactive_console()):
         print(line)
 
@@ -1904,6 +2213,8 @@ if __name__ == "__main__":
     tray = None
     if BOOT_MODE:
         print("Boot-time instance: no tray icon; hands over to the signed-in companion when it starts.")
+    elif "--no-tray" in args:
+        print("Running without a tray icon (--no-tray).")
     else:
         tray = OrbitTrayIcon(
             status_provider=tray_status_snapshot,
@@ -1911,11 +2222,13 @@ if __name__ == "__main__":
             token_provider=mint_manual_token,
             log_path=log_file,
             notify_on_start=("--tray" in args),
+            on_open=open_companion_window,
         )
         tray.start()
         NOTIFIER.show = tray.show_notification
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
+        threading.Thread(target=update_watch_worker, name="orbit-update-watch", daemon=True).start()
     try:
         asyncio.run(serve_both(
             app,
@@ -1925,6 +2238,9 @@ if __name__ == "__main__":
             certificate,
             private_key,
             stop_event=STOP_EVENT,
+            # The companion window (127.0.0.1 only); the boot instance has no desktop to show it on.
+            local_app=None if BOOT_MODE else create_window_app(AgentWindowBackend(), WINDOW_SESSIONS, WINDOW_PORT),
+            local_port=WINDOW_PORT,
         ))
     except KeyboardInterrupt:
         pass

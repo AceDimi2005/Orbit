@@ -1,19 +1,19 @@
 # Orbit Agent pentru Windows
 
-Agentul **5.0.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **5.0.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Pe PC are acum și o fereastră proprie, **Orbit** (click pe pictograma din tray): dispozitivele asociate, ce au făcut, setările și diagnosticarea conexiunii. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
 ## Pornire, instalare și conectare
 
 1. Instalează **Python 3.11 sau mai nou** de la [python.org](https://www.python.org/downloads/windows/), cu opțiunea **Add Python to PATH**.
 2. **Instalare rapidă (recomandat):** deschide `install_orbit.bat`. Acesta creează mediul Python, instalează dependențele, compilează automat executabilul nativ `OrbitCompanion.exe` (fără fereastră de consolă, cu pictograma `orbit.ico`), creează scurtături pe **Desktop** și în **Start Menu** și pornește companionul în System Tray.
    - Alternativ, poți rula direct `start_agent.bat` sau poți construi un executabil complet independent (`dist\OrbitCompanion.exe`, fără să necesite Python pe alte PC-uri) rulând `build_exe.bat`.
-3. Apasă click sau click-dreapta pe pictograma Orbit din **System Tray** (dreapta-jos / **Hidden icons**) pentru meniul rapid:
+3. **Click** pe pictograma Orbit din **System Tray** (dreapta-jos / **Hidden icons**) deschide fereastra Orbit (vezi [Fereastra Orbit](#fereastra-orbit)). **Click-dreapta** deschide meniul rapid, cu **Open Orbit** primul:
    - **Run at Windows startup**: activează sau dezactivează pornirea automată în fundal la autentificarea în Windows (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
    - **Check for updates...**: verifică pe GitHub (`https://github.com/AceDimi2005/Orbit`) dacă a apărut o versiune publică nouă a companionului de PC și permite descărcarea și instalarea automată a actualizării (sau deschiderea paginii de release).
    - **Connection details...** și **Copy manual pairing token**: afișează IP-ul, portul HTTPS, amprenta SHA-256 a certificatului sau copiază tokenul manual în clipboard ca text privat: Windows nu îl păstrează în istoricul clipboardului (**Win+V**) și nici în clipboardul sincronizat în cloud, iar Orbit golește clipboardul după un minut dacă nu ai copiat altceva între timp.
    - **Show console window** / **Open agent log**: afișează consola (dacă a fost pornit cu `start_agent.bat --console`) sau deschide jurnalul `%LOCALAPPDATA%\Orbit\agent.log`.
    - **Stop Orbit Companion**: oprește curat serverul, anunțul Bonjour și pictograma din tray.
-4. La solicitarea Windows Firewall, permite Python / `OrbitCompanion.exe` în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone.
+4. La solicitarea Windows Firewall, permite Python / `OrbitCompanion.exe` în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone. Windows 11 marchează orice rețea nouă ca **Public**, iar atunci telefonul nu găsește PC-ul: **Orbit → Diagnostics** arată exact unde se oprește conexiunea și, cu un click și permisiunea Windows (UAC), face rețeaua Private sau adaugă regulile de firewall ale Orbit.
 5. În onboarding, apasă **Find my PC**, alege PC-ul descoperit și introdu **codul de șase cifre** afișat în dialogul Windows. Codul este valabil **120 de secunde**, pentru o singură încercare de confirmare. După un cod greșit sau expirat, solicită unul nou.
 6. Orbit completează automat IP/hostname, tokenurile, certificatul și datele Wake-on-LAN și salvează profilul. Așteaptă inventarul și prima măsurătoare. Pentru alt PC, folosește **Tools → My PCs → Find a PC nearby**. Tokenul fiecărui profil rămâne separat în Keychain, iar dashboardul și favoritele se păstrează per PC.
 
@@ -311,6 +311,22 @@ Agentul notează în **`%LOCALAPPDATA%\Orbit\activity.sqlite3`** fiecare comand�
 
 **Notificări Windows** (balonul pictogramei din tray): un dispozitiv nou asociat, începutul vizualizării ecranului, transferurile de fișiere (o rafală devine o singură notificare), începutul unei sesiuni de control și acțiunile de alimentare. `GET /api/settings/notifications` și `PATCH /api/settings/notifications` (`admin`, HTTPS) citesc și schimbă `{"newDevice": true, "power": true, "files": true, "screenView": true, "inputSession": true, "quietWhileGaming": true}`, păstrate în `%LOCALAPPDATA%\Orbit\settings.json`. Cu `quietWhileGaming`, cât timp rulează un joc nu apar notificările pentru fișiere, ecran și input; dispozitivele noi și acțiunile de alimentare apar mereu (dacă sunt activate). Instanța de boot, fără tray, nu afișează notificări, dar notează activitatea.
 
+## Fereastra Orbit
+
+Fereastra rulează numai pe PC: un server local pe **`127.0.0.1:8767`** (nu este accesibil din rețea), deschis de la pictograma din tray ca fereastră de aplicație Microsoft Edge (`msedge --app=…`, fără taburi și bară de adresă) sau, fără Edge, în browserul implicit. Fiecare click din tray creează un cod de lansare valabil **60 de secunde** și o singură dată, schimbat imediat pe un cookie de sesiune `HttpOnly`, `SameSite=Strict`; codul dispare din bara de adresă. Serverul acceptă numai antetul `Host` `127.0.0.1:8767` / `localhost:8767` (protecție împotriva DNS rebinding), cere pentru fiecare apel și un antet propriu pe care o pagină străină nu îl poate trimite, acceptă modificări numai cu `Origin` propriu și trimite un Content-Security-Policy cu nonce, fără resurse externe (fără CDN, fără fonturi descărcate). Instanța de boot nu are fereastră.
+
+Paginile:
+
+- **Overview**: numele PC-ului și verdictul conexiunii („Devices on Dimi-Home 5G can reach this PC” sau „Phones cannot reach this PC”), codul de asociere mare, cu dispozitivul care îl cere și timpul rămas, cât timp o asociere așteaptă, drumul conexiunii (rețea → Windows Firewall → Orbit → dispozitivele tale), acțiunile de azi, jocul pornit și temporizatorul de alimentare, primele dispozitive și ultimele acțiuni.
+- **Devices**: toate dispozitivele, cu permisiunile și ultima conexiune; redenumire, permisiuni (comutatoare pentru fiecare scope) și **Remove**, cu o confirmare care numește dispozitivul. **Add a device** explică asocierea prin cod și poate crea un token manual, afișat o singură dată și copiat privat.
+- **Activity**: jurnalul complet, filtrat pe tipuri (Power, Files, Devices, Screen, Input, Audio, Apps, Settings).
+- **Settings**: pornire cu Windows, pornire înainte de autentificare (Windows cere permisiunea), notificările (cu o previzualizare a notificării așa cum apare), monitorizarea (jocuri suplimentare, adaptorul de rețea, captura PresentMon, LibreHardwareMonitor) și actualizările (verificare zilnică opțională, care doar anunță; instalare și **Restart Orbit**). Fiecare modificare se salvează imediat.
+- **Diagnostics**: profilul fiecărei rețele (Public/Private/Work), regulile Orbit din Windows Firewall pentru TCP 8766, UDP 5353 și TCP 8765 (Apple Watch și aplicațiile vechi), adresa, portul și amprenta certificatului, starea Sunshine. **Make this network Private** (`Set-NetConnectionProfile`) și **Add Orbit's firewall rules** (`New-NetFirewallRule`, numai **LocalSubnet**, profilurile **Private, Domain**) rulează printr-un PowerShell ridicat, cu promptul UAC al Windows, ca task-ul de boot. Nimic nu se schimbă fără click-ul tău și permisiunea Windows.
+
+Tot ce faci în fereastră apare în Activity cu dispozitivul „This PC”. Designul: negru adevărat, text alb, o singură culoare de accent (Orbit Blue `#0A84FF`) numai pe date (dispozitivele conectate, codul în curs), Segoe UI Variable, fără gradiente sau umbre decorative; tranzițiile scurte respectă **Reduce motion** din Windows.
+
+**Pictograma** este noul semn Orbit: un inel alb deschis sus, cu un satelit albastru în deschidere. În tray apare singur, pe fundal transparent (cu inel închis la culoare dacă bara de activități Windows este deschisă la culoare); dimensiunile mari (scurtături, Explorer) îl pun pe un pătrat grafit rotunjit.
+
 ## Pornire înainte de autentificarea în Windows
 
 Din meniul pictogramei din tray, **Start before Windows sign-in (boot task)** creează (cu drepturi de administrator, prin UAC) un task programat care pornește companionul la boot, în contul tău, fără parolă salvată (tip de logon S4U, deci aceleași fișiere `%LOCALAPPDATA%\Orbit`, aceeași identitate TLS). Instanța de boot rulează cu `--boot`: fără pictogramă în tray, iar funcțiile care au nevoie de desktop (mouse, tastatură, previzualizare, clipboard) nu sunt disponibile până te autentifici. Când te autentifici, instanța normală din tray pornește, îi cere celei de boot să se oprească (`POST /api/internal/handover`, doar de pe loopback, cu token) și preia porturile. Astfel telefonul se poate conecta imediat după pornirea PC-ului (stare, Wake-on-LAN, fișiere, stream prin Sunshine, care rulează oricum ca serviciu). Dacă task-ul nu pornește (contul nu are dreptul „Log on as a batch job”), rulează manual, ca administrator: `schtasks /Create /F /SC ONSTART /RU SYSTEM /RL HIGHEST /TN "Orbit PC Companion (boot)" /TR "\"<cale>\pythonw.exe\" \"<cale>\orbit_agent.py\" --boot"`; în acest caz instanța de boot folosește identitatea TLS a contului SYSTEM, deci telefonul trebuie asociat o dată și cu ea.
@@ -318,6 +334,8 @@ Din meniul pictogramei din tray, **Start before Windows sign-in (boot task)** cr
 `/api/status` raportează `sessionLocked`: `true` cât timp Windows afișează ecranul de autentificare sau de blocare (procesul LogonUI), `false` când sesiunea este deschisă, `null` în afara Windows. Aplicațiile arată „Locked” în locul lui „Online”.
 
 ## Configurare avansată
+
+Opțiunile de monitorizare se schimbă acum din **Orbit → Settings → Monitoring** sau prin API și sunt păstrate în `%LOCALAPPDATA%\Orbit\settings.json`; o variabilă de mediu setată în Windows are în continuare prioritate, iar fereastra spune când o setare este administrată astfel. `GET /api/settings` (`admin`, HTTPS) → `{"runAtStartup", "startBeforeSignIn", "bootTaskAvailable", "notifications": {...}, "monitoring": {"gameProcesses": [], "networkInterface", "presentMonCSV", "libreHardwareMonitorURL", "managedByEnvironment": []}, "updates": {"checkAutomatically", "version", "frozen"}}`; `PATCH /api/settings` primește oricare dintre `runAtStartup`, `notifications`, `monitoring`, `updates` și validează totul înainte să schimbe ceva. Pornirea înainte de autentificare cere UAC, deci se schimbă numai din fereastra de pe PC.
 
 Variabilele de mediu trebuie setate înainte de pornirea agentului:
 
@@ -337,6 +355,10 @@ Variabilele de mediu trebuie setate înainte de pornirea agentului:
 | `ORBIT_SUNSHINE_APPS` | Calea explicită spre Sunshine `apps.json` |
 | `ORBIT_SUNSHINE_CONF` | Calea explicită spre `sunshine.conf` (porturi, nume) |
 | `ORBIT_SUNSHINE_LOGIN_FILE` | Altă locație pentru login-ul web UI Sunshine salvat (`.orbit-sunshine-login`) |
+| `ORBIT_WINDOW_PORT` | Portul ferestrei Orbit, numai pe `127.0.0.1`; implicit `8767` |
+| `ORBIT_DEVICES_FILE` | Altă locație pentru lista de dispozitive; implicit `%LOCALAPPDATA%\Orbit\devices.json` |
+
+Opțiuni de pornire pentru dezvoltare: `--console` (consola vizibilă), `--no-tray` (fără pictogramă, de exemplu în CI), `--no-discovery` (fără anunț Bonjour, ca o instanță de test să nu apară în **Find my PC**), `--after <pid>` (așteaptă oprirea instanței anterioare; folosit de **Restart Orbit**).
 
 API-ul de status include `agentVersion`, `sensorSource`, `sensorStatus`, `gpuSource` și `networkInterface`, păstrează câmpurile istorice și include `fps`, `fpsSource`, `fpsUnavailableReason`, `activeGameProcess`, `lastUpdated`, `volumeAvailable` și `telemetryAvailable`. Metricile extinse includ `cpuPowerWatts`, `gpuPowerWatts`, `vramUsedGB`, `vramTotalGB`, `cpuClockMHz`, `cpuClockSource`, `cpuFanRPM`, `gpuFanPercent`, `networkUploadMBps`, `networkDownloadMBps`, `diskReadMBps` și `diskWriteMBps`. Senzorii necunoscuți sunt `null`; clienții trebuie să respecte indicatorii de disponibilitate pentru câmpurile numerice păstrate pentru compatibilitate. `/api/specs` oferă inventarul structurat separat de măsurătorile live.
 

@@ -317,7 +317,7 @@ class ActivityAPITests(unittest.TestCase):
     def test_new_device_is_logged_and_notified_unless_switched_off(self):
         with patch.object(agent, "current_principal", return_value=None):
             agent.register_paired_device({"name": "Orbit on Mac", "platform": "macOS"}, "192.168.1.40")
-        self.assertEqual(self.entries(category="devices")[0]["summary"], "Paired Mac (Mac) from 192.168.1.40")
+        self.assertEqual(self.entries(category="devices")[0]["summary"], "Paired Mac from 192.168.1.40")
         self.assertEqual(self.shown[-1][0], "Orbit · New device")
         self.assertEqual(self.https.patch("/api/settings/notifications", headers=self.auth, json={"newDevice": False}).status_code, 200)
         count = len(self.shown)

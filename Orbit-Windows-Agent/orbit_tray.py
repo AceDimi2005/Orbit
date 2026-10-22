@@ -3,7 +3,6 @@ import ctypes
 from ctypes import wintypes
 import io
 import logging
-import math
 import os
 from pathlib import Path
 import secrets
@@ -23,6 +22,7 @@ MAX_LOG_BYTES = 2 * 1024 * 1024
 
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
+WM_SETTINGCHANGE = 0x001A
 WM_QUIT = 0x0012
 WM_SETICON = 0x0080
 WM_COMMAND = 0x0111
@@ -82,6 +82,9 @@ ID_OPEN_LOG = 1005
 ID_EXIT = 1006
 ID_CHECK_UPDATES = 1007
 ID_TOGGLE_BOOT = 1008
+ID_OPEN_WINDOW = 1009
+OPEN_DEBOUNCE_SECONDS = 1.5
+PERSONALIZE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 
 BOOT_TASK_NAME = "Orbit PC Companion (boot)"
 
@@ -193,60 +196,9 @@ def build_windows_ico(base_rgba, sizes=(16, 20, 24, 32, 40, 48, 64, 256)):
 
 
 def render_default_icon(size=256):
-    """Render the Orbit planet, glowing cyan orbital ring, and satellite moon."""
-    from PIL import Image, ImageDraw
-
-    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    margin = max(2, int(size * 0.02))
-    radius = int(size * 0.23)
-    draw.rounded_rectangle(
-        (margin, margin, size - 1 - margin, size - 1 - margin),
-        radius=radius,
-        fill=(4, 15, 42, 255),
-        outline=(87, 200, 255, 160),
-        width=max(2, int(size * 0.025)),
-    )
-    center = size / 2.0
-    planet_r = size * 0.21
-    draw.ellipse(
-        (center - planet_r, center - planet_r, center + planet_r, center + planet_r),
-        fill=(10, 38, 92, 255),
-        outline=(72, 190, 255, 235),
-        width=max(2, int(size * 0.025)),
-    )
-    highlight_r = planet_r * 0.55
-    draw.ellipse(
-        (center - planet_r * 0.55, center - planet_r * 0.65,
-         center - planet_r * 0.55 + highlight_r, center - planet_r * 0.65 + highlight_r * 0.7),
-        fill=(145, 225, 255, 150),
-    )
-    rx, ry = size * 0.38, size * 0.19
-    tilt = -math.pi / 6.5
-    cos_t, sin_t = math.cos(tilt), math.sin(tilt)
-    points = []
-    for step in range(96):
-        angle = 2 * math.pi * step / 96
-        px = rx * math.cos(angle)
-        py = ry * math.sin(angle)
-        x = center + px * cos_t - py * sin_t
-        y = center + px * sin_t + py * cos_t
-        points.append((x, y))
-    points.append(points[0])
-    draw.line(points, fill=(95, 215, 255, 255), width=max(3, int(size * 0.045)), joint="curve")
-    moon_angle = -math.pi / 5.5
-    mx = rx * math.cos(moon_angle)
-    my = ry * math.sin(moon_angle)
-    moon_x = center + mx * cos_t - my * sin_t
-    moon_y = center + mx * sin_t + my * cos_t
-    moon_r = max(3.0, size * 0.06)
-    draw.ellipse(
-        (moon_x - moon_r, moon_y - moon_r, moon_x + moon_r, moon_y + moon_r),
-        fill=(225, 252, 255, 255),
-        outline=(87, 200, 255, 255),
-        width=max(1, int(size * 0.015)),
-    )
-    return canvas
+    """The Orbit mark on its graphite tile (see orbit_logo)."""
+    from orbit_logo import render_tile
+    return render_tile(size)
 
 
 def ensure_icon_file(path=ICON_PATH, fallback_directory=None):
@@ -263,9 +215,35 @@ def ensure_icon_file(path=ICON_PATH, fallback_directory=None):
     fallback_dir.mkdir(parents=True, exist_ok=True)
     generated = fallback_dir / "orbit.ico"
     if not generated.is_file() or generated.stat().st_size <= 64:
-        ico_bytes = build_windows_ico(render_default_icon(256))
-        generated.write_bytes(ico_bytes)
+        from orbit_logo import build_ico, icon_frames
+        generated.write_bytes(build_ico(icon_frames()))
     return generated
+
+
+def light_taskbar_icon(fallback_directory=None):
+    """The mark with a near-black ring for a light Windows taskbar, where white would vanish."""
+    from orbit_logo import TRAY_SIZES, build_ico, render_mark
+    folder = Path(fallback_directory) if fallback_directory is not None else data_directory()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "orbit-tray-light.ico"
+    if not path.is_file() or path.stat().st_size <= 64:
+        frames = {size: render_mark(size, ring="#1C1C1E", scale=0.94 if size >= 24 else 1.0) for size in TRAY_SIZES}
+        path.write_bytes(build_ico(frames))
+    return path
+
+
+def taskbar_uses_light_theme(registry=None):
+    """Windows' "SystemUsesLightTheme": 1 when the taskbar and tray are light."""
+    if registry is None:
+        if os.name != "nt":
+            return False
+        import winreg as registry
+    try:
+        with registry.OpenKey(registry.HKEY_CURRENT_USER, PERSONALIZE_KEY) as key:
+            value, _ = registry.QueryValueEx(key, "SystemUsesLightTheme")
+        return int(value) == 1
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def resolve_pythonw_executable(script_path=None, python_executable=None):
@@ -499,6 +477,7 @@ def _win32_apis():
         (user32.AppendMenuW, [wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR], wintypes.BOOL),
         (user32.TrackPopupMenu, [wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, ctypes.c_void_p], wintypes.BOOL),
         (user32.DestroyMenu, [wintypes.HMENU], wintypes.BOOL),
+        (user32.SetMenuDefaultItem, [wintypes.HMENU, wintypes.UINT, wintypes.UINT], wintypes.BOOL),
         (user32.SetForegroundWindow, [wintypes.HWND], wintypes.BOOL),
         (user32.GetCursorPos, [ctypes.POINTER(POINT)], wintypes.BOOL),
         (user32.RegisterWindowMessageW, [wintypes.LPCWSTR], wintypes.UINT),
@@ -521,7 +500,7 @@ class OrbitTrayIcon:
     def __init__(self, *, status_provider, on_stop, startup_manager=None,
                  token_provider=None, update_checker=None, update_installer=None,
                  release_page_opener=None, icon_path=ICON_PATH, log_path=None,
-                 notify_on_start=False, apis=None, boot_task=None):
+                 notify_on_start=False, apis=None, boot_task=None, on_open=None):
         self.status_provider = status_provider
         self.on_stop = on_stop
         self.startup = startup_manager or StartupManager()
@@ -533,6 +512,9 @@ class OrbitTrayIcon:
         self.icon_path = Path(icon_path)
         self.log_path = Path(log_path) if log_path is not None else default_log_path()
         self.notify_on_start = bool(notify_on_start)
+        # Left click (and clicking a notification) opens the companion window.
+        self.on_open = on_open
+        self._last_open = 0.0
         self._apis = apis
         self._hwnd = None
         self._hicon_small = None
@@ -600,7 +582,11 @@ class OrbitTrayIcon:
         game = info.get("activeGame")
         startup_enabled = self.startup.is_enabled()
 
-        items = [
+        items = []
+        if callable(self.on_open):
+            items.extend([{"id": ID_OPEN_WINDOW, "label": "Open Orbit", "enabled": True, "checked": False, "default": True},
+                          {"separator": True}])
+        items += [
             {"id": 0, "label": self._product(info), "enabled": False, "checked": False},
             {"id": 0, "label": f"IP: {ip_address} · HTTPS {secure_port}", "enabled": False, "checked": False},
             {"id": 0, "label": f"Game: {game}" if game else "Status: Online in background", "enabled": False, "checked": False},
@@ -628,8 +614,28 @@ class OrbitTrayIcon:
         ])
         return items
 
+    def open_window(self):
+        """Open the companion window; a double click or a second click right after opens it once."""
+        import time as _time
+        if not callable(self.on_open):
+            return False
+        now = _time.monotonic()
+        if now - self._last_open < OPEN_DEBOUNCE_SECONDS:
+            return False
+        self._last_open = now
+        try:
+            self.on_open()
+            return True
+        except Exception:
+            LOGGER.exception("Could not open the Orbit window")
+            return False
+
     def execute_command(self, command_id):
         """Execute a tray context-menu command ID."""
+        if command_id == ID_OPEN_WINDOW:
+            self._last_open = 0.0
+            self.open_window()
+            return "window_opened"
         if command_id == ID_TOGGLE_STARTUP:
             try:
                 enabled = self.startup.toggle()
@@ -915,6 +921,8 @@ class OrbitTrayIcon:
                 if item.get("checked"):
                     flags |= MF_CHECKED
                 user32.AppendMenuW(menu, flags, int(item.get("id") or 0), item["label"])
+                if item.get("default"):
+                    user32.SetMenuDefaultItem(menu, int(item["id"]), 0)
             point = POINT()
             user32.GetCursorPos(ctypes.byref(point))
             user32.SetForegroundWindow(hwnd)
@@ -933,8 +941,17 @@ class OrbitTrayIcon:
         if selected > 0:
             self.execute_command(selected)
 
-    def _load_icons(self, user32, kernel32):
+    def _icon_for_theme(self):
         resolved = ensure_icon_file(self.icon_path)
+        if taskbar_uses_light_theme():
+            try:
+                return light_taskbar_icon()
+            except Exception:
+                LOGGER.exception("Could not draw the light-taskbar icon")
+        return resolved
+
+    def _load_icons(self, user32, kernel32):
+        resolved = self._icon_for_theme()
         sm_cx = user32.GetSystemMetrics(SM_CXSMICON) or 16
         sm_cy = user32.GetSystemMetrics(SM_CYSMICON) or 16
         bg_cx = user32.GetSystemMetrics(SM_CXICON) or 32
@@ -954,12 +971,22 @@ class OrbitTrayIcon:
         user32, shell32, _ = self._get_apis()
         if msg == WM_TRAYICON:
             event = int(lparam) & 0xFFFF
-            if event in (WM_RBUTTONUP, WM_LBUTTONUP, WM_CONTEXTMENU, NIN_SELECT, NIN_KEYSELECT):
+            if event in (WM_LBUTTONUP, NIN_SELECT, NIN_KEYSELECT, NIN_BALLOONUSERCLICK, WM_LBUTTONDBLCLK):
+                # Left click opens the window; without one (boot instance) it shows the menu.
+                if callable(self.on_open):
+                    self.open_window()
+                elif event != WM_LBUTTONDBLCLK and event != NIN_BALLOONUSERCLICK:
+                    self._show_context_menu(hwnd)
+                else:
+                    self.show_connection_details()
+                return 0
+            if event in (WM_RBUTTONUP, WM_CONTEXTMENU):
                 self._show_context_menu(hwnd)
                 return 0
-            if event in (WM_LBUTTONDBLCLK, NIN_BALLOONUSERCLICK):
-                self.show_connection_details()
-                return 0
+        elif msg == WM_SETTINGCHANGE:
+            # Light/dark taskbar switched: redraw the icon in the matching ring colour.
+            self._reload_icons()
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
         elif self._taskbar_created_msg and msg == self._taskbar_created_msg:
             with self._lock:
                 if self._hwnd:
@@ -981,6 +1008,21 @@ class OrbitTrayIcon:
             user32.PostQuitMessage(0)
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _reload_icons(self):
+        try:
+            user32, shell32, kernel32 = self._get_apis()
+            old = (self._hicon_small, self._hicon_big)
+            self._load_icons(user32, kernel32)
+            with self._lock:
+                if self._hwnd:
+                    data = self._notify_data(flags=NIF_ICON)
+                    shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(data))
+            for handle in old:
+                if handle and handle not in (self._hicon_small, self._hicon_big):
+                    user32.DestroyIcon(handle)
+        except Exception:
+            LOGGER.exception("Could not refresh the tray icon")
 
     def _run_loop(self):
         try:

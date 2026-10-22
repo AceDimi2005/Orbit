@@ -71,6 +71,7 @@ SUMMARIES = {
     "device.revoke": lambda c: "Removed a device",
     "update.apply": lambda c: "Updated Orbit PC Companion",
     "settings.notifications": lambda c: "Changed notification settings",
+    "settings.change": lambda c: "Changed settings",
     "library.launch": lambda c: f"Launched {c.path_params.get('game_id', 'a game')}",
     "power.cancel": lambda c: "Cancelled the pending shutdown or restart",
     "power.timer": lambda c: "Set a power timer",
@@ -218,6 +219,12 @@ class ActivityLog:
                     "category": row["category"], "action": row["action"], "summary": row["summary"],
                     "result": row["result"], "status": row["status"]} for row in page]
         return {"entries": entries, "nextBefore": page[-1]["id"] if len(rows) > limit and page else None}
+
+    def count_since(self, timestamp):
+        """How many entries were recorded at or after `timestamp` (seconds since the epoch)."""
+        self.wait()
+        with self._lock:
+            return int(self._db.execute("SELECT COUNT(*) FROM activity WHERE at >= ?", (float(timestamp),)).fetchone()[0])
 
     def close(self):
         if self._closed:
