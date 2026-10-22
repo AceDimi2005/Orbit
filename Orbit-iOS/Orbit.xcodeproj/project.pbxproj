@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A40000000000000000000106 /* WatchComplications.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011B /* WatchComplications.swift */; };
+		A3000000000000000000010C /* WatchComplications.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011B /* WatchComplications.swift */; };
+		A3000000000000000000010B /* WatchComplicationGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011A /* WatchComplicationGallery.swift */; };
+		A3000000000000000000010A /* WatchMediaPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000119 /* WatchMediaPage.swift */; };
+		A30000000000000000000109 /* WatchControlPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000118 /* WatchControlPage.swift */; };
+		A30000000000000000000108 /* WatchPowerPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000117 /* WatchPowerPage.swift */; };
+		A30000000000000000000107 /* WatchGlancePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000116 /* WatchGlancePage.swift */; };
+		A40000000000000000000105 /* WatchReadings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* WatchReadings.swift */; };
+		A30000000000000000000106 /* WatchReadings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* WatchReadings.swift */; };
 		A40000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A10000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A40000000000000000000103 /* OrbitGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000103 /* OrbitGlass.swift */; };
@@ -226,6 +235,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000011B /* WatchComplications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchComplications.swift; sourceTree = "<group>"; };
+		B2000000000000000000011A /* WatchComplicationGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchComplicationGallery.swift; sourceTree = "<group>"; };
+		B20000000000000000000119 /* WatchMediaPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchMediaPage.swift; sourceTree = "<group>"; };
+		B20000000000000000000118 /* WatchControlPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchControlPage.swift; sourceTree = "<group>"; };
+		B20000000000000000000117 /* WatchPowerPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPowerPage.swift; sourceTree = "<group>"; };
+		B20000000000000000000116 /* WatchGlancePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchGlancePage.swift; sourceTree = "<group>"; };
+		B20000000000000000000115 /* WatchReadings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchReadings.swift; sourceTree = "<group>"; };
 		B20000000000000000000114 /* AppIconSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSettingsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000113 /* AppIcon-Minimal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Minimal.icon"; sourceTree = "<group>"; };
 		B20000000000000000000112 /* AppIcon-Matrix.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Matrix.icon"; sourceTree = "<group>"; };
@@ -531,6 +547,12 @@
 				B30000000000000000000005 /* Assets.xcassets */,
 				B30000000000000000000006 /* Info.plist */,
 				B30000000000000000000007 /* PrivacyInfo.xcprivacy */,
+				B20000000000000000000115 /* WatchReadings.swift */,
+				B20000000000000000000116 /* WatchGlancePage.swift */,
+				B20000000000000000000117 /* WatchPowerPage.swift */,
+				B20000000000000000000118 /* WatchControlPage.swift */,
+				B20000000000000000000119 /* WatchMediaPage.swift */,
+				B2000000000000000000011A /* WatchComplicationGallery.swift */,
 			);
 			path = OrbitWatch;
 			sourceTree = "<group>";
@@ -541,6 +563,7 @@
 				B40000000000000000000002 /* OrbitWatchWidgets.swift */,
 				B40000000000000000000003 /* Info.plist */,
 				B40000000000000000000004 /* PrivacyInfo.xcprivacy */,
+				B2000000000000000000011B /* WatchComplications.swift */,
 			);
 			path = OrbitWatchWidgets;
 			sourceTree = "<group>";
@@ -884,6 +907,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A3000000000000000000010C /* WatchComplications.swift in Sources */,
+				A3000000000000000000010B /* WatchComplicationGallery.swift in Sources */,
+				A3000000000000000000010A /* WatchMediaPage.swift in Sources */,
+				A30000000000000000000109 /* WatchControlPage.swift in Sources */,
+				A30000000000000000000108 /* WatchPowerPage.swift in Sources */,
+				A30000000000000000000107 /* WatchGlancePage.swift in Sources */,
+				A30000000000000000000106 /* WatchReadings.swift in Sources */,
 				A30000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A30000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A30000000000000000000102 /* OrbitComponents.swift in Sources */,
@@ -903,6 +933,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A40000000000000000000106 /* WatchComplications.swift in Sources */,
+				A40000000000000000000105 /* WatchReadings.swift in Sources */,
 				A40000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A40000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A40000000000000000000102 /* OrbitComponents.swift in Sources */,
