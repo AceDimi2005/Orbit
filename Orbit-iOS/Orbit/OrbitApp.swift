@@ -4,6 +4,9 @@ import SwiftUI
 @main
 struct OrbitApp: App {
     init() {
+        #if DEBUG
+        if let mode = ProcessInfo.processInfo.environment["ORBIT_IDENTITY_SELFTEST"] { OrbitIdentitySelfTest.run(mode: mode) }
+        #endif
         OrbitAppShortcuts.updateAppShortcutParameters()
         OrbitBackgroundRefresh.register()
         Self.migrateDefaultTheme()
@@ -68,3 +71,68 @@ struct OrbitAppShortcuts: AppShortcutsProvider {
         )
     }
 }
+
+#if DEBUG
+/// `ORBIT_IDENTITY_SELFTEST=create|tls|cleanup` (in the simulator pass it as
+/// `SIMCTL_CHILD_ORBIT_IDENTITY_SELFTEST`) checks the per-host Sunshine client identity in the iOS
+/// Keychain and exits: `create` makes one and prints its certificate, `tls` reloads it in a new
+/// process and authenticates with it to `ORBIT_TLS_URL` (server certificate in
+/// `ORBIT_TLS_SERVER_CERT_B64`), `cleanup` deletes it.
+enum OrbitIdentitySelfTest {
+    private static let referenceKey = "orbit.selftest.identity"
+
+    static func run(mode: String) -> Never {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached {
+            await perform(mode: mode)
+            semaphore.signal()
+        }
+        semaphore.wait()
+        exit(0)
+    }
+
+    private static func storedReference() -> MoonlightIdentityReference? {
+        UserDefaults.standard.data(forKey: referenceKey).flatMap { try? JSONDecoder().decode(MoonlightIdentityReference.self, from: $0) }
+    }
+
+    private static func perform(mode: String) async {
+        let environment = ProcessInfo.processInfo.environment
+        switch mode {
+        case "create":
+            do {
+                let created = try MoonlightIdentityStore.createForPairing()
+                UserDefaults.standard.set(try JSONEncoder().encode(created.reference), forKey: referenceKey)
+                print("created \(created.reference.id) · TLS identity \(created.identity.secIdentity != nil)")
+                print(created.identity.certificatePEM)
+            } catch {
+                print("create failed: \(error)")
+            }
+        case "tls":
+            guard let reference = storedReference() else { print("no stored reference"); return }
+            do {
+                let identity = try MoonlightIdentityStore.identity(for: reference)
+                print("reloaded \(reference.id) · same certificate \(identity.certificateDER == reference.certificateDER) · TLS identity \(identity.secIdentity != nil)")
+                let shared = try MoonlightIdentityStore.loadOrCreate()
+                print("shared identity is a different certificate: \(shared.certificateDER != reference.certificateDER)")
+                if let url = environment["ORBIT_TLS_URL"].flatMap(URL.init(string:)),
+                   let serverDER = environment["ORBIT_TLS_SERVER_CERT_B64"].flatMap({ Data(base64Encoded: $0) }) {
+                    let endpoints = try MoonlightEndpoints.standard(host: url.host ?? "127.0.0.1", httpPort: url.port ?? 47989, httpsPort: url.port ?? 47984)
+                    let transport = MoonlightTransport(endpoints: endpoints, uniqueID: "selftest0000beef", deviceName: "Orbit self-test",
+                                                       serverCertificate: serverDER, identity: identity.secIdentity)
+                    let reply = try await transport.request(secure: true, path: url.path.isEmpty ? "/serverinfo" : url.path, query: [], timeout: 10)
+                    print("TLS with the per-host client certificate: HTTP 200 · \(String(decoding: reply.prefix(80), as: UTF8.self))")
+                }
+            } catch {
+                print("tls failed: \(error)")
+            }
+        case "cleanup":
+            guard let reference = storedReference() else { print("no stored reference"); return }
+            MoonlightIdentityStore.remove(reference)
+            UserDefaults.standard.removeObject(forKey: referenceKey)
+            print("removed \(reference.id) · reload \((try? MoonlightIdentityStore.identity(for: reference)) == nil ? "fails as expected" : "STILL WORKS")")
+        default:
+            print("unknown mode \(mode)")
+        }
+    }
+}
+#endif
