@@ -631,7 +631,7 @@ final class OrbitViewModel: ObservableObject {
             return
         }
         guard hasCompletedOnboarding || hasSecureConnection else { statusLog = "Choose Find my PC to pair with the code shown on Windows."; return }
-        guard isConfigured else { metrics.isOnline = false; statusLog = "Find and pair your PC in My PCs"; return }
+        guard isConfigured else { metrics.isOnline = false; statusLog = "Add your PC to pair it"; return }
         isRefreshing = true; defer { isRefreshing = false }
         let version = generation
         let start = Date()
@@ -824,7 +824,7 @@ final class OrbitViewModel: ObservableObject {
             guard !pairing.token.isEmpty else { throw OrbitError(message: "The agent did not return a widget access token.") }
             widgetToken = pairing.token
             guard hasSecureConnection, let profile = savedPCs.first(where: { $0.id == selectedPCID }) else {
-                throw OrbitError(message: "Pair this PC securely in My PCs to configure widgets automatically.")
+                throw OrbitError(message: "Pair this PC again to set up widgets automatically.")
             }
             try OrbitWidgetConnectionStore.save(
                 id: profile.id,
@@ -973,7 +973,7 @@ final class OrbitViewModel: ObservableObject {
             let addresses = candidates.map(\.address).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             let displayed = addresses.prefix(8).joined(separator: ", ")
             let remaining = addresses.count > 8 ? " and \(addresses.count - 8) more" : ""
-            statusLog = "Found \(addresses.count) unverified Orbit agent(s): \(displayed)\(remaining). Add the PC in My PCs and copy its certificate fingerprint to connect securely."
+            statusLog = "Found \(addresses.count) unverified Orbit agent(s): \(displayed)\(remaining). Pair the PC to connect securely."
         } else {
             statusLog = pinned ? "No agent matched this PC’s certificate on \(prefix).x. Check the PC, secure port and firewall." : "No Orbit agents found on \(prefix).x. Check the PC, discovery port and firewall."
         }

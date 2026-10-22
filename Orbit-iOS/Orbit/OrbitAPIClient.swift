@@ -22,10 +22,10 @@ final class OrbitAPIClient: @unchecked Sendable {
 
     init(host: String, port: Int, token: String, fingerprint: String, pairingOnly: Bool = false) throws {
         guard !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port), (!token.isEmpty || pairingOnly) else {
-            throw OrbitError(message: "Enter the PC address, secure port and pairing token in My PCs.")
+            throw OrbitError(message: "This PC is missing its address, secure port or pairing token. Pair it again.")
         }
         guard Self.validFingerprint(fingerprint) else {
-            throw OrbitError(message: "Set up the encrypted connection in My PCs. Copy the certificate fingerprint printed by Orbit Agent 4.0.0 on your PC.")
+            throw OrbitError(message: "This PC has no encrypted connection yet. Pair it again, or enter the certificate fingerprint Orbit Companion shows on the PC.")
         }
         self.host = host; self.port = port; self.token = token
         self.pairingOnly = pairingOnly
@@ -59,7 +59,7 @@ final class OrbitAPIClient: @unchecked Sendable {
         guard let response = response as? HTTPURLResponse else { throw OrbitError(message: "The PC did not return a valid response.") }
         guard (200..<300).contains(response.statusCode) else {
             let detail = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["detail"] as? String
-            throw OrbitError(message: detail ?? (response.statusCode == 401 ? "Pairing token rejected. Update this PC in My PCs." : "PC returned error \(response.statusCode)."),
+            throw OrbitError(message: detail ?? (response.statusCode == 401 ? "The PC no longer accepts this device. Pair it again." : "PC returned error \(response.statusCode)."),
                              statusCode: response.statusCode)
         }
     }
@@ -149,7 +149,7 @@ private class OrbitPinnedDelegate: NSObject, URLSessionDelegate, URLSessionTaskD
         let der = SecCertificateCopyData(certificate) as Data
         let received = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
         guard received == fingerprint else {
-            reject("The PC certificate fingerprint does not match. Check Certificate SHA-256 in the agent window and update this PC in My PCs.")
+            reject("The PC's certificate doesn't match the one Orbit trusts. If Orbit Companion was reinstalled, pair the PC again.")
             completion(.cancelAuthenticationChallenge, nil); return
         }
         // The exact certificate identifies the PC, verified out of band. Basic
@@ -159,7 +159,7 @@ private class OrbitPinnedDelegate: NSObject, URLSessionDelegate, URLSessionTaskD
               SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
               SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
               SecTrustEvaluateWithError(trust, nil) else {
-            reject("The PC certificate is invalid or expired. Check the PC and iPhone clocks, then verify the certificate in My PCs.")
+            reject("The PC's certificate is invalid or expired. Check that the clocks on the PC and on this device are right, then pair the PC again.")
             completion(.cancelAuthenticationChallenge, nil); return
         }
         completion(.useCredential, URLCredential(trust: trust))

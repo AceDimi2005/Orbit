@@ -1,6 +1,6 @@
 # Widgeturi și Dynamic Island
 
-Orbit include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Widgeturile folosesc un **App Group** comun și Keychain pentru asociere automată, fără notificări push. În tabelul Apple actual, App Groups și Keychain Sharing sunt disponibile și coloanei gratuite **Apple Developer**. Setările se găsesc în **Tools → Settings**; aspectul, widgeturile și Live Activity au pagini dedicate și în **Tools**.
+Orbit include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity ActivityKit. Widgeturile folosesc un **App Group** comun și Keychain pentru asociere automată, fără notificări push. În tabelul Apple actual, App Groups și Keychain Sharing sunt disponibile și coloanei gratuite **Apple Developer**. **Settings** se deschide din rotița de pe fila **PC**; widgeturile și Live Activity au pagini proprii în secțiunea **Outside the App**.
 
 ## Testare gratuită
 
@@ -9,7 +9,7 @@ Orbit include o extensie reală WidgetKit (`OrbitWidgets`) și o Live Activity A
 3. Dacă identificatorii existenți nu sunt disponibili pentru contul tău, schimbă-i în ambele ținte: de exemplu `com.nume.orbit` și `com.nume.orbit.widgets`. Identificatorul extensiei trebuie să înceapă cu identificatorul aplicației. Activează același App Group în ambele ținte și setează `ORBIT_APP_GROUP_IDENTIFIER` la identificatorul înregistrat (de exemplu `group.com.nume.orbit`). Xcode trebuie să includă grupul în profilurile ambelor ținte. Nu este suficientă schimbarea textului din entitlements fără înregistrarea grupului.
 4. Rulează aplicația pe simulator sau pe iPhone. Pentru telefonul personal, activează Developer Mode dacă iOS îl solicită și acordă acces la rețeaua locală.
 5. Pentru widget: ține apăsat pe Home Screen, alege **Edit → Add Widget → Orbit**, apoi alege un stil și o dimensiune. Widgeturile de monitorizare trebuie asociate cu PC-ul folosind pașii de mai jos. Există și variante pentru Lock Screen.
-6. Pentru Live Activity: conectează PC-ul și pornește funcția din Orbit. Alege profilul **Overview**, **Gaming** sau **Power** din setările Live Activity. Verifică Lock Screen; Dynamic Island apare numai pe modelele de iPhone care au acest hardware. Extinde insula prin apăsare lungă. Permisiunea pentru Live Activities trebuie activată în setările iOS ale aplicației.
+6. Pentru Live Activity: conectează PC-ul și pornește **Show on Lock Screen** din meniul cu numele PC-ului de pe fila PC. Citirile (**Load and Memory**, **Frame Rate and Graphics** sau **Power Draw**) se aleg în **Settings → Live Activity**. Verifică Lock Screen; Dynamic Island apare numai pe modelele de iPhone care au acest hardware. Extinde insula prin apăsare lungă. Permisiunea pentru Live Activities trebuie activată în setările iOS ale aplicației.
 
 Personal Team are limite de instalare și semnare; aplicația trebuie de regulă reconstruită și reinstalată după șapte zile. Un abonament plătit este necesar pentru distribuirea prin App Store/TestFlight, nu pentru implementarea locală a widgeturilor și Live Activities.
 
@@ -17,16 +17,17 @@ Personal Team are limite de instalare și semnare; aplicația trebuie de regulă
 
 | Widget | Conținut | Dimensiuni |
 | --- | --- | --- |
-| **PC overview** | CPU, GPU, RAM și VRAM | Mic, mediu, mare |
-| **Gaming snapshot** | FPS măsurat, VRAM utilizată, încărcare și temperatură GPU | Mic, mediu |
-| **CPU & GPU power** | Putere CPU package și GPU în wați | Mic, mediu |
-| **CPU & GPU temperatures** | Temperaturile CPU și GPU | Mic, mediu |
-| **PC cooling** | Ventilatoare CPU/GPU și lichid de răcire | Mic, mediu |
-| **Storage activity** | Transfer citire/scriere al discurilor | Mic, mediu |
-| **Network activity** | Transfer download/upload | Mic, mediu |
-| **Choose a PC metric** | Un indicator ales: CPU, GPU, RAM, VRAM în procente sau GB, putere CPU/GPU, temperatură CPU/GPU ori FPS | Mic, mediu, Lock Screen circular sau dreptunghiular |
+| **Status** | Cum se descurcă PC-ul, într-o propoziție, cu citirile principale | Mic, mediu, mare |
+| **Frame Rate** | Jocul pornit și cât de fluid rulează | Mic, mediu, mare |
+| **Power Draw** | Wații folosiți de procesor (CPU package) și de placa video | Mic, mediu |
+| **Temperatures** | Procesorul, placa video și lichidul de răcire | Mic, mediu |
+| **Fans** | Turațiile ventilatoarelor și temperatura lichidului | Mic, mediu |
+| **Disk Activity** | Citirea și scrierea pe discuri | Mic, mediu |
+| **Network** | Ce primește și ce trimite PC-ul | Mic, mediu |
+| **Reading** | O citire aleasă: procesor, placă video, memorie, memorie video, putere sau temperatură CPU/GPU, frecvență CPU, ventilatoare, lichid, disc, rețea ori FPS | Mic, mediu, mare; Lock Screen circular, dreptunghiular sau pe un rând |
+| **Power Buttons** (Orbit Pro) | Wake, Sleep și Shut Down pentru PC | Mic, mediu; Lock Screen circular sau dreptunghiular |
 
-Poți adăuga mai multe instanțe, fiecare cu altă metrică sau alt PC. Există în continuare widgeturi cu scurtături către aplicație și controale. **Wake PC** deschide controalele și nu trimite automat o comandă.
+Poți adăuga mai multe instanțe, fiecare cu altă citire sau alt PC. În Control Center (și pe Lock Screen sau butonul Action) există comenzile **Wake PC**, **Sleep PC** și **Shut Down PC** (Orbit Pro), care trimit comanda direct, fără să deschidă aplicația.
 
 Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lipsă apar cu „—”. FPS apare când RTSS raportează cadre recente pentru joc. Agentul detectează automat RTSS pe PC, fără CSV. PresentMon rămâne alternativă; sursa sa poate fi **application FPS** (`MsBetweenPresents`) sau **CPU frame FPS** (`FrameTime` v2). Citirile nu garantează FPS-ul ecranului, al cadrelor generate sau al streamingului.
 
@@ -34,8 +35,8 @@ Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lip
 
 1. Asociază PC-ul în aplicația Orbit. Aplicația pregătește automat accesul de monitorizare pentru widgeturi.
 2. Adaugă widgetul pe Home Screen. PC-ul asociat este disponibil în lista **PC**; nu introduci IP, port sau token.
-3. Prin **Edit Widget**, alege alt PC asociat, o metrică și o temă; implicită este **Noir** (fundal negru, un singur accent). Opțiunea **Use one accent colour** înlocuiește culorile separate ale metricilor cu accentul ales la celelalte teme.
-4. Dacă accesul necesită refacere, deschide **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
+3. Prin **Edit Widget**, alege alt PC asociat, o citire (la **Reading**) și culoarea de accent; implicită este **Orbit Blue**.
+4. Dacă accesul necesită refacere, deschide **Settings → Widgets, Controls and Siri → Refresh Widget Access** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
 
 Widgeturile se conectează prin **HTTPS**, pe portul securizat al profilului, și verifică exact certificatul PC-ului deja asociat. Redirecturile nu sunt urmate. În Keychain-ul grupului comun este păstrat exclusiv tokenul **read-only** pentru `GET /api/widget/status`; tokenul principal de control rămâne în Keychain-ul privat al aplicației. Numele, adresa și amprenta certificatului sunt partajate separat pentru configurare. Datele de acces nu apar în câmpurile Edit Widget.
 
@@ -47,27 +48,27 @@ Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcod
 
 **Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Aplicația salvează după fiecare citire reușită un instantaneu în App Group (`Orbit.WidgetSnapshot.v1.<id PC>`) și reîmprospătează widgeturile cel mult o dată pe minut; un widget care găsește un instantaneu mai nou de două minute îl afișează direct, fără conexiune proprie. Altfel solicită o nouă citire după **15 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. După **15 minute** de la măsurătoare, valorile sunt marcate ca expirate și ascunse. PC-ul oprit, agentul indisponibil sau lipsa accesului la rețea produc un mesaj de indisponibilitate. Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
 
-**Live Activity** este separată de widgeturi. În **Tools → Live Activity** poți porni sau opri sesiunea și alege:
+**Live Activity** este separată de widgeturi. O pornești și o oprești cu **Show on Lock Screen** (meniul cu numele PC-ului de pe fila PC sau **Settings → Outside the App**). În **Settings → Live Activity** alegi:
 
-- Profilul **Overview**, **Gaming** sau **Power**.
-- Stilul Lock Screen **Standard**, **Minimal** sau **Detailed**.
-- Citirea compactă a insulei: automată, CPU, GPU, RAM, FPS, putere CPU/GPU sau VRAM.
-- Accentul, afișarea numelui jocului și a orei ultimei actualizări.
+- Stilul Lock Screen **Minimal**, **Standard** sau **Detailed**.
+- Citirile: **Load and Memory**, **Frame Rate and Graphics** sau **Power Draw**.
+- Ce arată Dynamic Island: **Automatic** (cele două temperaturi, iar cât joci FPS-ul), procesor, placă video, memorie, FPS, putere CPU/GPU sau memorie video.
+- Culoarea, afișarea jocului și a orei ultimei actualizări.
 - Intervalul de actualizare în foreground: **5, 10 sau 15 secunde**.
 
-Insula extinsă și stilul Detailed oferă un buton real **Stop**, fără deschiderea aplicației; stilul Detailed afișează și temperaturile CPU/GPU. La trecerea în fundal, ultimele valori rămân afișate până la expirare (trei intervale), apoi iOS marchează activitatea ca învechită și apare **Paused · tap to refresh**. Orbit programează un **Background App Refresh** (`com.dimitrie.orbit.refresh`, `UIBackgroundModes: fetch`) cât timp activitatea rulează; când sistemul îl acordă, aplicația citește o dată telemetria și actualizează activitatea și instantaneul widgeturilor. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
+La trecerea în fundal, ultimele valori rămân afișate până la expirare (trei intervale), apoi iOS marchează activitatea ca învechită și apare **Paused · tap to refresh**. Orbit programează un **Background App Refresh** (`com.dimitrie.orbit.refresh`, `UIBackgroundModes: fetch`) cât timp activitatea rulează; când sistemul îl acordă, aplicația citește o dată telemetria și actualizează activitatea și instantaneul widgeturilor. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
 
 iOS poate suspenda aplicația; alegerea unui interval mai scurt nu acordă rulare continuă în fundal. Nu există promisiunea unor actualizări în timp real cu aplicația suspendată. Dynamic Island apare doar pe modele compatibile, iar iOS controlează prezentarea ei.
 
 ## Aspectul aplicației
 
-Tema implicită este **Noir** (fundal negru, suprafețe plate, un singur accent). **Tools → Appearance** oferă stilurile **Crisp**/**Glass**, celelalte teme, o singură culoare pentru metrici și reducerea luminii de fundal. Aplicația respectă textul mărit și Reduce Transparency; modul de text accesibil folosește o coloană pe dashboard.
+Aplicația folosește Liquid Glass din iOS 26: fundal negru, suprafețe calme și o singură culoare de accent. **Settings → Appearance** alege culoarea (Orbit Blue implicit; Teal, Mint, Indigo, Orange, Graphite; cu Orbit Pro și Pink, Gold, Red, Green, Ice, Rose) și iconul aplicației. Widgeturile și Live Activity folosesc aceeași culoare. Aplicația respectă textul mărit, Reduce Motion și Reduce Transparency; cu text de accesibilitate, citirile de pe fila PC trec pe o coloană.
 
 ## Dacă lipsesc temperaturile sau FPS
 
-Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.1.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
+Verifică întâi datele în aplicația principală, la **PC → This PC → Monitoring Sources**. Acolo vezi versiunea agentului (cea actuală: **5.0.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
 
-Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Tools → Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
+Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Settings → Readings → Frame Rate Counter** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
 
 LibreHardwareMonitor rămâne o alternativă pentru senzori. Pentru **0.9.5+**, activează pe PC **Options → Remote Web Server → Run**, port **8085**, și păstrează programul deschis; rulează-l ca administrator dacă senzorii cer asta. Aceste versiuni [au eliminat WMI](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2143), iar agentul citește acum `http://127.0.0.1:8085/data.json`. Pentru alt port local, configurează `ORBIT_LHM_URL` înainte de pornirea agentului. Versiunile vechi pot folosi WMI. GPU AMD/Intel poate avea date prin LibreHardwareMonitor chiar dacă `nvidia-smi` lipsește.
 

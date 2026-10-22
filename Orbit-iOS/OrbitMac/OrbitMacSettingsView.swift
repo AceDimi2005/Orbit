@@ -449,7 +449,7 @@ private struct MacSettingsConnectionTab: View {
             Button("Forget PC", role: .destructive) { vm.removePC(pc) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The saved address, certificate fingerprint and pairing token are removed from this Mac. You can pair again at any time from My PCs.")
+            Text("The saved address, certificate fingerprint and pairing token are removed from this Mac. You can pair again at any time from PCs in the sidebar.")
         }
     }
 
@@ -500,7 +500,7 @@ private struct MacSettingsConnectionTab: View {
             if pc.isSecure {
                 Text("Orbit for Mac only talks to your PC over the encrypted, certificate-pinned channel on the secure port. Unencrypted legacy connections are never used.")
             } else {
-                Text("This profile has no valid certificate fingerprint, so Orbit cannot connect. Pair again from My PCs to pin the agent's certificate.")
+                Text("This profile has no valid certificate fingerprint, so Orbit cannot connect. Pair again from PCs in the sidebar to trust the PC's certificate.")
                     .foregroundStyle(.orange)
             }
         }
@@ -578,7 +578,7 @@ private struct MacSettingsConnectionTab: View {
                 title: vm.isDemoMode ? "Demo mode · no PC paired" : "No PC paired",
                 message: "Pair your Windows PC with the 6-digit code shown by Orbit Agent, or import the PC you already paired on your iPhone.",
                 tint: theme.accent,
-                actionTitle: "Open My PCs…",
+                actionTitle: "Open PCs…",
                 action: { openPCs() }
             )
             if vm.isDemoMode {

@@ -317,7 +317,7 @@ final class OrbitMacViewModel: ObservableObject {
 
     func client(for pc: MacSavedPC? = nil) throws -> OrbitAPIClient {
         guard !isDemoMode else { throw OrbitError(message: "Pair a real PC to use this feature. Demo mode only simulates telemetry.") }
-        guard let target = pc ?? currentPC else { throw OrbitError(message: "Pair your PC first in My PCs.") }
+        guard let target = pc ?? currentPC else { throw OrbitError(message: "Pair your PC first in PCs.") }
         let token = MacTokenStore.token(for: target.id)
         return try OrbitAPIClient(host: target.address, port: target.securePort, token: token, fingerprint: target.certificateFingerprint)
     }

@@ -349,7 +349,7 @@ fileprivate struct MacPreviewCanvas: View {
         if !vm.isConfigured {
             MacEmptyState(icon: "desktopcomputer", title: "Pair your PC",
                           message: "Pair your PC, or use the one you added on your iPhone.",
-                          tint: theme.accent, actionTitle: "Open My PCs") { goToPCs() }
+                          tint: theme.accent, actionTitle: "Open PCs") { goToPCs() }
         } else if vm.isDemoMode {
             MacEmptyState(icon: "sparkles", title: "Demo mode",
                           message: "The desktop preview streams real frames from a paired PC, so there is nothing to simulate here.",
