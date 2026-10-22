@@ -247,7 +247,7 @@ struct MacPCsView: View {
                 .disabled(vm.isProbing || manualHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help("Find Orbit Companion at this address")
             }
-            Text("Orbit checks the PC at this address (port \(MacPcsFormat.defaultDiscoveryPort) unless you add another), then asks for the code it shows.")
+            Text("Orbit checks the PC at this address (port \(String(MacPcsFormat.defaultDiscoveryPort)) unless you add another), then asks for the code it shows.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -361,6 +361,7 @@ private struct MacPcsSavedCard: View {
     @State private var wolPortDraft = ""
     @State private var wolRelayDraft = ""
     @State private var wolExpanded = false
+    @State private var detailsExpanded = false
     @State private var hovered = false
 
     private var isSelected: Bool { vm.currentPC?.id == pc.id }
@@ -396,8 +397,16 @@ private struct MacPcsSavedCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            chips
-            fingerprintRow
+            DisclosureGroup(isExpanded: $detailsExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    chips
+                    fingerprintRow
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Details")
+                    .font(.callout.weight(.medium))
+            }
             wakeOnLan
             actions
         }
@@ -418,7 +427,10 @@ private struct MacPcsSavedCard: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            MacIconBadge(systemName: "desktopcomputer", tint: isSelected ? theme.accent : Color.secondary, size: 40, filled: isSelected)
+            Image(systemName: "desktopcomputer")
+                .font(.title2)
+                .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(width: 32)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(pc.name.isEmpty ? "Unnamed PC" : pc.name)
@@ -433,15 +445,11 @@ private struct MacPcsSavedCard: View {
                         MacStatusPill(text: status.text, tint: status.tint, pulsing: status.pulsing)
                     }
                 }
-                Text("\(pc.address):\(pc.securePort)")
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                Text(verbatim: [pc.address, pc.isSecure ? "Encrypted" : "Not encrypted · pair again", isLive ? "\(vm.pingMs) ms" : nil]
+                    .compactMap { $0 }.joined(separator: " · "))
+                    .font(.callout)
+                    .foregroundStyle(pc.isSecure ? AnyShapeStyle(.secondary) : AnyShapeStyle(OrbitPalette.warm))
                     .textSelection(.enabled)
-                HStack(spacing: 6) {
-                    MacStatusPill(text: pc.isSecure ? "Encrypted" : "Legacy", tint: pc.isSecure ? Color.mint : Color.orange, icon: pc.isSecure ? "lock.fill" : "lock.open")
-                    MacStatChip(label: "Port", value: "\(pc.agentPort)")
-                    if isLive { MacStatChip(label: "Ping", value: "\(vm.pingMs) ms") }
-                }
             }
         }
     }
@@ -580,7 +588,7 @@ private struct MacPcsDiscoveredRow: View {
                         MacStatusPill(text: "Paired", tint: .mint, icon: "checkmark.seal.fill")
                     }
                 }
-                Text("\(pc.host):\(pc.securePort)")
+                Text(verbatim: "\(pc.host):\(pc.securePort)")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)

@@ -177,10 +177,10 @@ struct MacRemoteView: View {
     // MARK: Trackpad
 
     private var trackpadSubtitle: String {
-        if isCapturing { return "Pointer locked to the pad · keystrokes go to the PC" }
-        if captureEnabled { return "Capture armed · move into the pad to lock the pointer" }
-        if vm.isDemoMode { return "Pointer input is simulated locally in demo mode" }
-        return "Relative pointer control over the encrypted input socket"
+        if isCapturing { return "The pointer and keys go to the PC. Press Esc to let go." }
+        if captureEnabled { return "Move into the pad to hand the pointer to the PC" }
+        if vm.isDemoMode { return "The demo doesn't move a real pointer" }
+        return "Move the PC's pointer from here"
     }
 
     private var trackpadColumn: some View {
@@ -303,7 +303,7 @@ struct MacRemoteView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 34, alignment: .trailing)
             }
-            Text("Move inside the pad to move the PC cursor · scroll to scroll · ⎋ releases capture")
+            Text("Move to point, click to click, scroll to scroll. Esc lets go of the pointer.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

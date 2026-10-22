@@ -132,7 +132,7 @@ struct MoonlightPairingView: View {
                         .font(.callout.weight(.semibold))
                 }
                 .tint(accent)
-                Text("The page uses Sunshine's self-signed certificate, so the browser shows a warning once. On the PC itself it is https://localhost:\(url.port ?? 47990)/pin.")
+                Text("The page uses Sunshine's self-signed certificate, so the browser shows a warning once. On the PC itself it is https://localhost:\(String(url.port ?? 47990))/pin.")
                     .font(.caption).foregroundStyle(.secondary)
                 #endif
             }
