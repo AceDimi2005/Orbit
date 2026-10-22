@@ -69,6 +69,7 @@ POLICIES = {
     ("GET", "/api/sunshine/apps"): P(READ),
     ("GET", "/api/audio/sessions"): P(READ, secure=True),
     ("GET", "/api/audio/outputs"): P(READ, secure=True),
+    ("GET", "/api/audio/microphone"): P(READ, secure=True),
     ("GET", "/api/history/sessions"): P(READ, secure=True),
     ("GET", "/api/history/sessions/{session_id}"): P(READ, secure=True),
     # The widget token it returns can only read, so reading is enough to set widgets up.
@@ -80,6 +81,8 @@ POLICIES = {
     ("POST", "/api/processes/{pid}/terminate"): P(CONTROL, category="apps", action="process.end"),
     ("POST", "/api/audio/session"): P(CONTROL, secure=True, category="audio", action="audio.session"),
     ("POST", "/api/audio/route"): P(CONTROL, secure=True, category="audio", action="audio.route"),
+    ("POST", "/api/audio/default"): P(CONTROL, secure=True, category="audio", action="audio.default"),
+    ("POST", "/api/audio/microphone"): P(CONTROL, secure=True, category="audio", action="audio.microphone"),
     ("POST", "/api/sunshine/pin"): P(CONTROL, category="sunshine", action="sunshine.pin"),
     ("POST", "/api/sunshine/start"): P(CONTROL, category="sunshine", action="sunshine.start"),
     ("POST", "/api/sunshine/launch"): P(CONTROL, category="apps", action="sunshine.launch"),

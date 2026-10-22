@@ -16,7 +16,7 @@ import psutil
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from orbit_access import note
-from orbit_audio_policy import AudioPolicyConfig, AudioPolicyUnavailable
+from orbit_audio_policy import AudioPolicyConfig, AudioPolicyUnavailable, DefaultEndpointPolicy
 from orbit_icons import ICONS, parse_icon_location, system_sounds_icon_location
 
 MAX_CLIPBOARD_BYTES = 1024 * 1024
@@ -547,24 +547,154 @@ def update_audio_session(identity, volume=None, muted=None):
     raise AudioSessionGone("This audio session has ended or the playback device changed. Refresh the mixer.")
 
 
+@contextmanager
+def _com():
+    """A COM apartment on this request's worker thread, without enumerating sessions."""
+    if os.name != "nt":
+        raise DesktopUnavailable("Windows audio controls require Windows.")
+    try:
+        import comtypes
+    except (ImportError, OSError) as error:
+        raise DesktopUnavailable("Windows Core Audio is unavailable. Update the complete Orbit Agent folder and its dependencies.") from error
+    comtypes.CoInitialize()
+    try:
+        yield
+    finally:
+        comtypes.CoUninitialize()
+
+
+def _device_id(device):
+    value = getattr(device, "id", None)
+    if not isinstance(value, str):
+        try:
+            value = device.GetId()
+        except Exception:
+            value = None
+    return value if isinstance(value, str) and value else None
+
+
+def _default_output_id():
+    """The console/multimedia default playback device, or None."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        return _device_id(AudioUtilities.GetSpeakers())
+    except Exception:
+        return None
+
+
 def _output_devices():
     from pycaw.pycaw import AudioUtilities
+    default_id = _default_output_id()
     devices = []
     for device in AudioUtilities.GetAllDevices(data_flow=0, device_state=1):
         if isinstance(device.id, str) and device.id:
-            devices.append({"id": device.id, "name": str(device.FriendlyName or "Audio output")[:260]})
+            devices.append({"id": device.id, "name": str(device.FriendlyName or "Audio output")[:260],
+                            "isDefault": device.id == default_id})
     return devices
+
+
+def _default_switch_reason():
+    try:
+        with DefaultEndpointPolicy():
+            return None
+    except (AudioPolicyUnavailable, OSError, AttributeError) as error:
+        return str(error)
 
 
 def list_audio_outputs():
     with _AUDIO_LOCK, _audio_sessions():  # Same worker-thread COM apartment.
         devices = _output_devices()
+        default_reason = _default_switch_reason()
+        result = {"devices": devices, "defaultDeviceID": next((device["id"] for device in devices if device.get("isDefault")), None),
+                  "defaultSwitchAvailable": default_reason is None, "defaultSwitchUnavailableReason": default_reason}
         try:
             with AudioPolicyConfig():
                 pass
-            return {"devices": devices, "routingAvailable": True, "routingUnavailableReason": None}
+            return {**result, "routingAvailable": True, "routingUnavailableReason": None}
         except (AudioPolicyUnavailable, OSError, AttributeError) as error:
-            return {"devices": devices, "routingAvailable": False, "routingUnavailableReason": str(error)}
+            return {**result, "routingAvailable": False, "routingUnavailableReason": str(error)}
+
+
+def set_default_output(device_id):
+    """Make an active playback device the Windows default for every role, then confirm it."""
+    if not isinstance(device_id, str) or not device_id:
+        raise ValueError("Select an active audio output.")
+    with _AUDIO_LOCK, _com():
+        devices = _output_devices()
+        device = next((item for item in devices if item["id"] == device_id), None)
+        if device is None:
+            raise AudioSessionGone("That audio device disconnected. Refresh and select an active output.")
+        try:
+            with DefaultEndpointPolicy() as policy:
+                policy.set_default(device_id)
+        except AudioPolicyUnavailable as error:
+            raise DesktopUnavailable(str(error)) from error
+        if _default_output_id() != device_id:
+            raise DesktopUnavailable("Windows did not make this the default output. Try again from Windows Settings → System → Sound.")
+        devices = _output_devices()
+        return {"status": "default_changed", "deviceID": device_id, "name": device["name"], "devices": devices}
+
+
+def _capture_endpoints():
+    """The default recording devices for the console and communications roles (often the
+    same microphone), each with its IAudioEndpointVolume. Empty without a microphone."""
+    import comtypes
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    if hasattr(AudioUtilities, "GetDeviceEnumerator"):
+        enumerator = AudioUtilities.GetDeviceEnumerator()
+    else:
+        from pycaw.constants import CLSID_MMDeviceEnumerator
+        from pycaw.pycaw import IMMDeviceEnumerator
+        enumerator = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER)
+    endpoints, seen = [], set()
+    for role in (0, 2):  # eConsole, eCommunications
+        try:
+            device = enumerator.GetDefaultAudioEndpoint(1, role)  # eCapture
+        except Exception:
+            continue  # No default device for this role.
+        identity = _device_id(device)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        interface = device.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
+        volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
+        try:
+            name = AudioUtilities.CreateDevice(device).FriendlyName
+        except Exception:
+            name = None
+        endpoints.append({"id": identity, "name": str(name or "Microphone")[:260], "volume": volume})
+    return endpoints
+
+
+def microphone_state():
+    with _AUDIO_LOCK, _com():
+        try:
+            endpoints = _capture_endpoints()
+        except Exception as error:
+            raise DesktopUnavailable("Windows could not read the microphone.") from error
+        if not endpoints:
+            return {"available": False, "muted": None, "devices": []}
+        muted = all(bool(endpoint["volume"].GetMute()) for endpoint in endpoints)
+        return {"available": True, "muted": muted,
+                "devices": [{"id": endpoint["id"], "name": endpoint["name"]} for endpoint in endpoints]}
+
+
+def set_microphone_muted(muted):
+    if not isinstance(muted, bool):
+        raise ValueError("muted is true or false.")
+    with _AUDIO_LOCK, _com():
+        try:
+            endpoints = _capture_endpoints()
+        except Exception as error:
+            raise DesktopUnavailable("Windows could not reach the microphone.") from error
+        if not endpoints:
+            raise AudioSessionGone("This PC has no active microphone.")
+        for endpoint in endpoints:
+            endpoint["volume"].SetMute(muted, None)
+        actual = all(bool(endpoint["volume"].GetMute()) for endpoint in endpoints)
+        if actual != muted:
+            raise DesktopUnavailable("Windows did not change the microphone mute.")
+        return {"muted": actual, "devices": [{"id": endpoint["id"], "name": endpoint["name"]} for endpoint in endpoints]}
 
 
 def route_audio_session(identity, expected_create_time, device_id):
@@ -643,6 +773,16 @@ class AudioSessionWrite(BaseModel):
         return self
 
 
+class AudioDefaultWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deviceID: str = Field(min_length=1, max_length=32768)
+
+
+class MicrophoneWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    muted: StrictBool
+
+
 class AudioRouteWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -705,5 +845,21 @@ def create_desktop_router(verify_control):
     @router.post("/audio/route", dependencies=[Depends(require_encrypted)])
     def audio_route(body: AudioRouteWrite):
         return translate(lambda: route_audio_session(body.id, body.expectedCreateTime, body.deviceID))
+
+    @router.post("/audio/default", dependencies=[Depends(require_encrypted)])
+    def audio_default(body: AudioDefaultWrite):
+        result = translate(lambda: set_default_output(body.deviceID))
+        note(summary=f"Made {result['name']} the default output")
+        return result
+
+    @router.get("/audio/microphone", dependencies=[Depends(require_encrypted)])
+    def microphone():
+        return translate(microphone_state)
+
+    @router.post("/audio/microphone", dependencies=[Depends(require_encrypted)])
+    def microphone_mute(body: MicrophoneWrite):
+        result = translate(lambda: set_microphone_muted(body.muted))
+        note(summary="Muted the microphone" if body.muted else "Unmuted the microphone")
+        return result
 
     return router

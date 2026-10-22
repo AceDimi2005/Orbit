@@ -1,10 +1,17 @@
-"""Small adapter for Windows' internal per-application output preference API.
+"""Small adapters for Windows' internal audio policy interfaces.
 
-Microsoft documents WinRT activation/HSTRING and Core Audio endpoint IDs, but
-not this internal policy interface. Its two exact interface GUIDs and complete
-IInspectable slot layout are verified against EarTrumpet's original definitions:
+AudioPolicyConfig sets one application's output preference. Microsoft documents
+WinRT activation/HSTRING and Core Audio endpoint IDs, but not this internal policy
+interface. Its two exact interface GUIDs and complete IInspectable slot layout are
+verified against EarTrumpet's original definitions:
 https://github.com/File-New-Project/EarTrumpet/tree/master/EarTrumpet/Interop/MMDeviceAPI
-See THIRD_PARTY_NOTICES.md. We never substitute a system-default-device API.
+Per-app routing never falls back to changing the system default device.
+
+DefaultEndpointPolicy changes the system default device itself, only when the owner
+asks for exactly that (POST /api/audio/default). It uses IPolicyConfig, created from
+CLSID PolicyConfigClient and queried for the one IID whose layout is verified against
+EarTrumpet's IPolicyConfigWin7 (IPolicyConfig.cs, PolicyConfigClient.cs). See
+THIRD_PARTY_NOTICES.md.
 """
 import ctypes
 import os
@@ -158,3 +165,57 @@ class AudioPolicyConfig:
                 except Exception:
                     pass
             raise
+
+
+class DefaultEndpointPolicy:
+    """IPolicyConfig::SetDefaultEndpoint for the console, multimedia and communications roles.
+
+    CoCreateInstance asks for the verified IID directly: Windows 10 TH1/TH2 used other
+    IIDs, and an unknown layout is refused before any slot is called.
+    """
+    CLSID = "870af99c-171d-4f9e-af0d-e63df40c2bc9"  # PolicyConfigClient
+    IID = "f8679f50-850a-41cf-9c72-430f290290c8"    # IPolicyConfig (Windows 7, 8, 10 RS1+, 11)
+    # IUnknown (3) + Unused1-8 (8) + GetPropertyValue + SetPropertyValue = slot 13.
+    SET_DEFAULT_SLOT = 13
+    ROLES = (0, 1, 2)  # eConsole, eMultimedia, eCommunications
+
+    def __init__(self, api=None):
+        self.client = ctypes.c_void_p()
+        if os.name != "nt" and api is None:
+            raise AudioPolicyUnavailable("Changing the default audio device requires Windows.")
+        self.api = api or ctypes.WinDLL("ole32", use_last_error=True)
+        self.api.CoCreateInstance.argtypes = [ctypes.POINTER(_GUID), ctypes.c_void_p, ctypes.c_uint32,
+                                              ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)]
+        self.api.CoCreateInstance.restype = ctypes.c_int32
+        clsid, iid = _GUID.parse(self.CLSID), _GUID.parse(self.IID)
+        status = self.api.CoCreateInstance(ctypes.byref(clsid), None, 0x17, ctypes.byref(iid), ctypes.byref(self.client))
+        if status < 0 or not self.client:
+            self.client = ctypes.c_void_p()
+            raise AudioPolicyUnavailable("This Windows version does not let Orbit change the default audio device. "
+                                         "Use Windows Settings → System → Sound.")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def _method(self, slot, *arguments):
+        table = ctypes.cast(self.client, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        prototype = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+        return prototype(ctypes.c_int32, ctypes.c_void_p, *arguments)(table[slot])
+
+    def set_default(self, device_id, roles=ROLES):
+        if not isinstance(device_id, str) or not device_id or len(device_id) > 32768 or "\0" in device_id:
+            raise AudioPolicyUnavailable("Select an active audio device.")
+        method = self._method(self.SET_DEFAULT_SLOT, ctypes.c_wchar_p, ctypes.c_int32)
+        for role in roles:
+            if method(self.client, device_id, role) < 0:
+                raise AudioPolicyUnavailable("Windows refused to make this the default audio device. It may have disconnected.")
+
+    def close(self):
+        if self.client:
+            try:
+                self._method(2)(self.client)  # IUnknown::Release
+            finally:
+                self.client = ctypes.c_void_p()

@@ -46,6 +46,8 @@ SUMMARIES = {
     "process.end": lambda c: f"Ended process {c.path_params.get('pid', '')}",
     "audio.session": lambda c: "Changed an app's volume",
     "audio.route": lambda c: "Changed an app's audio output",
+    "audio.default": lambda c: "Changed the default audio output",
+    "audio.microphone": lambda c: "Changed the microphone mute",
     "sunshine.pin": lambda c: f"Entered the Sunshine pairing PIN for {c.query.get('name') or 'Orbit'}",
     "sunshine.start": lambda c: "Started Sunshine",
     "sunshine.launch": lambda c: f"Started {c.query.get('app') or 'an app'} from the Sunshine library",

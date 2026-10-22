@@ -105,7 +105,7 @@ for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICE
 # What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
 FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
             "activity", "notifications", "power.countdown", "power.cancel", "library",
-            "power.timer", "power.keepAwake", "power.plans"]
+            "power.timer", "power.keepAwake", "power.plans", "audio.default", "audio.microphone"]
 POWER = WindowsPower()
 INPUT_SESSIONS = InputSessions()
 

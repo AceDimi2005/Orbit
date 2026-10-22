@@ -12,6 +12,14 @@ Original source paths:
 - `EarTrumpet/Interop/MMDeviceAPI/IAudioPolicyConfigFactoryVariantForDownlevel.cs`
 - `EarTrumpet/DataModel/WindowsAudio/Internal/AudioPolicyConfigService.cs`
 
+The default-device adapter (`DefaultEndpointPolicy` in `orbit_audio_policy.py`, agent 5.0)
+references the factual CLSID of `PolicyConfigClient`, the IID of `IPolicyConfigWin7`
+(Windows 7/8 and Windows 10 RS1 or later) and the position of `SetDefaultEndpoint` in its
+method list from:
+
+- `EarTrumpet/Interop/MMDeviceAPI/IPolicyConfig.cs`
+- `EarTrumpet/Interop/MMDeviceAPI/PolicyConfigClient.cs`
+
 The original project's license is reproduced below in full. It includes explicit
 excluded entities in addition to the MIT terms.
 
