@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A5000000000000000000010E /* TVDebugLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000124 /* TVDebugLaunch.swift */; };
+		A5000000000000000000010D /* TVSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000123 /* TVSettingsView.swift */; };
+		A5000000000000000000010C /* TVActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* TVActivityView.swift */; };
+		A5000000000000000000010B /* TVSoundView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* TVSoundView.swift */; };
+		A5000000000000000000010A /* TVPlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* TVPlayView.swift */; };
+		A50000000000000000000109 /* TVVitalDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* TVVitalDetailView.swift */; };
+		A50000000000000000000108 /* TVPCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* TVPCView.swift */; };
+		A50000000000000000000107 /* TVRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* TVRootView.swift */; };
+		A50000000000000000000106 /* TVDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* TVDesign.swift */; };
 		A6000000000000000000010C /* MacPCAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011B /* MacPCAccess.swift */; };
 		A6000000000000000000010B /* OrbitMacViewModel+Companion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011A /* OrbitMacViewModel+Companion.swift */; };
 		A30000000000000000000106 /* OrbitCompanionAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000119 /* OrbitCompanionAPI.swift */; };
@@ -123,7 +132,6 @@
 		A40000000000000000000004 /* OrbitWatchWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* OrbitWatchWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A50000000000000000000001 /* OrbitTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000002 /* OrbitTVApp.swift */; };
 		A50000000000000000000002 /* OrbitTVViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000003 /* OrbitTVViewModel.swift */; };
-		A50000000000000000000003 /* OrbitTVViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000004 /* OrbitTVViews.swift */; };
 		A50000000000000000000004 /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
 		A50000000000000000000005 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
 		A50000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000005 /* Assets.xcassets */; };
@@ -235,6 +243,15 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000124 /* TVDebugLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVDebugLaunch.swift; sourceTree = "<group>"; };
+		B20000000000000000000123 /* TVSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVSettingsView.swift; sourceTree = "<group>"; };
+		B20000000000000000000122 /* TVActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVActivityView.swift; sourceTree = "<group>"; };
+		B20000000000000000000121 /* TVSoundView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVSoundView.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* TVPlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVPlayView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* TVVitalDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVVitalDetailView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011E /* TVPCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVPCView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011D /* TVRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVRootView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011C /* TVDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVDesign.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* MacPCAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPCAccess.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitMacViewModel+Companion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OrbitMacViewModel+Companion.swift"; sourceTree = "<group>"; };
 		B20000000000000000000119 /* OrbitCompanionAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitCompanionAPI.swift; sourceTree = "<group>"; };
@@ -318,7 +335,6 @@
 		B50000000000000000000001 /* OrbitTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000002 /* OrbitTVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVApp.swift; sourceTree = "<group>"; };
 		B50000000000000000000003 /* OrbitTVViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVViewModel.swift; sourceTree = "<group>"; };
-		B50000000000000000000004 /* OrbitTVViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVViews.swift; sourceTree = "<group>"; };
 		B50000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B50000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B50000000000000000000007 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -577,10 +593,18 @@
 			children = (
 				B50000000000000000000002 /* OrbitTVApp.swift */,
 				B50000000000000000000003 /* OrbitTVViewModel.swift */,
-				B50000000000000000000004 /* OrbitTVViews.swift */,
 				B50000000000000000000005 /* Assets.xcassets */,
 				B50000000000000000000006 /* Info.plist */,
 				B50000000000000000000007 /* PrivacyInfo.xcprivacy */,
+				B2000000000000000000011C /* TVDesign.swift */,
+				B2000000000000000000011D /* TVRootView.swift */,
+				B2000000000000000000011E /* TVPCView.swift */,
+				B2000000000000000000011F /* TVVitalDetailView.swift */,
+				B20000000000000000000120 /* TVPlayView.swift */,
+				B20000000000000000000121 /* TVSoundView.swift */,
+				B20000000000000000000122 /* TVActivityView.swift */,
+				B20000000000000000000123 /* TVSettingsView.swift */,
+				B20000000000000000000124 /* TVDebugLaunch.swift */,
 			);
 			path = OrbitTV;
 			sourceTree = "<group>";
@@ -948,6 +972,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A5000000000000000000010E /* TVDebugLaunch.swift in Sources */,
+				A5000000000000000000010D /* TVSettingsView.swift in Sources */,
+				A5000000000000000000010C /* TVActivityView.swift in Sources */,
+				A5000000000000000000010B /* TVSoundView.swift in Sources */,
+				A5000000000000000000010A /* TVPlayView.swift in Sources */,
+				A50000000000000000000109 /* TVVitalDetailView.swift in Sources */,
+				A50000000000000000000108 /* TVPCView.swift in Sources */,
+				A50000000000000000000107 /* TVRootView.swift in Sources */,
+				A50000000000000000000106 /* TVDesign.swift in Sources */,
 				A50000000000000000000105 /* OrbitCompanionAPI.swift in Sources */,
 				A50000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A50000000000000000000103 /* OrbitGlass.swift in Sources */,
@@ -956,7 +989,6 @@
 				A50000000000000000000100 /* OrbitDesign.swift in Sources */,
 				A50000000000000000000001 /* OrbitTVApp.swift in Sources */,
 				A50000000000000000000002 /* OrbitTVViewModel.swift in Sources */,
-				A50000000000000000000003 /* OrbitTVViews.swift in Sources */,
 				A50000000000000000000004 /* OrbitAPIClient.swift in Sources */,
 				A50000000000000000000005 /* OrbitPairing.swift in Sources */,
 				A50000000000000000000080 /* MoonlightClient.swift in Sources */,

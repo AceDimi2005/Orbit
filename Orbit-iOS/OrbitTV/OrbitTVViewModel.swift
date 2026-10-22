@@ -49,6 +49,10 @@ struct TVPCMetrics: Codable {
     var telemetryAvailable: Bool? = nil
     /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
     var sessionLocked: Bool? = nil
+    /// False when Windows reports no volume to control (no playback device).
+    var volumeAvailable: Bool? = nil
+    var cpuClockSource: String? = nil
+    var fpsUnavailableReason: String? = nil
 
     var formattedUptime: String {
         guard uptimeSeconds > 0 else { return "0h 0m" }
@@ -278,8 +282,13 @@ final class OrbitTVViewModel: ObservableObject {
 
     @Published var metrics = TVPCMetrics()
     @Published var pingMs: Int = 0
-    @Published var statusBanner: String = "Sync your PC from iPhone or pair in the My PCs tab"
+    @Published var statusBanner: String = "Add your PC in Settings"
     @Published var isWaking: Bool = false
+    /// The last poll of the selected PC failed: it is asleep, off or unreachable, as opposed
+    /// to still connecting for the first time.
+    @Published var lastConnectionFailed: Bool = false
+    /// When the last wake-up signal went out; screens say "Waking…" while the PC boots.
+    @Published var wakeSentAt: Date?
 
     // Rolling sparkline history & session peaks
     // Empty until real readings arrive; a missing sensor leaves a gap instead of a 0.
@@ -377,7 +386,7 @@ final class OrbitTVViewModel: ObservableObject {
             applyDemoData()
         } else {
             clearLiveAndDemoData()
-            statusBanner = currentPC != nil ? "Connecting to \(currentPC!.name)…" : "Sync from iPhone or pair your PC in the My PCs tab"
+            statusBanner = currentPC != nil ? "Connecting to \(currentPC!.name)…" : "Add your PC in Settings"
             Task { await refreshMetrics() }
         }
     }
@@ -388,6 +397,8 @@ final class OrbitTVViewModel: ObservableObject {
             metrics.hostname = pc.name
         }
         pingMs = 0
+        lastConnectionFailed = false
+        wakeSentAt = nil
         cpuHistory = []
         gpuHistory = []
         fpsHistory = []
@@ -464,7 +475,7 @@ final class OrbitTVViewModel: ObservableObject {
 
     func client(for pc: TVSavedPC? = nil) throws -> OrbitAPIClient {
         guard let target = pc ?? currentPC else {
-            throw OrbitError(message: "Pair your PC first in the My PCs tab.")
+            throw OrbitError(message: "Add your PC in Settings first.")
         }
         let token = readToken(for: target.id)
         return try OrbitAPIClient(
@@ -488,12 +499,13 @@ final class OrbitTVViewModel: ObservableObject {
         }
         guard let pc = currentPC else {
             metrics.isOnline = false
+            lastConnectionFailed = false
             games = []
             audioSessions = []
             audioOutputs = []
             processes = []
             hasSyncedExtras = false
-            statusBanner = "Sync your PC from iPhone or pair in the My PCs tab"
+            statusBanner = "Add your PC in Settings"
             return
         }
         let start = Date()
@@ -501,6 +513,8 @@ final class OrbitTVViewModel: ObservableObject {
             let apiClient = try client(for: pc)
             let fetched: TVPCMetrics = try await apiClient.get("/api/status")
             metrics = fetched
+            lastConnectionFailed = false
+            wakeSentAt = nil
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
             statusBanner = "Connected to \(pc.name) · \(pc.address) · \(pingMs) ms"
             appendHistorySample()
@@ -512,6 +526,7 @@ final class OrbitTVViewModel: ObservableObject {
             }
         } catch {
             metrics.isOnline = false
+            lastConnectionFailed = true
             metrics.activeGame = nil
             metrics.fps = nil
             pingMs = 0
@@ -599,6 +614,7 @@ final class OrbitTVViewModel: ObservableObject {
                 sent = sent || (count == packet.count)
             }
         }
+        if sent { wakeSentAt = Date() }
         statusBanner = sent ? "Wake-on-LAN Magic Packet sent to \(pc.name) · waiting for PC to boot…" : "Could not send Wake packet"
     }
 
@@ -610,7 +626,9 @@ final class OrbitTVViewModel: ObservableObject {
         "prev_track": "media_prev"
     ]
 
-    func sendAction(_ rawAction: String) async {
+    /// Returns whether the PC accepted the action (always true in demo mode).
+    @discardableResult
+    func sendAction(_ rawAction: String) async -> Bool {
         let action = Self.actionAliases[rawAction] ?? rawAction
         let label = action.replacingOccurrences(of: "media_", with: "").replacingOccurrences(of: "_", with: " ").capitalized
         if isDemoMode {
@@ -623,7 +641,7 @@ final class OrbitTVViewModel: ObservableObject {
                 metrics.fps = nil
             }
             statusBanner = "Preview Command Sent · \(label)"
-            return
+            return true
         }
         do {
             let apiClient = try client()
@@ -631,11 +649,14 @@ final class OrbitTVViewModel: ObservableObject {
             statusBanner = "Executed \(label) on \(currentPC?.name ?? "PC")"
             if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false
+                lastConnectionFailed = true
             } else if action == "mute" {
                 metrics.isMuted.toggle()
             }
+            return true
         } catch {
             statusBanner = "Action failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -785,6 +806,11 @@ final class OrbitTVViewModel: ObservableObject {
     // MARK: - Automatic & 1-Click Sync from iPhone (iCloud + LAN Bonjour _orbit-iphone._tcp)
 
     func syncFromiPhone(silent: Bool = false) async {
+        #if DEBUG
+        // Simulator screenshots (`-OrbitNoSync YES`): keep the seeded PCs and import nothing from
+        // iCloud, the simulator bridge or nearby iPhones.
+        if UserDefaults.standard.bool(forKey: "OrbitNoSync") { return }
+        #endif
         if !silent {
             isSyncingFromiPhone = true
             iPhoneSyncStatusMessage = "Searching for your paired PC on iPhone (iCloud & Local Wi-Fi)…"
@@ -983,7 +1009,7 @@ final class OrbitTVViewModel: ObservableObject {
         if let found = await probeHost(clean, port: discoveryPort) {
             await beginPINPairing(with: found)
         } else {
-            pairingErrorMessage = "Could not reach Orbit Agent at \(clean):\(discoveryPort). Make sure your PC is on and Orbit Agent is running."
+            pairingErrorMessage = "Orbit Companion didn't answer at \(clean):\(discoveryPort). Make sure the PC is on and Orbit Companion is running."
         }
     }
 
@@ -1139,7 +1165,14 @@ final class OrbitTVViewModel: ObservableObject {
         ]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return "" }
+              let data = result as? Data else {
+            #if DEBUG
+            // Simulator screenshots against the test agent: `-OrbitDebugToken <token>` stands in
+            // for a Keychain item the seeded profile does not have.
+            if let token = UserDefaults.standard.string(forKey: "OrbitDebugToken"), !token.isEmpty { return token }
+            #endif
+            return ""
+        }
         return String(data: data, encoding: .utf8) ?? ""
     }
 }
