@@ -71,6 +71,11 @@ SUMMARIES = {
     "settings.notifications": lambda c: "Changed notification settings",
     "library.launch": lambda c: f"Launched {c.path_params.get('game_id', 'a game')}",
     "power.cancel": lambda c: "Cancelled the pending shutdown or restart",
+    "power.timer": lambda c: "Set a power timer",
+    "power.timer.cancel": lambda c: "Cancelled the power timer",
+    "power.keepAwake": lambda c: "Kept the PC awake",
+    "power.keepAwake.stop": lambda c: "Let the PC sleep again",
+    "power.plan": lambda c: "Changed the power plan",
 }
 
 

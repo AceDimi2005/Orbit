@@ -502,6 +502,7 @@ class APITests(unittest.TestCase):
              patch.object(agent, "DEVICES_PATH", Path(folder) / "devices.json"), \
              patch.object(agent, "ACTIVITY_PATH", Path(folder) / "activity.sqlite3"), \
              patch.object(agent, "SETTINGS_PATH", Path(folder) / "settings.json"), \
+             patch.object(agent, "POWER_STATE_PATH", Path(folder) / "power.json"), \
              patch.object(agent, "load_api_token", return_value=TOKEN), \
              patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
              patch.object(agent, "inventory_worker") as inventory, \

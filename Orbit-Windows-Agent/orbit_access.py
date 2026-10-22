@@ -125,6 +125,12 @@ POLICIES = {
     # Power: the Windows countdown can be stopped from any device that may run power actions,
     # over HTTP too, so even the oldest Watch build can cancel what it started.
     ("POST", "/api/power/cancel"): P(CONTROL, category="power", action="power.cancel"),
+    ("GET", "/api/power"): P(READ, secure=True),
+    ("POST", "/api/power/timer"): P(CONTROL, secure=True, category="power", action="power.timer"),
+    ("DELETE", "/api/power/timer"): P(CONTROL, secure=True, category="power", action="power.timer.cancel"),
+    ("PUT", "/api/power/keep-awake"): P(CONTROL, secure=True, category="power", action="power.keepAwake"),
+    ("DELETE", "/api/power/keep-awake"): P(CONTROL, secure=True, category="power", action="power.keepAwake.stop"),
+    ("PUT", "/api/power/plan"): P(CONTROL, secure=True, category="power", action="power.plan"),
 
     # Game library.
     ("GET", "/api/library"): P(READ, secure=True),

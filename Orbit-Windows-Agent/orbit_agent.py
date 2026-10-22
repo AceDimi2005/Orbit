@@ -24,12 +24,13 @@ from pathlib import Path
 import psutil
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, Response, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 import orbit_paths
 from orbit_access import AccessMiddleware, current_principal, error_response, note, websocket_principal
 from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
-from orbit_power import COUNTDOWN_SECONDS, NothingToCancel, PowerUnavailable, WindowsPower, shutdown_comment
+from orbit_power import (ACTION_WORDS, COUNTDOWN_SECONDS, GUID as POWER_PLAN_ID, NothingToCancel, PowerScheduler,
+                         PowerUnavailable, TIMER_ACTIONS, WindowsPower, shutdown_comment)
 from orbit_library import GAME_ID, GameLibrary
 from orbit_settings import Settings, SettingsError
 from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
@@ -95,14 +96,16 @@ DEVICE_REGISTRY = None
 # What paired devices did (never typed text, clipboard or file contents) and the settings.
 ACTIVITY_PATH = data_directory() / "activity.sqlite3"
 SETTINGS_PATH = data_directory() / "settings.json"
+POWER_STATE_PATH = data_directory() / "power.json"
 ACTIVITY = None
 SETTINGS = None
-for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH, SETTINGS_PATH,
+for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH, SETTINGS_PATH, POWER_STATE_PATH,
                 *(Path(str(ACTIVITY_PATH) + suffix) for suffix in ("", "-wal", "-shm", "-journal"))):
     orbit_paths.protect_path(_secret)
 # What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
 FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
-            "activity", "notifications", "power.countdown", "power.cancel", "library"]
+            "activity", "notifications", "power.countdown", "power.cancel", "library",
+            "power.timer", "power.keepAwake", "power.plans"]
 POWER = WindowsPower()
 INPUT_SESSIONS = InputSessions()
 
@@ -119,6 +122,27 @@ def _gaming():
 
 # Shows Windows notifications through the tray balloon once the tray is up (None: log only).
 NOTIFIER = Notifier(show=None, settings=_notification_settings, gaming=_gaming)
+
+
+def _running_game_title():
+    """The game the telemetry worker sees right now, for "when the game exits" timers."""
+    with STATE_LOCK:
+        fresh = time.monotonic() - LAST_TELEMETRY <= 10
+        return STATE.get("activeGame") if fresh else None
+
+
+def _record_power(action, summary, requested_by, result="ok"):
+    log = ACTIVITY
+    if log is not None:
+        log.record(None, requested_by or PC_ACTOR[1], "power", action, summary, result)
+
+
+def open_power_scheduler():
+    return PowerScheduler(POWER, POWER_STATE_PATH, notify=lambda title, message: NOTIFIER.notify("power", title, message),
+                          game=_running_game_title, record=_record_power)
+
+
+POWER_SCHEDULER = None
 SUNSHINE_EXECUTABLE_PATHS = [
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
     Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
@@ -427,12 +451,14 @@ def open_settings():
 
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY, ACTIVITY, SETTINGS
+    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY, ACTIVITY, SETTINGS, POWER_SCHEDULER
     API_TOKEN = load_api_token()
     WIDGET_TOKEN = load_widget_token()
     SETTINGS = open_settings()
     ACTIVITY = open_activity_log()
     DEVICE_REGISTRY = open_device_registry(API_TOKEN)
+    POWER_SCHEDULER = open_power_scheduler()
+    POWER_SCHEDULER.start()
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
     STOP_EVENT.clear()
@@ -459,6 +485,9 @@ async def lifespan(application):
     registry, DEVICE_REGISTRY = DEVICE_REGISTRY, None
     if registry is not None:
         registry.close()
+    scheduler, POWER_SCHEDULER = POWER_SCHEDULER, None
+    if scheduler is not None:
+        scheduler.close()
     log, ACTIVITY = ACTIVITY, None
     if log is not None:
         log.close()
@@ -1031,8 +1060,7 @@ def execute_action(action_name: str, authorization: str = Header(None)):
                 raise OSError("LockWorkStation failed")
         elif action_name == "sleep":
             # Do not force suspension; let Windows honor its power policy.
-            if not ctypes.windll.powrprof.SetSuspendState(0, 0, 0):
-                raise OSError("SetSuspendState failed")
+            POWER.suspend(False)
         elif action_name in {"restart", "shutdown"}:
             # Windows' own countdown: the person at the PC sees who asked, and
             # POST /api/power/cancel (shutdown /a) stops it.
@@ -1094,15 +1122,129 @@ def cancel_power_action(authorization: str = Header(None)):
     """Stops a pending shutdown or restart (Windows' countdown) and any Orbit power timer."""
     verify_token(authorization)
     require_windows()
+    timer = POWER_SCHEDULER.cancel_timer() if POWER_SCHEDULER is not None else None
     try:
         POWER.abort()
     except NothingToCancel as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        if timer is None:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
         raise HTTPException(status_code=503, detail="Windows could not cancel the shutdown") from error
-    note(summary="Cancelled the pending shutdown or restart")
+    note(summary="Cancelled the pending shutdown or restart" if timer is None
+         else f"Cancelled the {ACTION_WORDS[timer['action']][1].lower()} timer")
     NOTIFIER.notify("power", "Orbit · Power", "The shutdown or restart was cancelled.")
     return {"status": "cancelled"}
+
+
+def require_scheduler():
+    if POWER_SCHEDULER is None:
+        raise HTTPException(status_code=503, detail="Power timers are not ready. Restart Orbit PC Companion.")
+    return POWER_SCHEDULER
+
+
+class PowerTimerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(max_length=20)
+    inSeconds: StrictInt | None = None
+    when: str | None = Field(default=None, max_length=20)
+
+
+class KeepAwakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    minutes: StrictInt | None = None
+    display: StrictBool = False
+
+
+class PowerPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=POWER_PLAN_ID.pattern)
+
+
+def power_plans():
+    try:
+        return POWER.plans()
+    except (OSError, subprocess.SubprocessError, PowerUnavailable):
+        return []
+
+
+@app.get("/api/power")
+def get_power(authorization: str = Header(None)):
+    """The pending timer, keep-awake, Windows power plans and what this PC supports."""
+    verify_token(authorization)
+    scheduler = require_scheduler()
+    supports = POWER.capabilities()
+    return {"timer": scheduler.public_timer(), "keepAwake": scheduler.public_keep_awake(), "plans": power_plans(),
+            "supports": {"hibernate": bool(supports.get("hibernate")), "displayOff": bool(supports.get("displayOff"))}}
+
+
+@app.post("/api/power/timer")
+def set_power_timer(body: PowerTimerRequest, request: Request, authorization: str = Header(None)):
+    """{"action", "inSeconds"} or {"action", "when": "gameExits"}. Replaces any pending timer."""
+    principal = caller(request, authorization)
+    require_windows()
+    if body.action == "hibernate" and not POWER.capabilities().get("hibernate"):
+        raise HTTPException(status_code=409, detail="Hibernation is turned off on this PC.")
+    if body.action == "displayOff" and not POWER.capabilities().get("displayOff"):
+        raise HTTPException(status_code=409, detail="The display can only be turned off from the signed-in session.")
+    try:
+        timer, summary = require_scheduler().set_timer(body.action, body.inSeconds, body.when, principal.name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    note(summary=summary)
+    return timer
+
+
+@app.delete("/api/power/timer")
+def cancel_power_timer(authorization: str = Header(None)):
+    verify_token(authorization)
+    timer = require_scheduler().cancel_timer()
+    if timer is None:
+        raise HTTPException(status_code=404, detail="No power timer is set.")
+    summary = f"Cancelled the {ACTION_WORDS[timer['action']][1].lower()} timer"
+    note(summary=summary)
+    NOTIFIER.notify("power", "Orbit · Power", summary + ".")
+    return {"status": "cancelled"}
+
+
+@app.put("/api/power/keep-awake")
+def keep_pc_awake(body: KeepAwakeRequest, request: Request, authorization: str = Header(None)):
+    """Keeps Windows from sleeping (and the display on with "display": true) for `minutes`, or until stopped."""
+    principal = caller(request, authorization)
+    require_windows()
+    try:
+        result = require_scheduler().set_keep_awake(body.minutes, body.display, principal.name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    span = f"for {body.minutes} minutes" if body.minutes else "until turned off"
+    note(summary=f"Kept the PC awake {span}" + (" with the display on" if body.display else ""))
+    return result
+
+
+@app.delete("/api/power/keep-awake")
+def stop_keeping_pc_awake(authorization: str = Header(None)):
+    verify_token(authorization)
+    if not require_scheduler().stop_keep_awake():
+        raise HTTPException(status_code=404, detail="The PC is not being kept awake.")
+    note(summary="Let the PC sleep again")
+    return {"status": "stopped"}
+
+
+@app.put("/api/power/plan")
+def set_power_plan(body: PowerPlanRequest, authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    plans = power_plans()
+    plan = next((item for item in plans if item["id"] == body.id.lower()), None)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="This power plan does not exist on the PC.")
+    try:
+        POWER.set_plan(plan["id"])
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
+        raise HTTPException(status_code=503, detail="Windows could not switch the power plan.") from error
+    note(summary=f"Switched to the {plan['name']} power plan")
+    return {"plans": power_plans()}
 
 
 @app.get("/api/activity")
@@ -1700,6 +1842,7 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     BOOT_MODE = "--boot" in args
+    POWER.interactive = not BOOT_MODE
     log_file = ensure_background_stdio()
     mutex = _acquire_single_instance_mutex()
     if mutex is False:
