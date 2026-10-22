@@ -281,8 +281,10 @@ def _default_target():
 
 
 def _file_digest(path):
+    """SHA-256 of a text file with CRLF read as LF: a git checkout on Windows can hold CRLF
+    while GitHub's archive holds LF, and that alone is not a dependency change."""
     try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     except OSError:
         return None
 

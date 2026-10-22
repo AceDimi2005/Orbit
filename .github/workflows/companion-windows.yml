@@ -48,4 +48,5 @@ jobs:
         run: python -m unittest discover -p "test_*.py" -v
 
       - name: Windows smoke test
+        if: ${{ !cancelled() }}
         run: python ci/smoke_windows.py

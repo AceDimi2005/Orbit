@@ -422,7 +422,8 @@ class LibraryAPITests(unittest.TestCase):
         rows = self.log.entries(category="apps")["entries"]
         self.assertEqual([row["summary"] for row in rows if row["result"] == "ok"], ["Launched Cyberpunk 2077"])
         self.assertEqual(rows[-1]["result"], "denied")
-        self.assertEqual(self.https.post("/api/library/steam:1091500/launch", headers=self.auth).status_code, 501)  # not Windows
+        if os.name != "nt":  # PC controls need Windows; on Windows the fake launcher runs instead
+            self.assertEqual(self.https.post("/api/library/steam:1091500/launch", headers=self.auth).status_code, 501)
 
     def test_rescan(self):
         self.assertEqual(self.https.post("/api/library/rescan", headers=self.reader).status_code, 403)

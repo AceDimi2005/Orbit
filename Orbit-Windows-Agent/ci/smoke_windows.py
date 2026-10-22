@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import ssl
 import subprocess
@@ -218,7 +219,8 @@ def agent():
                 status, _ = call(secure + path, token)
             except urllib.error.HTTPError as error:
                 status = error.code
-            assert status in (200, 503), (path, status)  # 503: no audio device on a CI runner
+            # 503: no audio device on a CI runner; 501 (PC controls need Windows) only off Windows.
+            assert status in ((200, 503) if os.name == "nt" else (200, 501, 503)), (path, status)
         try:
             call(f"http://127.0.0.1:{ports['ORBIT_PORT']}/api/status", "not-a-token")
             raise AssertionError("a wrong token was accepted")
@@ -245,5 +247,6 @@ def agent():
 
 
 failed = [name for name, passed, _ in results if not passed]
+shutil.rmtree(STATE, ignore_errors=True)  # files still open in this process stay until the runner is recycled
 print(f"\n{len(results) - len(failed)} of {len(results)} checks passed" + (f"; failed: {', '.join(failed)}" if failed else ""))
 sys.exit(1 if failed else 0)

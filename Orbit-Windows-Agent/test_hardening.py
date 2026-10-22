@@ -409,6 +409,14 @@ class DependencyUpdateTests(unittest.TestCase):
         self.assertEqual(result.dependencies, "unchanged")
         runner.assert_not_called()
 
+    def test_line_endings_alone_are_not_a_dependency_change(self):
+        # A git checkout on Windows can hold CRLF while GitHub's archive holds LF.
+        (self.target / "requirements.txt").write_bytes(b"fastapi>=0.115,<1\r\n")
+        runner = MagicMock()
+        result = self.apply({"orbit_agent.py": "x = 1\n", "requirements.txt": "fastapi>=0.115,<1\n"}, runner)
+        self.assertEqual(result.dependencies, "unchanged")
+        runner.assert_not_called()
+
     def test_pip_failure_is_reported_not_hidden(self):
         result = self.apply({"orbit_agent.py": "x = 1\n", "requirements.txt": "other\n"},
                             lambda command: SimpleNamespace(returncode=1, stdout="", stderr="Access is denied"))
@@ -432,21 +440,21 @@ class VersionTests(unittest.TestCase):
     def test_every_version_string_matches_the_agent(self):
         self.assertEqual(agent.AGENT_VERSION, "5.0.0")
         version = re.escape(agent.AGENT_VERSION)
-        self.assertRegex((AGENT_FOLDER / "install_orbit.bat").read_text(), rf"Orbit PC Companion {version} - Windows Installer")
-        self.assertRegex((AGENT_FOLDER / "start_agent.bat").read_text(), rf"title Orbit PC Companion {version}")
-        launcher = (AGENT_FOLDER / "OrbitCompanion.cs").read_text()
+        self.assertRegex((AGENT_FOLDER / "install_orbit.bat").read_text(encoding="utf-8"), rf"Orbit PC Companion {version} - Windows Installer")
+        self.assertRegex((AGENT_FOLDER / "start_agent.bat").read_text(encoding="utf-8"), rf"title Orbit PC Companion {version}")
+        launcher = (AGENT_FOLDER / "OrbitCompanion.cs").read_text(encoding="utf-8")
         self.assertIn(f'AssemblyVersion("{agent.AGENT_VERSION}.0")', launcher)
         self.assertIn(f'AssemblyFileVersion("{agent.AGENT_VERSION}.0")', launcher)
-        self.assertIn(f"**{agent.AGENT_VERSION}**", (AGENT_FOLDER / "README.md").read_text())
+        self.assertIn(f"**{agent.AGENT_VERSION}**", (AGENT_FOLDER / "README.md").read_text(encoding="utf-8"))
         for name in ("orbit_tray.py", "orbit_pairing.py", "orbit_updater.py"):
-            self.assertNotRegex((AGENT_FOLDER / name).read_text(), r'"4\.\d\.\d"|Agent 4\.1|Updater/4')
+            self.assertNotRegex((AGENT_FOLDER / name).read_text(encoding="utf-8"), r'"4\.\d\.\d"|Agent 4\.1|Updater/4')
 
     def test_updater_reads_the_literal_version_line_old_agents_look_for(self):
-        source = (AGENT_FOLDER / "orbit_agent.py").read_text()
+        source = (AGENT_FOLDER / "orbit_agent.py").read_text(encoding="utf-8")
         self.assertEqual(updater._AGENT_VERSION_ASSIGN_RE.search(source).group(1), agent.AGENT_VERSION)
 
     def test_build_script_lists_every_orbit_module(self):
-        script = (AGENT_FOLDER / "build_exe.bat").read_text()
+        script = (AGENT_FOLDER / "build_exe.bat").read_text(encoding="utf-8")
         for module in sorted(AGENT_FOLDER.glob("orbit_*.py")):
             if module.stem != "orbit_agent":
                 self.assertIn(f'--hidden-import "{module.stem}"', script)
