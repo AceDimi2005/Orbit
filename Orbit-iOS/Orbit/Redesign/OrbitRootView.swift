@@ -34,6 +34,9 @@ struct OrbitRootView: View {
         .tabViewStyle(.sidebarAdaptable)
         .tabBarMinimizeBehavior(.onScrollDown)
         .modifier(NowPlayingAccessoryModifier(vm: vm, sunshine: sunshine))
+        #if DEBUG
+        .modifier(OrbitDebugScreenModifier(vm: vm))
+        #endif
         .tint(theme.orbitTint)
         .onChange(of: tab) { _, _ in OrbitHaptics.selection() }
         .task(id: sunshineKey) { await syncSunshine() }

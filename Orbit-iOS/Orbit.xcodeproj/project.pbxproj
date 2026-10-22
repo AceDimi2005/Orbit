@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000122 /* OrbitDebugScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* OrbitDebugScreens.swift */; };
 		A20000000000000000000121 /* OrbitHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitHaptics.swift */; };
 		A20000000000000000000120 /* LiveActivitySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* LiveActivitySettingsView.swift */; };
 		A2000000000000000000011F /* OrbitProViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitProViews.swift */; };
@@ -237,6 +238,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000122 /* OrbitDebugScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDebugScreens.swift; sourceTree = "<group>"; };
 		B20000000000000000000121 /* OrbitHaptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitHaptics.swift; sourceTree = "<group>"; };
 		B20000000000000000000120 /* LiveActivitySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivitySettingsView.swift; sourceTree = "<group>"; };
 		B2000000000000000000011F /* OrbitProViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitProViews.swift; sourceTree = "<group>"; };
@@ -493,6 +495,7 @@
 				B2000000000000000000011F /* OrbitProViews.swift */,
 				B20000000000000000000120 /* LiveActivitySettingsView.swift */,
 				B20000000000000000000121 /* OrbitHaptics.swift */,
+				B20000000000000000000122 /* OrbitDebugScreens.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -845,6 +848,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000122 /* OrbitDebugScreens.swift in Sources */,
 				A20000000000000000000121 /* OrbitHaptics.swift in Sources */,
 				A20000000000000000000120 /* LiveActivitySettingsView.swift in Sources */,
 				A2000000000000000000011F /* OrbitProViews.swift in Sources */,
