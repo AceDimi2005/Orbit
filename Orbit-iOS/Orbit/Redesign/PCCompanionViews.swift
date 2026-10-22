@@ -7,20 +7,28 @@ struct PCPowerStatus: View {
     @EnvironmentObject var companion: PCCompanion
 
     var body: some View {
-        if let power = companion.power, power.timer != nil || power.keepAwake != nil {
+        let power = companion.power
+        let countdown = companion.localCountdown?.isRunning == true ? companion.localCountdown : nil
+        if power?.timer != nil || power?.keepAwake != nil || countdown != nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(spacing: 0) {
-                    if let timer = power.timer {
+                    if let countdown, countdown.until > context.date {
+                        row(symbol: countdown.action == "restart" ? "arrow.clockwise" : "power",
+                            title: countdown.summary(at: context.date),
+                            detail: "Windows shows the same warning on the PC",
+                            urgent: true,
+                            button: "Cancel") { Task { await companion.cancelPending() } }
+                    } else if let timer = power?.timer {
                         row(symbol: symbol(for: timer.action),
                             title: timer.summary(remaining: companion.remaining(timer.remainingSeconds, at: context.date)),
-                            detail: timer.requestedBy.map { "Asked from \($0)" },
+                            detail: requester(timer.requestedBy),
                             urgent: timer.state == "countdown",
                             button: "Cancel") { Task { await companion.cancelPending() } }
                     }
-                    if power.timer != nil && power.keepAwake != nil {
+                    if (power?.timer != nil || countdown != nil) && power?.keepAwake != nil {
                         Divider().overlay(OrbitPalette.hairline)
                     }
-                    if let keep = power.keepAwake {
+                    if let keep = power?.keepAwake {
                         row(symbol: "cup.and.saucer",
                             title: keep.summary(remaining: companion.remaining(keep.remainingSeconds, at: context.date)),
                             detail: nil,
@@ -32,6 +40,11 @@ struct PCPowerStatus: View {
             }
             .transition(.opacity.combined(with: .move(edge: .top)))
         }
+    }
+
+    private func requester(_ name: String?) -> String? {
+        guard let name, name != "Legacy device" else { return nil }
+        return name == companion.capabilities?.deviceName ? "Asked from this iPhone" : "Asked from \(name)"
     }
 
     private func symbol(for action: String) -> String {
@@ -152,6 +165,7 @@ struct PCSoundExtras: View {
                         .padding(.vertical, 10)
                         .contentShape(Rectangle())
                     }
+                    .tint(.primary)
                     .accessibilityLabel("Output, \(defaultOutput?.name ?? "not set")")
                 }
                 if let microphone = companion.microphone, microphone.available {
@@ -280,7 +294,7 @@ struct PCActivityLogView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.summary)
                                 .font(.subheadline)
-                            Text([entry.deviceName, entry.date?.formatted(.relative(presentation: .named)),
+                            Text([entry.deviceName == "Legacy device" ? "An older Orbit app" : entry.deviceName, entry.date?.formatted(.relative(presentation: .named)),
                                   entry.result == "denied" ? "not allowed" : (entry.result == "error" ? "failed" : nil)]
                                 .compactMap { $0 }.joined(separator: " · "))
                                 .font(.footnote)

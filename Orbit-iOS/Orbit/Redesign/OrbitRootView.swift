@@ -85,6 +85,7 @@ struct OrbitRootView: View {
                     OrbitHaptics.warning()
                     Task {
                         await vm.sendPowerAction(action.rawValue)
+                        companion.noteSent(action.rawValue)
                         await companion.refreshPower()
                     }
                 }

@@ -15,7 +15,10 @@ struct MacMenuBarView: View {
         if vm.metrics.hasTelemetry || vm.isDemoMode {
             ForEach(readings, id: \.self) { Text($0) }
         }
-        if let timer = vm.power?.timer {
+        if let countdown = vm.localCountdown, countdown.isRunning {
+            Text(countdown.summary())
+            Button(countdown.action == "restart" ? "Cancel Restart" : "Cancel Shut Down") { Task { await vm.cancelPendingPower() } }
+        } else if let timer = vm.power?.timer {
             Text(timer.summary(remaining: vm.remaining(timer.remainingSeconds)))
             Button("Cancel \(timer.actionTitle)") { Task { await vm.cancelPendingPower() } }
         }

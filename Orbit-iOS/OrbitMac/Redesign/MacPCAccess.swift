@@ -155,7 +155,7 @@ struct MacPCAccessSection: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.summary)
                     .lineLimit(2)
-                Text([entry.deviceName, entry.result == "denied" ? "not allowed" : (entry.result == "error" ? "failed" : nil)]
+                Text([entry.deviceName == "Legacy device" ? "An older Orbit app" : entry.deviceName, entry.result == "denied" ? "not allowed" : (entry.result == "error" ? "failed" : nil)]
                     .compactMap { $0 }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)

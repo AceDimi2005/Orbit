@@ -128,6 +128,20 @@ struct OrbitPowerTimer: Codable, Equatable, Identifiable {
     }
 }
 
+/// Windows' own 30-second warning after Shut Down or Restart (Orbit Companion 5). The PC
+/// doesn't list it in `GET /api/power`, so the app that asked counts it down itself.
+struct OrbitLocalCountdown: Equatable {
+    var action: String
+    var until: Date
+
+    var isRunning: Bool { until > Date() }
+
+    func summary(at date: Date = Date()) -> String {
+        let seconds = max(0, Int(until.timeIntervalSince(date).rounded(.up)))
+        return "\(action == "restart" ? "Restarting" : "Shutting down") in \(OrbitCompanionDates.clock(seconds))"
+    }
+}
+
 struct OrbitKeepAwake: Codable, Equatable {
     var since: String?
     var until: String?

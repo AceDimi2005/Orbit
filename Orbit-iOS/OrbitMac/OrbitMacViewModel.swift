@@ -126,6 +126,7 @@ final class OrbitMacViewModel: ObservableObject {
     /// When `power` arrived, so countdowns can tick between refreshes.
     @Published var powerFetchedAt = Date()
     @Published var powerError: String?
+    @Published var localCountdown: OrbitLocalCountdown?
     @Published var devices: [OrbitDevice] = []
     @Published var devicesError: String?
     @Published var isLoadingDevices = false
@@ -353,7 +354,7 @@ final class OrbitMacViewModel: ObservableObject {
         audioSessions = []; audioOutputs = []; audioRoutingAvailable = false; audioRoutingReason = nil; audioError = nil; audioStatus = nil; audioUpdated = nil
         audioPending = [:]; audioWorker?.cancel(); audioWorker = nil; audioDragging = []; audioChanged = [:]
         defaultOutputSwitchAvailable = false; defaultOutputSwitchReason = nil; microphone = nil
-        capabilities = nil; power = nil; powerError = nil; devices = []; devicesError = nil; isLoadingDevices = false
+        capabilities = nil; power = nil; powerError = nil; localCountdown = nil; devices = []; devicesError = nil; isLoadingDevices = false
         library = nil; isLoadingLibrary = false; activity = []; activityError = nil; libraryCovers = [:]
         processes = []; processesCapturedAt = nil; processGpuStatus = nil; processesError = nil; processActionStatus = nil
         clipboardStatus = nil; clipboardError = nil
@@ -557,7 +558,10 @@ final class OrbitMacViewModel: ObservableObject {
             _ = try await client().data("/api/action/\(action)", method: "POST")
             guard version == generation else { return false }
             statusBanner = "Sent \(label) to \(currentPC?.name ?? "PC")"
-            if ["shutdown", "sleep", "restart"].contains(action) {
+            if ["shutdown", "restart"].contains(action), has("power.countdown") {
+                // Windows waits 30 seconds and the PC stays online meanwhile, so Cancel still works.
+                localCountdown = OrbitLocalCountdown(action: action, until: Date().addingTimeInterval(30))
+            } else if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false
                 wasOnline = false
                 stopPreview()

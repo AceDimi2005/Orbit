@@ -22,6 +22,8 @@ final class PCCompanion: ObservableObject {
     @Published private(set) var canSwitchOutput = false
     /// The last thing that went wrong, for a short message where the action was.
     @Published var lastError: String?
+    /// Windows' 30-second warning after Shut Down or Restart, counted here.
+    @Published private(set) var localCountdown: OrbitLocalCountdown?
 
     struct Output: Decodable, Identifiable, Equatable {
         var id: String
@@ -46,7 +48,13 @@ final class PCCompanion: ObservableObject {
         connection = key
         capabilities = nil; power = nil; devices = []; devicesError = nil; library = nil
         activity = []; activityError = nil; microphone = nil; outputs = []; canSwitchOutput = false
-        lastError = nil; covers = [:]
+        lastError = nil; covers = [:]; localCountdown = nil
+    }
+
+    /// After Shut Down or Restart on Orbit Companion 5, Windows waits 30 seconds.
+    func noteSent(_ action: String) {
+        guard ["shutdown", "restart"].contains(action), has("power.countdown") else { return }
+        localCountdown = OrbitLocalCountdown(action: action, until: Date().addingTimeInterval(30))
     }
 
     func has(_ feature: String) -> Bool { capabilities?.has(feature) == true }
@@ -90,6 +98,7 @@ final class PCCompanion: ObservableObject {
 
     func cancelPending() async {
         await powerRequest { _ = try await $0.data("/api/power/cancel", method: "POST") }
+        if lastError == nil { localCountdown = nil }
     }
 
     func keepAwake(minutes: Int?) async {

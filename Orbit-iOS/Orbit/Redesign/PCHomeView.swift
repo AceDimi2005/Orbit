@@ -78,6 +78,7 @@ struct PCHomeView: View {
                     OrbitHaptics.warning()
                     Task {
                         await vm.sendPowerAction(action.rawValue)
+                        companion.noteSent(action.rawValue)
                         // Orbit Companion 5 gives Windows 30 seconds, counted down at the top.
                         await companion.refreshPower()
                     }

@@ -1013,7 +1013,9 @@ final class OrbitViewModel: ObservableObject {
             _ = try await request("/api/action/\(action)", method: "POST")
             guard generation == version else { return }
             statusLog = "Command sent • \(action.replacingOccurrences(of: "_", with: " "))"
-            if ["sleep", "shutdown", "restart"].contains(action) { metrics.isOnline = false; await activity.stop() }
+            // Shut Down and Restart may come with Windows' 30-second warning (Orbit Companion 5),
+            // which can still be cancelled; the next status poll notices when the PC stops answering.
+            if action == "sleep" { metrics.isOnline = false; await activity.stop() }
         } catch { if generation == version { statusLog = error.localizedDescription } }
     }
     func setVolume(_ value: Double) {

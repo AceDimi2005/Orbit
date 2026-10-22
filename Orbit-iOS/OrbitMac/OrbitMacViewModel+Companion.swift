@@ -50,6 +50,7 @@ extension OrbitMacViewModel {
     /// Stops a timer or Windows' shutdown countdown, whichever is pending.
     func cancelPendingPower() async {
         await powerRequest { _ = try await $0.data("/api/power/cancel", method: "POST") }
+        if powerError == nil { localCountdown = nil }
     }
 
     func setKeepAwake(minutes: Int?, display: Bool = false) async {

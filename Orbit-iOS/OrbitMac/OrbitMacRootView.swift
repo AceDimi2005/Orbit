@@ -366,20 +366,28 @@ struct MacPowerStatus: View {
     @EnvironmentObject var vm: OrbitMacViewModel
 
     var body: some View {
-        if let power = vm.power, power.timer != nil || power.keepAwake != nil {
+        let power = vm.power
+        let countdown = vm.localCountdown?.isRunning == true ? vm.localCountdown : nil
+        if power?.timer != nil || power?.keepAwake != nil || countdown != nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(spacing: 0) {
-                    if let timer = power.timer {
+                    if let countdown, countdown.until > context.date {
+                        row(symbol: countdown.action == "restart" ? "arrow.clockwise" : "power",
+                            title: countdown.summary(at: context.date),
+                            detail: "Windows shows the same warning on the PC",
+                            urgent: true,
+                            button: "Cancel") { Task { await vm.cancelPendingPower() } }
+                    } else if let timer = power?.timer {
                         row(symbol: symbol(for: timer.action),
                             title: timer.summary(remaining: vm.remaining(timer.remainingSeconds, at: context.date)),
-                            detail: timer.requestedBy.map { "Asked from \($0)" },
+                            detail: requester(timer.requestedBy),
                             urgent: timer.state == "countdown",
                             button: "Cancel") { Task { await vm.cancelPendingPower() } }
                     }
-                    if power.timer != nil && power.keepAwake != nil {
+                    if (power?.timer != nil || countdown != nil) && power?.keepAwake != nil {
                         Divider().overlay(OrbitPalette.hairline)
                     }
-                    if let keep = power.keepAwake {
+                    if let keep = power?.keepAwake {
                         row(symbol: "cup.and.saucer",
                             title: keep.summary(remaining: vm.remaining(keep.remainingSeconds, at: context.date)),
                             detail: keep.display ? "The display stays on too" : "The display can still turn off",
@@ -393,6 +401,11 @@ struct MacPowerStatus: View {
             }
             .transition(.opacity.combined(with: .move(edge: .top)))
         }
+    }
+
+    private func requester(_ name: String?) -> String? {
+        guard let name, name != "Legacy device" else { return nil }
+        return name == vm.capabilities?.deviceName ? "Asked from this Mac" : "Asked from \(name)"
     }
 
     private func symbol(for action: String) -> String {
