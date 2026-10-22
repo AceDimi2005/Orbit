@@ -410,6 +410,8 @@ final class OrbitViewModel: ObservableObject {
     @Published var processGpuStatus: String?
     var connectionID: Int { generation }
     @Published var isWakingUp = false
+    /// The last status request for this connection failed (as opposed to: none answered yet).
+    @Published var lastConnectionFailed = false
     @Published var isScanningLAN = false
     @Published var smartLaunchStep: SmartLaunchStep = .idle
     @Published var activeStreamingGame: SunshineGame?
@@ -495,6 +497,7 @@ final class OrbitViewModel: ObservableObject {
     func resetConnection() {
         generation += 1
         appIcons.reset()
+        lastConnectionFailed = false
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
         metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; sunshineInfo = nil; lastUpdated = nil; pingMs = 0
@@ -641,7 +644,7 @@ final class OrbitViewModel: ObservableObject {
             history.append(decoded)
             if savedPCs.isEmpty || selectedPCID.isEmpty { saveCurrentConnection() }
             if isDraggingVolume || volumeCommands.isSending || start <= lastVolumeChangeTime || Date().timeIntervalSince(lastVolumeChangeTime) < 2 { metrics.volume = sliderVolume }
-            pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
+            pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date(); lastConnectionFailed = false
             statusLog = "Connected • \(cleanHost())"
             await updateLiveActivity()
             publishWidgetSnapshot(decoded)
@@ -660,7 +663,7 @@ final class OrbitViewModel: ObservableObject {
             if specs == nil && Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
         } catch {
             guard generation == version, !Task.isCancelled else { return }
-            metrics.isOnline = false; metrics.fps = nil; pingMs = 0
+            metrics.isOnline = false; metrics.fps = nil; pingMs = 0; lastConnectionFailed = true
             statusLog = (error as? OrbitError)?.message ?? "PC unreachable • check Wi-Fi and Orbit Agent"
             await updateLiveActivity()
             OrbitWatchBridge.shared.pushStateToWatch()

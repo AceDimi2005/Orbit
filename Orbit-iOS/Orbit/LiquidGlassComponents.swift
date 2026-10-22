@@ -222,7 +222,7 @@ struct OrbitIconBadge: View {
 }
 
 /// Small eyebrow-style header for grouped content.
-struct OrbitSectionHeader<Trailing: View>: View {
+struct LegacyOrbitSectionHeader<Trailing: View>: View {
     var title: String
     var icon: String? = nil
     var tint: Color? = nil
@@ -255,7 +255,7 @@ struct OrbitSectionHeader<Trailing: View>: View {
     }
 }
 
-extension OrbitSectionHeader where Trailing == EmptyView {
+extension LegacyOrbitSectionHeader where Trailing == EmptyView {
     init(_ title: String, icon: String? = nil, tint: Color? = nil) {
         self.init(title, icon: icon, tint: tint) { EmptyView() }
     }
@@ -374,7 +374,7 @@ struct OrbitSparklineShape: Shape {
     }
 }
 
-struct OrbitSparkline: View {
+struct LegacyOrbitSparkline: View {
     var values: [Double]
     var tint: Color
     var lineWidth: CGFloat = 1.8
@@ -546,7 +546,7 @@ struct HardwareMetricCard: View {
 
             ZStack(alignment: .bottomLeading) {
                 if history.count >= 3 {
-                    OrbitSparkline(values: history, tint: metricAccent.opacity(0.9), lineWidth: 1.6)
+                    LegacyOrbitSparkline(values: history, tint: metricAccent.opacity(0.9), lineWidth: 1.6)
                         .frame(height: 30)
                         .padding(.leading, 56)
                         .padding(.bottom, 2)
@@ -604,11 +604,11 @@ struct HardwareMetricCard: View {
 
 // MARK: - Misc
 
-struct OrbitMark: View {
+struct LegacyOrbitMark: View {
     var size: CGFloat = 72
 
     var body: some View {
-        Image("OrbitMark")
+        Image("LegacyOrbitMark")
             .resizable()
             .scaledToFill()
             .frame(width: size, height: size)

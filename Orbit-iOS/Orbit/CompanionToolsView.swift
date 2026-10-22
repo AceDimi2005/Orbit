@@ -24,7 +24,7 @@ struct CompanionToolsView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         pcSwitcherCard
 
-                        OrbitSectionHeader("PC Control", icon: "slider.horizontal.3")
+                        LegacyOrbitSectionHeader("PC Control", icon: "slider.horizontal.3")
                         LazyVGrid(columns: columns, spacing: 12) {
                             NavigationLink { ClipboardView(vm: vm) } label: {
                                 toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
@@ -42,7 +42,7 @@ struct CompanionToolsView: View {
                             }
                         }
 
-                        OrbitSectionHeader("Diagnostics & History", icon: "waveform.path.ecg")
+                        LegacyOrbitSectionHeader("Diagnostics & History", icon: "waveform.path.ecg")
                         LazyVGrid(columns: columns, spacing: 12) {
                             NavigationLink {
                                 OrbitProGate(title: "Session Graphs", message: "Recorded sessions with FPS, temperature and power history are part of Orbit Pro.") {
@@ -62,7 +62,7 @@ struct CompanionToolsView: View {
                             }
                         }
 
-                        OrbitSectionHeader("Apple Ecosystem", icon: "sparkles")
+                        LegacyOrbitSectionHeader("Apple Ecosystem", icon: "sparkles")
                         LazyVGrid(columns: columns, spacing: 12) {
                             NavigationLink { AppleWatchCompanionHelpView(vm: vm) } label: {
                                 toolTile("Apple Watch", subtitle: watchSubtitle, icon: "applewatch.radiowaves.left.and.right", tint: .green)
@@ -204,7 +204,7 @@ struct CompanionToolsView: View {
             ZStack {
                 OrbitRingGauge(progress: vm.metrics.isOnline && vm.metrics.telemetryAvailable != false ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 4, tint: theme.accent)
                     .frame(width: 48, height: 48)
-                OrbitMark(size: 30)
+                LegacyOrbitMark(size: 30)
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text(vm.isDemoMode ? "Demo Mode" : vm.selectedPCName)

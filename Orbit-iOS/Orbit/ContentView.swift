@@ -622,7 +622,7 @@ struct DashboardView: View {
             Spacer(minLength: 8)
             ZStack(alignment: .trailing) {
                 if vm.history.fps.count >= 3 {
-                    OrbitSparkline(values: vm.history.fps, tint: gameTint, lineWidth: 1.5)
+                    LegacyOrbitSparkline(values: vm.history.fps, tint: gameTint, lineWidth: 1.5)
                         .frame(width: 92, height: 30)
                         .opacity(0.6)
                 }
@@ -1126,7 +1126,7 @@ struct GameLibraryView: View {
                     )
                     .padding(.vertical, 24)
                 } else {
-                    OrbitSectionHeader("Apps", icon: "square.grid.2x2") {
+                    LegacyOrbitSectionHeader("Apps", icon: "square.grid.2x2") {
                         Text(canStream ? "Tap to stream · hold for more" : "Tap to launch on the PC")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -2115,7 +2115,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     HStack(spacing: 14) {
-                        OrbitMark(size: 50)
+                        LegacyOrbitMark(size: 50)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(vm.isConfigured ? vm.selectedPCName : "Orbit Companion")
                                 .font(.headline.weight(.bold))
@@ -2616,7 +2616,7 @@ struct OnboardingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 14) {
-                    OrbitMark(size: 56)
+                    LegacyOrbitMark(size: 56)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Connect your PC")
                             .font(.system(size: 26, weight: .bold))
