@@ -1,6 +1,6 @@
 # Orbit Agent pentru Windows
 
-Agentul **5.0.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Pe PC are acum și o fereastră proprie, **Orbit** (click pe pictograma din tray): dispozitivele asociate, ce au făcut, setările și diagnosticarea conexiunii. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **5.0.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Pe PC are acum și o fereastră proprie, **Orbit** (click pe pictograma din tray): dispozitivele asociate, ce au făcut, setările și diagnosticarea conexiunii. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Pe iPhone, aplicația are filele **PC / Play / Files**; setările se deschid din rotița de pe fila PC.
 
 ## Pornire, instalare și conectare
 
@@ -148,7 +148,7 @@ Conexiunea este **locală și automată**, prin memoria partajată a programelor
 2. În **Afterburner → Settings → Monitoring**, bifează graficele dorite în **Active hardware monitoring graphs**, de exemplu **CPU temperature**, **GPU temperature**, **GPU usage**, **Memory usage**, **Framerate** și **Frametime**, în funcție de ce apare pe PC-ul tău. Apasă **Apply**. Graficul trebuie să aibă o valoare curentă în Afterburner. **Show in On-Screen Display** este opțional pentru afișarea pe PC. Vezi [ghidul MSI pentru monitorizare](https://www.msi.com/blog/msi-afterburner-on-screen-display/).
 3. Deschide RTSS din system tray și setează **Application detection level → Low** pentru joc. Pentru o verificare vizuală, poți activa temporar **Show own statistics**; nu este nevoie să lași overlay-ul vizibil pe ecran pentru Orbit.
 4. Actualizează agentul complet la ultima versiune, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
-5. În Orbit, verifică **PC → This PC → Monitoring Sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă cardul **Game frame rate** din **Customize dashboard**. **Tools → Settings → Set up FPS** include acești pași.
+5. În Orbit, verifică **PC → This PC → Monitoring Sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă citirea **Game frame rate** din **Edit** (lângă **Right Now** pe fila PC). **Settings → Readings → Frame Rate Counter** include acești pași.
 
 **Dacă nu apare o valoare:** verifică întâi că ea există în Afterburner sau în statisticile RTSS. Unele jocuri, API-uri grafice ori sisteme anti-cheat blochează detectarea RTSS; integrarea nu garantează compatibilitatea cu fiecare joc. Pentru un executabil nerecunoscut, setează `ORBIT_GAME_PROCESSES` înainte de pornirea agentului. Datele vechi nu sunt afișate ca măsurători noi după oprirea sursei sau a jocului. PresentMon rămâne o alternativă pentru FPS, descrisă mai jos.
 
@@ -177,7 +177,7 @@ Pentru alegerea exactă a adaptorului, rulează de exemplu `$env:ORBIT_NETWORK_I
 
 Capacitățile folosesc puteri de 1024 (GiB/TiB), chiar dacă numele istorice ale câmpurilor API conțin `GB`/`TB`. `ssdUsedTB` și `ssdTotalTB` descriu **volumul de sistem**. Inventarul static se recitește la repornirea agentului.
 
-În iOS, **Customize dashboard** permite alegerea și reordonarea celor 17 carduri în una sau două coloane. Configurația se păstrează separat pentru fiecare PC.
+Pe iPhone, **Edit** de lângă **Right Now** (fila PC) permite alegerea și reordonarea celor 17 citiri. Configurația se păstrează separat pentru fiecare PC.
 
 ## Volum fluid
 
