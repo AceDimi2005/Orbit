@@ -7,6 +7,19 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000114 /* AppIconSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000114 /* AppIconSettingsView.swift */; };
+		A20000000000000000000113 /* AppIcon-Minimal.icon in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000113 /* AppIcon-Minimal.icon */; };
+		A20000000000000000000112 /* AppIcon-Matrix.icon in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000112 /* AppIcon-Matrix.icon */; };
+		A20000000000000000000111 /* AppIcon-Crimson.icon in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000111 /* AppIcon-Crimson.icon */; };
+		A20000000000000000000110 /* AppIcon-Gold.icon in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000110 /* AppIcon-Gold.icon */; };
+		A2000000000000000000010F /* AppIcon-Neon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010F /* AppIcon-Neon.icon */; };
+		A60000000000000000000105 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010E /* AppIcon.icon */; };
+		A30000000000000000000105 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010E /* AppIcon.icon */; };
+		A2000000000000000000010E /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010E /* AppIcon.icon */; };
+		A60000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
+		A50000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
+		A30000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
+		A2000000000000000000010D /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A2000000000000000000010C /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010C /* WelcomeView.swift */; };
 		A2000000000000000000010B /* SettingsHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010B /* SettingsHubView.swift */; };
 		A2000000000000000000010A /* PlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010A /* PlayView.swift */; };
@@ -203,6 +216,14 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000114 /* AppIconSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSettingsView.swift; sourceTree = "<group>"; };
+		B20000000000000000000113 /* AppIcon-Minimal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Minimal.icon"; sourceTree = "<group>"; };
+		B20000000000000000000112 /* AppIcon-Matrix.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Matrix.icon"; sourceTree = "<group>"; };
+		B20000000000000000000111 /* AppIcon-Crimson.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Crimson.icon"; sourceTree = "<group>"; };
+		B20000000000000000000110 /* AppIcon-Gold.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Gold.icon"; sourceTree = "<group>"; };
+		B2000000000000000000010F /* AppIcon-Neon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Neon.icon"; sourceTree = "<group>"; };
+		B2000000000000000000010E /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		B2000000000000000000010D /* OrbitVitals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitVitals.swift; sourceTree = "<group>"; };
 		B2000000000000000000010C /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		B2000000000000000000010B /* SettingsHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHubView.swift; sourceTree = "<group>"; };
 		B2000000000000000000010A /* PlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayView.swift; sourceTree = "<group>"; };
@@ -351,6 +372,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		C20000000000000000000102 /* Icons */ = {
+			isa = PBXGroup;
+			children = (
+				B2000000000000000000010E /* AppIcon.icon */,
+				B2000000000000000000010F /* AppIcon-Neon.icon */,
+				B20000000000000000000110 /* AppIcon-Gold.icon */,
+				B20000000000000000000111 /* AppIcon-Crimson.icon */,
+				B20000000000000000000112 /* AppIcon-Matrix.icon */,
+				B20000000000000000000113 /* AppIcon-Minimal.icon */,
+			);
+			path = Icons;
+			sourceTree = "<group>";
+		};
 		C20000000000000000000101 /* Redesign */ = {
 			isa = PBXGroup;
 			children = (
@@ -363,6 +397,7 @@
 				B2000000000000000000010A /* PlayView.swift */,
 				B2000000000000000000010B /* SettingsHubView.swift */,
 				B2000000000000000000010C /* WelcomeView.swift */,
+				B20000000000000000000114 /* AppIconSettingsView.swift */,
 			);
 			path = Redesign;
 			sourceTree = "<group>";
@@ -374,6 +409,7 @@
 				B20000000000000000000101 /* OrbitMark.swift */,
 				B20000000000000000000102 /* OrbitComponents.swift */,
 				B20000000000000000000103 /* OrbitGlass.swift */,
+				B2000000000000000000010D /* OrbitVitals.swift */,
 			);
 			path = Design;
 			sourceTree = "<group>";
@@ -461,6 +497,7 @@
 				B20000000000000000000086 /* OrbitAcknowledgements.swift */,
 				C20000000000000000000003 /* Streaming */,
 				C20000000000000000000100 /* Design */,
+				C20000000000000000000102 /* Icons */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -704,6 +741,12 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000113 /* AppIcon-Minimal.icon in Resources */,
+				A20000000000000000000112 /* AppIcon-Matrix.icon in Resources */,
+				A20000000000000000000111 /* AppIcon-Crimson.icon in Resources */,
+				A20000000000000000000110 /* AppIcon-Gold.icon in Resources */,
+				A2000000000000000000010F /* AppIcon-Neon.icon in Resources */,
+				A2000000000000000000010E /* AppIcon.icon in Resources */,
 				A10000000000000000000005 /* Assets.xcassets in Resources */,
 				A20000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -721,6 +764,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000105 /* AppIcon.icon in Resources */,
 				A30000000000000000000005 /* Assets.xcassets in Resources */,
 				A30000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -747,6 +791,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000105 /* AppIcon.icon in Resources */,
 				A60000000000000000000014 /* Assets.xcassets in Resources */,
 				A60000000000000000000015 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -759,6 +804,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000114 /* AppIconSettingsView.swift in Sources */,
+				A2000000000000000000010D /* OrbitVitals.swift in Sources */,
 				A2000000000000000000010C /* WelcomeView.swift in Sources */,
 				A2000000000000000000010B /* SettingsHubView.swift in Sources */,
 				A2000000000000000000010A /* PlayView.swift in Sources */,
@@ -822,6 +869,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A30000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A30000000000000000000102 /* OrbitComponents.swift in Sources */,
 				A30000000000000000000101 /* OrbitMark.swift in Sources */,
@@ -849,6 +897,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A50000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A50000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A50000000000000000000102 /* OrbitComponents.swift in Sources */,
 				A50000000000000000000101 /* OrbitMark.swift in Sources */,
@@ -875,6 +924,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A60000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A60000000000000000000102 /* OrbitComponents.swift in Sources */,
 				A60000000000000000000101 /* OrbitMark.swift in Sources */,

@@ -2,106 +2,17 @@ import SwiftUI
 
 // MARK: - Vitals
 
-/// One reading as the PC tab shows it.
-struct PCVital {
-    var label: String
-    var value: String?
-    var unit: String?
-    var detail: String?
-    var fraction: Double?
-    var color: Color = .primary
-    var history: [Double] = []
-    var historyRange: ClosedRange<Double>? = nil
+/// The PC tab's readings are the shared Orbit vitals, fed by this app's model.
+typealias PCVital = OrbitVital
 
+extension OrbitVital {
     @MainActor
     init(_ metric: DashboardMetric, vm: OrbitViewModel) {
-        let m = vm.metrics
-        label = metric.title
-        history = vm.history.series(for: metric)
-        switch metric {
-        case .cpuLoad:
-            value = OrbitFormat.percent(m.cpuUsage); unit = "%"
-            fraction = m.cpuUsage / 100
-            color = OrbitPalette.load(fraction)
-            detail = Self.join([OrbitFormat.temperature(m.cpuTemp), m.cpuClockMHz.map { Self.gigahertz($0) }])
-            historyRange = 0...100
-        case .gpuLoad:
-            value = OrbitFormat.percent(m.gpuUsage); unit = "%"
-            fraction = m.gpuUsage.map { $0 / 100 }
-            color = OrbitPalette.load(fraction)
-            detail = Self.join([OrbitFormat.temperature(m.gpuTemp), OrbitFormat.watts(m.gpuPowerWatts)])
-            historyRange = 0...100
-        case .memory:
-            value = m.ramTotalGB > 0 ? OrbitFormat.gigabytes(m.ramUsedGB) : nil; unit = "GB"
-            fraction = m.ramTotalGB > 0 ? m.ramUsedGB / m.ramTotalGB : nil
-            color = OrbitPalette.load(fraction)
-            detail = m.ramTotalGB > 0 ? "of \(OrbitFormat.gigabytes(m.ramTotalGB, digits: 0) ?? "") GB" : nil
-        case .storage:
-            value = m.ssdTotalTB > 0 ? OrbitFormat.gigabytes(m.ssdUsedTB, digits: 2) : nil; unit = "TB"
-            fraction = m.ssdTotalTB > 0 ? m.ssdUsedTB / m.ssdTotalTB : nil
-            color = OrbitPalette.load(fraction)
-            detail = m.ssdTotalTB > 0 ? "of \(OrbitFormat.gigabytes(m.ssdTotalTB, digits: 2) ?? "") TB" : nil
-        case .vram:
-            value = OrbitFormat.gigabytes(m.vramUsedGB); unit = "GB"
-            if let used = m.vramUsedGB, let total = m.vramTotalGB, total > 0 {
-                fraction = used / total
-                detail = "of \(OrbitFormat.gigabytes(total, digits: 0) ?? "") GB"
-            }
-            color = OrbitPalette.load(fraction)
-        case .cpuPower:
-            value = m.cpuPowerWatts.flatMap { $0.isFinite ? String(Int($0.rounded())) : nil }; unit = "W"
-            detail = "Processor package"
-        case .gpuPower:
-            value = m.gpuPowerWatts.flatMap { $0.isFinite ? String(Int($0.rounded())) : nil }; unit = "W"
-            detail = "Graphics card"
-        case .cpuTemperature:
-            value = OrbitFormat.temperature(m.cpuTemp)
-            fraction = m.cpuTemp.map { $0 / 100 }
-            color = OrbitPalette.temperature(m.cpuTemp)
-            historyRange = 20...100
-        case .gpuTemperature:
-            value = OrbitFormat.temperature(m.gpuTemp)
-            fraction = m.gpuTemp.map { $0 / 100 }
-            color = OrbitPalette.temperature(m.gpuTemp)
-            historyRange = 20...100
-        case .coolantTemperature:
-            value = OrbitFormat.temperature(m.liquidTemp)
-            detail = "Liquid loop"
-        case .cpuClock:
-            value = m.cpuClockMHz.flatMap { $0.isFinite && $0 > 0 ? ($0 / 1000).formatted(.number.precision(.fractionLength(2))) : nil }
-            unit = "GHz"
-            detail = m.cpuClockSource
-        case .network:
-            value = OrbitFormat.rate(m.networkDownloadMBps).map { $0.components(separatedBy: " ").first ?? $0 }
-            unit = m.networkDownloadMBps.map { $0 >= 1 ? "MB/s" : "KB/s" }
-            detail = OrbitFormat.rate(m.networkUploadMBps).map { "↑ \($0)" }
-        case .diskActivity:
-            value = OrbitFormat.rate(m.diskReadMBps).map { $0.components(separatedBy: " ").first ?? $0 }
-            unit = m.diskReadMBps.map { $0 >= 1 ? "MB/s" : "KB/s" }
-            detail = OrbitFormat.rate(m.diskWriteMBps).map { "Writing \($0)" }
-        case .uptime:
-            value = m.uptimeSeconds > 0 ? OrbitFormat.duration(seconds: m.uptimeSeconds) : nil
-            detail = "Since the last restart"
-        case .fps:
-            value = m.fps.flatMap { $0.isFinite ? String(Int($0.rounded())) : nil }; unit = "fps"
-            detail = m.activeGame ?? m.fpsUnavailableReason
-        case .cpuFan:
-            value = m.cpuFanRPM.flatMap { $0.isFinite ? String(Int($0.rounded())) : nil }; unit = "rpm"
-        case .gpuFan:
-            value = OrbitFormat.percent(m.gpuFanPercent); unit = "%"
-            fraction = m.gpuFanPercent.map { $0 / 100 }
-        }
-    }
-
-    private static func join(_ parts: [String?]) -> String? {
-        let present = parts.compactMap { $0 }
-        return present.isEmpty ? nil : present.joined(separator: " · ")
-    }
-
-    private static func gigahertz(_ mhz: Double) -> String {
-        (mhz / 1000).formatted(.number.precision(.fractionLength(2))) + " GHz"
+        self.init(OrbitVitalKind(rawValue: metric.rawValue) ?? .cpuLoad, metrics: vm.metrics, history: vm.history.series(for: metric))
     }
 }
+
+extension PCMetrics: OrbitTelemetry {}
 
 struct PCVitalsSection: View {
     @ObservedObject var vm: OrbitViewModel
@@ -114,10 +25,7 @@ struct PCVitalsSection: View {
     private var metrics: [DashboardMetric] {
         let configured = vm.dashboardConfiguration.orderedVisibleMetrics
         let chosen = configured.isEmpty ? [.cpuLoad, .gpuLoad, .memory, .storage] : configured
-        return chosen.filter { metric in
-            let vital = PCVital(metric, vm: vm)
-            return vital.value != nil || vital.history.contains(where: \.isFinite)
-        }
+        return chosen.filter { PCVital($0, vm: vm).hasData }
     }
 
     private var columns: [GridItem] {

@@ -141,15 +141,15 @@ Broadcastul UDP poate avea restricții suplimentare pe iPhone; verifică nota di
 
 ### Icon
 
-Iconul este deja inclus în `Orbit-iOS/Orbit/Assets.xcassets/AppIcon.appiconset/OrbitIcon.png`. Pentru a-l schimba, deschide **Assets → AppIcon** în Xcode și înlocuiește imaginea universală de 1024 × 1024 cu un PNG pătrat, opac. iOS aplică forma colțurilor.
+Iconul este marca Orbit: un inel deschis sus pentru satelitul lui. Pe iPhone, iPad, Mac și Apple Watch e un fișier Liquid Glass din Icon Composer (`Orbit-iOS/Shared/Icons/AppIcon.icon`), cu variantele Orbit Pro alături (`AppIcon-Neon.icon`, `-Gold`, `-Crimson`, `-Matrix`, `-Minimal`). Sistemul face singur aspectele întunecat, colorat și transparent.
 
-Generat cu instrumentul integrat imagegen. Promptul folosit: „Create a finished square iOS app icon image for Orbit, a refined PC companion app for monitoring and remote control. Deep midnight navy full-bleed opaque background. A single striking luminous cyan and ice-blue orbital ring around a small central polished dark sphere, subtle 3D glass and satin-metal depth, one bright satellite point. Elegant restrained premium technology aesthetic, strong recognizable silhouette at small size, centered composition occupying 70% of square. No text, letters, computer drawing, mockup, border, rounded square mask, or external padding. The entire 1024 by 1024 image IS the icon artwork, corners opaque navy.”
+Toate iconurile, inclusiv straturile pentru Apple TV și imaginile Top Shelf, se generează din aceeași geometrie: `python3 Orbit-iOS/Tools/generate_orbit_icons.py` (are nevoie de Pillow). Fișierele `.icon` se pot deschide și ajusta în Icon Composer.
 
 ### Publicare Apple TV
 
 Selectează schema **OrbitTV**, destinația **Any tvOS Device**, apoi **Product → Archive**. Buildul curent este **10**. După actualizarea proiectului creează o arhivă nouă; arhivele vechi din Organizer păstrează configurația veche.
 
-Catalogul `OrbitTV/Assets.xcassets/AppIcon.brandassets` include iconuri pe straturi pentru Home Screen și App Store, plus Top Shelf normal și Wide în variante 1x/2x. Ambele configurații folosesc **AppIcon**. Cheile `CFBundleIcons.CFBundlePrimaryIcon` și `TVTopShelfImage.TVTopShelfPrimaryImageWide` trebuie să existe și în `Info.plist` din aplicația arhivată, împreună cu imaginile compilate. Verificare locală: `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /cale/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Grafica se poate regenera din iconul Orbit existent cu `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
+Catalogul `OrbitTV/Assets.xcassets/AppIcon.brandassets` include iconuri pe straturi pentru Home Screen și App Store, plus Top Shelf normal și Wide în variante 1x/2x. Ambele configurații folosesc **AppIcon**. Cheile `CFBundleIcons.CFBundlePrimaryIcon` și `TVTopShelfImage.TVTopShelfPrimaryImageWide` trebuie să existe și în `Info.plist` din aplicația arhivată, împreună cu imaginile compilate. Verificare locală: `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /cale/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Grafica se regenerează cu `python3 Orbit-iOS/Tools/generate_orbit_icons.py`.
 
 ### Verificări de dezvoltare
 
@@ -345,15 +345,15 @@ UDP broadcast may face additional restrictions on iPhone; see the note in the [t
 
 ### App icon
 
-The icon is already included at `Orbit-iOS/Orbit/Assets.xcassets/AppIcon.appiconset/OrbitIcon.png`. To change it, open **Assets → AppIcon** in Xcode and replace the universal 1024 × 1024 image with a square, opaque PNG. iOS applies the rounded corners.
+The icon is Orbit's mark: a ring that opens at the top for its satellite. On iPhone, iPad, Mac and Apple Watch it is a Liquid Glass Icon Composer document (`Orbit-iOS/Shared/Icons/AppIcon.icon`), with the Orbit Pro alternates beside it (`AppIcon-Neon.icon`, `-Gold`, `-Crimson`, `-Matrix`, `-Minimal`). The system renders the dark, tinted and clear looks.
 
-Generated with the built-in imagegen tool. Prompt: “Create a finished square iOS app icon image for Orbit, a refined PC companion app for monitoring and remote control. Deep midnight navy full-bleed opaque background. A single striking luminous cyan and ice-blue orbital ring around a small central polished dark sphere, subtle 3D glass and satin-metal depth, one bright satellite point. Elegant restrained premium technology aesthetic, strong recognizable silhouette at small size, centered composition occupying 70% of square. No text, letters, computer drawing, mockup, border, rounded square mask, or external padding. The entire 1024 by 1024 image IS the icon artwork, corners opaque navy.”
+Every icon, including the Apple TV layers and Top Shelf images, comes from one geometry: `python3 Orbit-iOS/Tools/generate_orbit_icons.py` (needs Pillow). The `.icon` documents also open in Icon Composer for fine-tuning.
 
 ### Apple TV submission
 
 Choose **OrbitTV**, destination **Any tvOS Device**, then **Product → Archive**. The current build is **10**. Create a fresh archive after updating the project; existing archives in Organizer retain their old configuration.
 
-`OrbitTV/Assets.xcassets/AppIcon.brandassets` contains layered Home Screen/App Store icons and standard/Wide Top Shelf images at 1x/2x. Both configurations select **AppIcon**. The archived app must contain `CFBundleIcons.CFBundlePrimaryIcon` and `TVTopShelfImage.TVTopShelfPrimaryImageWide` as well as the compiled images. Verify locally with `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /path/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Regenerate the assets from the existing Orbit artwork with `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
+`OrbitTV/Assets.xcassets/AppIcon.brandassets` contains layered Home Screen/App Store icons and standard/Wide Top Shelf images at 1x/2x. Both configurations select **AppIcon**. The archived app must contain `CFBundleIcons.CFBundlePrimaryIcon` and `TVTopShelfImage.TVTopShelfPrimaryImageWide` as well as the compiled images. Verify locally with `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /path/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Regenerate them with `python3 Orbit-iOS/Tools/generate_orbit_icons.py`.
 
 ### Development checks
 

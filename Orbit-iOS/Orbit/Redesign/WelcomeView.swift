@@ -120,7 +120,7 @@ struct WelcomeView: View {
                             OrbitMark(status: .online, size: 52)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(vm.selectedPCName).font(.headline)
-                                Text(PCTakeaway(metrics: vm.metrics).headline)
+                                Text(OrbitTakeaway(vm.metrics).headline)
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }

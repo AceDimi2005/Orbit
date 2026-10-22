@@ -15,6 +15,7 @@ struct SettingsHubView: View {
     @State private var showsLicenses = false
     @State private var showsStreamSettings = false
     @State private var showsCustomize = false
+    @AppStorage("orbit.appIcon") private var currentIcon: OrbitAppIcon = .classic
 
     var body: some View {
         NavigationStack {
@@ -65,7 +66,12 @@ struct SettingsHubView: View {
                             }
                         }
                     }
-                    NavigationLink("App Icon") { AppearanceSettingsView() }
+                    NavigationLink {
+                        AppIconSettingsView()
+                    } label: {
+                        // `currentIcon` only redraws the row after a change; the system has the real answer.
+                        LabeledContent("App Icon") { Text(currentIcon == .current ? currentIcon.title : OrbitAppIcon.current.title) }
+                    }
                     Button("Readings on the PC Tab…") { showsCustomize = true }
                 }
 
@@ -150,7 +156,7 @@ struct SettingsHubView: View {
                 showsPro = true
             } label: {
                 HStack(spacing: 14) {
-                    OrbitMark(status: .online, size: 34)
+                    OrbitMark(status: .online, size: 34, tint: theme.orbitTint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(proStore.isProUnlocked ? "Orbit Pro" : "Unlock Orbit Pro")
                             .font(.headline)

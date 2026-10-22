@@ -130,90 +130,27 @@ extension View { func macAppearance() -> some View { modifier(MacAppearanceModif
 
 // MARK: - Backgrounds & surfaces
 
+
+/// The window canvas: plain black, so content and glass carry the hierarchy.
 struct MacAmbientBackground: View {
-    @AppStorage("mac.theme") private var theme: MacTheme = .noir
-    @AppStorage("mac.reduceGlow") private var reduceGlow = false
     var isOnline: Bool = true
 
-    // Static glow: the previous perpetual drift re-rendered three large blurs on
-    // every frame and cost real CPU while the window sat idle. Noir is plain black.
     var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            ZStack {
-                theme.background
-                if !reduceGlow && !theme.isFlat {
-                    LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .center, endPoint: .bottom)
-                    Ellipse()
-                        .fill(theme.accent.opacity(0.14))
-                        .frame(width: max(600, size.width * 0.9), height: max(320, size.height * 0.45))
-                        .blur(radius: 130)
-                        .offset(x: -size.width * 0.3, y: -size.height * 0.3)
-                    Ellipse()
-                        .fill(theme.secondary.opacity(0.11))
-                        .frame(width: max(500, size.width * 0.7), height: max(300, size.height * 0.4))
-                        .blur(radius: 140)
-                        .offset(x: size.width * 0.35, y: size.height * 0.25)
-                    Circle()
-                        .fill((isOnline ? theme.accent : Color.orange).opacity(0.05))
-                        .frame(width: max(400, size.width * 0.5))
-                        .blur(radius: 110)
-                        .offset(x: size.width * 0.05, y: size.height * 0.6)
-                }
-            }
-            .frame(width: size.width, height: size.height)
-            .clipped()
-        }
-        .ignoresSafeArea()
+        OrbitPalette.canvas.ignoresSafeArea()
     }
 }
 
-/// Glass card: opaque themed surface with a specular edge. Shadows are cast by
-/// the silhouette only so glyphs inside never bleed.
+
+/// Grouped content on a quiet solid surface; it brightens slightly under the pointer.
 struct MacGlassCard: ViewModifier {
-    @AppStorage("mac.theme") private var theme: MacTheme = .noir
-    @AppStorage("mac.reduceGlow") private var reduceGlow = false
     var cornerRadius: CGFloat = 18
     var tint: Color = .white
     var elevated: Bool = false
     var hovered: Bool = false
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .background {
-                ZStack {
-                    if theme.isFlat {
-                        shape.fill(hovered ? Color(red: 0.085, green: 0.085, blue: 0.095) : theme.surface)
-                    } else {
-                        shape.fill(theme.surface.opacity(0.92))
-                        shape.fill(
-                            LinearGradient(
-                                colors: [tint.opacity(elevated || hovered ? 0.14 : 0.07), tint.opacity(0.015), .clear],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    }
-                }
-                .compositingGroup()
-                .shadow(color: .black.opacity(theme.isFlat ? 0 : 0.30), radius: elevated ? 22 : 10, y: elevated ? 10 : 4)
-                .shadow(color: elevated && !reduceGlow && !theme.isFlat ? tint.opacity(0.12) : .clear, radius: 28, y: 8)
-            }
-            .overlay {
-                if theme.isFlat {
-                    shape.strokeBorder(hovered ? Color.white.opacity(0.22) : theme.hairline, lineWidth: 1)
-                } else {
-                    shape.strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(hovered ? 0.30 : (elevated ? 0.24 : 0.16)), .white.opacity(0.05), tint.opacity(0.12)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-                }
-            }
+        content.background(hovered ? OrbitPalette.well : OrbitPalette.surface,
+                           in: RoundedRectangle(cornerRadius: max(cornerRadius, 14), style: .continuous))
     }
 }
 
@@ -238,46 +175,31 @@ extension View { func macHoverLift() -> some View { modifier(MacHoverLift()) } }
 
 // MARK: - Primitives
 
+
+/// A plain symbol; color is kept for status, not decoration.
 struct MacIconBadge: View {
     var systemName: String
     var tint: Color
     var size: CGFloat = 30
     var filled: Bool = false
-    @Environment(\.macTheme) private var theme
-
-    private var fillStyle: AnyShapeStyle {
-        if theme.isFlat {
-            return filled ? AnyShapeStyle(theme.accent) : AnyShapeStyle(Color.white.opacity(0.08))
-        }
-        return filled
-            ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
-    }
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(fillStyle)
-                .overlay(
-                    RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                        .strokeBorder(.white.opacity(filled ? 0.22 : (theme.isFlat ? 0.10 : 0.08)), lineWidth: 1)
-                )
-            Image(systemName: systemName)
-                .font(.system(size: size * 0.46, weight: .semibold))
-                .foregroundStyle(filled ? Color.black.opacity(0.85) : (theme.isFlat ? Color.white.opacity(0.92) : tint))
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        Image(systemName: systemName)
+            .font(.system(size: size * 0.52, weight: .medium))
+            .foregroundStyle(filled ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
+
+/// A section title in Title Case, an optional one-line subtitle and a trailing control.
 struct MacSectionHeader<Trailing: View>: View {
     var title: String
     var subtitle: String?
     var icon: String?
     var tint: Color?
     var trailing: Trailing
-    @Environment(\.macTheme) private var theme
 
     init(_ title: String, subtitle: String? = nil, icon: String? = nil, tint: Color? = nil, @ViewBuilder trailing: () -> Trailing) {
         self.title = title
@@ -288,21 +210,15 @@ struct MacSectionHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            if let icon {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(tint ?? theme.accent)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title.uppercased())
-                    .font(.system(.caption, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(.white.opacity(0.62))
+                Text(title)
+                    .font(.title3.weight(.semibold))
                 if let subtitle {
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
             }
             Spacer(minLength: 8)
@@ -318,47 +234,35 @@ extension MacSectionHeader where Trailing == EmptyView {
     }
 }
 
+
+/// A status light with its label; it pulses while something is live.
 struct MacStatusPill: View {
     var text: String
     var tint: Color
     var pulsing: Bool = false
     var icon: String? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        Group {
             if let icon {
-                Image(systemName: icon).font(.system(size: 10, weight: .bold))
-            } else {
-                ZStack {
-                    if pulsing && !reduceMotion {
-                        Circle().fill(tint.opacity(0.5))
-                            .frame(width: 7, height: 7)
-                            .scaleEffect(pulse ? 2.2 : 1)
-                            .opacity(pulse ? 0 : 0.8)
-                    }
-                    Circle().fill(tint).frame(width: 7, height: 7)
+                Label {
+                    Text(text).foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: icon).foregroundStyle(tint)
                 }
-                .frame(width: 10, height: 10)
+                .font(.callout)
+            } else {
+                OrbitStatusLabel(text: text, color: tint, pulsing: pulsing)
+                    .font(.callout)
             }
-            Text(text)
-                .font(.system(.caption, weight: .bold))
-                .lineLimit(1)
         }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(tint.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
+        .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
-        .onAppear {
-            guard pulsing && !reduceMotion else { return }
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true }
-        }
     }
 }
 
+
+/// A small labelled value ("Ping 4 ms").
 struct MacStatChip: View {
     var label: String
     var value: String
@@ -366,24 +270,15 @@ struct MacStatChip: View {
     var tint: Color = .white
 
     var body: some View {
-        HStack(spacing: 5) {
-            if let icon {
-                Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(tint.opacity(0.9))
-            }
-            Text(label.uppercased())
-                .font(.system(.caption2, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(.white.opacity(0.5))
+        HStack(spacing: 4) {
+            Text(label).foregroundStyle(.secondary)
             Text(value)
-                .font(.system(.caption, weight: .bold))
+                .fontWeight(.semibold)
                 .monospacedDigit()
-                .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())
                 .lineLimit(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(.white.opacity(0.06), in: Capsule())
+        .font(.callout)
         .fixedSize(horizontal: true, vertical: false)
     }
 }
@@ -407,7 +302,6 @@ struct MacRing: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: reduceGlow || theme.isFlat ? .clear : tint.opacity(0.5), radius: 6)
                     .animation(.snappy(duration: 0.45), value: clamped)
             }
         }
@@ -473,55 +367,40 @@ struct MacSparkline: View {
 
 // MARK: - Buttons
 
-/// Pointer-aware button: subtle hover highlight, press scale, disabled dimming.
+
+/// Buttons on the Mac: glass capsules; prominent ones are tinted with the accent.
 struct MacHoverButtonStyle: ButtonStyle {
     var tint: Color = .white
     var prominent: Bool = false
     var cornerRadius: CGFloat = 10
 
     func makeBody(configuration: Configuration) -> some View {
-        MacHoverButtonBody(configuration: configuration, tint: tint, prominent: prominent, cornerRadius: cornerRadius)
+        MacHoverButtonBody(configuration: configuration, tint: tint, prominent: prominent)
     }
 
     private struct MacHoverButtonBody: View {
         let configuration: Configuration
         let tint: Color
         let prominent: Bool
-        let cornerRadius: CGFloat
-        @State private var hovered = false
         @Environment(\.isEnabled) private var isEnabled
-        @Environment(\.macTheme) private var theme
 
         var body: some View {
             configuration.label
-                .font(.system(.body, weight: .semibold))
-                .foregroundStyle(prominent ? Color.black.opacity(0.85) : (tint == .white ? Color.white : tint))
-                .padding(.horizontal, 12)
+                .font(.body.weight(.medium))
+                .foregroundStyle(prominent ? Color.white : (tint == .white ? Color.primary : tint))
+                .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(
-                            prominent
-                                ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                : AnyShapeStyle(tint.opacity(tint == .white ? (hovered ? 0.14 : 0.08) : (hovered ? 0.22 : 0.13)))
-                        )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(prominent ? .white.opacity(0.25) : tint.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
-                )
-                .shadow(color: prominent && !theme.isFlat ? tint.opacity(hovered ? 0.45 : 0.3) : .clear, radius: 12, y: 5)
+                .glassEffect(prominent ? .regular.tint(tint == .white ? OrbitPalette.accent : tint).interactive() : .regular.interactive(), in: Capsule())
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .opacity(isEnabled ? 1 : 0.45)
-                .animation(.spring(response: 0.25, dampingFraction: 0.75), value: configuration.isPressed)
-                .animation(.easeOut(duration: 0.15), value: hovered)
-                .onHover { hovered = $0 }
-                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .animation(OrbitMotion.quick, value: configuration.isPressed)
+                .contentShape(Capsule())
         }
     }
 }
 
-/// Borderless icon button used in toolbars and card corners.
+
+/// Round glass icon buttons for toolbars and card corners.
 struct MacIconButtonStyle: ButtonStyle {
     var tint: Color = .white
     var size: CGFloat = 30
@@ -534,26 +413,24 @@ struct MacIconButtonStyle: ButtonStyle {
         let configuration: Configuration
         let tint: Color
         let size: CGFloat
-        @State private var hovered = false
         @Environment(\.isEnabled) private var isEnabled
 
         var body: some View {
             configuration.label
-                .font(.system(size: size * 0.46, weight: .semibold))
-                .foregroundStyle(tint == .white ? Color.white.opacity(0.9) : tint)
+                .font(.system(size: size * 0.44, weight: .medium))
+                .foregroundStyle(tint == .white ? Color.primary : tint)
                 .frame(width: size, height: size)
-                .background(Color.white.opacity(hovered ? 0.12 : 0.06), in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(hovered ? 0.18 : 0.08), lineWidth: 1))
+                .glassEffect(.regular.interactive(), in: Circle())
                 .scaleEffect(configuration.isPressed ? 0.94 : 1)
                 .opacity(isEnabled ? 1 : 0.4)
-                .animation(.easeOut(duration: 0.15), value: hovered)
-                .onHover { hovered = $0 }
+                .animation(OrbitMotion.quick, value: configuration.isPressed)
                 .contentShape(Circle())
         }
     }
 }
 
-/// Square tile with icon + title used for quick actions.
+
+/// A quick action: a symbol over a short label on a quiet surface; accent-filled while active.
 struct MacActionTile: View {
     var title: String
     var icon: String
@@ -568,30 +445,23 @@ struct MacActionTile: View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(isActive ? Color.black.opacity(0.85) : tint)
+                    .font(.system(size: 17, weight: .medium))
                     .frame(height: 20)
                 Text(title)
-                    .font(.system(.caption, weight: .semibold))
-                    .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
+                    .font(.callout)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
+            .foregroundStyle(isActive ? Color.white : Color.primary)
             .frame(maxWidth: .infinity, minHeight: minHeight)
             .padding(.horizontal, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(isActive ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Color.white.opacity(hovered ? 0.10 : 0.055)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(isActive ? tint.opacity(0.4) : .white.opacity(hovered ? 0.16 : 0.07), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(isActive ? AnyShapeStyle(tint) : AnyShapeStyle(hovered ? OrbitPalette.well : OrbitPalette.surface),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
         .opacity(isEnabled ? 1 : 0.45)
-        .animation(.easeOut(duration: 0.15), value: hovered)
+        .animation(.easeOut(duration: 0.12), value: hovered)
         .onHover { hovered = $0 }
         .help(title)
         .accessibilityLabel(title)
@@ -690,6 +560,8 @@ struct MacMetricCard: View {
     }
 }
 
+
+/// An inline note: a symbol, a short title and a line or two of explanation.
 struct MacNotice: View {
     var title: String
     var message: String
@@ -697,20 +569,23 @@ struct MacNotice: View {
     var tint: Color = .cyan
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            MacIconBadge(systemName: icon, tint: tint, size: 32)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                Text(title).font(.headline)
+                Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(4)
             }
             Spacer(minLength: 0)
         }
-        .padding(13)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 16, tint: tint)
+        .background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
+
+/// A calm placeholder with an optional action.
 struct MacEmptyState: View {
     var icon: String
     var title: String
@@ -720,29 +595,23 @@ struct MacEmptyState: View {
     var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle().fill(tint.opacity(0.12)).frame(width: 68, height: 68)
-                Circle().strokeBorder(tint.opacity(0.25), lineWidth: 1).frame(width: 68, height: 68)
-                Image(systemName: icon)
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(tint)
-            }
-            VStack(spacing: 4) {
-                Text(title).font(.headline.weight(.bold))
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-            }
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(title).font(.title3.weight(.semibold))
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .buttonStyle(MacHoverButtonStyle(tint: tint))
-                    .padding(.top, 2)
+                    .buttonStyle(MacHoverButtonStyle(tint: tint == .cyan ? .white : tint, prominent: true))
+                    .padding(.top, 6)
             }
         }
-        .padding(.vertical, 28)
+        .padding(.vertical, 32)
         .padding(.horizontal, 20)
         .frame(maxWidth: .infinity)
     }

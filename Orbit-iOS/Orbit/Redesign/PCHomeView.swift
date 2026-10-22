@@ -193,7 +193,7 @@ private struct PCStatusHeader: View {
     private var title: String {
         switch state {
         case .setup: return "No PC yet"
-        case .demo, .online: return PCTakeaway(metrics: vm.metrics).headline
+        case .demo, .online: return OrbitTakeaway(vm.metrics).headline
         case .connecting: return "Connecting…"
         case .waking: return "Waking up…"
         case .locked: return "Locked"
@@ -221,21 +221,7 @@ private struct PCStatusHeader: View {
     }
 }
 
-/// One sentence about how the PC is doing, from the readings that matter most.
-struct PCTakeaway {
-    var metrics: PCMetrics
 
-    var headline: String {
-        if let temp = metrics.cpuTemp, temp >= 90 { return "Processor is hot · \(Int(temp))°" }
-        if let temp = metrics.gpuTemp, temp >= 85 { return "Graphics card is hot · \(Int(temp))°" }
-        if metrics.cpuUsage >= 85 { return "Processor is busy · \(Int(metrics.cpuUsage))%" }
-        if let gpu = metrics.gpuUsage, gpu >= 90, metrics.activeGame == nil { return "Graphics card is busy · \(Int(gpu))%" }
-        if metrics.ramTotalGB > 0, metrics.ramUsedGB / metrics.ramTotalGB >= 0.9 { return "Memory is almost full" }
-        if metrics.activeGame != nil { return "In game" }
-        if let cpu = metrics.cpuTemp, cpu < 65, (metrics.gpuTemp ?? 0) < 65, metrics.cpuUsage < 30 { return "Running cool and quiet" }
-        return metrics.cpuUsage < 30 ? "Idle" : "Running smoothly"
-    }
-}
 
 // MARK: - Setup, demo, offline
 

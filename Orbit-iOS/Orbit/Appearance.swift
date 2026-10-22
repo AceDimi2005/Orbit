@@ -115,6 +115,8 @@ enum OrbitTheme: String, CaseIterable, Identifiable {
 }
 
 enum OrbitAppIcon: String, CaseIterable, Identifiable {
+    // Raw values are the alternate icon names (Shared/Icons/AppIcon-*.icon); they stay
+    // stable so people keep the icon they picked.
     case classic = "default"
     case neon = "AppIcon-Neon"
     case gold = "AppIcon-Gold"
@@ -130,59 +132,90 @@ enum OrbitAppIcon: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .classic: "Orbit Cyan"
-        case .neon: "Cyber Neon"
-        case .gold: "Solar Gold"
-        case .crimson: "Crimson"
-        case .matrix: "Matrix"
-        case .minimal: "Titanium"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .classic: "Default"
-        case .neon: "Pro · Magenta & Cyan"
-        case .gold: "Pro · Obsidian Gold"
-        case .crimson: "Pro · Carbon Ruby"
-        case .matrix: "Pro · Phosphor Green"
-        case .minimal: "Pro · Monochrome"
+        case .classic: "Graphite"
+        case .neon: "Blue"
+        case .gold: "Gold"
+        case .crimson: "Red"
+        case .matrix: "Green"
+        case .minimal: "Light"
         }
     }
 
     var isPro: Bool { self != .classic }
 
-    var primaryColor: Color {
+    /// The icon the Home Screen shows right now (the system remembers it, not Orbit).
+    static var current: OrbitAppIcon {
+        OrbitAppIcon(rawValue: UIApplication.shared.alternateIconName ?? "default") ?? .classic
+    }
+
+    // The colors below mirror Tools/generate_orbit_icons.py, so the picker shows the
+    // icon people will get (its default, light appearance).
+
+    var backgroundTop: Color {
         switch self {
-        case .classic: Color(red: 0.30, green: 0.85, blue: 0.97)
-        case .neon: Color(red: 1.0, green: 0.18, blue: 0.72)
-        case .gold: Color(red: 0.99, green: 0.82, blue: 0.32)
-        case .crimson: Color(red: 1.0, green: 0.26, blue: 0.36)
-        case .matrix: Color(red: 0.18, green: 0.98, blue: 0.44)
-        case .minimal: Color(red: 0.88, green: 0.92, blue: 0.98)
+        case .classic, .crimson, .matrix: Self.p3(0.235, 0.247, 0.282)
+        case .neon: Self.p3(0.169, 0.471, 1.0)
+        case .gold: Self.p3(0.204, 0.180, 0.141)
+        case .minimal: Self.p3(0.965, 0.965, 0.973)
         }
     }
 
-    var secondaryColor: Color {
+    var backgroundBottom: Color {
         switch self {
-        case .classic: Color(red: 0.14, green: 0.50, blue: 0.92)
-        case .neon: Color(red: 0.18, green: 0.92, blue: 1.0)
-        case .gold: Color(red: 0.78, green: 0.54, blue: 0.14)
-        case .crimson: Color(red: 1.0, green: 0.52, blue: 0.30)
-        case .matrix: Color(red: 0.08, green: 0.68, blue: 0.42)
-        case .minimal: Color(red: 0.45, green: 0.50, blue: 0.60)
+        case .classic, .crimson, .matrix: Self.p3(0.063, 0.066, 0.078)
+        case .neon: Self.p3(0.035, 0.153, 0.502)
+        case .gold: Self.p3(0.051, 0.043, 0.031)
+        case .minimal: Self.p3(0.820, 0.824, 0.847)
         }
     }
 
-    var backgroundColor: Color {
+    var ringColor: Color {
         switch self {
-        case .classic: Color(red: 0.04, green: 0.07, blue: 0.13)
-        case .neon: Color(red: 0.08, green: 0.02, blue: 0.14)
-        case .gold: Color(red: 0.09, green: 0.07, blue: 0.03)
-        case .crimson: Color(red: 0.11, green: 0.025, blue: 0.04)
-        case .matrix: Color(red: 0.02, green: 0.08, blue: 0.035)
-        case .minimal: Color(red: 0.09, green: 0.10, blue: 0.12)
+        case .gold: Self.p3(0.902, 0.722, 0.298)
+        case .minimal: Self.p3(0.110, 0.110, 0.122)
+        default: .white
         }
+    }
+
+    var satelliteColor: Color {
+        switch self {
+        case .classic, .minimal: Self.p3(0.039, 0.518, 1.0)
+        case .crimson: Self.p3(1.0, 0.271, 0.227)
+        case .matrix: Self.p3(0.188, 0.820, 0.345)
+        case .neon, .gold: .white
+        }
+    }
+
+    private static func p3(_ red: Double, _ green: Double, _ blue: Double) -> Color {
+        Color(.displayP3, red: red, green: green, blue: blue)
+    }
+}
+
+/// An app icon drawn from the same geometry as the real one: the mark on its background,
+/// with a light rim where the glass catches the light.
+struct OrbitAppIconPreview: View {
+    var icon: OrbitAppIcon
+    var size: CGFloat = 60
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous)
+        // The ring's outer edge spans 630 of the icon's 1024 points.
+        let mark = size * 630 / 1024
+        ZStack {
+            shape.fill(LinearGradient(colors: [icon.backgroundTop, icon.backgroundBottom], startPoint: .top, endPoint: .bottom))
+            OrbitRingShape()
+                .stroke(icon.ringColor, style: StrokeStyle(lineWidth: mark * OrbitMarkGeometry.stroke, lineCap: .round))
+                .frame(width: mark, height: mark)
+            Circle()
+                .fill(icon.satelliteColor)
+                .frame(width: mark * OrbitMarkGeometry.satellite * 2, height: mark * OrbitMarkGeometry.satellite * 2)
+                .offset(y: -mark * OrbitMarkGeometry.radius)
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.32), .white.opacity(0.04)], startPoint: .top, endPoint: .bottom), lineWidth: max(0.5, size / 120))
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -530,29 +563,7 @@ struct AppearanceSettingsView: View {
         } label: {
             VStack(spacing: 6) {
                 ZStack(alignment: .topTrailing) {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(icon.backgroundColor)
-                        .frame(width: 54, height: 54)
-                        .overlay(
-                            ZStack {
-                                Circle()
-                                    .strokeBorder(icon.secondaryColor.opacity(0.45), lineWidth: 3.5)
-                                    .frame(width: 36, height: 36)
-                                Circle()
-                                    .trim(from: 0.08, to: 0.82)
-                                    .stroke(icon.primaryColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                                    .frame(width: 36, height: 36)
-                                    .rotationEffect(.degrees(-35))
-                                Circle()
-                                    .fill(LinearGradient(colors: [icon.primaryColor, icon.secondaryColor], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                    .frame(width: 14, height: 14)
-                            }
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(isSelected ? icon.primaryColor : .white.opacity(0.14), lineWidth: isSelected ? 2.2 : 1)
-                        )
-                        .shadow(color: isSelected ? icon.primaryColor.opacity(0.45) : .clear, radius: 10)
+                    OrbitAppIconPreview(icon: icon, size: 54)
                     if locked {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 9, weight: .bold))
@@ -563,7 +574,7 @@ struct AppearanceSettingsView: View {
                     } else if isSelected {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(icon.primaryColor)
+                            .foregroundStyle(.tint)
                             .background(Circle().fill(.black))
                             .offset(x: 4, y: -4)
                     }
