@@ -1,6 +1,8 @@
 """Network diagnosis and the elevated fixes, with a fake PowerShell: nothing changes Windows."""
 import json
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import orbit_diagnostics as diagnostics
 
@@ -62,6 +64,18 @@ class ScriptTests(unittest.TestCase):
         with unittest.mock.patch.object(diagnostics.os, "name", "posix"):
             with self.assertRaises(OSError):
                 diagnostics.run_elevated("Get-Date")
+
+    def test_readings_exit_0_unless_they_failed_and_failures_say_why(self):
+        for script in (diagnostics.PROFILES_SCRIPT, diagnostics.RULES_SCRIPT, diagnostics.ADDRESSES_SCRIPT):
+            self.assertTrue(script.startswith(diagnostics.UTF8))  # $ErrorActionPreference = 'Stop' comes first
+            self.assertTrue(script.endswith("; exit 0"))
+        for stderr, expected in ((b"", "PowerShell exited with code 1."), (b"Access denied", "PowerShell exited with code 1: Access denied")):
+            completed = SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
+            with patch.object(diagnostics, "os", SimpleNamespace(name="nt")), \
+                    patch.object(diagnostics.subprocess, "run", return_value=completed):
+                with self.assertRaises(OSError) as raised:
+                    diagnostics.PowerShell._run(diagnostics.RULES_SCRIPT)
+            self.assertEqual(str(raised.exception), expected)
 
     def test_powershell_output_of_one_object_or_many(self):
         shell = diagnostics.PowerShell(runner=lambda script: json.dumps({"Name": "only"}))

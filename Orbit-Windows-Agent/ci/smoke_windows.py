@@ -34,6 +34,7 @@ os.environ.update({"LOCALAPPDATA": str(STATE), "ORBIT_TOKEN_FILE": str(STATE / "
                    "ORBIT_SUNSHINE_LOGIN_FILE": str(STATE / ".orbit-sunshine-login"),
                    "ORBIT_HISTORY_FILE": str(STATE / "history.sqlite3"), "ORBIT_HOST": "127.0.0.1"})
 sys.path.insert(0, str(AGENT))
+sys.stdout.reconfigure(encoding="utf-8")
 results = []
 
 
@@ -151,8 +152,24 @@ def diagnosis():
     report = orbit_diagnostics.Diagnostics(address=lambda: None, elevate=lambda script: (_ for _ in ()).throw(
         AssertionError("the smoke test must never elevate"))).report()
     assert report["verdict"]["state"] in ("ok", "warning", "problem", "unknown")
-    assert len(report["firewall"]["rules"]) in (0, 3)
-    return f"{report['verdict']['title']} · {len(report['profiles'])} network profile(s)"
+    if os.name == "nt" and not report["available"]:
+        for name in ("PROFILES_SCRIPT", "RULES_SCRIPT", "ADDRESSES_SCRIPT"):  # what PowerShell said, for the log
+            started = time.monotonic()
+            completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", getattr(orbit_diagnostics, name)],
+                                       capture_output=True, timeout=60, creationflags=orbit_diagnostics.CREATE_NO_WINDOW)
+            print(f"     {name}: exit {completed.returncode} after {time.monotonic() - started:.1f} s, "
+                  f"stdout {completed.stdout[:200]!r}, stderr {completed.stderr[:400]!r}", flush=True)
+        raise AssertionError(f"the diagnosis is unavailable: {report.get('reason')}")
+    profiles = ", ".join(f"{item['interface']} {item['category']}" for item in report["profiles"]) or "none"
+    detail = f"{report['verdict']['title']}; network profiles: {profiles}"
+    if os.name == "nt":
+        assert len(report["firewall"]["rules"]) == 3, report["firewall"]
+        # Why the readings end with "exit 0": the same reading without it, on a PC with no Orbit rule.
+        bare = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                               orbit_diagnostics.RULES_SCRIPT[:-len(orbit_diagnostics.READ_END)]],
+                              capture_output=True, timeout=60, creationflags=orbit_diagnostics.CREATE_NO_WINDOW)
+        detail += f"; without 'exit 0' the firewall reading exits {bare.returncode}"
+    return detail
 
 
 @check("SendInput structure")

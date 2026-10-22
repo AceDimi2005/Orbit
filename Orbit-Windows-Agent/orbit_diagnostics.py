@@ -20,16 +20,20 @@ FIREWALL_GROUP = "Orbit PC Companion"
 CREATE_NO_WINDOW = 0x08000000
 CACHE_SECONDS = 30
 UTF8 = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; "
+# A reading that finds nothing (no Orbit rule exists yet) still records a silenced error, and
+# powershell.exe would then exit with 1. Real failures stop the script before this line.
+READ_END = "; exit 0"
 PROFILES_SCRIPT = (UTF8 + "Get-NetConnectionProfile | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; "
                    "Interface = [string]$_.InterfaceAlias; Index = [int]$_.InterfaceIndex; "
-                   "Category = [string]$_.NetworkCategory } } | ConvertTo-Json -Compress")
+                   "Category = [string]$_.NetworkCategory } } | ConvertTo-Json -Compress" + READ_END)
 RULES_SCRIPT = (UTF8 + f"Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | ForEach-Object {{ "
                 "$port = $_ | Get-NetFirewallPortFilter; [pscustomobject]@{ Name = [string]$_.DisplayName; "
                 "Enabled = [string]$_.Enabled; Profile = [string]$_.Profile; Action = [string]$_.Action; "
                 "Direction = [string]$_.Direction; Protocol = [string]$port.Protocol; Port = [string]$port.LocalPort } } "
-                "| ConvertTo-Json -Compress")
+                "| ConvertTo-Json -Compress" + READ_END)
 ADDRESSES_SCRIPT = (UTF8 + "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { "
-                    "[pscustomobject]@{ Address = [string]$_.IPAddress; Index = [int]$_.InterfaceIndex } } | ConvertTo-Json -Compress")
+                    "[pscustomobject]@{ Address = [string]$_.IPAddress; Index = [int]$_.InterfaceIndex } } | ConvertTo-Json -Compress"
+                    + READ_END)
 
 
 def firewall_plan(secure_port=8766, legacy_port=8765):
@@ -91,7 +95,8 @@ class PowerShell:
         completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                                    capture_output=True, timeout=timeout, creationflags=CREATE_NO_WINDOW)
         if completed.returncode != 0:
-            raise OSError((completed.stderr or b"").decode("utf-8", "replace").strip()[:300] or "PowerShell failed.")
+            message = (completed.stderr or b"").decode("utf-8", "replace").strip()[:300]
+            raise OSError(f"PowerShell exited with code {completed.returncode}" + (f": {message}" if message else "."))
         return (completed.stdout or b"").decode("utf-8-sig", "replace")
 
     def objects(self, script):
