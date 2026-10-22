@@ -61,7 +61,7 @@ struct PCHomeView: View {
             }
         }
         .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
-        .sheet(isPresented: $showsPCs) { NavigationStack { PCProfilesView(vm: vm) } }
+        .sheet(isPresented: $showsPCs) { NavigationStack { PCProfilesView(vm: vm, showsCloseButton: true) } }
         .sheet(isPresented: $showsClipboard) { NavigationStack { ClipboardView(vm: vm) } }
         .sheet(isPresented: $showsMixer) { NavigationStack { AudioMixerView(vm: vm) } }
         .sheet(isPresented: $showsCustomize) { DashboardCustomizationView(vm: vm) }

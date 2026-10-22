@@ -27,12 +27,16 @@ struct OrbitRootView: View {
                 PlayView(vm: vm, sunshine: sunshine)
             }
             Tab("Files", systemImage: "folder", value: OrbitTab.files) {
-                NavigationStack { PCFilesView(vm: vm) }
+                // Files owns its navigation stack, so folders push like the Files app.
+                PCFilesView(vm: vm)
             }
         }
         .tabViewStyle(.sidebarAdaptable)
         .tabBarMinimizeBehavior(.onScrollDown)
         .modifier(NowPlayingAccessoryModifier(vm: vm, sunshine: sunshine))
+        #if DEBUG
+        .modifier(OrbitDebugScreenModifier(vm: vm))
+        #endif
         .tint(theme.orbitTint)
         .onChange(of: tab) { _, _ in OrbitHaptics.selection() }
         .task(id: sunshineKey) { await syncSunshine() }
