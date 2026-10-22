@@ -1,352 +1,179 @@
-import AppIntents
 import SwiftUI
 import WidgetKit
 
+/// Complications and Smart Stack widgets. Each shows one fact; tapping opens the page of the
+/// watch app where you act on it. Power actions are never one tap away on a watch face.
 @main
 struct OrbitWatchWidgets: WidgetBundle {
     var body: some Widget {
-        OrbitWatchTelemetryWidget()
-        OrbitWatchPowerWidget()
-        OrbitWatchAirMouseWidget()
+        OrbitWatchStatusWidget()
+        OrbitWatchProcessorTemperatureWidget()
+        OrbitWatchGraphicsTemperatureWidget()
+        OrbitWatchFrameRateWidget()
+        OrbitWatchControlWidget()
     }
 }
 
-private enum WatchWidgetPalette {
-    static let accent = Color(red: 0.36, green: 0.86, blue: 1.0)
-    static let purple = accent
-    static let mint = accent
-    static let coral = Color(red: 1.0, green: 0.45, blue: 0.48)
-    static let background = Color.black
-}
+// MARK: - Timeline
 
-struct WatchTelemetryEntry: TimelineEntry {
-    var date: Date
-    var pcName: String
-    var isOnline: Bool
-    var cpuUsage: Double
-    var cpuTemp: Double?
-    var gpuUsage: Double?
-    var gpuTemp: Double?
-    var ramUsage: Double
-    var fps: Double?
-    var activeGame: String?
-    var powerFeedback: String?
-
-    static var placeholder: WatchTelemetryEntry {
-        WatchTelemetryEntry(
-            date: Date(),
-            pcName: "Gaming PC",
-            isOnline: true,
-            cpuUsage: 28,
-            cpuTemp: 52,
-            gpuUsage: 46,
-            gpuTemp: 59,
-            ramUsage: 42,
-            fps: 120,
-            activeGame: nil,
-            powerFeedback: nil
-        )
-    }
-}
-
-struct WatchTelemetryProvider: TimelineProvider {
+/// Reads the snapshot the watch app saves after every poll. The watch only hears from the PC
+/// while the app runs, so a snapshot older than `freshness` is shown as last seen, not live.
+struct WatchComplicationProvider: TimelineProvider {
     private static let appGroupID = "group.com.dimitrie.orbit"
     private static let snapshotKey = "Orbit.WatchSnapshot.v1"
+    private static let freshness: TimeInterval = 15 * 60
 
-    func placeholder(in context: Context) -> WatchTelemetryEntry {
-        .placeholder
+    func placeholder(in context: Context) -> WatchComplicationEntry { .sample }
+
+    func getSnapshot(in context: Context, completion: @escaping (WatchComplicationEntry) -> Void) {
+        completion(context.isPreview ? .sample : entry(at: Date()))
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (WatchTelemetryEntry) -> Void) {
-        completion(loadEntry())
-    }
-
-    func getTimeline(in context: Context, completion: @escaping (Timeline<WatchTelemetryEntry>) -> Void) {
-        let entry = loadEntry()
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
-        completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
-    }
-
-    private func loadEntry() -> WatchTelemetryEntry {
-        let store = UserDefaults(suiteName: Self.appGroupID) ?? .standard
-        let defaultName = OrbitWidgetConnectionStore.defaultConnection()?.name ?? "Your PC"
-        let feedback = OrbitWidgetConnectionStore.recentPowerFeedback()
-
-        guard let snap = store.dictionary(forKey: Self.snapshotKey) ?? UserDefaults.standard.dictionary(forKey: Self.snapshotKey) else {
-            return WatchTelemetryEntry(
-                date: Date(),
-                pcName: defaultName,
-                isOnline: false,
-                cpuUsage: 0,
-                cpuTemp: nil,
-                gpuUsage: nil,
-                gpuTemp: nil,
-                ramUsage: 0,
-                fps: nil,
-                activeGame: nil,
-                powerFeedback: feedback
-            )
+    func getTimeline(in context: Context, completion: @escaping (Timeline<WatchComplicationEntry>) -> Void) {
+        let now = Date()
+        var entries = [entry(at: now)]
+        // Turn into "last seen" by itself once the reading is too old to trust.
+        if let updatedAt = entries[0].updatedAt, entries[0].isOnline {
+            let stale = updatedAt.addingTimeInterval(Self.freshness)
+            if stale > now { entries.append(entry(at: stale)) }
         }
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(Self.freshness))))
+    }
 
-        let ct = snap["cpuTemp"] as? Double ?? -1
-        let gu = snap["gpuUsage"] as? Double ?? -1
-        let gt = snap["gpuTemp"] as? Double ?? -1
-        let f = snap["fps"] as? Double ?? -1
-        let game = snap["activeGame"] as? String ?? ""
-
-        return WatchTelemetryEntry(
-            date: Date(),
-            pcName: snap["pcName"] as? String ?? defaultName,
-            isOnline: snap["isOnline"] as? Bool ?? false,
-            cpuUsage: snap["cpuUsage"] as? Double ?? 0,
-            cpuTemp: ct >= 0 ? ct : nil,
-            gpuUsage: gu >= 0 ? gu : nil,
-            gpuTemp: gt >= 0 ? gt : nil,
-            ramUsage: snap["ramUsagePercent"] as? Double ?? 0,
-            fps: f > 0 ? f : nil,
+    private func entry(at date: Date) -> WatchComplicationEntry {
+        let store = UserDefaults(suiteName: Self.appGroupID) ?? .standard
+        let fallbackName = OrbitWidgetConnectionStore.defaultConnection()?.name ?? "Your PC"
+        guard let snapshot = store.dictionary(forKey: Self.snapshotKey)
+                ?? UserDefaults.standard.dictionary(forKey: Self.snapshotKey) else {
+            return WatchComplicationEntry(date: date, pcName: fallbackName,
+                                          isPaired: OrbitWidgetConnectionStore.defaultConnection() != nil,
+                                          isOnline: false, isLocked: false, telemetry: WatchTelemetry(), updatedAt: nil)
+        }
+        func reading(_ key: String) -> Double? {
+            guard let value = snapshot[key] as? Double, value >= 0 else { return nil }
+            return value
+        }
+        let timestamp = snapshot["timestamp"] as? Double ?? 0
+        let updatedAt = timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+        let fresh = updatedAt.map { date.timeIntervalSince($0) < Self.freshness } ?? false
+        let isOnline = (snapshot["isOnline"] as? Bool ?? false) && fresh
+        let game = snapshot["activeGame"] as? String ?? ""
+        let telemetry = WatchTelemetry(
+            isOnline: isOnline,
+            cpuUsage: snapshot["cpuUsage"] as? Double ?? 0,
+            cpuTemp: reading("cpuTemp"),
+            gpuUsage: reading("gpuUsage"),
+            gpuTemp: reading("gpuTemp"),
+            ramUsedGB: snapshot["ramUsedGB"] as? Double ?? 0,
+            ramTotalGB: snapshot["ramTotalGB"] as? Double ?? 0,
             activeGame: game.isEmpty ? nil : game,
-            powerFeedback: feedback
-        )
+            fps: reading("fps").flatMap { $0 > 0 ? $0 : nil },
+            telemetryAvailable: snapshot["telemetryAvailable"] as? Bool ?? true,
+            sessionLocked: snapshot["sessionLocked"] as? Bool ?? false)
+        let selectedID = snapshot["selectedPCID"] as? String ?? ""
+        let host = snapshot["host"] as? String ?? ""
+        return WatchComplicationEntry(
+            date: date,
+            pcName: snapshot["pcName"] as? String ?? fallbackName,
+            isPaired: !selectedID.isEmpty || !host.isEmpty || OrbitWidgetConnectionStore.defaultConnection() != nil,
+            isOnline: isOnline,
+            isLocked: telemetry.sessionLocked == true,
+            telemetry: telemetry,
+            updatedAt: updatedAt,
+            tintHex: snapshot["tintHex"] as? String ?? "")
     }
 }
 
-// MARK: - 1. Watch Telemetry Complication & Smart Stack Card
+// MARK: - Widgets
 
-struct OrbitWatchTelemetryWidget: Widget {
-    let kind: String = "OrbitWatchTelemetry"
+/// Whether the PC is on, asleep or locked.
+struct OrbitWatchStatusWidget: Widget {
+    // The kind of the first watch complication, so faces that had it keep a complication.
+    let kind = "OrbitWatchTelemetry"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: WatchTelemetryProvider()) { entry in
-            OrbitWatchTelemetryComplicationView(entry: entry)
-                .containerBackground(WatchWidgetPalette.background.gradient, for: .widget)
+        StaticConfiguration(kind: kind, provider: WatchComplicationProvider()) { entry in
+            WatchComplicationContainer(url: "orbitwatch://glance") { family in
+                WatchStatusComplication(entry: entry, family: family)
+            }
         }
-        .configurationDisplayName("Orbit PC Telemetry")
-        .description("Live CPU, GPU, RAM, temperatures, and FPS on your Watch Face or Smart Stack.")
+        .configurationDisplayName("PC Status")
+        .description("Whether your PC is on, asleep or locked.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
     }
 }
 
-private struct OrbitWatchTelemetryComplicationView: View {
-    var entry: WatchTelemetryEntry
-    @Environment(\.widgetFamily) private var family
-
-    var body: some View {
-        switch family {
-        case .accessoryCircular:
-            Gauge(value: entry.isOnline ? min(100, max(0, entry.cpuUsage)) : 0, in: 0...100) {
-                Text("CPU")
-            } currentValueLabel: {
-                Text(entry.isOnline ? "\(Int(entry.cpuUsage.rounded()))%" : "OFF")
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .gaugeStyle(.accessoryCircular)
-            .tint(WatchWidgetPalette.accent.gradient)
-            .widgetURL(URL(string: "orbitwatch://cockpit"))
-
-        case .accessoryCorner:
-            Text(entry.isOnline ? "\(Int(entry.cpuUsage.rounded()))%" : "OFF")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(WatchWidgetPalette.accent)
-                .widgetCurvesContent()
-                .widgetLabel {
-                    Gauge(value: entry.isOnline ? min(100, max(0, entry.gpuUsage ?? entry.cpuUsage)) : 0, in: 0...100) {
-                        Text("GPU")
-                    } currentValueLabel: {
-                        Text(entry.gpuTemp.map { "\(Int($0.rounded()))°" } ?? "PC")
-                    }
-                    .gaugeStyle(.accessoryLinear)
-                    .tint(WatchWidgetPalette.purple)
-                }
-                .widgetURL(URL(string: "orbitwatch://cockpit"))
-
-        case .accessoryInline:
-            if entry.isOnline {
-                if let fps = entry.fps {
-                    Text("\(entry.pcName) · \(Int(entry.cpuUsage.rounded()))% · \(Int(fps.rounded())) FPS")
-                } else {
-                    Text("\(entry.pcName) · CPU \(Int(entry.cpuUsage.rounded()))% · GPU \(Int((entry.gpuUsage ?? 0).rounded()))%")
-                }
-            } else {
-                Text("\(entry.pcName) · Offline")
-            }
-
-        default:
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(entry.isOnline ? WatchWidgetPalette.mint : Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(entry.pcName)
-                        .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
-                    Spacer(minLength: 2)
-                    if let fps = entry.fps, entry.isOnline {
-                        Text("\(Int(fps.rounded())) FPS")
-                            .font(.system(size: 9.5, weight: .heavy))
-                            .foregroundStyle(WatchWidgetPalette.mint)
-                    } else {
-                        Text(entry.isOnline ? "LIVE" : "OFF")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    watchStatPill("CPU", value: entry.isOnline ? "\(Int(entry.cpuUsage.rounded()))%" : "—", tint: WatchWidgetPalette.accent)
-                    watchStatPill("GPU", value: entry.isOnline && entry.gpuUsage != nil ? "\(Int((entry.gpuUsage ?? 0).rounded()))%" : "—", tint: WatchWidgetPalette.purple)
-                    watchStatPill("RAM", value: entry.isOnline ? "\(Int(entry.ramUsage.rounded()))%" : "—", tint: WatchWidgetPalette.mint)
-                }
-            }
-            .widgetURL(URL(string: "orbitwatch://cockpit"))
-        }
-    }
-
-    private func watchStatPill(_ label: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(tint)
-            Text(value)
-                .font(.system(size: 11.5, weight: .bold))
-                .monospacedDigit()
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
-// MARK: - 2. Watch Power & Shut Down Complication
-
-struct OrbitWatchPowerWidget: Widget {
-    let kind: String = "OrbitWatchPower"
+struct OrbitWatchProcessorTemperatureWidget: Widget {
+    let kind = "OrbitWatchProcessorTemperature"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: WatchTelemetryProvider()) { entry in
-            OrbitWatchPowerComplicationView(entry: entry)
-                .containerBackground(WatchWidgetPalette.background.gradient, for: .widget)
+        StaticConfiguration(kind: kind, provider: WatchComplicationProvider()) { entry in
+            WatchComplicationContainer(url: "orbitwatch://glance") { family in
+                WatchTemperatureComplication(entry: entry, family: family, component: .processor)
+            }
         }
-        .configurationDisplayName("Orbit Power & Shut Down")
-        .description("Wake-on-LAN Power On, Sleep, and Shut Down buttons right on your Watch Face and Smart Stack.")
-        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryRectangular])
+        .configurationDisplayName("Processor Temperature")
+        .description("How warm your PC's processor is.")
+        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
     }
 }
 
-private struct OrbitWatchPowerComplicationView: View {
-    var entry: WatchTelemetryEntry
-    @Environment(\.widgetFamily) private var family
-
-    var body: some View {
-        switch family {
-        case .accessoryCircular:
-            Button(intent: OrbitWakePCIntent()) {
-                ZStack {
-                    AccessoryWidgetBackground()
-                    Image(systemName: "power")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(WatchWidgetPalette.mint)
-                }
-            }
-            .buttonStyle(.plain)
-
-        case .accessoryCorner:
-            ZStack {
-                AccessoryWidgetBackground()
-                Image(systemName: "power")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(WatchWidgetPalette.mint)
-            }
-            .widgetLabel {
-                Text(entry.pcName)
-            }
-            .widgetURL(URL(string: "orbitwatch://power"))
-
-        default:
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 4) {
-                    Image(systemName: "desktopcomputer")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(WatchWidgetPalette.accent)
-                    Text(entry.pcName)
-                        .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
-                    Spacer()
-                    if let feedback = entry.powerFeedback {
-                        Text(feedback)
-                            .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(WatchWidgetPalette.mint)
-                            .lineLimit(1)
-                    }
-                }
-
-                HStack(spacing: 5) {
-                    Button(intent: OrbitWakePCIntent()) {
-                        Label("On", systemImage: "power")
-                            .font(.system(size: 9.5, weight: .bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .background(WatchWidgetPalette.mint.opacity(0.22), in: Capsule())
-                            .foregroundStyle(WatchWidgetPalette.mint)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button(intent: OrbitSleepPCIntent()) {
-                        Image(systemName: "moon.zzz.fill")
-                            .font(.system(size: 9.5, weight: .bold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(Color.orange.opacity(0.22), in: Capsule())
-                            .foregroundStyle(.orange)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button(intent: OrbitShutdownPCIntent()) {
-                        Label("Off", systemImage: "power.circle.fill")
-                            .font(.system(size: 9.5, weight: .bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .background(WatchWidgetPalette.coral.opacity(0.22), in: Capsule())
-                            .foregroundStyle(WatchWidgetPalette.coral)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - 3. Watch Wrist Air Mouse Quick Launch Complication
-
-struct OrbitWatchAirMouseWidget: Widget {
-    let kind: String = "OrbitWatchAirMouse"
+struct OrbitWatchGraphicsTemperatureWidget: Widget {
+    let kind = "OrbitWatchGraphicsTemperature"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: WatchTelemetryProvider()) { entry in
-            OrbitWatchAirMouseComplicationView(entry: entry)
-                .containerBackground(WatchWidgetPalette.background.gradient, for: .widget)
+        StaticConfiguration(kind: kind, provider: WatchComplicationProvider()) { entry in
+            WatchComplicationContainer(url: "orbitwatch://glance") { family in
+                WatchTemperatureComplication(entry: entry, family: family, component: .graphics)
+            }
         }
-        .configurationDisplayName("Orbit Wrist Air Mouse")
-        .description("Quickly open the Apple Watch Gyro Air Mouse & Trackpad to control your PC cursor.")
+        .configurationDisplayName("Graphics Temperature")
+        .description("How warm your PC's graphics card is.")
+        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+struct OrbitWatchFrameRateWidget: Widget {
+    let kind = "OrbitWatchFrameRate"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: WatchComplicationProvider()) { entry in
+            WatchComplicationContainer(url: "orbitwatch://media") { family in
+                WatchFrameRateComplication(entry: entry, family: family)
+            }
+        }
+        .configurationDisplayName("Frame Rate")
+        .description("The frame rate of the game running on your PC.")
+        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+/// Opens the pointer page. Kept under the Air Mouse kind it replaces.
+struct OrbitWatchControlWidget: Widget {
+    let kind = "OrbitWatchAirMouse"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: WatchComplicationProvider()) { entry in
+            WatchComplicationContainer(url: "orbitwatch://control") { family in
+                WatchControlComplication(entry: entry, family: family)
+            }
+        }
+        .configurationDisplayName("Control")
+        .description("Opens the pointer, clicks and scrolling for your PC.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner])
     }
 }
 
-private struct OrbitWatchAirMouseComplicationView: View {
-    var entry: WatchTelemetryEntry
+/// Reads the family and sets the deep link and the Smart Stack background: Orbit's solid
+/// content surface (faces drop it; tinted modes desaturate it).
+private struct WatchComplicationContainer<Content: View>: View {
+    var url: String
+    @ViewBuilder var content: (WidgetFamily) -> Content
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        ZStack {
-            AccessoryWidgetBackground()
-            Image(systemName: "gyroscope")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(WatchWidgetPalette.accent)
-        }
-        .widgetLabel {
-            Text("Air Mouse")
-        }
-        .widgetURL(URL(string: "orbitwatch://cursor"))
+        content(family)
+            .widgetURL(URL(string: url))
+            .containerBackground(for: .widget) { OrbitPalette.surface }
     }
 }

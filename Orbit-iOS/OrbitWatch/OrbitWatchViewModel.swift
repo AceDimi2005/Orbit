@@ -114,6 +114,16 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var isUnlocking: Bool = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
+    /// When the wake signal went out. The PC gets `wakeWindow` to answer before the watch
+    /// stops showing it as waking.
+    @Published private(set) var wakeRequestedAt: Date?
+    /// False until the first poll for the current PC has finished, so the watch says
+    /// "Connecting…" right after launch instead of "Asleep or off".
+    @Published private(set) var hasCheckedConnection = false
+    /// The result of the last thing you asked the PC to do, shown briefly under the controls.
+    @Published private(set) var feedback: WatchFeedback?
+    /// The accent chosen on iPhone (`tintHex` in the sync payload); empty means Orbit Blue.
+    @Published private(set) var tintHex: String = UserDefaults.standard.string(forKey: "Orbit.WatchTintHex") ?? ""
 
     // Wrist Motion Air Mouse state
     @Published var isMotionCursorActive: Bool = false
@@ -125,7 +135,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             UserDefaults.standard.set(safe, forKey: "Orbit.WatchSensitivity")
         }
     }
-    @Published private(set) var cursorStatusMessage = "Choose a mode to control your PC"
+    @Published private(set) var cursorStatusMessage = "Swipe the pad to move the pointer."
     @Published private(set) var cursorRouteLabel = "Not connected"
     @Published private(set) var lastCursorDeliveryAt: Date?
     @Published private(set) var isCursorSending = false
@@ -159,6 +169,12 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     private var avoidPhoneUntil: Date = .distantPast
     private var lastPhoneContextAt: Double = 0
     private var pendingSelection: (id: String, until: Date)?
+    private var feedbackTask: Task<Void, Never>?
+    private var failedPollsForTarget = 0
+    /// DEBUG simulator checks freeze a canned state; polling and the iPhone link stay off.
+    private var isFrozenForDebug = false
+    private var isPhoneLinkDisabledForDebug = false
+    static let wakeWindow: TimeInterval = 90
 
     private var target: OrbitWatchControlTarget {
         OrbitWatchControlTarget(id: selectedPCID, host: host, agentPort: agentPort,
@@ -181,7 +197,10 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         loadCachedState()
         if let mode = WatchCursorMode(rawValue: UserDefaults.standard.string(forKey: "Orbit.WatchCursorMode") ?? "") { motionMode = mode }
         if let value = UserDefaults.standard.object(forKey: "Orbit.WatchSensitivity") as? Double { sensitivity = value }
-        if WCSession.isSupported() {
+        #if DEBUG
+        applyDebugLaunchOptions()
+        #endif
+        if WCSession.isSupported() && !isPhoneLinkDisabledForDebug {
             let session = WCSession.default
             session.delegate = self
             session.activate()
@@ -192,6 +211,44 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     var formattedUptime: String {
         guard uptimeSeconds > 0 else { return "—" }
         return "\(uptimeSeconds / 3600)h \((uptimeSeconds % 3600) / 60)m"
+    }
+
+    /// True from the wake request until the PC answers or `wakeWindow` passes.
+    var isWakingUp: Bool {
+        guard !isOnline else { return false }
+        if isWaking { return true }
+        guard let wakeRequestedAt else { return false }
+        return Date().timeIntervalSince(wakeRequestedAt) < Self.wakeWindow
+    }
+
+    /// The accent the iPhone uses, or Orbit Blue.
+    var tint: Color { Color(orbitHex: tintHex) ?? OrbitPalette.accent }
+
+    /// The latest readings as the shared Orbit telemetry (takeaway, vitals, colors).
+    var telemetry: WatchTelemetry {
+        WatchTelemetry(isOnline: isOnline, cpuUsage: cpuUsage, cpuTemp: cpuTemp, gpuUsage: gpuUsage, gpuTemp: gpuTemp,
+                       gpuPowerWatts: gpuPowerWatts, cpuPowerWatts: cpuPowerWatts, ramUsedGB: ramUsedGB, ramTotalGB: ramTotalGB,
+                       uptimeSeconds: uptimeSeconds, activeGame: activeGame, fps: fps,
+                       telemetryAvailable: telemetryAvailable, sessionLocked: sessionLocked)
+    }
+
+    /// Shows a short result under the controls (and keeps `statusMessage` in step).
+    private func announce(_ text: String, isError: Bool = false) {
+        statusMessage = text
+        feedback = WatchFeedback(text: text, isError: isError)
+        feedbackTask?.cancel()
+        feedbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(isError ? 8 : 4))
+            guard !Task.isCancelled else { return }
+            self?.feedback = nil
+        }
+    }
+
+    /// A fresh PC: forget the old connection state so the UI says "Connecting…" again.
+    private func resetConnectionState() {
+        hasCheckedConnection = false
+        failedPollsForTarget = 0
+        wakeRequestedAt = nil
     }
 
     var hasDirectCredentials: Bool {
@@ -223,7 +280,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             if hostOrPath.contains("wake") {
                 Task { await wakePC() }
             }
-        } else if hostOrPath.contains("cursor") || hostOrPath.contains("mouse") || hostOrPath.contains("remote") {
+        } else if hostOrPath.contains("cursor") || hostOrPath.contains("mouse") || hostOrPath.contains("remote")
+                    || hostOrPath.contains("control") || hostOrPath.contains("pointer") {
             selectedTab = 2
         } else if hostOrPath.contains("media") || hostOrPath.contains("volume") {
             selectedTab = 3
@@ -236,6 +294,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     func startPollingLoop() {
         pollTask?.cancel()
+        guard !isFrozenForDebug else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshTelemetry()
@@ -245,7 +304,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     }
 
     func requestSyncFromPhone() {
-        guard WCSession.isSupported() else { return }
+        guard WCSession.isSupported(), !isPhoneLinkDisabledForDebug else { return }
         let session = WCSession.default
         if !session.receivedApplicationContext.isEmpty {
             applyPhonePayload(session.receivedApplicationContext)
@@ -262,7 +321,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     }
 
     func refreshTelemetry() async {
-        guard appActive else { return }
+        guard appActive, !isFrozenForDebug else { return }
         if !hasDirectCredentials, let widgetConn = OrbitWidgetConnectionStore.defaultConnection() {
             selectedPCID = widgetConn.id
             host = widgetConn.host
@@ -288,6 +347,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 guard requestedTarget == target else { return }
                 lastTelemetryAt = Date()
                 isOnline = summary.isOnline ?? true
+                hasCheckedConnection = true
+                failedPollsForTarget = 0
+                if isOnline { wakeRequestedAt = nil }
                 sessionLocked = summary.sessionLocked ?? false
                 telemetryAvailable = summary.telemetryAvailable ?? true
                 if let name = summary.hostname, !name.isEmpty { pcName = name }
@@ -319,6 +381,10 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                     guard requestedTarget == target else { return }
                     lastTelemetryAt = Date()
                     isOnline = true
+                    hasCheckedConnection = true
+                    failedPollsForTarget = 0
+                    wakeRequestedAt = nil
+                    sessionLocked = (json["sessionLocked"] as? Bool) ?? false
                     telemetryAvailable = (json["telemetryAvailable"] as? Bool) ?? true
                     if let name = json["hostname"] as? String, !name.isEmpty { pcName = name }
                     cpuUsage = (json["cpuUsage"] as? Double) ?? 0
@@ -347,6 +413,10 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
 
         if !isTelemetryFresh { isOnline = false }
+        if let wakeRequestedAt, Date().timeIntervalSince(wakeRequestedAt) >= Self.wakeWindow { self.wakeRequestedAt = nil }
+        // Give the iPhone one poll to answer before calling the PC unreachable.
+        failedPollsForTarget += 1
+        if !phoneCanRelay || failedPollsForTarget > 1 { hasCheckedConnection = true }
         // A relay can still work when the last telemetry sample is stale.
         if phoneCanRelay {
             requestSyncFromPhone()
@@ -373,20 +443,21 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         defer { isWaking = false }
         // watchOS does not permit BSD UDP sockets. The paired iPhone sends WoL.
         guard phoneCanRelay else {
-            statusMessage = "Open Orbit on your nearby iPhone to wake this PC"
+            announce("Keep your iPhone nearby with Orbit installed. It sends the wake signal.", isError: true)
             WKInterfaceDevice.current().play(.failure)
             return
         }
-        statusMessage = "Sending Wake-on-LAN via iPhone…"
+        statusMessage = "Sending the wake signal through iPhone…"
         do {
             let destination = target
             let reply = try await sendPCMessage(["cmd": "wake"], to: destination)
             guard target == destination else { return }
             applyPhonePayload(reply)
-            statusMessage = "Wake packet sent via iPhone · waiting for PC"
+            if !isOnline { wakeRequestedAt = Date() }
+            statusMessage = "Wake signal sent · waiting for the PC"
             WKInterfaceDevice.current().play(.success)
         } catch {
-            statusMessage = "Wake failed: \(error.localizedDescription)"
+            announce("Couldn't wake the PC. \(error.localizedDescription)", isError: true)
             WKInterfaceDevice.current().play(.failure)
         }
     }
@@ -399,7 +470,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         isUnlocking = true
         defer { isUnlocking = false }
         guard phoneCanRelay else {
-            statusMessage = "Open Orbit on your nearby iPhone to unlock this PC"
+            announce("Keep your iPhone nearby with Orbit installed. It signs in for the watch.", isError: true)
             WKInterfaceDevice.current().play(.failure)
             return
         }
@@ -413,17 +484,17 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             guard reply["status"] as? String == "sent" else {
                 throw WatchControlError(reply["message"] as? String ?? "iPhone could not sign in to the PC.")
             }
-            statusMessage = "Sign-in sent · the PC should unlock"
+            announce("Password typed. The PC should unlock.")
             WKInterfaceDevice.current().play(.success)
         } catch {
-            statusMessage = "Unlock failed: \(error.localizedDescription)"
+            announce("Couldn't unlock. \(error.localizedDescription)", isError: true)
             WKInterfaceDevice.current().play(.failure)
         }
     }
 
     func sendPowerAction(_ action: String) async {
         WKInterfaceDevice.current().play(.click)
-        let label = action.replacingOccurrences(of: "_", with: " ").capitalized
+        let label = Self.actionName(action)
         let destination = target
         statusMessage = "Sending \(label)…"
         do {
@@ -435,15 +506,51 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 _ = try await client(for: destination).data(path: "/api/action/\(action)", method: "POST")
             }
             guard target == destination else { return }
-            statusMessage = "\(label) sent"
+            if let done = Self.actionResult(action) { announce(done) } else { statusMessage = "\(label) sent" }
             if ["shutdown", "sleep", "restart"].contains(action) { isOnline = false; stopMotionCursor() }
             if action == "mute" { isMuted.toggle() }
             WKInterfaceDevice.current().play(.success)
             saveSnapshotForComplications()
         } catch {
             guard target == destination else { return }
-            statusMessage = "\(label) failed: \(error.localizedDescription)"
+            announce("\(label) didn't go through. \(error.localizedDescription)", isError: true)
             WKInterfaceDevice.current().play(.failure)
+        }
+    }
+
+    /// Plain names for agent actions, as the buttons call them.
+    static func actionName(_ action: String) -> String {
+        switch action {
+        case "lock": "Lock"
+        case "sleep": "Sleep"
+        case "restart": "Restart"
+        case "shutdown": "Shut Down"
+        case "kill_game": "Quit Game"
+        case "mute": "Mute"
+        case "media_play_pause": "Play/Pause"
+        case "media_next": "Next"
+        case "media_prev": "Previous"
+        case "show_desktop": "Show Desktop"
+        case "alt_tab": "Switch Window"
+        case "task_view": "Task View"
+        case "screenshot": "Screenshot"
+        case "fullscreen": "Full Screen"
+        case "toggle_hdr": "HDR"
+        case "restore_display": "Turn On Display"
+        default: action.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    /// What changed on the PC, for actions whose result you cannot see from the watch.
+    private static func actionResult(_ action: String) -> String? {
+        switch action {
+        case "lock": "Locked."
+        case "sleep": "Going to sleep."
+        case "restart": "Restarting."
+        case "shutdown": "Shutting down."
+        case "kill_game": "Asked the game to close."
+        case "screenshot": "Screenshot taken."
+        default: nil
         }
     }
 
@@ -466,7 +573,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                     guard self.target == destination else { return }
                     do {
                         _ = try await self.sendPCMessage(["cmd": "volume", "level": level], to: destination)
-                    } catch { self.statusMessage = "Volume: \(error.localizedDescription)" }
+                    } catch { self.announce("Volume didn't change. \(error.localizedDescription)", isError: true) }
                 }
             }
         }
@@ -476,7 +583,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     func togglePhoneLiveActivity() {
         WKInterfaceDevice.current().play(.click)
         guard WCSession.isSupported() && WCSession.default.isReachable else {
-            statusMessage = "Open Orbit on iPhone nearby"
+            announce("Keep your iPhone nearby with Orbit installed.", isError: true)
             return
         }
         statusMessage = isLiveActivityActive ? "Stopping Live Activity…" : "Starting Live Activity…"
@@ -500,11 +607,12 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                         query: [URLQueryItem(name: "app", value: game.title)])
                 }
                 guard target == destination else { return }
-                statusMessage = "Launched \(game.title)"
+                announce("Starting \(game.title) on the PC.")
                 WKInterfaceDevice.current().play(.success)
             } catch {
                 guard target == destination else { return }
-                statusMessage = "Launch failed: \(error.localizedDescription)"
+                announce("Couldn't start \(game.title). \(error.localizedDescription)", isError: true)
+                WKInterfaceDevice.current().play(.failure)
             }
         }
     }
@@ -515,6 +623,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         volumeQueue?.cancel()
         lastTelemetryAt = nil
         isOnline = false
+        resetConnectionState()
         pendingSelection = (profile.id, Date().addingTimeInterval(10))
         selectedPCID = profile.id
         pcName = profile.name
@@ -549,7 +658,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     func startMotionCursor() {
         guard !isMotionCursorActive, canControlPC else {
-            if !canControlPC { cursorStatusMessage = "Pair your PC in Orbit on iPhone first" }
+            if !canControlPC { cursorStatusMessage = "Pair your PC in Orbit on iPhone first." }
             return
         }
         guard motionMode != .touchPad else {
@@ -557,7 +666,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             return
         }
         guard motionManager.isDeviceMotionAvailable else {
-            cursorStatusMessage = "Wrist sensors unavailable · use Touchpad"
+            cursorStatusMessage = "This watch can't follow wrist motion. Swipe the pad instead."
             isMotionCursorActive = false
             return
         }
@@ -574,13 +683,13 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             guard let self else { return }
             if let error {
                 self.stopMotionCursor()
-                self.cursorStatusMessage = "Motion: \(error.localizedDescription)"
+                self.cursorStatusMessage = "Wrist motion stopped. \(error.localizedDescription)"
                 return
             }
             guard let motion else { return }
             self.processDeviceMotion(motion)
         }
-        cursorStatusMessage = "Move your wrist · waiting for PC confirmation"
+        cursorStatusMessage = "Move your wrist. Waiting for the PC…"
     }
 
     func stopMotionCursor() {
@@ -598,7 +707,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
         if wasActive {
             WKInterfaceDevice.current().play(.stop)
-            cursorStatusMessage = "Cursor paused"
+            cursorStatusMessage = "Wrist motion paused."
         }
     }
 
@@ -606,7 +715,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         stopMotionCursor()
         motionMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "Orbit.WatchCursorMode")
-        cursorStatusMessage = mode == .touchPad ? "Swipe the pad to move your PC cursor" : "Tap Start, then move your wrist"
+        cursorStatusMessage = mode == .touchPad ? "Swipe the pad to move the pointer." : "Start wrist motion, then move your wrist."
     }
 
     func resetCrownScroll() {
@@ -622,18 +731,18 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         smoothedDY = 0
         cursorIndicatorOffset = .zero
         WKInterfaceDevice.current().play(.click)
-        cursorStatusMessage = "Hold this position · wrist center reset"
+        cursorStatusMessage = "Centered. This wrist position is the middle now."
         if motionMode == .laserPointer {
             sendCursorPacket(normX: 0.5, normY: 0.5)
         }
     }
 
     func toggleDragLock() {
-        guard canControlPC else { cursorStatusMessage = "Connect your PC first"; return }
+        guard canControlPC else { cursorStatusMessage = "Connect your PC first."; return }
         isDragLocked.toggle()
         WKInterfaceDevice.current().play(.directionUp)
         sendCursorPacket(drag: isDragLocked ? "down" : "up")
-        cursorStatusMessage = isDragLocked ? "Holding left button · tap Release when done" : "Drag released"
+        cursorStatusMessage = isDragLocked ? "Holding the mouse button. Tap Release when done." : "Released."
     }
 
     func handleCrownScrollChange(_ newValue: Double) {
@@ -729,7 +838,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         normX: Double? = nil, normY: Double? = nil, drag: String = ""
     ) {
         guard canControlPC else {
-            cursorStatusMessage = "Connect your PC or open Orbit on your nearby iPhone"
+            cursorStatusMessage = "Connect your PC, or keep your iPhone nearby."
             return
         }
         if !click.isEmpty { WKInterfaceDevice.current().play(.click) }
@@ -751,7 +860,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 if self.cursorFailureHandled { self.cursorMayNeedRelease = false }
                 self.cursorFailureHandled = true
                 self.stopMotionCursor()
-                self.cursorStatusMessage = "Cursor paused: \(error.localizedDescription)"
+                self.cursorStatusMessage = "Pointer paused. \(error.localizedDescription)"
                 self.cursorRouteLabel = "Connection needs attention"
                 WKInterfaceDevice.current().play(.failure)
             })
@@ -805,7 +914,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             if packet.isReleaseOnly { cursorMayNeedRelease = false }
             lastCursorDeliveryAt = Date()
             cursorRouteLabel = route
-            cursorStatusMessage = isMotionCursorActive ? "Controlling your PC · tap Pause to stop" : "PC confirmed your input"
+            if isMotionCursorActive {
+                cursorStatusMessage = "Moving with your wrist."
+            } else if !isDragLocked {
+                cursorStatusMessage = "The PC got your input."
+            }
         } catch {
             // Do not replay an unacknowledged click: it might already have executed.
             // Switch route for the next fresh command instead.
@@ -904,6 +1017,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             volumeQueue?.cancel()
             lastTelemetryAt = nil
             isOnline = false
+            resetConnectionState()
+        }
+        if let hex = payload["tintHex"] as? String, hex != tintHex, hex.isEmpty || Color(orbitHex: hex) != nil {
+            tintHex = hex
+            UserDefaults.standard.set(hex, forKey: "Orbit.WatchTintHex")
         }
         selectedPCID = incomingID
         if let name = payload["pcName"] as? String, !name.isEmpty { pcName = name }
@@ -928,6 +1046,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
            sampleDate >= (lastTelemetryAt ?? .distantPast) {
             lastTelemetryAt = sampleDate
             isOnline = (payload["isOnline"] as? Bool ?? false) && Date().timeIntervalSince(sampleDate) <= 12
+            hasCheckedConnection = true
+            if isOnline { wakeRequestedAt = nil; failedPollsForTarget = 0 }
             sessionLocked = payload["sessionLocked"] as? Bool ?? false
             telemetryAvailable = payload["telemetryAvailable"] as? Bool ?? false
             cpuUsage = payload["cpuUsage"] as? Double ?? 0
@@ -1011,8 +1131,13 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             "gpuUsage": gpuUsage ?? -1,
             "gpuTemp": gpuTemp ?? -1,
             "ramUsagePercent": ramUsagePercent,
+            "ramUsedGB": ramUsedGB,
+            "ramTotalGB": ramTotalGB,
             "fps": fps ?? -1,
             "activeGame": activeGame ?? "",
+            "sessionLocked": sessionLocked,
+            "telemetryAvailable": telemetryAvailable,
+            "tintHex": tintHex,
             "timestamp": lastTelemetryAt?.timeIntervalSince1970 ?? 0,
             "host": host,
             "agentPort": agentPort,
@@ -1047,10 +1172,14 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         let gt = snapshot["gpuTemp"] as? Double ?? -1
         gpuTemp = gt >= 0 ? gt : nil
         ramUsagePercent = snapshot["ramUsagePercent"] as? Double ?? 0
+        ramUsedGB = snapshot["ramUsedGB"] as? Double ?? 0
+        ramTotalGB = snapshot["ramTotalGB"] as? Double ?? 0
         let f = snapshot["fps"] as? Double ?? -1
         fps = f >= 0 ? f : nil
         let game = snapshot["activeGame"] as? String ?? ""
         activeGame = game.isEmpty ? nil : game
+        sessionLocked = snapshot["sessionLocked"] as? Bool ?? false
+        telemetryAvailable = snapshot["telemetryAvailable"] as? Bool ?? isOnline
         host = snapshot["host"] as? String ?? ""
         agentPort = snapshot["agentPort"] as? Int ?? 8765
         securePort = snapshot["securePort"] as? Int ?? 8766
@@ -1120,3 +1249,131 @@ private final class WatchReplyWaiter {
         continuation.resume(with: result)
     }
 }
+
+/// A short result line for something you asked the PC to do.
+struct WatchFeedback: Equatable {
+    let id = UUID()
+    var text: String
+    var isError: Bool
+}
+
+#if DEBUG
+// MARK: - Simulator checks (DEBUG builds only)
+
+extension OrbitWatchViewModel {
+    /// Launch arguments for simulator checks; none of them exist in Release builds.
+    /// - `-OrbitWatchHost <address> -OrbitWatchTokenFile <path> [-OrbitWatchPort 8765]` points the
+    ///   watch at a test agent over plain HTTP, without the iPhone (`-OrbitWatchToken` also works).
+    /// - `-OrbitWatchFixture <name>` freezes a canned state: idle, game, hot, locked, offline,
+    ///   waking, connecting, setup, motion, drag, muted.
+    /// - `-OrbitWatchPage glance|power|control|media` opens a page; `-OrbitWatchTint <hex>` sets
+    ///   the accent; `-OrbitWatchFeedback <text>` shows a result line.
+    /// Each of these turns the iPhone link off, so a paired simulator cannot retarget the watch.
+    fileprivate func applyDebugLaunchOptions() {
+        let arguments = UserDefaults.standard
+        if let page = arguments.string(forKey: "OrbitWatchPage") {
+            selectedTab = ["glance": 0, "power": 1, "control": 2, "media": 3][page] ?? 0
+        }
+        if let hex = arguments.string(forKey: "OrbitWatchTint") { tintHex = hex }
+        // `-OrbitWatchTokenFile <path>` keeps the token off the command line.
+        let tokenFromFile = arguments.string(forKey: "OrbitWatchTokenFile").flatMap {
+            try? String(contentsOfFile: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let host = arguments.string(forKey: "OrbitWatchHost"),
+           let token = tokenFromFile ?? arguments.string(forKey: "OrbitWatchToken"), !token.isEmpty {
+            isPhoneLinkDisabledForDebug = true
+            selectedPCID = "debug-agent"
+            pcName = "Test PC"
+            self.host = host
+            let port = arguments.integer(forKey: "OrbitWatchPort")
+            agentPort = (1...65535).contains(port) ? port : 8765
+            certificateFingerprint = ""
+            apiToken = token
+            savedPCs = []
+            resetConnectionState()
+            isOnline = false
+        }
+        if let name = arguments.string(forKey: "OrbitWatchFixture") {
+            isPhoneLinkDisabledForDebug = true
+            isFrozenForDebug = true
+            applyFixture(name)
+        }
+        if let text = arguments.string(forKey: "OrbitWatchFeedback") {
+            feedback = WatchFeedback(text: text, isError: true)
+        }
+    }
+
+    private func applyFixture(_ fixture: String) {
+        // "<name>-nophone" shows the same state without the iPhone nearby.
+        let name = fixture.replacingOccurrences(of: "-nophone", with: "")
+        isPhoneReachable = !fixture.hasSuffix("-nophone")
+        // An unresolvable host: controls render enabled, and nothing can ever be sent.
+        selectedPCID = "fixture"
+        pcName = "Gaming PC"
+        host = "fixture.invalid"
+        apiToken = "fixture"
+        certificateFingerprint = ""
+        savedPCs = [
+            WatchPCProfile(id: "fixture", name: "Gaming PC", address: "fixture.invalid"),
+            WatchPCProfile(id: "fixture-2", name: "Living Room PC", address: "living-room.invalid"),
+        ]
+        games = ["Cyberpunk 2077", "Forza Horizon 5", "Baldur's Gate 3", "Hades II"].enumerated().map {
+            WatchSunshineGame(id: "game-\($0.offset)", title: $0.element, genre: "Sunshine")
+        }
+        isOnline = true
+        hasCheckedConnection = true
+        telemetryAvailable = true
+        lastTelemetryAt = Date()
+        pingMs = 9
+        uptimeSeconds = 2 * 86_400 + 5 * 3600
+        cpuUsage = 12; cpuTemp = 46; gpuUsage = 8; gpuTemp = 41
+        ramUsedGB = 11.2; ramTotalGB = 32; ramUsagePercent = 35
+        cpuPowerWatts = 38; gpuPowerWatts = 22
+        volume = 40
+        isMuted = false
+        sessionLocked = false
+        activeGame = nil
+        fps = nil
+        switch name {
+        case "game":
+            activeGame = "Cyberpunk 2077"; fps = 118
+            cpuUsage = 38; cpuTemp = 71; gpuUsage = 97; gpuTemp = 68
+            cpuPowerWatts = 96; gpuPowerWatts = 310
+        case "hot":
+            cpuUsage = 88; cpuTemp = 93; gpuUsage = 64; gpuTemp = 78
+        case "locked":
+            sessionLocked = true
+        case "offline":
+            isOnline = false
+            lastTelemetryAt = Date().addingTimeInterval(-2 * 3600)
+        case "waking":
+            isOnline = false
+            isWaking = true
+        case "connecting":
+            isOnline = false
+            hasCheckedConnection = false
+        case "setup":
+            isOnline = false
+            selectedPCID = ""
+            pcName = "Your PC"
+            host = ""
+            apiToken = ""
+            savedPCs = []
+            games = []
+            lastTelemetryAt = nil
+        case "motion":
+            isMotionCursorActive = true
+            cursorIndicatorOffset = CGSize(width: 18, height: -9)
+            cursorRouteLabel = "Direct HTTP · confirmed"
+            cursorStatusMessage = "Moving with your wrist."
+        case "drag":
+            isDragLocked = true
+            cursorStatusMessage = "Holding the mouse button. Tap Release when done."
+        case "muted":
+            isMuted = true
+        default:
+            break
+        }
+    }
+}
+#endif
