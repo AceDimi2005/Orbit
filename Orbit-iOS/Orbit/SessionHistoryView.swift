@@ -87,24 +87,27 @@ private enum OrbitHistoryMetric: String, CaseIterable, Identifiable {
     case ramUsedGB, vramUsedGB, networkDownloadMBps, networkUploadMBps
 
     var id: String { rawValue }
+
     var title: String {
         switch self {
-        case .fps: return "Frame rate"
-        case .cpuUsage: return "CPU load"
-        case .gpuUsage: return "GPU load"
-        case .cpuTemp: return "CPU temperature"
-        case .gpuTemp: return "GPU temperature"
-        case .cpuPowerWatts: return "CPU power"
-        case .gpuPowerWatts: return "GPU power"
-        case .ramUsedGB: return "RAM used"
-        case .vramUsedGB: return "VRAM used"
-        case .networkDownloadMBps: return "Download"
-        case .networkUploadMBps: return "Upload"
+        case .fps: return "Frame Rate"
+        case .cpuUsage: return "Processor"
+        case .gpuUsage: return "Graphics"
+        case .cpuTemp: return "CPU Temperature"
+        case .gpuTemp: return "GPU Temperature"
+        case .cpuPowerWatts: return "CPU Power"
+        case .gpuPowerWatts: return "GPU Power"
+        case .ramUsedGB: return "Memory"
+        case .vramUsedGB: return "Video Memory"
+        case .networkDownloadMBps: return "Receiving"
+        case .networkUploadMBps: return "Sending"
         }
     }
+
+    /// Unit for chart axes and VoiceOver.
     var unit: String {
         switch self {
-        case .fps: return "FPS"
+        case .fps: return "fps"
         case .cpuUsage, .gpuUsage: return "%"
         case .cpuTemp, .gpuTemp: return "°C"
         case .cpuPowerWatts, .gpuPowerWatts: return "W"
@@ -112,19 +115,40 @@ private enum OrbitHistoryMetric: String, CaseIterable, Identifiable {
         case .networkUploadMBps, .networkDownloadMBps: return "MB/s"
         }
     }
-    var color: Color {
-        switch self {
-        case .fps: return .mint
-        case .cpuUsage, .cpuTemp, .cpuPowerWatts: return .cyan
-        case .gpuUsage, .gpuTemp, .gpuPowerWatts: return .purple
-        case .ramUsedGB, .vramUsedGB: return .orange
-        case .networkUploadMBps, .networkDownloadMBps: return .blue
-        }
-    }
+
     func formatted(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
-        let digits = self == .networkUploadMBps || self == .networkDownloadMBps ? 3 : 1
-        return value.formatted(.number.precision(.fractionLength(digits))) + " " + unit
+        switch self {
+        case .fps: return "\(Int(value.rounded())) fps"
+        case .cpuUsage, .gpuUsage: return "\(Int(value.rounded()))%"
+        case .cpuTemp, .gpuTemp: return "\(Int(value.rounded()))°"
+        case .cpuPowerWatts, .gpuPowerWatts: return "\(Int(value.rounded())) W"
+        case .ramUsedGB, .vramUsedGB: return value.formatted(.number.precision(.fractionLength(1))) + " GB"
+        case .networkUploadMBps, .networkDownloadMBps: return OrbitFormat.rate(value) ?? "—"
+        }
+    }
+}
+
+private extension OrbitHistorySession {
+    var durationText: String {
+        let seconds = max(0, Int(durationSeconds))
+        if seconds < 60 { return "\(seconds) s" }
+        return OrbitFormat.duration(seconds: seconds)
+    }
+
+    var startedText: String {
+        startedDate.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+    }
+
+    /// The figure that sums the session up: the average frame rate for games, else the processor.
+    var summary: (value: String, label: String)? {
+        if let fps = statistics["fps"]?.average, fps.isFinite, (statistics["fps"]?.count ?? 0) > 0 {
+            return ("\(Int(fps.rounded())) fps", "average")
+        }
+        if let cpu = statistics["cpuUsage"]?.average, cpu.isFinite, (statistics["cpuUsage"]?.count ?? 0) > 0 {
+            return ("\(Int(cpu.rounded()))%", "processor")
+        }
+        return nil
     }
 }
 
@@ -133,6 +157,8 @@ private struct OrbitHistoryEmptyBody: Encodable {}
 private struct OrbitHistoryStopResponse: Decodable { let session: OrbitHistorySession? }
 private struct OrbitHistoryDeleteResponse: Decodable { let deleted: Bool }
 
+/// Recorded sessions: Orbit Companion records the readings while a game runs (or while a
+/// recording you start runs) and keeps them on the PC.
 struct SessionHistoryView: View {
     @ObservedObject var vm: OrbitViewModel
     @Environment(\.scenePhase) private var scenePhase
@@ -145,98 +171,81 @@ struct SessionHistoryView: View {
     @State private var sessionName = ""
     @State private var pendingDelete: OrbitHistorySession?
 
-    @Environment(\.orbitTheme) private var theme
+    private var saved: [OrbitHistorySession] { history?.sessions.filter { !$0.isRecording } ?? [] }
 
     var body: some View {
         List {
-            Section {
-                HStack(spacing: 12) {
-                    OrbitIconBadge(systemName: "chart.xyaxis.line", tint: .mint, size: 40, filled: true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(history.map { "\($0.sessions.filter { !$0.isRecording }.count) saved session\($0.sessions.filter { !$0.isRecording }.count == 1 ? "" : "s")" } ?? "Sessions & graphs")
-                            .font(.headline.weight(.bold))
-                        Text("Game sessions are recorded automatically every 5 seconds on the PC.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if isLoading { ProgressView().tint(theme.accent) }
+            if !saved.isEmpty || history?.activeSession != nil {
+                Section {
+                    header
+                        .listRowBackground(Color.clear)
                 }
-                .padding(.vertical, 2)
-                if vm.isDemoMode {
-                    Label("Preview mode · recording is disabled", systemImage: "sparkles")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                Button {
-                    OrbitHaptics.tap()
-                    showStart = true
-                } label: {
-                    Label("Start a manual recording", systemImage: "record.circle")
-                        .fontWeight(.semibold)
-                }
-                .disabled(!canAct || history?.activeSession?.kind == "manual")
-            } footer: {
-                Text("Up to 100 sessions and 30 days of readings are kept on the selected PC.")
             }
-            .orbitRow(tint: .mint)
 
             if let error {
-                Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
-                    .orbitRow(tint: .orange)
+                Section { OrbitInlineStatus(text: error, kind: .problem) }
             }
 
             if let active = history?.activeSession {
-                Section {
+                Section("Recording Now") {
                     sessionLink(active)
-                    Button {
+                    Button(role: .destructive) {
                         OrbitHaptics.warning()
                         beginAction { client, connection in
                             Task { await stopRecording(client: client, connection: connection) }
                         }
                     } label: {
-                        Label("Stop recording", systemImage: "stop.circle.fill")
-                            .foregroundStyle(.orange)
-                            .fontWeight(.semibold)
+                        Label("Stop Recording", systemImage: "stop.circle")
                     }
                     .disabled(!canAct)
-                } header: {
-                    HStack(spacing: 6) {
-                        OrbitStatusPill(text: "REC", tint: .red, pulsing: true)
-                        Text("Recording now")
-                    }
                 }
-                .orbitRow(tint: .red)
             }
 
             Section {
                 if isLoading && history == nil {
-                    HStack(spacing: 12) { ProgressView(); Text("Reading session history…") }
-                } else if (history?.sessions.filter { !$0.isRecording }.isEmpty ?? true) {
-                    OrbitEmptyState(icon: "chart.xyaxis.line", title: "No completed sessions",
-                                    message: "Play a detected game with Orbit Agent running, or start a manual recording.", tint: .mint)
-                } else if let history {
-                    ForEach(history.sessions.filter { !$0.isRecording }) { session in
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Reading sessions…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .listRowBackground(Color.clear)
+                } else if saved.isEmpty && history?.activeSession == nil {
+                    emptyMessage
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(saved) { session in
                         sessionLink(session)
                             .swipeActions {
-                                Button("Delete", role: .destructive) { pendingDelete = session }
+                                Button("Delete", systemImage: "trash", role: .destructive) { pendingDelete = session }
+                                    .disabled(!canAct)
+                            }
+                            .contextMenu {
+                                Button("Delete", systemImage: "trash", role: .destructive) { pendingDelete = session }
                                     .disabled(!canAct)
                             }
                     }
                 }
             } header: {
-                Text("Session history")
+                if !saved.isEmpty { Text("Saved") }
             } footer: {
-                Text("Only monitoring values, session names and game process names are saved. Unavailable sensors stay empty. History remains on the selected PC.")
+                Text("Sessions stay on the PC: up to 100 of them, for 30 days. Only readings, session names and game names are saved.")
             }
-            .orbitRow()
         }
-        .orbitListChrome(isOnline: vm.metrics.isOnline)
-        .navigationTitle("Sessions & graphs")
+        .listStyle(.insetGrouped)
+        .orbitListBackground()
+        .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showStart = true } label: { Image(systemName: "plus.circle") }
-                    .disabled(!canAct || history?.activeSession?.kind == "manual")
-                    .accessibilityLabel("Start manual session")
+                Button("Record", systemImage: "record.circle") {
+                    OrbitHaptics.tap()
+                    showStart = true
+                }
+                .tint(.primary)
+                .disabled(!canAct || history?.activeSession?.kind == "manual")
             }
         }
         .refreshable { await load() }
@@ -248,24 +257,24 @@ struct SessionHistoryView: View {
                 do { try await Task.sleep(for: .seconds(10)) } catch { break }
             }
         }
-        .alert("Record a PC session", isPresented: $showStart) {
-            TextField("Session name (optional)", text: $sessionName)
-            Button("Start recording") {
+        .alert("Record a Session", isPresented: $showStart) {
+            TextField("Name (optional)", text: $sessionName)
+            Button("Record") {
                 let name = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
                 sessionName = ""
                 beginAction { client, connection in
                     Task { await startRecording(name: name.isEmpty ? nil : String(name.prefix(100)), client: client, connection: connection) }
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { sessionName = "" }
         } message: {
-            Text("A manual recording continues on the PC until you stop it or the agent closes. Starting one completes the current automatic game session.")
+            Text("The PC records until you stop it or Orbit Companion closes. A game session that is running now ends here.")
         }
         .confirmationDialog("Delete this session?", isPresented: Binding(
             get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
         ), titleVisibility: .visible) {
             if let session = pendingDelete {
-                Button("Delete session", role: .destructive) {
+                Button("Delete Session", role: .destructive) {
                     pendingDelete = nil
                     beginAction { client, connection in
                         Task { await delete(session, client: client, connection: connection) }
@@ -274,17 +283,55 @@ struct SessionHistoryView: View {
             }
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("The saved monitoring history for this session will be removed from the selected PC.")
+            Text("Its readings are removed from the PC.")
         }
     }
 
     private var canAct: Bool { vm.metrics.isOnline && !vm.isDemoMode && !isActing && historyConnection == vm.connectionID }
 
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(headline)
+                .font(.title3.weight(.semibold))
+            Text(subline)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var headline: String {
+        if history?.activeSession != nil { return "Recording now" }
+        return saved.count == 1 ? "1 session" : "\(saved.count) sessions"
+    }
+
+    private var subline: String {
+        if !vm.metrics.isOnline { return "Connect to your PC to record or open sessions." }
+        return "Orbit records on its own while a game runs."
+    }
+
+    @ViewBuilder
+    private var emptyMessage: some View {
+        if vm.isDemoMode {
+            OrbitEmptyMessage(systemImage: "chart.xyaxis.line", title: "Sessions need your own PC",
+                              message: "Recording is off in demo mode.")
+        } else if !vm.metrics.isOnline {
+            OrbitEmptyMessage(systemImage: "desktopcomputer", title: "Your PC isn't connected",
+                              message: "Sessions are kept on the PC. Connect to it to see them.")
+        } else {
+            OrbitEmptyMessage(systemImage: "chart.xyaxis.line", title: "No sessions yet",
+                              message: "Orbit records on its own while a game runs. You can also record any time.",
+                              actionTitle: canAct ? "Start a Recording" : nil) { showStart = true }
+        }
+    }
+
     @MainActor private func beginAction(_ action: (OrbitAPIClient, Int) -> Void) {
         guard canAct else { return }
         do {
-            // Capture the selected PC during the user's tap, before scheduling
-            // work. A later PC switch cannot redirect a queued action.
+            // Capture the selected PC during the tap, before scheduling work, so a later
+            // PC switch cannot redirect a queued action.
             let client = try vm.companionClient()
             let connection = vm.connectionID
             isActing = true
@@ -298,26 +345,43 @@ struct SessionHistoryView: View {
         NavigationLink {
             OrbitHistoryDetailView(vm: vm, session: session, originConnection: vm.connectionID)
         } label: {
-            HStack(alignment: .center, spacing: 12) {
-                OrbitIconBadge(systemName: session.kind == "auto" ? "gamecontroller.fill" : "record.circle", tint: session.isRecording ? .red : (session.kind == "auto" ? .mint : theme.accent), size: 38)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(session.startedDate, format: .dateTime.month(.abbreviated).day().hour().minute())
-                        .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(session.name)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
                     HStack(spacing: 6) {
-                        OrbitStatChip(label: "Time", value: session.durationLabel)
-                        if let average = session.statistics["fps"]?.average, average.isFinite {
-                            OrbitStatChip(label: "Avg", value: "\(average.formatted(.number.precision(.fractionLength(0)))) FPS")
-                        } else if let average = session.statistics["cpuUsage"]?.average, average.isFinite {
-                            OrbitStatChip(label: "CPU", value: "\(average.formatted(.number.precision(.fractionLength(0))))%")
+                        if session.isRecording {
+                            Circle()
+                                .fill(OrbitPalette.critical)
+                                .frame(width: 7, height: 7)
+                            Text("Recording · \(session.durationText)")
+                        } else {
+                            Text("\(session.startedText) · \(session.durationText)")
                         }
                         if session.status == "interrupted" {
-                            OrbitStatusPill(text: "Interrupted", tint: .orange)
+                            Text("Interrupted")
+                                .foregroundStyle(OrbitPalette.warm)
                         }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .orbitLiveNumber()
+                }
+                Spacer(minLength: 8)
+                if let summary = session.summary {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(summary.value)
+                            .font(.subheadline.weight(.semibold))
+                            .orbitLiveNumber()
+                        Text(summary.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -385,6 +449,8 @@ private struct OrbitHistoryChartPoint: Identifiable {
     let segment: Int
 }
 
+/// One session: a chart of the reading you pick, its low, average and peak, and every
+/// reading the session recorded.
 private struct OrbitHistoryDetailView: View {
     @ObservedObject var vm: OrbitViewModel
     let session: OrbitHistorySession
@@ -395,6 +461,7 @@ private struct OrbitHistoryDetailView: View {
     @State private var selectedTime: Date?
     @State private var error: String?
     @State private var isLoading = false
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
 
     init(vm: OrbitViewModel, session: OrbitHistorySession, originConnection: Int) {
         self.vm = vm
@@ -404,6 +471,13 @@ private struct OrbitHistoryDetailView: View {
 
     private var samePC: Bool { originConnection == vm.connectionID && !vm.isDemoMode }
     private var currentSession: OrbitHistorySession { detail?.session ?? session }
+
+    /// Readings this session has; every reading while it is still loading.
+    private var recordedMetrics: [OrbitHistoryMetric] {
+        let present = OrbitHistoryMetric.allCases.filter { (currentSession.statistics[$0.rawValue]?.count ?? 0) > 0 }
+        return present.isEmpty ? OrbitHistoryMetric.allCases : present
+    }
+
     private var chartPoints: [OrbitHistoryChartPoint] {
         var points: [OrbitHistoryChartPoint] = []
         var lineSegment = 0
@@ -417,129 +491,37 @@ private struct OrbitHistoryDetailView: View {
             let sourceSegment = sample.metricSegments?[selectedMetric.rawValue] ?? sample.segment
             if missingReading || previousSourceSegment != sourceSegment { lineSegment += 1 }
             points.append(OrbitHistoryChartPoint(id: index, date: Date(timeIntervalSince1970: sample.timestamp),
-                                                value: value, segment: lineSegment))
+                                                 value: value, segment: lineSegment))
             previousSourceSegment = sourceSegment
             missingReading = false
         }
         return points
     }
+
     private var selectedPoint: OrbitHistoryChartPoint? {
         guard let selectedTime else { return nil }
         return chartPoints.min { abs($0.date.timeIntervalSince(selectedTime)) < abs($1.date.timeIntervalSince(selectedTime)) }
     }
 
     var body: some View {
-        List {
+        Group {
             if !samePC {
-                OrbitEmptyState(icon: "desktopcomputer", title: "PC changed",
-                                message: "Return to the session list to view history from the selected PC.", tint: .orange)
-                    .orbitRow()
+                OrbitEmptyMessage(systemImage: "desktopcomputer", title: "This session is on another PC",
+                                  message: "Go back to see the sessions of the PC you're using now.")
+                    .frame(maxHeight: .infinity)
+                    .background(OrbitPalette.canvas)
             } else {
-                Section {
-                    HStack(spacing: 12) {
-                        OrbitIconBadge(systemName: currentSession.kind == "auto" ? "gamecontroller.fill" : "record.circle", tint: currentSession.isRecording ? .red : .mint, size: 36, filled: true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(currentSession.kind == "auto" ? "Game session" : "Manual recording")
-                                .font(.subheadline.weight(.semibold))
-                            Text(currentSession.statusLabel)
-                                .font(.caption)
-                                .foregroundStyle(currentSession.isRecording ? .red : .secondary)
-                        }
-                        Spacer()
-                        if currentSession.isRecording { OrbitStatusPill(text: "REC", tint: .red, pulsing: true) }
+                OrbitPage {
+                    summary
+                    if let error {
+                        OrbitInlineStatus(text: error, kind: .problem)
+                            .padding(.horizontal, 4)
                     }
-                    LabeledContent("Started", value: currentSession.startedDate.formatted(date: .abbreviated, time: .shortened))
-                    LabeledContent("Duration", value: currentSession.durationLabel)
-                    if let game = currentSession.gameProcess { LabeledContent("Game process", value: game).font(.caption) }
-                    if currentSession.status == "interrupted" {
-                        Text("The agent stopped before this session was completed. Its duration ends at the last saved reading.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
+                    chartSection
+                    allReadings
                 }
-                .orbitRow(tint: .mint)
-
-                if let error {
-                    Section { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange) }
-                        .orbitRow(tint: .orange)
-                }
-
-                Section {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(OrbitHistoryMetric.allCases) { metric in
-                                let available = (currentSession.statistics[metric.rawValue]?.count ?? 0) > 0
-                                Button {
-                                    OrbitHaptics.selection()
-                                    withAnimation(.snappy) { selectedMetric = metric }
-                                } label: {
-                                    Text(metric.title)
-                                        .font(.caption.weight(.semibold))
-                                        .padding(.horizontal, 11)
-                                        .padding(.vertical, 6)
-                                        .background(selectedMetric == metric ? metric.color.opacity(0.24) : .white.opacity(0.05), in: Capsule())
-                                        .overlay(Capsule().strokeBorder(selectedMetric == metric ? metric.color.opacity(0.5) : .clear, lineWidth: 1))
-                                        .foregroundStyle(selectedMetric == metric ? metric.color : (available ? .white.opacity(0.8) : .secondary))
-                                }
-                                .buttonStyle(.plain)
-                                .opacity(available ? 1 : 0.5)
-                                .accessibilityLabel("\(metric.title)\(available ? "" : ", no readings")")
-                                .accessibilityAddTraits(selectedMetric == metric ? [.isSelected] : [])
-                            }
-                        }
-                        .padding(.horizontal, 2)
-                    }
-                    .accessibilityLabel("Show graph")
-                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 6, trailing: 12))
-                    if isLoading && detail == nil {
-                        HStack(spacing: 12) { ProgressView(); Text("Loading readings…") }
-                    } else if chartPoints.isEmpty {
-                        OrbitEmptyState(icon: "waveform.path", title: "No \(selectedMetric.title.lowercased()) readings",
-                                        message: "This sensor was unavailable during this session. Orbit does not estimate missing values.", tint: selectedMetric.color)
-                    } else {
-                        chart
-                        HStack(spacing: 10) {
-                            statistic("Average", value: currentSession.statistics[selectedMetric.rawValue]?.average)
-                            Spacer()
-                            statistic("Peak", value: currentSession.statistics[selectedMetric.rawValue]?.peak)
-                            Spacer()
-                            statistic("Readings", text: "\(currentSession.statistics[selectedMetric.rawValue]?.count ?? 0)")
-                        }
-                        .padding(.vertical, 6)
-                    }
-                } header: {
-                    Text("\(selectedMetric.title) · \(selectedMetric.unit)")
-                } footer: {
-                    Text(detail?.downsampled == true
-                         ? "The graph shows a selection of actual readings. Averages and peaks use every saved reading. Gaps indicate missing data."
-                         : "Readings are sampled every 5 seconds. Gaps indicate missing data. Drag across the graph to inspect a reading.")
-                }
-                .orbitRow()
-
-                Section {
-                    ForEach(OrbitHistoryMetric.allCases) { metric in
-                        if let statistic = currentSession.statistics[metric.rawValue], statistic.count > 0 {
-                            HStack(spacing: 12) {
-                                Circle().fill(metric.color).frame(width: 8, height: 8)
-                                Text(metric.title).font(.subheadline)
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text("Avg \(metric.formatted(statistic.average))")
-                                    Text("Peak \(metric.formatted(statistic.peak))")
-                                }
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 3)
-                        }
-                    }
-                } header: {
-                    Text("Session averages & peaks")
-                } footer: {
-                    Text("Power readings describe the measured component, not the entire PC. FPS depends on the monitoring source. Only available readings are included in averages.")
-                }
-                .orbitRow()
             }
         }
-        .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
@@ -554,58 +536,207 @@ private struct OrbitHistoryDetailView: View {
         }
     }
 
+    // MARK: Summary
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if currentSession.isRecording {
+                    OrbitStatusLabel(text: "Recording", color: OrbitPalette.critical, pulsing: true)
+                } else if currentSession.status == "interrupted" {
+                    OrbitStatusLabel(text: "Interrupted", color: OrbitPalette.warm)
+                }
+                Text(currentSession.kind == "auto" ? "Game session" : "Recording you started")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text("\(currentSession.startedDate.formatted(date: .abbreviated, time: .shortened)) · \(currentSession.durationText)")
+                .font(.title3.weight(.semibold))
+                .orbitLiveNumber()
+            if let game = currentSession.gameProcess, !game.isEmpty {
+                Text(game)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            if currentSession.status == "interrupted" {
+                Text("Orbit Companion stopped before the session ended, so it ends at the last saved reading.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: Chart
+
+    private var chartSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Menu {
+                Picker("Reading", selection: $selectedMetric) {
+                    ForEach(recordedMetrics) { metric in
+                        Text(metric.title).tag(metric)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(selectedMetric.title)
+                        .font(.title3.weight(.semibold))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 4)
+            }
+            .tint(.primary)
+            .accessibilityLabel("Reading shown: \(selectedMetric.title)")
+
+            if isLoading && detail == nil {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading readings…")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, minHeight: 200)
+            } else if chartPoints.isEmpty {
+                Text("No \(selectedMetric.title.lowercased()) readings in this session. Orbit doesn't fill in missing values.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+                    .multilineTextAlignment(.center)
+                    .orbitSurface()
+            } else {
+                chart
+                stats
+            }
+
+            Text(detail?.downsampled == true
+                 ? "The chart shows a selection of the readings; average and peak use all of them. Gaps are missing readings."
+                 : "A reading every 5 seconds. Gaps are missing readings. Touch the chart to see one.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+        }
+    }
+
     private var chart: some View {
         Chart {
             ForEach(chartPoints) { point in
                 AreaMark(x: .value("Time", point.date), y: .value(selectedMetric.unit, point.value),
                          series: .value("Segment", point.segment))
-                    .foregroundStyle(LinearGradient(colors: [selectedMetric.color.opacity(0.28), selectedMetric.color.opacity(0.0)], startPoint: .top, endPoint: .bottom))
-                    .interpolationMethod(.linear)
+                    .foregroundStyle(LinearGradient(colors: [theme.orbitTint.opacity(0.28), theme.orbitTint.opacity(0)],
+                                                    startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone)
                 LineMark(x: .value("Time", point.date), y: .value(selectedMetric.unit, point.value),
                          series: .value("Segment", point.segment))
-                    .foregroundStyle(selectedMetric.color)
+                    .foregroundStyle(.tint)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.linear)
-                if chartPoints.count < 30 {
-                    PointMark(x: .value("Time", point.date), y: .value(selectedMetric.unit, point.value))
-                        .foregroundStyle(selectedMetric.color).symbolSize(14)
-                }
+                    .interpolationMethod(.monotone)
             }
             if let point = selectedPoint {
                 RuleMark(x: .value("Selected time", point.date))
-                    .foregroundStyle(.secondary.opacity(0.5))
-                    .annotation(position: .top, spacing: 6) {
-                        VStack(spacing: 3) {
-                            Text(selectedMetric.formatted(point.value)).font(.caption.weight(.semibold).monospacedDigit())
-                            Text(point.date, format: .dateTime.hour().minute().second()).font(.caption2)
+                    .foregroundStyle(Color.white.opacity(0.35))
+                    .annotation(position: .top, spacing: 6, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        VStack(spacing: 2) {
+                            Text(selectedMetric.formatted(point.value))
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                            Text(point.date, format: .dateTime.hour().minute().second())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .padding(7).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(OrbitPalette.well, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
             }
         }
         .chartLegend(.hidden)
-        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisGridLine(); AxisTick(); AxisValueLabel(format: .dateTime.hour().minute()) } }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(OrbitPalette.hairline)
+                AxisValueLabel(format: .dateTime.hour().minute()).foregroundStyle(.secondary)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(OrbitPalette.hairline)
+                AxisValueLabel().foregroundStyle(.secondary)
+            }
+        }
         .chartYScale(domain: .automatic(includesZero: selectedMetric == .cpuUsage || selectedMetric == .gpuUsage))
         .chartXSelection(value: $selectedTime)
-        .frame(height: 240)
-        .padding(.vertical, 16)
-        .accessibilityLabel("\(selectedMetric.title) history in \(selectedMetric.unit)")
+        .frame(height: 210)
+        .padding(.top, 18)
+        .animation(OrbitMotion.standard, value: selectedMetric)
+        .accessibilityLabel("\(selectedMetric.title) during the session")
     }
 
-    private func statistic(_ title: String, value: Double?) -> some View {
-        statistic(title, text: selectedMetric.formatted(value))
+    private var stats: some View {
+        let statistic = currentSession.statistics[selectedMetric.rawValue]
+        let values = chartPoints.map(\.value)
+        return HStack(spacing: 0) {
+            stat("Low", values.min().map { selectedMetric.formatted($0) } ?? "—")
+            stat("Average", selectedMetric.formatted(statistic?.average))
+            stat("Peak", selectedMetric.formatted(statistic?.peak))
+        }
+        .orbitSurface(padding: 16, radius: 22)
     }
 
-    private func statistic(_ title: String, text: String) -> some View {
+    private func stat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
-                .font(.system(size: 9.5, weight: .bold))
-                .tracking(0.8)
+            Text(title)
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
-            Text(text)
-                .font(.system(size: 17, weight: .bold))
-                .monospacedDigit()
-                .contentTransition(.numericText())
+            Text(value)
+                .font(.orbitReading(24))
+                .orbitLiveNumber()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: All readings
+
+    @ViewBuilder
+    private var allReadings: some View {
+        let recorded = OrbitHistoryMetric.allCases.filter { (currentSession.statistics[$0.rawValue]?.count ?? 0) > 0 }
+        if !recorded.isEmpty {
+            OrbitGroup("All Readings", footer: "Power is what each part draws, not the whole PC. Only readings the PC reported count.") {
+                ForEach(recorded) { metric in
+                    let statistic = currentSession.statistics[metric.rawValue]
+                    Button {
+                        OrbitHaptics.selection()
+                        withAnimation(OrbitMotion.standard) { selectedMetric = metric }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Text(metric.title)
+                                .foregroundStyle(.primary)
+                            if metric == selectedMetric {
+                                Image(systemName: "chart.xyaxis.line")
+                                    .font(.footnote)
+                                    .foregroundStyle(.tint)
+                                    .accessibilityLabel("Shown in the chart")
+                            }
+                            Spacer(minLength: 12)
+                            Text("\(metric.formatted(statistic?.average)) avg · \(metric.formatted(statistic?.peak)) peak")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .font(.subheadline)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 

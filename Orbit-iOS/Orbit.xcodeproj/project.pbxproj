@@ -7,6 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000121 /* OrbitHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitHaptics.swift */; };
+		A20000000000000000000120 /* LiveActivitySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* LiveActivitySettingsView.swift */; };
+		A2000000000000000000011F /* OrbitProViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitProViews.swift */; };
+		A2000000000000000000011E /* AppleWatchHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* AppleWatchHelpView.swift */; };
+		A2000000000000000000011D /* WidgetHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* WidgetHelpView.swift */; };
+		A2000000000000000000011C /* ReadingsEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* ReadingsEditorView.swift */; };
+		A2000000000000000000011B /* DesktopPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011B /* DesktopPreviewView.swift */; };
+		A2000000000000000000011A /* SmartLaunchOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011A /* SmartLaunchOverlay.swift */; };
+		A20000000000000000000119 /* OrbitTrackpadSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000119 /* OrbitTrackpadSurface.swift */; };
+		A20000000000000000000118 /* HardwareSpecsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000118 /* HardwareSpecsView.swift */; };
+		A20000000000000000000117 /* SensorSourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000117 /* SensorSourcesView.swift */; };
+		A20000000000000000000116 /* OrbitScreenKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000116 /* OrbitScreenKit.swift */; };
 		A10000000000000000000105 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* OrbitActivityViews.swift */; };
 		A20000000000000000000115 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* OrbitActivityViews.swift */; };
 		A40000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
@@ -58,9 +70,7 @@
 		A30000000000000000000100 /* OrbitDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000100 /* OrbitDesign.swift */; };
 		A20000000000000000000100 /* OrbitDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000100 /* OrbitDesign.swift */; };
 		A10000000000000000000001 /* OrbitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* OrbitApp.swift */; };
-		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* ContentView.swift */; };
 		A10000000000000000000003 /* ModelsAndServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* ModelsAndServices.swift */; };
-		A10000000000000000000004 /* LiquidGlassComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* LiquidGlassComponents.swift */; };
 		A10000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* Assets.xcassets */; };
 		A20000000000000000000001 /* OrbitLiveActivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* OrbitLiveActivityCoordinator.swift */; };
 		A20000000000000000000002 /* OrbitActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* OrbitActivityAttributes.swift */; };
@@ -76,7 +86,6 @@
 		A2000000000000000000000C /* PCFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* PCFilesView.swift */; };
 		A2000000000000000000000D /* DesktopToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* DesktopToolsView.swift */; };
 		A2000000000000000000000E /* SessionHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* SessionHistoryView.swift */; };
-		A2000000000000000000000F /* CompanionToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* CompanionToolsView.swift */; };
 		A20000000000000000000010 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
 		A20000000000000000000011 /* PCDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* PCDiscoveryView.swift */; };
 		A20000000000000000000012 /* Appearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* Appearance.swift */; };
@@ -228,6 +237,18 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000121 /* OrbitHaptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitHaptics.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* LiveActivitySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivitySettingsView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* OrbitProViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitProViews.swift; sourceTree = "<group>"; };
+		B2000000000000000000011E /* AppleWatchHelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleWatchHelpView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011D /* WidgetHelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetHelpView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011C /* ReadingsEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingsEditorView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011B /* DesktopPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopPreviewView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011A /* SmartLaunchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartLaunchOverlay.swift; sourceTree = "<group>"; };
+		B20000000000000000000119 /* OrbitTrackpadSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTrackpadSurface.swift; sourceTree = "<group>"; };
+		B20000000000000000000118 /* HardwareSpecsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareSpecsView.swift; sourceTree = "<group>"; };
+		B20000000000000000000117 /* SensorSourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorSourcesView.swift; sourceTree = "<group>"; };
+		B20000000000000000000116 /* OrbitScreenKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitScreenKit.swift; sourceTree = "<group>"; };
 		B20000000000000000000115 /* OrbitActivityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitActivityViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000114 /* AppIconSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSettingsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000113 /* AppIcon-Minimal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Minimal.icon"; sourceTree = "<group>"; };
@@ -252,9 +273,7 @@
 		B20000000000000000000100 /* OrbitDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDesign.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Orbit.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Orbit.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* OrbitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitApp.swift; sourceTree = "<group>"; };
-		B10000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000000000000000000004 /* ModelsAndServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsAndServices.swift; sourceTree = "<group>"; };
-		B10000000000000000000005 /* LiquidGlassComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassComponents.swift; sourceTree = "<group>"; };
 		B10000000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B10000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000001 /* OrbitLiveActivityCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitLiveActivityCoordinator.swift; sourceTree = "<group>"; };
@@ -271,7 +290,6 @@
 		B2000000000000000000000C /* PCFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCFilesView.swift; sourceTree = "<group>"; };
 		B2000000000000000000000D /* DesktopToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopToolsView.swift; sourceTree = "<group>"; };
 		B2000000000000000000000E /* SessionHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryView.swift; sourceTree = "<group>"; };
-		B2000000000000000000000F /* CompanionToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionToolsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000010 /* OrbitPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPairing.swift; sourceTree = "<group>"; };
 		B20000000000000000000011 /* PCDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCDiscoveryView.swift; sourceTree = "<group>"; };
 		B20000000000000000000012 /* Appearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Appearance.swift; sourceTree = "<group>"; };
@@ -452,7 +470,6 @@
 				B20000000000000000000006 /* VolumeCommandQueue.swift */,
 				B20000000000000000000008 /* DashboardConfiguration.swift */,
 				B20000000000000000000009 /* TaskManagerView.swift */,
-				B2000000000000000000000F /* CompanionToolsView.swift */,
 				B2000000000000000000000E /* SessionHistoryView.swift */,
 				B2000000000000000000000D /* DesktopToolsView.swift */,
 				B2000000000000000000000C /* PCFilesView.swift */,
@@ -460,12 +477,22 @@
 				B2000000000000000000000A /* OrbitAPIClient.swift */,
 				B20000000000000000000001 /* OrbitLiveActivityCoordinator.swift */,
 				B10000000000000000000004 /* ModelsAndServices.swift */,
-				B10000000000000000000005 /* LiquidGlassComponents.swift */,
-				B10000000000000000000003 /* ContentView.swift */,
 				B10000000000000000000006 /* Assets.xcassets */,
 				B10000000000000000000007 /* Info.plist */,
 				B20000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				C20000000000000000000101 /* Redesign */,
+				B20000000000000000000116 /* OrbitScreenKit.swift */,
+				B20000000000000000000117 /* SensorSourcesView.swift */,
+				B20000000000000000000118 /* HardwareSpecsView.swift */,
+				B20000000000000000000119 /* OrbitTrackpadSurface.swift */,
+				B2000000000000000000011A /* SmartLaunchOverlay.swift */,
+				B2000000000000000000011B /* DesktopPreviewView.swift */,
+				B2000000000000000000011C /* ReadingsEditorView.swift */,
+				B2000000000000000000011D /* WidgetHelpView.swift */,
+				B2000000000000000000011E /* AppleWatchHelpView.swift */,
+				B2000000000000000000011F /* OrbitProViews.swift */,
+				B20000000000000000000120 /* LiveActivitySettingsView.swift */,
+				B20000000000000000000121 /* OrbitHaptics.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -818,6 +845,18 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000121 /* OrbitHaptics.swift in Sources */,
+				A20000000000000000000120 /* LiveActivitySettingsView.swift in Sources */,
+				A2000000000000000000011F /* OrbitProViews.swift in Sources */,
+				A2000000000000000000011E /* AppleWatchHelpView.swift in Sources */,
+				A2000000000000000000011D /* WidgetHelpView.swift in Sources */,
+				A2000000000000000000011C /* ReadingsEditorView.swift in Sources */,
+				A2000000000000000000011B /* DesktopPreviewView.swift in Sources */,
+				A2000000000000000000011A /* SmartLaunchOverlay.swift in Sources */,
+				A20000000000000000000119 /* OrbitTrackpadSurface.swift in Sources */,
+				A20000000000000000000118 /* HardwareSpecsView.swift in Sources */,
+				A20000000000000000000117 /* SensorSourcesView.swift in Sources */,
+				A20000000000000000000116 /* OrbitScreenKit.swift in Sources */,
 				A20000000000000000000115 /* OrbitActivityViews.swift in Sources */,
 				A20000000000000000000114 /* AppIconSettingsView.swift in Sources */,
 				A2000000000000000000010D /* OrbitVitals.swift in Sources */,
@@ -854,7 +893,6 @@
 				A20000000000000000000006 /* VolumeCommandQueue.swift in Sources */,
 				A20000000000000000000008 /* DashboardConfiguration.swift in Sources */,
 				A20000000000000000000009 /* TaskManagerView.swift in Sources */,
-				A2000000000000000000000F /* CompanionToolsView.swift in Sources */,
 				A2000000000000000000000E /* SessionHistoryView.swift in Sources */,
 				A2000000000000000000000D /* DesktopToolsView.swift in Sources */,
 				A2000000000000000000000C /* PCFilesView.swift in Sources */,
@@ -863,8 +901,6 @@
 				A20000000000000000000001 /* OrbitLiveActivityCoordinator.swift in Sources */,
 				A20000000000000000000002 /* OrbitActivityAttributes.swift in Sources */,
 				A10000000000000000000003 /* ModelsAndServices.swift in Sources */,
-				A10000000000000000000004 /* LiquidGlassComponents.swift in Sources */,
-				A10000000000000000000002 /* ContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

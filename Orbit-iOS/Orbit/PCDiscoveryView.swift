@@ -17,7 +17,7 @@ struct DiscoveredOrbitPC: Identifiable, Equatable {
 @MainActor
 final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     @Published private(set) var computers: [DiscoveredOrbitPC] = []
-    @Published private(set) var message = "Searching your local network…"
+    @Published private(set) var message = "Keep Orbit Companion open on the PC, on the same network as this iPhone."
     private let browser = NetServiceBrowser()
     private var services: [NetService] = []
     private var resolved: [String: DiscoveredOrbitPC] = [:]
@@ -26,7 +26,7 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
     func start() {
         guard !running else { return }
         running = true; computers = []; resolved = [:]
-        message = "Searching your local network…"
+        message = "Keep Orbit Companion open on the PC, on the same network as this iPhone."
         browser.delegate = self
         browser.searchForServices(ofType: "_orbit._tcp.", inDomain: "local.")
     }
@@ -45,7 +45,7 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
         publish()
     }
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
-        message = "Discovery is unavailable. Allow Local Network access for Orbit in iPhone Settings, then try again. You can also use manual setup."
+        message = "Orbit can't search your network. Allow Local Network for Orbit in the iPhone's Settings, then try again."
     }
     func netServiceDidResolveAddress(_ sender: NetService) {
         guard running, let data = sender.txtRecordData() else { return }
@@ -82,64 +82,14 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
     }
     private func publish() {
         computers = Dictionary(resolved.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        message = computers.isEmpty ? "Keep Orbit Agent open on your PC. Both devices must be on the same local network." : "Choose your PC to show a one-use pairing code on Windows."
+        message = computers.isEmpty ? "Keep Orbit Companion open on the PC, on the same network as this iPhone." : "Choose your PC. It shows a code to type here."
     }
 }
 
-/// Animated radar used while Bonjour is searching.
-private struct OrbitRadarView: View {
-    var tint: Color
-    var isActive: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sweep = false
-    @State private var ripple = false
-
-    var body: some View {
-        ZStack {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .strokeBorder(tint.opacity(0.18 - Double(index) * 0.04), lineWidth: 1)
-                    .frame(width: 60 + CGFloat(index) * 44, height: 60 + CGFloat(index) * 44)
-            }
-            if isActive && !reduceMotion {
-                Circle()
-                    .strokeBorder(tint.opacity(0.5), lineWidth: 1.5)
-                    .frame(width: 60, height: 60)
-                    .scaleEffect(ripple ? 2.6 : 1)
-                    .opacity(ripple ? 0 : 0.9)
-                AngularGradient(colors: [tint.opacity(0), tint.opacity(0.55)], center: .center, startAngle: .degrees(0), endAngle: .degrees(360))
-                    .clipShape(Circle())
-                    .frame(width: 148, height: 148)
-                    .mask {
-                        Circle()
-                            .trim(from: 0.62, to: 1)
-                            .stroke(style: StrokeStyle(lineWidth: 74))
-                            .frame(width: 74, height: 74)
-                    }
-                    .rotationEffect(.degrees(sweep ? 360 : 0))
-            }
-            Circle()
-                .fill(tint.opacity(0.16))
-                .frame(width: 60, height: 60)
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(tint)
-        }
-        .frame(width: 160, height: 160)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { sweep = true }
-            withAnimation(.easeOut(duration: 2.0).repeatForever(autoreverses: false)) { ripple = true }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// Six-cell one-time-code field backed by a hidden text field so the system
-/// keyboard, autofill and VoiceOver keep working.
+/// Six code cells over a hidden text field, so the system keyboard, one-time-code
+/// autofill and VoiceOver keep working.
 private struct OrbitPINField: View {
     @Binding var pin: String
-    var tint: Color
     var isFocused: FocusState<Bool>.Binding
 
     var body: some View {
@@ -150,31 +100,36 @@ private struct OrbitPINField: View {
                 .focused(isFocused)
                 .opacity(0.02)
                 .frame(height: 1)
-                .accessibilityLabel("Pairing code shown on your PC")
-            HStack(spacing: 10) {
+                .accessibilityLabel("Code shown on your PC")
+            HStack(spacing: 8) {
                 ForEach(0..<6, id: \.self) { index in
                     let digits = Array(pin)
                     let digit = index < digits.count ? String(digits[index]) : ""
                     let active = isFocused.wrappedValue && index == min(pin.count, 5)
                     Text(digit)
-                        .font(.system(size: 26, weight: .bold))
+                        .font(.orbitReading(30))
                         .monospacedDigit()
-                        .frame(maxWidth: .infinity, minHeight: 56)
-                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(active ? tint : (digit.isEmpty ? .white.opacity(0.1) : tint.opacity(0.45)), lineWidth: active ? 2 : 1)
-                        )
+                        .frame(maxWidth: .infinity, minHeight: 58)
+                        .background(OrbitPalette.well, in: RoundedRectangle(cornerRadius: OrbitMetrics.controlRadius, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: OrbitMetrics.controlRadius, style: .continuous)
+                                .strokeBorder(.tint, lineWidth: 2)
+                                .opacity(active ? 1 : 0)
+                        }
                         .contentTransition(.numericText())
-                        .animation(.snappy(duration: 0.2), value: pin)
+                        .animation(OrbitMotion.quick, value: pin)
+                        .animation(OrbitMotion.quick, value: active)
                 }
             }
             .contentShape(Rectangle())
             .onTapGesture { isFocused.wrappedValue = true }
+            .accessibilityHidden(true)
         }
     }
 }
 
+/// Adding a PC: Orbit finds Orbit Companion on the network, the PC shows a six-digit code,
+/// and the code proves both sides before the connection is saved.
 struct PCDiscoveryView: View {
     @ObservedObject var vm: OrbitViewModel
     var onPaired: (() -> Void)? = nil
@@ -190,301 +145,298 @@ struct PCDiscoveryView: View {
     @State private var attempt = UUID()
     @State private var paired = false
     @State private var showsProPaywall = false
+    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.orbitTheme) private var theme
     @FocusState private var pinFocused: Bool
+
+    private let companionURL = URL(string: "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip")!
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                OrbitAmbientBackground(isOnline: true)
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 16) {
-                        if !vm.canAddNewPC {
-                            VStack(alignment: .leading, spacing: 10) {
-                                OrbitNotice(title: "One PC in the free version", message: "You can re-pair the PC you already saved. To add another one, remove it in My PCs or unlock Orbit Pro.", icon: "lock.fill", tint: .yellow)
-                                Button {
-                                    showsProPaywall = true
-                                } label: {
-                                    Label("Unlock Orbit Pro", systemImage: "crown.fill")
-                                }
-                                .buttonStyle(OrbitProminentButtonStyle(colors: [Color(red: 1.0, green: 0.86, blue: 0.36), Color(red: 0.96, green: 0.68, blue: 0.22)]))
-                            }
-                        }
-                        if let candidate {
-                            pairingCard(candidate)
-                        } else {
-                            searchCard
-                            nearbyCard
-                            needAppCard
-                        }
-                        if let error {
-                            OrbitNotice(title: "Pairing problem", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-                        Text("Discovery never shares access tokens. The one-time code proves both sides share the same secret before your PC’s credentials are saved to the Keychain.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 12)
-                    }
-                    .frame(maxWidth: 560)
-                    .padding(18)
-                    .frame(maxWidth: .infinity)
-                    .animation(.snappy, value: candidate)
-                    .animation(.snappy, value: error)
-                    .animation(.snappy, value: discovery.computers)
+            OrbitPage(spacing: 26) {
+                if let candidate {
+                    pairing(candidate)
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+                } else {
+                    searching
+                        .transition(.opacity)
                 }
-                .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
-                .scrollDismissesKeyboard(.interactively)
+                if let error {
+                    OrbitInlineStatus(text: error, kind: .problem)
+                        .padding(.horizontal, 4)
+                        .transition(.opacity)
+                }
+                Text("The code proves it's your PC. Orbit then keeps the connection in this iPhone's Keychain.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
             }
-            .navigationTitle(candidate == nil ? "Connect a PC" : "Pair securely")
+            .animation(OrbitMotion.standard, value: candidate)
+            .animation(OrbitMotion.standard, value: error)
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(candidate == nil ? "Add a PC" : "Pair")
             .navigationBarTitleDisplayMode(.inline)
+            .orbitCloseButton { dismiss() }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
                     Button("Done") { pinFocused = false }
                 }
             }
+            .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
             .onAppear { discovery.start() }
             .onDisappear { discovery.stop(); task?.cancel(); attempt = UUID(); handshake = nil; pin = "" }
         }
-        .orbitAppearance()
+        .tint(theme.orbitTint)
+        .preferredColorScheme(.dark)
     }
 
-    // MARK: Search
+    // MARK: Searching
 
-    private var searchCard: some View {
-        VStack(spacing: 14) {
-            OrbitRadarView(tint: theme.accent, isActive: discovery.computers.isEmpty)
-            VStack(spacing: 6) {
-                Text(discovery.computers.isEmpty ? "Looking for Orbit PCs…" : "\(discovery.computers.count) PC\(discovery.computers.count == 1 ? "" : "s") found")
-                    .font(.title3.weight(.bold))
-                    .contentTransition(.numericText())
-                Text(discovery.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            HStack(spacing: 8) {
-                OrbitStatChip(label: "Service", value: "_orbit._tcp", icon: "antenna.radiowaves.left.and.right")
-                OrbitStatChip(label: "Pairing", value: "SRP-6a", icon: "lock.shield.fill")
-            }
+    @ViewBuilder
+    private var searching: some View {
+        VStack(spacing: 12) {
+            OrbitMark(status: discovery.computers.isEmpty ? .working : .online, size: 64)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+            Text(foundTitle)
+                .font(.title2.weight(.bold))
+                .contentTransition(.opacity)
+            Text(discovery.message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(20)
         .frame(maxWidth: .infinity)
-        .liquidGlass(cornerRadius: 24, tint: theme.accent, elevated: true)
-    }
+        .padding(.horizontal, 12)
 
-    private var nearbyCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Nearby computers", systemImage: "desktopcomputer")
-                    .font(.subheadline.weight(.bold))
-                Spacer()
-                Button {
-                    OrbitHaptics.tap()
-                    discovery.stop(); discovery.start()
-                } label: {
-                    Label("Search again", systemImage: "arrow.clockwise")
-                        .font(.caption.weight(.bold))
-                }
-                .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 20))
+        OrbitGroup("On This Network", trailing: {
+            Button("Search Again") {
+                OrbitHaptics.tap()
+                discovery.stop()
+                discovery.start()
             }
+        }) {
             if discovery.computers.isEmpty {
                 HStack(spacing: 12) {
-                    ProgressView().tint(theme.accent)
-                    Text("Keep Orbit Agent running in the Windows system tray. Allow it on Private networks if the firewall asks.")
-                        .font(.caption)
+                    ProgressView()
+                    Text("Searching…")
                         .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                .padding(.vertical, 6)
+                .font(.subheadline)
+                .padding(.vertical, 12)
             }
             ForEach(discovery.computers) { pc in
+                let allowed = vm.canAddNewPC || isSaved(pc)
                 Button {
-                    OrbitHaptics.press()
-                    begin(pc)
+                    if allowed {
+                        OrbitHaptics.press()
+                        begin(pc)
+                    } else {
+                        showsProPaywall = true
+                    }
                 } label: {
                     HStack(spacing: 12) {
-                        OrbitIconBadge(systemName: "desktopcomputer", tint: theme.accent, size: 42, filled: true)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(pc.name.isEmpty ? "Orbit PC" : pc.name)
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.white)
-                            Text("Orbit Agent \(pc.version) · \(pc.host)")
-                                .font(.caption)
+                        Image(systemName: "desktopcomputer")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pc.name.isEmpty ? "Windows PC" : pc.name)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(pc.version.isEmpty ? pc.host : "\(pc.host) · Orbit Companion \(pc.version)")
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
-                        Spacer()
-                        Text("Pair")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.black.opacity(0.85))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(theme.heroGradient, in: Capsule())
+                        Spacer(minLength: 8)
+                        if allowed {
+                            Text("Pair")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.tint)
+                        } else {
+                            Image(systemName: "lock")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .padding(12)
-                    .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.07), lineWidth: 1))
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.orbitPressable)
+                .buttonStyle(.plain)
+                .accessibilityLabel(allowed ? "Pair with \(pc.name.isEmpty ? "Windows PC" : pc.name)" : "\(pc.name), needs Orbit Pro")
             }
         }
-        .padding(16)
-        .liquidGlass(cornerRadius: 22)
+        .animation(OrbitMotion.standard, value: discovery.computers)
+
+        if !vm.canAddNewPC {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Orbit keeps one PC. You can pair yours again; to add another, remove it in Manage PCs or unlock Orbit Pro.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Unlock Orbit Pro") { showsProPaywall = true }
+                    .font(.footnote.weight(.semibold))
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, -14)
+        }
+
+        VStack(alignment: .leading, spacing: 12) {
+            OrbitSectionHeader("Get Orbit Companion")
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Install it on the Windows PC and keep it running in the system tray. Allow it on private networks if Windows asks.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ShareLink(item: companionURL,
+                          subject: Text("Orbit Companion for Windows"),
+                          message: Text("Orbit Companion for Windows: unzip it and run install_orbit.bat.")) {
+                    Label("Send the Download to Your PC", systemImage: "square.and.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                }
+                Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
+                    Label("Open on GitHub", systemImage: "arrow.up.right")
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+            .orbitSurface()
+        }
     }
 
-    private var needAppCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Need the Windows PC app?", systemImage: "arrow.down.app.fill")
-                .font(.subheadline.weight(.bold))
-            Text("Install Orbit PC Companion on your Windows computer first, then keep it running in the system tray.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                ShareLink(
-                    item: URL(string: "https://github.com/AceDimi2005/Orbit")!,
-                    subject: Text("Orbit PC Companion for Windows"),
-                    message: Text("Download the Orbit PC Companion for Windows: https://github.com/AceDimi2005/Orbit (Direct ZIP: https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip)")
-                ) {
-                    Label("Send to PC", systemImage: "square.and.arrow.up")
-                        .font(.caption.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 12))
-                Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit/raw/main/Orbit-Windows-Agent.zip")!) {
-                    Label("Download .zip", systemImage: "arrow.down.doc.fill")
-                        .font(.caption.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 12))
-            }
-            Link(destination: URL(string: "https://github.com/AceDimi2005/Orbit")!) {
-                Label("Open GitHub (AceDimi2005/Orbit)", systemImage: "arrow.up.right.square")
-                    .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 12))
+    /// A PC already saved here, which can always be paired again.
+    private func isSaved(_ pc: DiscoveredOrbitPC) -> Bool {
+        vm.savedPCs.contains { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == pc.fingerprint }
+    }
+
+    private var foundTitle: String {
+        switch discovery.computers.count {
+        case 0: return "Looking for your PC"
+        case 1: return "Found your PC"
+        default: return "Found \(discovery.computers.count) PCs"
         }
-        .padding(16)
-        .liquidGlass(cornerRadius: 22)
     }
 
     // MARK: Pairing
 
-    private func pairingCard(_ candidate: DiscoveredOrbitPC) -> some View {
-        VStack(spacing: 18) {
-            HStack(spacing: 12) {
-                OrbitIconBadge(systemName: paired ? "checkmark.seal.fill" : "desktopcomputer", tint: paired ? .mint : theme.accent, size: 46, filled: true)
-                VStack(alignment: .leading, spacing: 3) {
+    private func pairing(_ candidate: DiscoveredOrbitPC) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(spacing: 14) {
+                OrbitMark(status: paired ? .online : (busy ? .working : .online), size: 46)
+                    .padding(2)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(candidate.name.isEmpty ? "Your PC" : candidate.name)
-                        .font(.headline.weight(.bold))
-                    Text("Orbit Agent \(candidate.version) · \(candidate.host)")
-                        .font(.caption)
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+                    Text(candidate.host)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Spacer()
-                Button("Change") { resetAttempt() }
-                    .buttonStyle(OrbitGlassButtonStyle(tint: .white, cornerRadius: 20))
-                    .font(.caption.weight(.bold))
+                Spacer(minLength: 8)
+                if !paired && !busy {
+                    Button("Change") { resetAttempt() }
+                        .font(.subheadline.weight(.semibold))
+                }
             }
+            .padding(.top, 8)
 
             if paired {
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.system(size: 40, weight: .semibold))
-                        .foregroundStyle(.mint)
-                    Text("Paired securely")
-                        .font(.title3.weight(.bold))
-                    Text("Credentials are stored in the Keychain. Connecting…")
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Paired")
+                        .font(.title2.weight(.bold))
+                    Text("Connecting to \(candidate.name.isEmpty ? "your PC" : candidate.name)…")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 8)
+                .transition(.opacity)
             } else if handshake != nil {
-                VStack(spacing: 12) {
-                    Text("Enter the six-digit code shown on your PC")
-                        .font(.subheadline.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                    OrbitPINField(pin: $pin, tint: theme.accent, isFocused: $pinFocused)
-                        .onChange(of: pin) { _, value in
-                            pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6))
-                            if pin.count == 6 { OrbitHaptics.selection() }
-                        }
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let expired = (expiresAt ?? .distantPast) <= context.date
-                        VStack(spacing: 12) {
-                            if let expiresAt, !expired {
-                                HStack(spacing: 8) {
-                                    OrbitRingGauge(progress: remainingFraction(at: context.date), lineWidth: 3, tint: theme.accent)
-                                        .frame(width: 18, height: 18)
-                                    Text("Code expires in")
-                                    Text(expiresAt, style: .timer).monospacedDigit().fontWeight(.bold)
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            } else {
-                                Label("Code expired. Request a new one.", systemImage: "clock.badge.exclamationmark")
-                                    .font(.callout)
-                                    .foregroundStyle(.orange)
-                            }
-                            Button {
-                                OrbitHaptics.press()
-                                finish()
-                            } label: {
-                                Label(busy ? "Verifying…" : "Pair this PC", systemImage: "lock.shield")
-                            }
-                            .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
-                            .disabled(busy || pin.count != 6 || expired)
-                            .opacity(busy || pin.count != 6 || expired ? 0.55 : 1)
-                            if expired && !busy {
-                                Button("Get a new code") { begin(candidate) }
-                                    .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent, cornerRadius: 16))
-                            }
-                        }
-                    }
+                codeEntry(candidate)
+            } else if busy {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Showing a code on your PC…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
             } else {
-                VStack(spacing: 12) {
-                    Text("A six-digit code appears in the Orbit Agent window and a Windows dialog. Nothing needs copying.")
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Your PC shows a six-digit code in Orbit Companion. Ask for a new one if it closed.")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    if !busy {
-                        Button {
-                            OrbitHaptics.tap()
-                            begin(candidate)
-                        } label: {
-                            Label("Request a new code", systemImage: "arrow.clockwise")
-                        }
-                        .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        OrbitHaptics.tap()
+                        begin(candidate)
+                    } label: {
+                        Text("Show a New Code")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
                     }
-                }
-            }
-
-            if busy {
-                HStack(spacing: 10) {
-                    ProgressView().tint(theme.accent)
-                    Text(handshake == nil ? (paired ? "Connecting to your PC…" : "Showing a code on your PC…") : "Verifying and saving your PC…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    .orbitGlassButton(prominent: true)
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity)
-        .liquidGlass(cornerRadius: 24, tint: paired ? .mint : theme.accent, elevated: true)
-        .animation(.snappy, value: handshake == nil)
-        .animation(.snappy, value: paired)
-        .animation(.snappy, value: busy)
+        .animation(OrbitMotion.standard, value: handshake == nil)
+        .animation(OrbitMotion.standard, value: paired)
+        .animation(OrbitMotion.standard, value: busy)
     }
 
-    private func remainingFraction(at date: Date) -> Double {
-        guard let expiresAt, codeLifetime > 0 else { return 0 }
-        return max(0, min(1, expiresAt.timeIntervalSince(date) / codeLifetime))
+    private func codeEntry(_ candidate: DiscoveredOrbitPC) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Type the code your PC shows")
+                    .font(.headline)
+                Text("It's in the Orbit Companion window on Windows.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            OrbitPINField(pin: $pin, isFocused: $pinFocused)
+                .onChange(of: pin) { _, value in
+                    pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6))
+                    if pin.count == 6 { OrbitHaptics.selection() }
+                }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let expired = (expiresAt ?? .distantPast) <= context.date
+                VStack(alignment: .leading, spacing: 14) {
+                    if let expiresAt, !expired {
+                        Text("The code works for \(expiresAt, style: .timer) more.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    } else {
+                        Text("The code expired. Ask your PC for a new one.")
+                            .font(.footnote)
+                            .foregroundStyle(OrbitPalette.warm)
+                    }
+                    Button {
+                        OrbitHaptics.press()
+                        finish()
+                    } label: {
+                        Text(busy ? "Checking…" : "Pair")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .orbitGlassButton(prominent: true)
+                    .disabled(busy || pin.count != 6 || expired)
+                    if expired && !busy {
+                        Button("Show a New Code") { begin(candidate) }
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
     }
+
+    // MARK: Pairing steps
 
     private func begin(_ pc: DiscoveredOrbitPC) {
         resetAttempt(); candidate = pc; busy = true
@@ -504,6 +456,7 @@ struct PCDiscoveryView: View {
             if identifier == attempt { busy = false }
         }
     }
+
     private func finish() {
         guard let handshake, let candidate, !busy else { return }
         let code = pin, identifier = attempt
@@ -527,6 +480,7 @@ struct PCDiscoveryView: View {
             if identifier == attempt { busy = false }
         }
     }
+
     private func resetAttempt() {
         task?.cancel(); attempt = UUID(); candidate = nil; handshake = nil; pin = ""; expiresAt = nil; busy = false; error = nil; paired = false
     }

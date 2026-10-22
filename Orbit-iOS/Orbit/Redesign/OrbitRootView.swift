@@ -27,7 +27,8 @@ struct OrbitRootView: View {
                 PlayView(vm: vm, sunshine: sunshine)
             }
             Tab("Files", systemImage: "folder", value: OrbitTab.files) {
-                NavigationStack { PCFilesView(vm: vm) }
+                // Files owns its navigation stack, so folders push like the Files app.
+                PCFilesView(vm: vm)
             }
         }
         .tabViewStyle(.sidebarAdaptable)
