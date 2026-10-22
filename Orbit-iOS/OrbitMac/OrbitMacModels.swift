@@ -325,8 +325,21 @@ struct MacAudioSession: Codable, Identifiable, Hashable {
     }
 }
 
-struct MacAudioOutput: Codable, Identifiable, Hashable { let id: String; let name: String }
-struct MacAudioOutputsReply: Decodable { let devices: [MacAudioOutput]; let routingAvailable: Bool; let routingUnavailableReason: String? }
+struct MacAudioOutput: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    /// Orbit Companion 5: the Windows default playback device.
+    var isDefault: Bool? = nil
+}
+struct MacAudioOutputsReply: Decodable {
+    let devices: [MacAudioOutput]
+    let routingAvailable: Bool
+    let routingUnavailableReason: String?
+    // Orbit Companion 5: switching the default output.
+    var defaultDeviceID: String? = nil
+    var defaultSwitchAvailable: Bool? = nil
+    var defaultSwitchUnavailableReason: String? = nil
+}
 struct MacAudioSessionsReply: Decodable { let sessions: [MacAudioSession]; let available: Bool }
 struct MacAudioSessionChange: Encodable { let id: String; var volume: Double?; var isMuted: Bool? }
 struct MacAudioSessionReply: Decodable { let status: String; let session: MacAudioSession }

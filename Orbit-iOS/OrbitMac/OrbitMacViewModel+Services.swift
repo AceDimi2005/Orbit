@@ -120,10 +120,12 @@ extension OrbitMacViewModel {
                 audioOutputs = outputs.devices
                 audioRoutingAvailable = outputs.routingAvailable
                 audioRoutingReason = outputs.routingUnavailableReason
+                defaultOutputSwitchAvailable = outputs.defaultSwitchAvailable == true
+                defaultOutputSwitchReason = outputs.defaultSwitchUnavailableReason
             } catch {
                 guard version == generation else { return }
                 audioRoutingAvailable = false
-                audioRoutingReason = "Per-app output selection is unavailable. Update the Orbit Agent, or use Windows Settings → System → Sound → Volume mixer."
+                audioRoutingReason = "Choosing an output per app needs a newer Orbit Companion. Windows Settings → System → Sound → Volume mixer does it on the PC."
             }
         } catch {
             guard version == generation else { return }

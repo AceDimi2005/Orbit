@@ -61,6 +61,7 @@ struct MacLibraryView: View {
         .task {
             moonlightInstalled = Self.detectMoonlight()
             await refreshLibrary()
+            await vm.refreshLibrary()
         }
         .onChange(of: vm.pendingStreamAction, initial: true) { _, action in
             guard let action else { return }
@@ -231,7 +232,7 @@ struct MacLibraryView: View {
             }
             .pickerStyle(.inline)
             Divider()
-            Button("Refresh Library") { Task { await refreshLibrary(); await sunshine.refresh() } }
+            Button("Refresh Library") { Task { await refreshLibrary(); await vm.refreshLibrary(rescan: vm.library != nil); await sunshine.refresh() } }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(vm.isDemoMode || !vm.metrics.isOnline)
             if let url = sunshineWebURL {
@@ -308,33 +309,124 @@ struct MacLibraryView: View {
     @ViewBuilder
     private var library: some View {
         if vm.isDemoMode || (vm.currentPC != nil && vm.metrics.isOnline) {
-            VStack(alignment: .leading, spacing: 16) {
-                OrbitSectionHeader(search.isEmpty ? "Library" : "Results") {
-                    if vm.isLoadingGames { ProgressView().controlSize(.small) }
-                }
-                if vm.isLoadingGames && vm.games.isEmpty {
-                    placeholder(symbol: nil, title: "Reading your library…", message: "Orbit asks the PC for the games Sunshine publishes.")
-                } else if games.isEmpty && search.isEmpty {
-                    placeholder(symbol: "square.grid.2x2", title: "No games yet",
-                                message: "Games you add to Sunshine on the PC appear here. In Sunshine, choose Applications, then Add.") {
-                        if let url = sunshineWebURL {
-                            Button("Open Sunshine on the PC") { NSWorkspace.shared.open(url) }
-                                .buttonStyle(MacHoverButtonStyle())
-                        }
+            if vm.library != nil {
+                storeLibrary
+                if !otherSunshineApps.isEmpty {
+                    gameSection(search.isEmpty ? "More in Sunshine" : "In Sunshine", loading: false) {
+                        ForEach(otherSunshineApps) { sunshineTile($0) }
                     }
-                } else if games.isEmpty {
-                    placeholder(symbol: "magnifyingglass", title: "No matches", message: "Try another name.")
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 22, alignment: .top)], alignment: .leading, spacing: 26) {
-                        ForEach(games) { game in tile(game) }
-                    }
-                    .animation(OrbitMotion.standard, value: games)
                 }
+            } else {
+                sunshineLibrary
             }
         }
     }
 
-    private func tile(_ game: MacSunshineGame) -> some View {
+    // Orbit Companion 5: games installed through Steam, Epic and GOG.
+
+    private var libraryGames: [OrbitLibraryGame] {
+        let all = vm.library?.games ?? []
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return all }
+        return all.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.storeName.localizedCaseInsensitiveContains(query) }
+    }
+
+    /// Sunshine apps no installed game already stands for (Steam Big Picture, emulators…).
+    private var otherSunshineApps: [MacSunshineGame] {
+        let covered = Set((vm.library?.games ?? []).compactMap { $0.sunshineApp?.lowercased() })
+        return games.filter { !covered.contains($0.title.lowercased()) }
+    }
+
+    @ViewBuilder
+    private var storeLibrary: some View {
+        let shown = libraryGames
+        if shown.isEmpty && search.isEmpty {
+            gameSection("Library", loading: vm.isLoadingLibrary) {
+                EmptyView()
+            } empty: {
+                placeholder(symbol: "square.grid.2x2", title: "No games found",
+                            message: "Orbit looks for games installed with Steam, Epic Games and GOG on the PC.") {
+                    Button("Look Again") { Task { await vm.refreshLibrary(rescan: true) } }
+                        .buttonStyle(MacHoverButtonStyle())
+                }
+            }
+        } else if shown.isEmpty {
+            if otherSunshineApps.isEmpty {
+                placeholder(symbol: "magnifyingglass", title: "No matches", message: "Try another name.")
+            }
+        } else {
+            gameSection(search.isEmpty ? "Library" : "Results", loading: vm.isLoadingLibrary) {
+                ForEach(shown) { libraryTile($0) }
+            }
+        }
+    }
+
+    private func libraryTile(_ game: OrbitLibraryGame) -> some View {
+        let app = game.sunshineApp.flatMap { sunshine.app(titled: $0) }
+        let streamAction: (() -> Void)? = {
+            guard canStream else { return nil }
+            if usesMoonlightApp, let name = game.sunshineApp { return { vm.streamInMoonlight(appTitle: name) } }
+            return app.map { app in { start(app) } }
+        }()
+        return MacLibraryCoverTile(game: game,
+                                   isLaunching: launchingID == game.id,
+                                   canStart: game.canLaunch && vm.metrics.isOnline,
+                                   onStream: streamAction,
+                                   onStart: { launchStoreGame(game) })
+    }
+
+    private func launchStoreGame(_ game: OrbitLibraryGame) {
+        guard launchingID == nil else { return }
+        launchingID = game.id
+        launchStatus = nil
+        Task { @MainActor in
+            await vm.launch(game)
+            if launchingID == game.id { launchingID = nil }
+            launchStatus = vm.statusBanner
+        }
+    }
+
+    // Sunshine's own list, for companions before 5.
+
+    @ViewBuilder
+    private var sunshineLibrary: some View {
+        if vm.isLoadingGames && vm.games.isEmpty {
+            gameSection("Library", loading: true) { EmptyView() } empty: {
+                placeholder(symbol: nil, title: "Reading your library…", message: "Orbit asks the PC for the games Sunshine publishes.")
+            }
+        } else if games.isEmpty && search.isEmpty {
+            gameSection("Library", loading: false) { EmptyView() } empty: {
+                placeholder(symbol: "square.grid.2x2", title: "No games yet",
+                            message: "Games you add to Sunshine on the PC appear here. In Sunshine, choose Applications, then Add.") {
+                    if let url = sunshineWebURL {
+                        Button("Open Sunshine on the PC") { NSWorkspace.shared.open(url) }
+                            .buttonStyle(MacHoverButtonStyle())
+                    }
+                }
+            }
+        } else if games.isEmpty {
+            placeholder(symbol: "magnifyingglass", title: "No matches", message: "Try another name.")
+        } else {
+            gameSection(search.isEmpty ? "Library" : "Results", loading: vm.isLoadingGames) {
+                ForEach(games) { sunshineTile($0) }
+            }
+        }
+    }
+
+    private func gameSection<Tiles: View, Empty: View>(_ title: String, loading: Bool, @ViewBuilder tiles: () -> Tiles,
+                                                       @ViewBuilder empty: () -> Empty = { EmptyView() }) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            OrbitSectionHeader(title) {
+                if loading { ProgressView().controlSize(.small) }
+            }
+            empty()
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 22, alignment: .top)], alignment: .leading, spacing: 26) {
+                tiles()
+            }
+        }
+    }
+
+    private func sunshineTile(_ game: MacSunshineGame) -> some View {
         let app = sunshine.app(titled: game.title)
         let running = (app != nil && app?.id == sunshine.info?.currentGame)
             || vm.metrics.activeGame.map { $0.caseInsensitiveCompare(game.title) == .orderedSame } == true
@@ -343,11 +435,13 @@ struct MacLibraryView: View {
             if usesMoonlightApp { return { vm.streamInMoonlight(appTitle: game.title) } }
             return app.map { app in { start(app) } }
         }()
-        return MacGameTile(game: game,
+        return MacGameTile(title: game.title,
+                           subtitle: game.isFavorite ? "Favorite" : nil,
                            artwork: app.flatMap { sunshine.artwork[$0.id] }.flatMap(NSImage.init(data:)),
                            isRunning: running,
                            isLaunching: launchingID == game.id,
                            canStart: vm.metrics.isOnline || vm.isDemoMode,
+                           command: game.cmd,
                            onStream: streamAction,
                            onStart: { launch(game) })
             .onAppear { if let app { sunshine.loadArtwork(for: app) } }
@@ -428,18 +522,20 @@ struct MacLibraryView: View {
 
 /// A game's cover and name. Pointing at it offers Stream and Start on PC; double-click streams.
 private struct MacGameTile: View {
-    var game: MacSunshineGame
+    var title: String
+    var subtitle: String?
     var artwork: NSImage?
     var isRunning: Bool
     var isLaunching: Bool
     var canStart: Bool
+    var command: String? = nil
     var onStream: (() -> Void)?
     var onStart: () -> Void
     @State private var hovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MacGameCover(game: game, artwork: artwork)
+            MacGameCover(title: title, artwork: artwork)
                 .aspectRatio(3 / 4, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(alignment: .topLeading) {
@@ -471,23 +567,22 @@ private struct MacGameTile: View {
                             }
                             .buttonStyle(MacHoverButtonStyle())
                             .disabled(!canStart || isLaunching)
-                            .help("Start \(game.title) on the PC")
+                            .help("Start \(title) on the PC")
                         }
                         .padding(10)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
                 .scaleEffect(hovered ? 1.02 : 1)
-            HStack(spacing: 6) {
-                Text(game.title)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
                     .font(.callout.weight(.semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                if game.isFavorite {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("Favorite")
                 }
             }
         }
@@ -499,8 +594,8 @@ private struct MacGameTile: View {
             if let onStream { Button("Stream on This Mac", action: onStream) }
             Button("Start on PC", action: onStart).disabled(!canStart)
             Divider()
-            Button("Copy Name") { copy(game.title) }
-            if let cmd = game.cmd, !cmd.isEmpty { Button("Copy Command") { copy(cmd) } }
+            Button("Copy Name") { copy(title) }
+            if let command, !command.isEmpty { Button("Copy Command") { copy(command) } }
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
@@ -514,9 +609,26 @@ private struct MacGameTile: View {
     }
 }
 
-/// The game's art, or a quiet typographic cover when Sunshine has none.
+/// An installed game from Steam, Epic or GOG; its cover comes from the PC.
+private struct MacLibraryCoverTile: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+    var game: OrbitLibraryGame
+    var isLaunching: Bool
+    var canStart: Bool
+    var onStream: (() -> Void)?
+    var onStart: () -> Void
+    @State private var cover: NSImage?
+
+    var body: some View {
+        MacGameTile(title: game.title, subtitle: game.storeName, artwork: cover, isRunning: game.isRunning,
+                    isLaunching: isLaunching, canStart: canStart, onStream: onStream, onStart: onStart)
+            .task(id: game.coverID) { cover = await vm.cover(for: game) }
+    }
+}
+
+/// The game's art, or a quiet symbol when there is none (the name is right below).
 struct MacGameCover: View {
-    var game: MacSunshineGame
+    var title: String
     var artwork: NSImage?
 
     var body: some View {
@@ -526,9 +638,8 @@ struct MacGameCover: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
-                // The name is right under the cover, so the placeholder doesn't repeat it.
                 OrbitPalette.well
-                Image(systemName: game.title.localizedCaseInsensitiveContains("steam") ? "play.rectangle" : "gamecontroller")
+                Image(systemName: title.localizedCaseInsensitiveContains("steam") ? "play.rectangle" : "gamecontroller")
                     .font(.system(size: 34, weight: .light))
                     .foregroundStyle(.tertiary)
             }

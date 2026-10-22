@@ -116,6 +116,24 @@ final class OrbitMacViewModel: ObservableObject {
     @Published var audioUpdated: Date?
     @Published var isLoadingAudio = false
     @Published var audioRoutingSessionID: String?
+    @Published var defaultOutputSwitchAvailable = false
+    @Published var defaultOutputSwitchReason: String?
+    @Published var microphone: OrbitMicrophoneState?
+
+    // Orbit Companion 5
+    @Published var capabilities: OrbitCapabilities?
+    @Published var power: OrbitPowerState?
+    /// When `power` arrived, so countdowns can tick between refreshes.
+    @Published var powerFetchedAt = Date()
+    @Published var powerError: String?
+    @Published var devices: [OrbitDevice] = []
+    @Published var devicesError: String?
+    @Published var isLoadingDevices = false
+    @Published var library: OrbitLibrary?
+    @Published var isLoadingLibrary = false
+    @Published var activity: [OrbitActivityEntry] = []
+    @Published var activityError: String?
+    var libraryCovers: [String: NSImage] = [:]
     @Published var processes: [MacProcess] = []
     @Published var processesCapturedAt: Date?
     @Published var processGpuStatus: String?
@@ -334,6 +352,9 @@ final class OrbitMacViewModel: ObservableObject {
         games = []; sunshineInfo = nil
         audioSessions = []; audioOutputs = []; audioRoutingAvailable = false; audioRoutingReason = nil; audioError = nil; audioStatus = nil; audioUpdated = nil
         audioPending = [:]; audioWorker?.cancel(); audioWorker = nil; audioDragging = []; audioChanged = [:]
+        defaultOutputSwitchAvailable = false; defaultOutputSwitchReason = nil; microphone = nil
+        capabilities = nil; power = nil; powerError = nil; devices = []; devicesError = nil; isLoadingDevices = false
+        library = nil; isLoadingLibrary = false; activity = []; activityError = nil; libraryCovers = [:]
         processes = []; processesCapturedAt = nil; processGpuStatus = nil; processesError = nil; processActionStatus = nil
         clipboardStatus = nil; clipboardError = nil
         historyList = nil; historyError = nil

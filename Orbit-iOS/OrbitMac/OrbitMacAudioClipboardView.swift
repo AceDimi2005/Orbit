@@ -35,10 +35,12 @@ struct MacAudioView: View {
         }
         .task {
             await vm.refreshAudio()
+            await vm.refreshMicrophone()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(4)) } catch { break }
                 guard draggingIDs.isEmpty, vm.audioRoutingSessionID == nil else { continue }
                 await vm.refreshAudio()
+                await vm.refreshMicrophone()
             }
         }
         .onChange(of: vm.selectedPCID) { _, _ in
@@ -66,6 +68,29 @@ struct MacAudioView: View {
             HStack(alignment: .center, spacing: 18) {
                 masterReadout
                 masterMuteButton
+            }
+            if let microphone = vm.microphone, microphone.available {
+                Divider().overlay(OrbitPalette.hairline)
+                HStack(spacing: 12) {
+                    Image(systemName: microphone.muted ? "mic.slash.fill" : "mic.fill")
+                        .foregroundStyle(microphone.muted ? OrbitPalette.warm : .secondary)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Microphone")
+                            .font(.headline)
+                        Text(microphone.muted ? "Muted on the PC" : (microphone.devices?.first?.name ?? "On"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Button(microphone.muted ? "Unmute" : "Mute") {
+                        Task { await vm.setMicrophoneMuted(!microphone.muted) }
+                    }
+                    .buttonStyle(MacHoverButtonStyle(prominent: microphone.muted))
+                    .help(microphone.muted ? "Turn the PC's microphone back on" : "Mute the PC's microphone")
+                }
             }
         }
         .padding(18)
@@ -122,13 +147,7 @@ struct MacAudioView: View {
 
     private var outputsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Outputs", subtitle: outputsSubtitle, icon: "hifispeaker.fill") {
-                if vm.audioRoutingAvailable {
-                    MacStatusPill(text: "Per-app routing", tint: .mint, icon: "arrow.triangle.branch")
-                } else {
-                    MacStatusPill(text: "Mixer only", tint: .secondary, icon: "slider.horizontal.3")
-                }
-            }
+            MacSectionHeader("Outputs", subtitle: outputsSubtitle, icon: "hifispeaker.fill")
             if vm.audioOutputs.isEmpty {
                 Text(vm.audioUpdated == nil && !vm.isDemoMode ? "Reading playback devices…" : "The PC didn't report any playback devices.")
                     .font(.caption)
@@ -148,20 +167,31 @@ struct MacAudioView: View {
 
     private func outputRow(_ output: MacAudioOutput) -> some View {
         let routed = vm.audioSessions.filter { $0.outputDeviceID == output.id }.count
+        let isDefault = output.isDefault == true
         return HStack(spacing: 10) {
-            MacIconBadge(systemName: "hifispeaker.fill", tint: theme.secondary, size: 28)
-            Text(output.name)
-                .font(.system(.subheadline, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Image(systemName: isDefault ? "checkmark.circle.fill" : "hifispeaker")
+                .foregroundStyle(isDefault ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(output.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if isDefault || routed > 0 {
+                    Text([isDefault ? "Default" : nil, routed > 0 ? (routed == 1 ? "1 app" : "\(routed) apps") : nil].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 6)
-            if routed > 0 {
-                MacStatChip(label: routed == 1 ? "app" : "apps", value: "\(routed)", icon: "app.fill", tint: theme.secondary)
+            if !isDefault && vm.defaultOutputSwitchAvailable {
+                Button("Make Default") { Task { await vm.makeDefaultOutput(output) } }
+                    .buttonStyle(MacHoverButtonStyle())
+                    .controlSize(.small)
+                    .help("Play the PC's sound through \(output.name)")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Notices
@@ -169,13 +199,13 @@ struct MacAudioView: View {
     @ViewBuilder
     private var notices: some View {
         if let error = vm.audioError, !vm.audioSessions.isEmpty {
-            MacNotice(title: "Audio problem", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
+            MacNotice(title: "Something went wrong with sound", message: error, icon: "exclamationmark.triangle.fill", tint: OrbitPalette.warm)
         }
         if let status = vm.audioStatus {
             MacNotice(title: "Output changed", message: status, icon: "checkmark.circle.fill", tint: theme.accent)
         }
         if !vm.audioRoutingAvailable, let reason = vm.audioRoutingReason {
-            MacNotice(title: "Per-app output routing unavailable", message: reason, icon: "arrow.triangle.branch", tint: theme.secondary)
+            MacNotice(title: "Choosing an output for each app isn't available", message: reason, icon: "arrow.triangle.branch", tint: .secondary)
         }
     }
 

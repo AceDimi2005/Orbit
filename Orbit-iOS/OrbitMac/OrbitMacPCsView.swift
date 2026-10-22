@@ -34,6 +34,7 @@ struct MacPCsView: View {
                 if vm.isDemoMode { demoBanner }
                 if !vm.canAddNewPC { proLimitBanner }
                 savedSection
+                MacPCAccessSection()
                 nearbySection
                 manualSection
                 iPhoneSection

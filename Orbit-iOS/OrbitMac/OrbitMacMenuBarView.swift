@@ -15,6 +15,10 @@ struct MacMenuBarView: View {
         if vm.metrics.hasTelemetry || vm.isDemoMode {
             ForEach(readings, id: \.self) { Text($0) }
         }
+        if let timer = vm.power?.timer {
+            Text(timer.summary(remaining: vm.remaining(timer.remainingSeconds)))
+            Button("Cancel \(timer.actionTitle)") { Task { await vm.cancelPendingPower() } }
+        }
         Divider()
         Button("Open Orbit") { open() }
         Divider()

@@ -18,7 +18,9 @@ struct PCPairingCredentials: Decodable {
 /// Bootstrap hints are untrusted until the PIN proves the SRP secret and the
 /// encrypted result authenticates the certificate used for this connection.
 final class OrbitPairingHandshake {
-    private struct Begin: Encodable { let name: String; let clientPublic: String }
+    /// `platform` and `model` (Orbit Companion 5) name the device in the PC's device list and
+    /// PIN dialog; older companions ignore them.
+    private struct Begin: Encodable { let name: String; let clientPublic: String; let platform: String; let model: String }
     private struct Challenge: Decodable {
         let id: String; let `protocol`: String; let salt: String; let serverPublic: String; let expiresIn: Int
     }
@@ -39,10 +41,11 @@ final class OrbitPairingHandshake {
 
     func begin(name: String) async throws -> Int {
         guard challenge == nil, !used else { throw OrbitError(message: "Request a new pairing code.") }
-        let result: Challenge = try await transport.send("/api/pair/start", body: Begin(name: String(name.prefix(60)), clientPublic: keys.public.hex))
+        let result: Challenge = try await transport.send("/api/pair/start", body: Begin(name: String(name.prefix(60)), clientPublic: keys.public.hex,
+                                                                                  platform: OrbitDeviceIdentity.platform, model: OrbitDeviceIdentity.model))
         guard result.protocol == "orbit-srp6a-sha256-2048-v1", result.id.count >= 20, result.id.count <= 80,
               Self.bytes(result.salt)?.count == 16, Self.bytes(result.serverPublic)?.count == 256,
-              (1...120).contains(result.expiresIn) else { throw OrbitError(message: "This PC returned an unsupported pairing response. Update Orbit Agent.") }
+              (1...120).contains(result.expiresIn) else { throw OrbitError(message: "This PC returned an unsupported pairing response. Update Orbit Companion on the PC.") }
         challenge = result
         return result.expiresIn
     }

@@ -27,6 +27,16 @@ struct MacRootView: View {
         }
         .animation(OrbitMotion.quick, value: vm.selectedSection)
         .task(id: sunshineKey) { await syncSunshine() }
+        .task(id: "\(vm.selectedPCID)|\(vm.metrics.isOnline)|\(vm.isDemoMode)") {
+            // Orbit Companion 5: what the PC can do, and any power timer or countdown pending.
+            guard vm.metrics.isOnline, !vm.isDemoMode else { return }
+            await vm.refreshCapabilities()
+            while !Task.isCancelled {
+                await vm.refreshPower()
+                let soon = vm.power?.timer?.state == "countdown" || (vm.power?.timer?.remainingSeconds ?? .max) < 90
+                do { try await Task.sleep(for: .seconds(soon ? 3 : 15)) } catch { break }
+            }
+        }
         .onChange(of: vm.metrics.sessionLocked, initial: true) { _, locked in stream.pcLocked = locked == true }
         .onReceive(NotificationCenter.default.publisher(for: .macConfirmPower)) { note in
             if let raw = note.object as? String, let action = MacPowerConfirmation(rawValue: raw) { pendingPower = action }
@@ -35,7 +45,11 @@ struct MacRootView: View {
             if let action = pendingPower {
                 Button(action.button, role: .destructive) {
                     pendingPower = nil
-                    Task { await vm.sendAction(action.rawValue) }
+                    Task {
+                        await vm.sendAction(action.rawValue)
+                        // Orbit Companion 5 gives Windows 30 seconds, which the PC page counts down.
+                        await vm.refreshPower()
+                    }
                 }
             }
             Button("Cancel", role: .cancel) { pendingPower = nil }
@@ -171,6 +185,7 @@ struct MacRootView: View {
                     Button("Sleep…", systemImage: "moon") { pendingPower = .sleep }
                     Button("Restart…", systemImage: "arrow.clockwise") { pendingPower = .restart }
                     Button("Shut Down…", systemImage: "power", role: .destructive) { pendingPower = .shutdown }
+                    MacPowerLaterMenus()
                 } else {
                     Button(vm.isWaking ? "Waking…" : "Wake PC", systemImage: "power") { Task { await vm.wakePC() } }
                         .disabled(vm.isWaking || vm.currentPC?.macAddress.isEmpty != false)
@@ -298,5 +313,119 @@ struct MacProLockedPage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showsPaywall) { OrbitProUnlockView(accent: theme.accent) { showsPaywall = false } }
+    }
+}
+
+/// Orbit Companion 5: sleep or shut down later, keep the PC awake, pick its power plan, and
+/// cancel what is pending. Shown only when the PC's companion supports it.
+struct MacPowerLaterMenus: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+
+    var body: some View {
+        if vm.has("power.timer") {
+            Divider()
+            timerMenu("Sleep Later", action: "sleep", symbol: "moon.zzz")
+            timerMenu("Shut Down Later", action: "shutdown", symbol: "power.dotted")
+        }
+        if vm.has("power.keepAwake") {
+            Menu("Keep Awake", systemImage: "cup.and.saucer") {
+                Button("For 1 Hour") { Task { await vm.setKeepAwake(minutes: 60) } }
+                Button("For 4 Hours") { Task { await vm.setKeepAwake(minutes: 240) } }
+                Button("Until I Turn It Off") { Task { await vm.setKeepAwake(minutes: nil) } }
+                if vm.power?.keepAwake != nil {
+                    Divider()
+                    Button("Stop Keeping Awake") { Task { await vm.stopKeepAwake() } }
+                }
+            }
+        }
+        if vm.has("power.plans"), let plans = vm.power?.plans, !plans.isEmpty {
+            Menu("Power Plan", systemImage: "gauge.with.dots.needle.67percent") {
+                ForEach(plans) { plan in
+                    Toggle(plan.name, isOn: Binding(get: { plan.active }, set: { if $0 { Task { await vm.setPowerPlan(plan) } } }))
+                }
+            }
+        }
+        if let timer = vm.power?.timer {
+            Divider()
+            Button("Cancel \(timer.actionTitle)", systemImage: "xmark.circle") { Task { await vm.cancelPendingPower() } }
+        }
+    }
+
+    private func timerMenu(_ title: String, action: String, symbol: String) -> some View {
+        Menu(title, systemImage: symbol) {
+            ForEach(OrbitPowerTimerChoice.allCases) { choice in
+                Button(choice.title) { Task { await vm.setPowerTimer(choice, action: action) } }
+                    .disabled(choice == .gameExits && (vm.metrics.activeGame ?? "").isEmpty)
+            }
+        }
+    }
+}
+
+/// A pending shutdown, timer or keep-awake, counting down, with the way to stop it.
+struct MacPowerStatus: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+
+    var body: some View {
+        if let power = vm.power, power.timer != nil || power.keepAwake != nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                VStack(spacing: 0) {
+                    if let timer = power.timer {
+                        row(symbol: symbol(for: timer.action),
+                            title: timer.summary(remaining: vm.remaining(timer.remainingSeconds, at: context.date)),
+                            detail: timer.requestedBy.map { "Asked from \($0)" },
+                            urgent: timer.state == "countdown",
+                            button: "Cancel") { Task { await vm.cancelPendingPower() } }
+                    }
+                    if power.timer != nil && power.keepAwake != nil {
+                        Divider().overlay(OrbitPalette.hairline)
+                    }
+                    if let keep = power.keepAwake {
+                        row(symbol: "cup.and.saucer",
+                            title: keep.summary(remaining: vm.remaining(keep.remainingSeconds, at: context.date)),
+                            detail: keep.display ? "The display stays on too" : "The display can still turn off",
+                            urgent: false,
+                            button: "Stop") { Task { await vm.stopKeepAwake() } }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 6)
+                .background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    private func symbol(for action: String) -> String {
+        switch action {
+        case "sleep", "hibernate": return "moon"
+        case "restart": return "arrow.clockwise"
+        case "signout": return "rectangle.portrait.and.arrow.right"
+        case "displayOff": return "display"
+        default: return "power"
+        }
+    }
+
+    private func row(symbol: String, title: String, detail: String?, urgent: Bool, button: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(urgent ? OrbitPalette.warm : .secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline)
+                    .orbitLiveNumber()
+                if let detail {
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 12)
+            Button(button, action: action)
+                .buttonStyle(MacHoverButtonStyle(prominent: urgent))
+        }
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
     }
 }

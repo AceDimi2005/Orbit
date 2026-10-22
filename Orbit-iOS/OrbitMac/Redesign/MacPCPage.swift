@@ -70,6 +70,7 @@ struct MacPCPage: View {
     private var page: some View {
         VStack(alignment: .leading, spacing: 34) {
             header
+            MacPowerStatus()
             switch state {
             case .setup: setup
             case .connecting, .waking, .offline: unreachable
