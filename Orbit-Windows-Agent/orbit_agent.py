@@ -4,7 +4,6 @@ import base64
 import copy
 import ctypes
 import hmac
-import io
 import ipaddress
 import json
 import logging
@@ -27,7 +26,9 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+import orbit_paths
 from orbit_processes import collect_processes, terminate_process
+from orbit_screen import FrameSource, NoDisplay, StreamSlots, stream_frames
 from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
 from orbit_files import create_files_router
 from orbit_desktop import create_desktop_router
@@ -52,7 +53,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.4.0"
+AGENT_VERSION = "5.0.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -64,8 +65,8 @@ ADVERTISEMENT = None
 # per-user instance once that starts.
 BOOT_MODE = False
 CERTIFICATE_FINGERPRINT = ""
-import sys as _sys
-_RUNTIME_DIR = Path(_sys.executable).resolve().parent if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent
+# The installed folder; in OrbitCompanion.exe that is next to the executable, not _MEIPASS.
+_RUNTIME_DIR = orbit_paths.runtime_directory()
 TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-token")))
 WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-widget-token")))
 SUNSHINE_APPS_PATHS = [
@@ -80,6 +81,8 @@ if os.getenv("ORBIT_SUNSHINE_CONF"):
     SUNSHINE_CONF_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_CONF"]))
 # Sunshine's web UI login, saved from the app so Orbit can enter pairing PINs itself.
 SUNSHINE_CREDENTIALS_PATH = Path(os.getenv("ORBIT_SUNSHINE_LOGIN_FILE", str(_RUNTIME_DIR / ".orbit-sunshine-login")))
+for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH):
+    orbit_paths.protect_path(_secret)
 SUNSHINE_EXECUTABLE_PATHS = [
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
     Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
@@ -129,6 +132,27 @@ def load_token_file(path):
     return token
 
 
+def write_private_file(path, text):
+    """Replace a credential file atomically, readable only by this account where the OS allows."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".orbit-tmp-{secrets.token_hex(6)}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(text)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def load_api_token(path=TOKEN_PATH):
     token = os.getenv("ORBIT_API_TOKEN", "").strip() or load_token_file(path)
     if len(token) < 24 or token == "endspec-secret-token":
@@ -156,6 +180,12 @@ def verify_token(authorization: str = Header(None)):
 def require_windows():
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="PC controls require Windows")
+
+
+def require_https(request):
+    """Credentials and administration only travel over the pinned HTTPS port (8766)."""
+    if request.url.scheme not in ("https", "wss"):
+        raise HTTPException(status_code=426, detail="This needs Orbit's encrypted connection (HTTPS port 8766). Update the app or pair this PC again.")
 
 
 @contextmanager
@@ -415,8 +445,9 @@ def get_status(authorization: str = Header(None)):
 
 
 @app.post("/api/widget/pairing")
-def widget_pairing(authorization: str = Header(None)):
+def widget_pairing(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
+    require_https(request)
     return {"token": WIDGET_TOKEN}
 
 
@@ -846,26 +877,24 @@ class SunshineLogin(BaseModel):
 
 
 @app.post("/api/sunshine/credentials")
-def save_sunshine_credentials(login: SunshineLogin, authorization: str = Header(None)):
+def save_sunshine_credentials(login: SunshineLogin, request: Request, authorization: str = Header(None)):
     """Stores the Sunshine web UI login next to the agent token so `/api/sunshine/pin` can use it."""
     verify_token(authorization)
+    require_https(request)
     username = login.username.strip()
     if not username or not login.password or len(username) > 128 or len(login.password) > 512:
         raise HTTPException(status_code=422, detail="Enter the Sunshine web UI username and password.")
     try:
-        SUNSHINE_CREDENTIALS_PATH.write_text(json.dumps({"username": username, "password": login.password}), encoding="utf-8")
-        try:
-            os.chmod(SUNSHINE_CREDENTIALS_PATH, 0o600)
-        except OSError:
-            pass
+        write_private_file(SUNSHINE_CREDENTIALS_PATH, json.dumps({"username": username, "password": login.password}))
     except OSError as error:
         raise HTTPException(status_code=503, detail="Could not save the Sunshine login on this PC") from error
     return {"status": "saved", "canSubmitPin": True}
 
 
 @app.delete("/api/sunshine/credentials")
-def delete_sunshine_credentials(authorization: str = Header(None)):
+def delete_sunshine_credentials(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
+    require_https(request)
     try:
         SUNSHINE_CREDENTIALS_PATH.unlink()
     except FileNotFoundError:
@@ -1053,6 +1082,13 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
     raise HTTPException(status_code=404, detail="Application was not found in Sunshine")
 
 
+SCREEN_STREAMS = StreamSlots()
+
+
+def screen_frame_source():
+    return FrameSource()
+
+
 @app.websocket("/ws/stream")
 async def websocket_video_stream(websocket: WebSocket):
     if not authorized(websocket.headers.get("authorization")):
@@ -1062,28 +1098,29 @@ async def websocket_video_stream(websocket: WebSocket):
     if not HAS_SCREEN_CAPTURE:
         await websocket.close(code=1011, reason="Screen capture dependencies are unavailable")
         return
+    if not SCREEN_STREAMS.acquire():
+        await websocket.close(code=1013, reason="Two screen previews are already open")
+        return
     try:
-        with mss.mss() as capture:
-            if len(capture.monitors) < 2:
-                await websocket.close(code=1011, reason="No display is available")
-                return
-            monitor = capture.monitors[1]
-            while True:
-                raw = capture.grab(monitor)
-                image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-                image.thumbnail((1280, 720))
-                buffer = io.BytesIO()
-                image.save(buffer, format="JPEG", quality=68)
-                await websocket.send_bytes(buffer.getvalue())
-                await asyncio.sleep(0.05)
+        # Capture and JPEG encoding run on the preview's own worker thread, so input and
+        # every other request keep flowing while a large desktop is being encoded.
+        await stream_frames(websocket.send_bytes, screen_frame_source())
     except WebSocketDisconnect:
         pass
+    except NoDisplay:
+        await _close_quietly(websocket, 1011, "No display is available")
     except Exception:
         LOGGER.exception("Screen preview failed")
-        try:
-            await websocket.close(code=1011, reason="Screen preview failed")
-        except RuntimeError:
-            pass
+        await _close_quietly(websocket, 1011, "Screen preview failed")
+    finally:
+        SCREEN_STREAMS.release()
+
+
+async def _close_quietly(websocket, code, reason):
+    try:
+        await websocket.close(code=code, reason=reason)
+    except RuntimeError:
+        pass
 
 
 @app.post("/api/internal/handover")
@@ -1140,9 +1177,14 @@ def api_check_for_updates(authorization: str = Header(None)):
 
 
 @app.post("/api/update/apply")
-def api_apply_update(authorization: str = Header(None)):
+def api_apply_update(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
-    from orbit_updater import check_for_updates, download_and_apply_update
+    require_https(request)
+    from orbit_updater import FrozenBuildError, apply_update, check_for_updates
+    if orbit_paths.is_frozen():
+        # OrbitCompanion.exe runs from a temporary unpack folder: writing .py files
+        # there would do nothing. Installing a new executable is the owner's step.
+        raise HTTPException(status_code=409, detail=FrozenBuildError.MESSAGE)
     try:
         info = check_for_updates(AGENT_VERSION)
     except Exception as error:
@@ -1153,14 +1195,18 @@ def api_apply_update(authorization: str = Header(None)):
     if not download_url:
         raise HTTPException(status_code=409, detail="No downloadable update archive is available for this release")
     try:
-        updated = download_and_apply_update(download_url)
+        result = apply_update(download_url)
+    except FrozenBuildError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"Could not apply update: {error}") from error
     return {
         "status": "updated",
         "currentVersion": AGENT_VERSION,
         "latestVersion": info.get("latestVersion"),
-        "updatedFiles": updated,
+        "updatedFiles": result.files,
+        "dependencies": result.dependencies,
+        "restartRequired": True,
     }
 
 
@@ -1177,6 +1223,20 @@ def tray_status_snapshot():
         "fingerprint": CERTIFICATE_FINGERPRINT,
         "activeGame": active_game,
     }
+
+
+def startup_banner(network, token, fingerprint, interactive):
+    """Console lines at start. The token never reaches the background log; an interactive
+    console shows only its last four characters."""
+    lines = [f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}",
+             f"PC IP: {network.get('ipAddress') or 'No active LAN adapter'}",
+             "In Orbit on iPhone, iPad, Mac or Apple TV, choose Find my PC. A one-use code will appear in a Windows dialog."]
+    if interactive and token:
+        lines.append(f"Manual pairing token: {orbit_paths.mask_secret(token)} (copy it from the Orbit tray menu)")
+    lines += [f"Encrypted connection port: {SECURE_PORT}",
+              f"Certificate SHA-256 (manual setup only): {fingerprint}",
+              "Use a trusted home network; do not port-forward this agent."]
+    return lines
 
 
 def _acquire_single_instance_mutex():
@@ -1250,14 +1310,8 @@ if __name__ == "__main__":
     CERTIFICATE_FINGERPRINT = fingerprint
     PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
     ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
-    network = get_local_network_details()
-    print(f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}")
-    print(f"PC IP: {network['ipAddress'] or 'No active LAN adapter'}")
-    print("In Orbit on iPhone, choose Find my PC. A one-use code will appear here and in a Windows dialog.")
-    print(f"Advanced manual pairing token: {API_TOKEN}")
-    print(f"Encrypted connection port: {SECURE_PORT}")
-    print(f"Certificate SHA-256 (manual setup only): {fingerprint}")
-    print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
+    for line in startup_banner(get_local_network_details(), API_TOKEN, fingerprint, orbit_paths.interactive_console()):
+        print(line)
 
     STOP_EVENT.clear()
     tray = None

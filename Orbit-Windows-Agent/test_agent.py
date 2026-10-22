@@ -30,9 +30,11 @@ class APITests(unittest.TestCase):
         self.token = patch.object(agent, "API_TOKEN", TOKEN)
         self.token.start()
         self.client = TestClient(agent.app)
+        self.secure = TestClient(agent.app, base_url="https://testserver")
 
     def tearDown(self):
         self.client.close()
+        self.secure.close()
         self.token.stop()
 
     def test_discovery_exposes_identity_only_without_token(self):
@@ -83,7 +85,9 @@ class APITests(unittest.TestCase):
         with patch.object(agent, "WIDGET_TOKEN", WIDGET_TOKEN):
             self.assertEqual(self.client.post("/api/widget/pairing").status_code, 401)
             self.assertEqual(self.client.post("/api/widget/pairing", headers=WIDGET_AUTH).status_code, 401)
-            self.assertEqual(self.client.post("/api/widget/pairing", headers=AUTH).json(), {"token": WIDGET_TOKEN})
+            # The widget secret only travels over the pinned HTTPS port.
+            self.assertEqual(self.client.post("/api/widget/pairing", headers=AUTH).status_code, 426)
+            self.assertEqual(self.secure.post("/api/widget/pairing", headers=AUTH).json(), {"token": WIDGET_TOKEN})
             self.assertEqual(self.client.get("/api/widget/status", headers=AUTH).status_code, 401)
             self.assertEqual(self.client.get("/api/widget/status").status_code, 401)
             self.assertEqual(self.client.get(f"/api/widget/status?token={WIDGET_TOKEN}").status_code, 401)
@@ -230,9 +234,12 @@ class APITests(unittest.TestCase):
             with patch.object(agent, "SUNSHINE_CREDENTIALS_PATH", login), patch.object(agent, "SUNSHINE_CONF_PATHS", []), \
                  patch.object(agent, "SUNSHINE_APPS_PATHS", []), patch.object(agent, "SUNSHINE_EXECUTABLE_PATHS", []), \
                  patch.object(agent, "sunshine_running", return_value=True):
-                self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": " admin ", "password": ""}, headers=AUTH).status_code, 422)
+                self.assertEqual(self.secure.post("/api/sunshine/credentials", json={"username": " admin ", "password": ""}, headers=AUTH).status_code, 422)
                 self.assertEqual(self.client.post("/api/sunshine/pin?pin=1234", headers=AUTH).status_code, 428)
-                saved = self.client.post("/api/sunshine/credentials", json={"username": " admin ", "password": "s3cret"}, headers=AUTH)
+                # The Sunshine login never travels over plain HTTP.
+                self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": "admin", "password": "s3cret"}, headers=AUTH).status_code, 426)
+                self.assertFalse(login.exists())
+                saved = self.secure.post("/api/sunshine/credentials", json={"username": " admin ", "password": "s3cret"}, headers=AUTH)
                 self.assertEqual(saved.status_code, 200)
                 self.assertEqual(agent.sunshine_credentials(), ("admin", "s3cret"))
                 self.assertTrue(self.client.get("/api/sunshine/info", headers=AUTH).json()["canSubmitPin"])
@@ -241,7 +248,8 @@ class APITests(unittest.TestCase):
                     response = self.client.post("/api/sunshine/pin?pin=1234&name=Orbit%20on%20iPhone", headers=AUTH)
                     self.assertEqual(response.json(), {"status": "accepted"})
                     forward.assert_called_once_with(("admin", "s3cret"), "1234", "Orbit on iPhone", client_address="testclient")
-                self.assertEqual(self.client.delete("/api/sunshine/credentials", headers=AUTH).json(), {"status": "removed", "canSubmitPin": False})
+                self.assertEqual(self.client.delete("/api/sunshine/credentials", headers=AUTH).status_code, 426)
+                self.assertEqual(self.secure.delete("/api/sunshine/credentials", headers=AUTH).json(), {"status": "removed", "canSubmitPin": False})
                 self.assertFalse(login.exists())
                 self.assertEqual(self.client.post("/api/sunshine/pin?pin=1234", headers=AUTH).status_code, 428)
 

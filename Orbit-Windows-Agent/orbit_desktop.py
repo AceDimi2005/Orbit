@@ -62,6 +62,8 @@ def _clipboard_apis():
                                ctypes.c_int, wintypes.HWND, wintypes.HMENU,
                                wintypes.HINSTANCE, ctypes.c_void_p], wintypes.HWND),
         (user.DestroyWindow, [wintypes.HWND], wintypes.BOOL),
+        (user.RegisterClipboardFormatW, [wintypes.LPCWSTR], wintypes.UINT),
+        (user.GetClipboardSequenceNumber, [], wintypes.DWORD),
         (kernel.GlobalAlloc, [wintypes.UINT, ctypes.c_size_t], wintypes.HGLOBAL),
         (kernel.GlobalFree, [wintypes.HGLOBAL], wintypes.HGLOBAL),
         (kernel.GlobalLock, [wintypes.HGLOBAL], ctypes.c_void_p),
@@ -128,7 +130,28 @@ class WindowsClipboard:
             finally:
                 self.kernel.GlobalUnlock(handle)
 
-    def write(self, text):
+    def _global_copy(self, data):
+        handle = self.kernel.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+        if not handle:
+            raise _native_error("memory allocation")
+        try:
+            pointer = self.kernel.GlobalLock(handle)
+            if not pointer:
+                raise _native_error("memory lock")
+            try:
+                ctypes.memmove(pointer, data, len(data))
+            finally:
+                self.kernel.GlobalUnlock(handle)
+        except BaseException:
+            self.kernel.GlobalFree(handle)
+            raise
+        return handle
+
+    def write(self, text, exclude_from_history=False):
+        """Replace the clipboard text. `exclude_from_history` marks it private: Windows
+        then keeps it out of clipboard history (Win+V) and cloud clipboard sync, the
+        formats Microsoft documents for password managers. Returns the clipboard
+        sequence number after the write (0 when unknown)."""
         if not isinstance(text, str) or "\0" in text:
             raise ValueError("Clipboard text cannot contain null characters.")
         try:
@@ -138,20 +161,11 @@ class WindowsClipboard:
         if len(data) > MAX_CLIPBOARD_BYTES:
             raise ValueError("Clipboard text exceeds the 1 MB transfer limit.")
         with _CLIPBOARD_LOCK, self.opened():
-            handle = self.kernel.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-            if not handle:
-                raise _native_error("memory allocation")
+            # Allocate/copy before emptying, so preparation failures leave the
+            # existing clipboard untouched. Windows owns hMem after success.
+            handle = self._global_copy(data)
             transferred = False
             try:
-                pointer = self.kernel.GlobalLock(handle)
-                if not pointer:
-                    raise _native_error("memory lock")
-                try:
-                    ctypes.memmove(pointer, data, len(data))
-                finally:
-                    self.kernel.GlobalUnlock(handle)
-                # Allocate/copy before emptying, so preparation failures leave the
-                # existing clipboard untouched. Windows owns hMem after success.
                 if not self.user.EmptyClipboard():
                     raise _native_error("clear")
                 if not self.user.SetClipboardData(13, handle):
@@ -160,6 +174,55 @@ class WindowsClipboard:
             finally:
                 if not transferred:
                     self.kernel.GlobalFree(handle)
+            if exclude_from_history:
+                self._mark_private()
+            try:
+                return int(self.user.GetClipboardSequenceNumber() or 0)
+            except Exception:
+                return 0
+
+    def _mark_private(self):
+        # https://learn.microsoft.com/windows/win32/dataxchg/clipboard-formats#cloud-clipboard-and-clipboard-history-formats
+        markers = (("ExcludeClipboardContentFromMonitorProcessing", b"\0\0\0\0"),
+                   ("CanIncludeInClipboardHistory", (0).to_bytes(4, "little")),
+                   ("CanUploadToCloudClipboard", (0).to_bytes(4, "little")))
+        for name, payload in markers:
+            identifier = self.user.RegisterClipboardFormatW(name)
+            if not identifier:
+                raise _native_error("private format registration")
+            handle = self._global_copy(payload)
+            if not self.user.SetClipboardData(identifier, handle):
+                self.kernel.GlobalFree(handle)
+                raise _native_error("private format write")
+
+    def clear_if_unchanged(self, sequence):
+        """Empty the clipboard only if nothing was copied since `sequence` (a private copy)."""
+        if not sequence:
+            return False
+        with _CLIPBOARD_LOCK:
+            if int(self.user.GetClipboardSequenceNumber() or 0) != int(sequence):
+                return False
+            with self.opened():
+                if int(self.user.GetClipboardSequenceNumber() or 0) != int(sequence):
+                    return False
+                return bool(self.user.EmptyClipboard())
+
+
+def copy_private_text(text, clear_after=60.0, clipboard_factory=None, timer_factory=threading.Timer):
+    """Copy a credential so it skips clipboard history, then clear it after `clear_after`
+    seconds unless the user copied something else meanwhile."""
+    clipboard = (clipboard_factory or WindowsClipboard)()
+    sequence = clipboard.write(text, exclude_from_history=True)
+    if clear_after and sequence:
+        def clear():
+            try:
+                (clipboard_factory or WindowsClipboard)().clear_if_unchanged(sequence)
+            except Exception:
+                pass
+        timer = timer_factory(clear_after, clear)
+        timer.daemon = True
+        timer.start()
+    return sequence
 
 
 @contextmanager

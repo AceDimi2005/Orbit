@@ -578,27 +578,30 @@ class OrbitTrayIcon:
         except Exception:
             return False
 
+    @staticmethod
+    def _product(info):
+        version = info.get("agentVersion")
+        return f"Orbit PC Companion {version}" if version else "Orbit PC Companion"
+
     def format_tooltip(self):
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
         ip_address = info.get("ipAddress") or "No LAN IP"
         secure_port = info.get("securePort") or 8766
         game = info.get("activeGame")
         suffix = f" · {game}" if game else ""
-        text = f"Orbit PC Companion {version} ({ip_address}:{secure_port}){suffix}"
+        text = f"{self._product(info)} ({ip_address}:{secure_port}){suffix}"
         return text[:127]
 
     def build_menu_items(self):
         """Return ordered menu item descriptors for inspection and native rendering."""
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
         ip_address = info.get("ipAddress") or "No active LAN adapter"
         secure_port = info.get("securePort") or 8766
         game = info.get("activeGame")
         startup_enabled = self.startup.is_enabled()
 
         items = [
-            {"id": 0, "label": f"Orbit PC Companion {version}", "enabled": False, "checked": False},
+            {"id": 0, "label": self._product(info), "enabled": False, "checked": False},
             {"id": 0, "label": f"IP: {ip_address} · HTTPS {secure_port}", "enabled": False, "checked": False},
             {"id": 0, "label": f"Game: {game}" if game else "Status: Online in background", "enabled": False, "checked": False},
             {"separator": True},
@@ -675,11 +678,13 @@ class OrbitTrayIcon:
                 token = self.token_provider()
                 if token:
                     try:
-                        from orbit_desktop import WindowsClipboard
-                        WindowsClipboard().write(token)
+                        # Kept out of clipboard history (Win+V) and cloud sync, and cleared
+                        # after a minute unless something else was copied meanwhile.
+                        from orbit_desktop import copy_private_text
+                        copy_private_text(token)
                         self.show_notification(
                             "Orbit PC Companion",
-                            "Manual pairing token copied to clipboard. Keep this token private.",
+                            "Manual pairing token copied. It is not kept in clipboard history and is cleared in 1 minute.",
                         )
                     except Exception:
                         LOGGER.exception("Could not copy manual pairing token")
@@ -706,7 +711,7 @@ class OrbitTrayIcon:
         )
 
         info = self.status_provider() or {}
-        current_version = info.get("agentVersion") or "4.1.0"
+        current_version = info.get("agentVersion") or "0"
         checker = self.update_checker or check_for_updates
         installer = self.update_installer or download_and_apply_update
         opener = self.release_page_opener or open_releases_page
@@ -828,7 +833,6 @@ class OrbitTrayIcon:
 
     def show_connection_details(self):
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
         hostname = info.get("hostname") or "PC"
         ip_address = info.get("ipAddress") or "No active LAN adapter"
         port = info.get("agentPort") or 8765
@@ -836,7 +840,7 @@ class OrbitTrayIcon:
         fingerprint = info.get("fingerprint") or "Unavailable"
         startup_state = "Enabled" if self.startup.is_enabled() else "Disabled"
         message = (
-            f"Orbit PC Companion {version}\n\n"
+            f"{self._product(info)}\n\n"
             f"PC Name: {hostname}\n"
             f"LAN IP Address: {ip_address}\n"
             f"Encrypted HTTPS Port: {secure_port} (HTTP: {port})\n"

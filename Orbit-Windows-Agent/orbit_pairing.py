@@ -24,6 +24,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from srptools import SRPContext, SRPServerSession, constants
 
+import orbit_paths
+
 USERNAME = "orbit-pairing"
 PROTOCOL = "orbit-srp6a-sha256-2048-v1"
 KEY_INFO = b"Orbit PIN pairing v1"
@@ -56,7 +58,9 @@ def display_pin(name, pin):
     message = (f"Pair {name} with Orbit\n\nCode: {pin}\n\n"
                "Enter this code on your iPhone. It expires in 2 minutes and works once.\n"
                "If you did not request this connection, ignore the code.")
-    print("\n" + message + "\n", flush=True)
+    # The code is only for the person at this PC: never into the background log file.
+    if os.name != "nt" or orbit_paths.interactive_console():
+        print("\n" + message + "\n", flush=True)
     cancelled = threading.Event()
     if os.name == "nt":
         def show():
@@ -216,7 +220,7 @@ def create_pairing_router(manager):
             raise HTTPException(426, "Pairing requires HTTPS")
         value = manager()
         if value is None:
-            raise HTTPException(503, "Start Orbit Agent 4.1.0 to enable automatic pairing")
+            raise HTTPException(503, "Restart Orbit PC Companion on the PC to enable automatic pairing")
         return value
 
     @router.post("/start")

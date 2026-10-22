@@ -4,7 +4,7 @@ title Orbit PC Companion - Installer
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Orbit PC Companion 4.1.0 - Windows Installer
+echo   Orbit PC Companion 5.0.0 - Windows Installer
 echo ============================================================
 echo.
 

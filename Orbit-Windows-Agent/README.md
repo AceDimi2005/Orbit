@@ -1,6 +1,6 @@
 # Orbit Agent pentru Windows
 
-Agentul **4.1.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **5.0.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
 ## Pornire, instalare și conectare
 
@@ -10,7 +10,7 @@ Agentul **4.1.0** citește componentele PC-ului și oferă asociere automată pr
 3. Apasă click sau click-dreapta pe pictograma Orbit din **System Tray** (dreapta-jos / **Hidden icons**) pentru meniul rapid:
    - **Run at Windows startup**: activează sau dezactivează pornirea automată în fundal la autentificarea în Windows (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
    - **Check for updates...**: verifică pe GitHub (`https://github.com/AceDimi2005/Orbit`) dacă a apărut o versiune publică nouă a companionului de PC și permite descărcarea și instalarea automată a actualizării (sau deschiderea paginii de release).
-   - **Connection details...** și **Copy manual pairing token**: afișează IP-ul, portul HTTPS, amprenta SHA-256 a certificatului sau copiază tokenul manual în clipboard.
+   - **Connection details...** și **Copy manual pairing token**: afișează IP-ul, portul HTTPS, amprenta SHA-256 a certificatului sau copiază tokenul manual în clipboard ca text privat: Windows nu îl păstrează în istoricul clipboardului (**Win+V**) și nici în clipboardul sincronizat în cloud, iar Orbit golește clipboardul după un minut dacă nu ai copiat altceva între timp.
    - **Show console window** / **Open agent log**: afișează consola (dacă a fost pornit cu `start_agent.bat --console`) sau deschide jurnalul `%LOCALAPPDATA%\Orbit\agent.log`.
    - **Stop Orbit Companion**: oprește curat serverul, anunțul Bonjour și pictograma din tray.
 4. La solicitarea Windows Firewall, permite Python / `OrbitCompanion.exe` în rețeaua **Private**, inclusiv HTTPS **8766** și Bonjour/mDNS **UDP 5353**. Pentru descoperirea inițială, telefonul și PC-ul trebuie să fie în aceeași rețea locală. Permite și **Local Network** pentru Orbit pe iPhone.
@@ -23,7 +23,7 @@ După asociere, aplicația folosește **HTTPS/WSS pe 8766** și verifică certif
 
 Rutele publice sunt `GET /api/discover` (metadate publice de descoperire) și `POST /api/pair/start`, `POST /api/pair/finish` (asociere numai prin HTTPS). Datele și comenzile cer `Authorization: Bearer <token>`, inclusiv WebSocket. Tokenurile în URL nu sunt acceptate. Widgeturile folosesc un token separat, fără drepturi asupra fișierelor, clipboardului, mixerului sau istoricului.
 
-**Configurare manuală avansată:** în **Manual configuration** din onboarding sau **My PCs → Add manually**, introdu adresa PC-ului, tokenul **Advanced manual pairing token** și **Certificate SHA-256**, afișate de agent, apoi testează conexiunea. Adresa se introduce fără `https://` și fără port. Portul securizat implicit este **8766**, configurabil din **Custom agent port**. Această variantă rămâne disponibilă când Bonjour este blocat sau nu traversează rețeaua/VPN-ul.
+**Configurare manuală avansată:** în **Manual configuration** din onboarding sau **My PCs → Add manually**, introdu adresa PC-ului, tokenul copiat cu **Copy manual pairing token** din meniul tray și **Certificate SHA-256** (din **Connection details...**), apoi testează conexiunea. Tokenul nu este scris niciodată în jurnalul `agent.log`; o consolă deschisă interactiv afișează doar ultimele patru caractere. Adresa se introduce fără `https://` și fără port. Portul securizat implicit este **8766**, configurabil din **Custom agent port**. Această variantă rămâne disponibilă când Bonjour este blocat sau nu traversează rețeaua/VPN-ul.
 
 Certificatul și cheia se generează automat în **`%LOCALAPPDATA%\Orbit\tls\server-cert.pem`** și **`server-key.pem`**. Aceste fișiere persistă între actualizări și nu trebuie copiate în arhive sau pe alte PC-uri. O identitate existentă incompletă sau invalidă produce o eroare explicită; schimbarea intenționată a certificatului cere asociere din nou pe telefon. Dacă adresa IP se schimbă prin DHCP, actualizează adresa din profil; amprenta aceluiași certificat rămâne valabilă și nu trebuie regenerată doar pentru noul IP. O amprentă diferită este refuzată înainte de trimiterea tokenului; verifică identitatea pe PC înainte de reasociere.
 
@@ -31,12 +31,14 @@ Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repor
 
 ## Actualizare și diagnosticare
 
-Această versiune a agentului raportează **4.1.0**. Poți verifica și aplica actualizări direct din:
+Această versiune a agentului raportează **5.0.0**. Poți verifica și aplica actualizări direct din:
 - **System Tray pe PC** → click pe pictograma Orbit → **Check for updates...**
 - **Aplicația iOS** → **Tools → Settings → PC Companion Update → Check for Updates on GitHub**
 - **Linie de comandă:** `OrbitCompanion.exe --check-updates` sau `python orbit_agent.py --check-updates`
 
-Actualizarea automată descarcă ultima versiune publică din `https://github.com/AceDimi2005/Orbit`, actualizează fișierele companionului și păstrează intacte `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul.
+Actualizarea automată descarcă ultima versiune publică din `https://github.com/AceDimi2005/Orbit`, actualizează fișierele companionului și păstrează intacte `.orbit-token`, `.orbit-widget-token`, `.orbit-sunshine-login` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul. Dacă noua versiune schimbă `requirements.txt`, actualizarea reinstalează dependențele în mediul privat `.venv` al agentului; răspunsul `POST /api/update/apply` raportează `dependencies`: `unchanged`, `installed`, `failed` (rulează `install_orbit.bat` pe PC) sau `manual` (nu există `.venv`). Actualizarea cerută din aplicație merge numai prin HTTPS și cere repornirea companionului (`restartRequired`).
+
+Executabilul independent construit cu `build_exe.bat` (`OrbitCompanion.exe` fără Python) nu își poate înlocui propriile fișiere: în acest caz `POST /api/update/apply` răspunde **409**, iar actualizarea înseamnă descărcarea noului `OrbitCompanion.exe` de pe pagina de release.
 
 În Orbit, **Tools → Monitoring Sources** afișează versiunea raportată de agent, sursa senzorilor CPU/GPU, interfețele de rețea și sursa FPS.
 
@@ -57,7 +59,7 @@ Tabul **Files** listează discurile locale și folderele rapide ale utilizatorul
 - **Upload from Files / Upload photos or videos** trimite fișiere selectate din aplicația Fișiere sau poze/video în folderul deschis pe PC. Progresul, viteza și anularea sunt vizibile în aplicație.
 - **New folder**, redenumirea, mutarea și **Recycle** organizează fișierele. Trimiterea în Recycle Bin cere confirmare; Windows poate refuza volumele sau intrările care nu suportă reciclarea. Orbit nu recurge automat la ștergere definitivă.
 
-Agentul folosește permisiunile contului Windows care îl rulează. Nu escaladează la administrator pentru acces la foldere. Tokenurile, identitatea TLS, istoricul privat și modificarea folderului agentului sunt protejate. Linkurile simbolice/junctions, hard linkurile, căile de rețea UNC, căile de dispozitiv și alternate data streams sunt refuzate; deschide direct folderul local original.
+Agentul folosește permisiunile contului Windows care îl rulează. Nu escaladează la administrator pentru acces la foldere. Tokenurile, login-ul Sunshine salvat (`.orbit-sunshine-login`, oriunde s-ar afla), orice fișier `.orbit-*`, identitatea TLS, istoricul privat, stocarea privată din `%LOCALAPPDATA%\Orbit` și modificarea folderului agentului (inclusiv folderul temporar al executabilului independent) sunt protejate. Linkurile simbolice/junctions, hard linkurile, căile de rețea UNC, căile de dispozitiv și alternate data streams sunt refuzate; deschide direct folderul local original.
 
 | Limită actuală | Valoare / comportament |
 | --- | --- |
@@ -116,7 +118,7 @@ Conexiunea este **locală și automată**, prin memoria partajată a programelor
 1. Descarcă [MSI Afterburner de pe pagina oficială MSI](https://www.msi.com/Landing/afterburner/graphics-cards). La instalare, include **RivaTuner Statistics Server (RTSS)**. Pornește ambele programe în aceeași sesiune Windows ca agentul.
 2. În **Afterburner → Settings → Monitoring**, bifează graficele dorite în **Active hardware monitoring graphs**, de exemplu **CPU temperature**, **GPU temperature**, **GPU usage**, **Memory usage**, **Framerate** și **Frametime**, în funcție de ce apare pe PC-ul tău. Apasă **Apply**. Graficul trebuie să aibă o valoare curentă în Afterburner. **Show in On-Screen Display** este opțional pentru afișarea pe PC. Vezi [ghidul MSI pentru monitorizare](https://www.msi.com/blog/msi-afterburner-on-screen-display/).
 3. Deschide RTSS din system tray și setează **Application detection level → Low** pentru joc. Pentru o verificare vizuală, poți activa temporar **Show own statistics**; nu este nevoie să lași overlay-ul vizibil pe ecran pentru Orbit.
-4. Actualizează agentul complet la **4.1.0**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
+4. Actualizează agentul complet la ultima versiune, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
 5. În Orbit, verifică **Tools → Monitoring sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă cardul **Game frame rate** din **Customize dashboard**. **Tools → Settings → Set up FPS** include acești pași.
 
 **Dacă nu apare o valoare:** verifică întâi că ea există în Afterburner sau în statisticile RTSS. Unele jocuri, API-uri grafice ori sisteme anti-cheat blochează detectarea RTSS; integrarea nu garantează compatibilitatea cu fiecare joc. Pentru un executabil nerecunoscut, setează `ORBIT_GAME_PROCESSES` înainte de pornirea agentului. Datele vechi nu sunt afișate ca măsurători noi după oprirea sursei sau a jocului. PresentMon rămâne o alternativă pentru FPS, descrisă mai jos.
@@ -210,7 +212,7 @@ Dacă nu mai avansează cadrele procesului timp de peste cinci secunde, FPS devi
 2. În Xcode, aplicația și extensia **OrbitWidgets** trebuie să aibă același **App Group înregistrat și semnat**, cu `ORBIT_APP_GROUP_IDENTIFIER` configurat corect; vezi [ghidul de semnare](../Orbit-iOS/WIDGETS.md#testare-gratuită).
 3. Adaugă un widget Orbit pe iPhone. Prin **Edit Widget → PC**, alege unul dintre calculatoarele asociate. Nu introduci adresa, portul sau tokenul. Dacă accesul necesită refacere, folosește **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat.
 
-Agentul generează automat `.orbit-widget-token`, un secret diferit de `.orbit-token`. `POST /api/widget/pairing` necesită **tokenul principal de control** și returnează tokenul pentru widgeturi. `GET /api/widget/status` acceptă **numai tokenul de widget**, prin antet Bearer, și oferă un rezumat de telemetrie fără comenzi sau inventar complet. Tokenul de widget nu autorizează controlul PC-ului sau accesul la Task Manager.
+Agentul generează automat `.orbit-widget-token`, un secret diferit de `.orbit-token`. `POST /api/widget/pairing` necesită **tokenul principal de control** și **HTTPS** și returnează tokenul pentru widgeturi. `GET /api/widget/status` acceptă **numai tokenul de widget**, prin antet Bearer, și oferă un rezumat de telemetrie fără comenzi sau inventar complet. Tokenul de widget nu autorizează controlul PC-ului sau accesul la Task Manager.
 
 Widgeturile citesc direct agentul prin **HTTPS** și verifică certificatul PC-ului. App Group partajează profilurile și exclusiv tokenul read-only, în Keychain-ul grupului; tokenul principal rămâne privat aplicației. Sunt disponibile Overview, Gaming, Power, Temperatures, Cooling, Storage, Network și un singur indicator la alegere, cu teme proprii. Afișează ora capturii și expiră după **15 minute**. Solicită o actualizare după 15 minute, dar iOS stabilește programarea efectivă; nu oferă monitorizare continuă.
 
@@ -242,7 +244,7 @@ Activează Wake-on-LAN în BIOS/UEFI și opțiunea **Wake on Magic Packet** a ad
 
 Comenzile Windows raportează erori când nu se pot executa. HDR trimite scurtătura Win+Alt+B, dar starea HDR nu poate fi verificată de această versiune și rămâne necunoscută. „Close game” trimite o cerere de închidere numai jocului detectat și aflat în prim-plan. Butoanele gamepad sunt mapări de tastatură, nu un controller XInput virtual. Tastatura suportă caracterele din layout-ul Windows activ; caracterele nereprezentabile sunt respinse explicit.
 
-Biblioteca Sunshine este citită din fișierele locale de configurare. Streaming-ul propriu-zis (video, audio, controller) se face direct între aplicație și Sunshine, prin protocolul Moonlight; agentul ajută doar la asociere și la pornire: `GET /api/sunshine/info` raportează porturile, dacă Sunshine rulează, `canSubmitPin` și `canStart`; `POST /api/sunshine/credentials` (JSON `username`/`password`) salvează login-ul web UI al Sunshine în `.orbit-sunshine-login`, lângă token, iar `DELETE` îl șterge; `POST /api/sunshine/pin?pin=1234&name=…` introduce PIN-ul de asociere prin API-ul local al Sunshine (`https://127.0.0.1:<port+1>/api/pin`, Basic auth cu login-ul salvat); `POST /api/sunshine/start` pornește `sunshine.exe` din Program Files când nu rulează. `POST /api/sunshine/launch` rămâne pentru pornirea comenzii unei intrări fără stream. Fluxul `/ws/stream` din Orbit este o **previzualizare JPEG a ecranului**, fără audio.
+Biblioteca Sunshine este citită din fișierele locale de configurare. Streaming-ul propriu-zis (video, audio, controller) se face direct între aplicație și Sunshine, prin protocolul Moonlight; agentul ajută doar la asociere și la pornire: `GET /api/sunshine/info` raportează porturile, dacă Sunshine rulează, `canSubmitPin` și `canStart`; `POST /api/sunshine/credentials` (JSON `username`/`password`, numai prin HTTPS) salvează login-ul web UI al Sunshine în `.orbit-sunshine-login`, lângă token, iar `DELETE` (tot prin HTTPS) îl șterge; `POST /api/sunshine/pin?pin=1234&name=…` introduce PIN-ul de asociere prin API-ul local al Sunshine (`https://127.0.0.1:<port+1>/api/pin`, Basic auth cu login-ul salvat); `POST /api/sunshine/start` pornește `sunshine.exe` din Program Files când nu rulează. `POST /api/sunshine/launch` rămâne pentru pornirea comenzii unei intrări fără stream. Fluxul `/ws/stream` din Orbit este o **previzualizare JPEG a ecranului**, fără audio. Captura și codarea JPEG rulează pe un fir separat, deci mouse-ul, tastatura și celelalte cereri nu mai așteaptă după un desktop 4K; ritmul se adaptează la PC și la rețea (cel mult 15 cadre pe secundă), un ecran neschimbat nu este recodat (ultimul cadru este retrimis o dată pe secundă), iar cel mult două previzualizări rulează simultan (a treia primește codul WebSocket 1013).
 
 ## Pornire înainte de autentificarea în Windows
 
