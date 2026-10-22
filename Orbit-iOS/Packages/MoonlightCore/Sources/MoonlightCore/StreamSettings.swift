@@ -97,7 +97,7 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
     public enum PacketSize: String, Codable, CaseIterable, Identifiable, Sendable {
         case auto, remote
         public var id: String { rawValue }
-        public var title: String { self == .auto ? "Automatic (1392)" : "VPN / Tailscale (1024)" }
+        public var title: String { self == .auto ? "Automatic (1392)" : "Remote network (1024)" }
         public var bytes: Int32 { self == .auto ? 1392 : 1024 }
     }
 

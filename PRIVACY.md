@@ -5,7 +5,7 @@
 Orbit ("the App") is a local-network hardware telemetry and remote power companion for Windows PCs. We are committed to protecting your privacy.
 
 ## 1. Local-Only Communication
-Orbit communicates directly between your iPhone/iPad and your Windows PC over your local network (LAN) or personal VPN (such as Tailscale) using encrypted HTTPS/TLS and a locally generated pairing token. **No telemetry data, hardware statistics, processes, files, or commands are ever transmitted to any external cloud servers.**
+Orbit communicates directly between your iPhone/iPad and your Windows PC over your own network (for example your home LAN) using encrypted HTTPS/TLS and a locally generated pairing token. **No telemetry data, hardware statistics, processes, files, or commands are ever transmitted to any external cloud servers.**
 
 ## 2. Data Collection & Third Parties
 - **No Personal Data Collected:** Orbit does not require creating an account and does not collect, store, or transmit personal information, usage analytics, or crash tracking to any third-party servers.

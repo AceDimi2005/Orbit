@@ -48,7 +48,7 @@ struct MoonlightStreamSettingsView: View {
                 } header: {
                     Text("Video")
                 } footer: {
-                    Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or over Tailscale if the picture breaks up.")
+                    Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
                 }
 
                 Section {
@@ -91,7 +91,7 @@ struct MoonlightStreamSettingsView: View {
                 } header: {
                     Text("Network")
                 } footer: {
-                    Text("Choose the VPN size when streaming through Tailscale or another tunnel; smaller packets avoid fragmentation.")
+                    Text("Choose Remote network when you stream from outside your home network; smaller packets avoid fragmentation.")
                 }
 
                 Section {
@@ -286,7 +286,7 @@ struct MoonlightStreamSettingsView: View {
         } header: {
             Text("Video")
         } footer: {
-            Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or over Tailscale if the picture breaks up.")
+            Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
         }
     }
 
@@ -373,7 +373,7 @@ struct MoonlightStreamSettingsView: View {
         } header: {
             Text("Network")
         } footer: {
-            Text("Choose the VPN size when streaming through Tailscale or another tunnel; smaller packets avoid fragmentation.")
+            Text("Choose Remote network when you stream from outside your home network; smaller packets avoid fragmentation.")
         }
     }
 

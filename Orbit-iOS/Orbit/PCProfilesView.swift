@@ -544,8 +544,8 @@ private struct PCProfileEditor: View {
                         TextField("Broadcast address", text: $profile.broadcastAddress).keyboardType(.decimalPad)
                         TextField("Wake port", value: $profile.wolPort, format: .number.grouping(.never)).keyboardType(.numberPad)
                         Toggle("Calculate broadcast automatically", isOn: $profile.autoCalcBroadcast)
-                        TextField("Wake relay (Tailscale/VPN host or host:port)", text: $profile.wolRelay).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        Text("Away from home the broadcast cannot leave your Wi-Fi. Enter the router or always-on device that Tailscale reaches (its 100.x address or MagicDNS name, optional :port) and Orbit also sends the wake packet there.")
+                        TextField("Wake relay (host or host:port)", text: $profile.wolRelay).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Text("Away from home the broadcast cannot leave your Wi-Fi. Enter a router or always-on device on your home network that you can reach from outside (its address or host name, optional :port), and Orbit also sends the wake packet there.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

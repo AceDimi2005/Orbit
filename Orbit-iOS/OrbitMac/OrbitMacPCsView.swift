@@ -489,7 +489,7 @@ private struct MacPcsSavedCard: View {
                     MacPcsField(title: "Broadcast", placeholder: pc.autoCalcBroadcast ? "Automatic" : "192.168.1.255", text: $broadcastDraft, monospaced: true)
                     MacPcsField(title: "UDP port", placeholder: "9", text: $wolPortDraft, monospaced: true, width: 84)
                 }
-                MacPcsField(title: "Wake relay over Tailscale/VPN (optional)", placeholder: "router.tail1234.ts.net or 100.64.0.1:9", text: $wolRelayDraft, monospaced: true)
+                MacPcsField(title: "Wake relay for remote access (optional)", placeholder: "router.example.net or 100.64.0.1:9", text: $wolRelayDraft, monospaced: true)
                 Text(wakeHint)
                     .font(.caption)
                     .foregroundStyle(macValid && portValid ? Color.secondary : Color.orange)

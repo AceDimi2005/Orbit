@@ -306,7 +306,7 @@ public final class MoonlightStreamSession: ObservableObject {
     static func terminationMessage(_ code: Int32) -> String? {
         switch code {
         case 0: return nil
-        case -100: return "No video arrived from the PC. Make sure UDP ports 47998–48000 reach it (firewall, VPN)."
+        case -100: return "No video arrived from the PC. Make sure UDP ports 47998–48000 reach it (firewall, router)."
         case -101: return "Video arrived but no frame could be decoded. Try H.264 or a lower resolution."
         case -102: return "The PC ended the session before it started."
         case -103: return "The PC is showing protected content that cannot be streamed."
