@@ -2,7 +2,8 @@
 
 The HTTP layer owns authentication and the Windows platform guard. On Windows,
 psutil's terminate() uses TerminateProcess: applications can lose unsaved work.
-Neither executable paths nor command lines are included in process snapshots.
+Neither executable paths nor command lines are included in process snapshots;
+icons are referenced by opaque IDs (see orbit_icons).
 """
 
 import math
@@ -14,6 +15,8 @@ import time
 
 import psutil
 
+from orbit_icons import ICONS
+
 
 MAX_COLLECTION_SECONDS = 1.8
 TERMINATION_WAIT_SECONDS = 1.0
@@ -24,7 +27,7 @@ PROTECTED_NAMES = frozenset({
     "audiodg.exe", "conhost.exe", "spoolsv.exe", "sppsvc.exe", "wudfhost.exe",
     "taskhostw.exe", "securityhealthservice.exe", "msmpeng.exe", "nissrv.exe",
 })
-PROCESS_ATTRIBUTES = ("pid", "name", "create_time", "memory_info", "cpu_times", "status", "username")
+PROCESS_ATTRIBUTES = ("pid", "name", "create_time", "memory_info", "cpu_times", "status", "username", "exe")
 _cpu_samples = {}
 _sample_lock = threading.Lock()
 _gpu_identities = set()
@@ -170,6 +173,15 @@ def _number(value):
     return float(value) if math.isfinite(value) else None
 
 
+def _icon_id(executable):
+    if not isinstance(executable, str) or not executable:
+        return None
+    try:
+        return ICONS.register(executable)
+    except Exception:
+        return None
+
+
 def _protected_pids():
     """Fail closed if the parent chain cannot be inspected."""
     own_pid = os.getpid()
@@ -281,6 +293,7 @@ def collect_processes():
                     "gpuEngine": graphics.get("gpuEngine"),
                     "vramMB": round(graphics["vramMB"], 1) if graphics.get("vramMB") is not None else None,
                     "sharedGpuMemoryMB": round(graphics["sharedGpuMemoryMB"], 1) if graphics.get("sharedGpuMemoryMB") is not None else None,
+                    "iconID": _icon_id(info.get("exe")),
                 }
                 processes.append(row)
             except (psutil.Error, OSError):

@@ -47,11 +47,23 @@ class ProcessSnapshotTests(unittest.TestCase):
         self.assertEqual(result["totalCount"], 1)
         row = result["processes"][0]
         self.assertEqual(set(row), {"pid", "name", "createTime", "memoryMB", "cpuPercent", "status", "canTerminate",
-                                    "gpuPercent", "vramMB", "sharedGpuMemoryMB", "gpuEngine"})
+                                    "gpuPercent", "vramMB", "sharedGpuMemoryMB", "gpuEngine", "iconID"})
+        self.assertIsNone(row["iconID"])
         self.assertIsNone(row["cpuPercent"])
         self.assertEqual(row["memoryMB"], 64)
         self.assertTrue(row["canTerminate"])
         self.assertFalse(result["truncated"])
+
+    def test_icons_are_opaque_ids_never_paths(self):
+        with_icon, without_path = fake_process(pid=201), fake_process(pid=202, name="System")
+        with_icon.info["exe"] = "C:\\Program Files\\Example\\Example.exe"
+        without_path.info["exe"] = ""
+        self.mocks[2].return_value = [with_icon, without_path]
+        rows = {row["pid"]: row for row in processes.collect_processes()["processes"]}
+        self.assertEqual(rows[201]["iconID"], processes.ICONS.register("C:\\Program Files\\Example\\Example.exe"))
+        self.assertRegex(rows[201]["iconID"], r"^[0-9a-f]{32}$")
+        self.assertNotIn("Program Files", str(rows[201]))
+        self.assertIsNone(rows[202]["iconID"])
 
     def test_cpu_uses_whole_machine_scale_and_pid_reuse_resets_sample(self):
         process = fake_process()

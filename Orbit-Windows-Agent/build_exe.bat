@@ -36,6 +36,7 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "uvicorn.protocols.websockets.auto" ^
     --hidden-import "uvicorn.lifespan.on" ^
     --hidden-import "orbit_desktop" ^
+    --hidden-import "orbit_icons" ^
     --hidden-import "orbit_files" ^
     --hidden-import "orbit_hardware" ^
     --hidden-import "orbit_history" ^

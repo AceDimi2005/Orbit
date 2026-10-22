@@ -88,6 +88,7 @@ extension OrbitMacViewModel {
 extension OrbitMacViewModel {
     func refreshAudio() async {
         if isDemoMode { return }
+        prepareAppIcons()
         guard metrics.isOnline, !isLoadingAudio else { return }
         let version = generation
         isLoadingAudio = true
@@ -193,7 +194,9 @@ extension OrbitMacViewModel {
                         if self.audioPending[next.key] == nil, !self.audioDragging.contains(next.key),
                            reply.session.volume.isFinite, (0...100).contains(reply.session.volume),
                            let index = self.audioSessions.firstIndex(where: { $0.id == next.key }) {
-                            self.audioSessions[index] = reply.session
+                            // Only the levels: name, group and icon come from the list.
+                            self.audioSessions[index].volume = reply.session.volume
+                            self.audioSessions[index].isMuted = reply.session.isMuted
                         }
                         self.audioError = nil
                     } catch {
@@ -213,6 +216,7 @@ extension OrbitMacViewModel {
 extension OrbitMacViewModel {
     func refreshProcesses() async {
         if isDemoMode { return }
+        prepareAppIcons()
         guard metrics.isOnline, !isLoadingProcesses else { return }
         let version = generation
         isLoadingProcesses = true

@@ -107,7 +107,8 @@ struct TaskManagerView: View {
             }
         }
         .refreshable { await vm.fetchProcesses() }
-        .task {
+        .task(id: vm.connectionID) {
+            vm.prepareAppIcons()
             while !Task.isCancelled {
                 if scenePhase == .active { await vm.fetchProcesses() }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
@@ -132,7 +133,9 @@ struct TaskManagerView: View {
     private func processRow(_ process: PCProcess) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {
-                OrbitIconBadge(systemName: process.canTerminate ? "app.fill" : "lock.shield.fill", tint: process.canTerminate ? theme.accent : .secondary, size: 34)
+                OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 34) {
+                    OrbitIconBadge(systemName: process.canTerminate ? "app.fill" : "lock.shield.fill", tint: process.canTerminate ? theme.accent : .secondary, size: 34)
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(process.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text("PID \(process.pid) · \(process.status)").font(.caption2).foregroundStyle(.secondary)

@@ -1330,8 +1330,18 @@ struct TVAudioAndMediaTab: View {
                                 : "Connect or power on your PC to control per-application volume and output devices."
                         )
                     } else {
-                        ForEach(vm.audioSessions) { session in
-                            audioSessionRow(session)
+                        // Like Windows Task Manager: apps, then background processes, then Windows.
+                        ForEach(OrbitAudioSessionKind.groups(vm.audioSessions, kind: \.kind)) { group in
+                            if group.kind != nil {
+                                Text(group.title)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 6)
+                                    .padding(.leading, 8)
+                            }
+                            ForEach(group.sessions) { session in
+                                audioSessionRow(session)
+                            }
                         }
                     }
                 }
@@ -1349,26 +1359,35 @@ struct TVAudioAndMediaTab: View {
         }
     }
 
+    /// "Playing • Spotify.exe • PID 21 • Speakers": the status first, truncated at the end.
+    private func sessionDetail(_ session: TVAudioSession) -> Text {
+        let detail = Text("\(session.detail) • \(session.outputDeviceName ?? "Windows default output")").foregroundStyle(.secondary)
+        guard session.isActive == true else { return detail }
+        return Text("\(Image(systemName: "waveform")) Playing").foregroundStyle(TVPalette.mint)
+            + Text(" • ").foregroundStyle(.secondary) + detail
+    }
+
     private func audioSessionRow(_ session: TVAudioSession) -> some View {
         let tint: Color = session.isMuted ? TVPalette.amber : TVPalette.accent
         return HStack(spacing: 20) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(tint.opacity(0.16))
-                    .frame(width: 52, height: 52)
-                Image(systemName: session.isMuted ? "speaker.slash.fill" : (session.pid == 0 ? "speaker.wave.2.bubble.fill" : "app.fill"))
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(tint)
+            OrbitAppIconView(store: vm.appIcons, iconID: session.iconID, size: 52, dimmed: session.isMuted) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(tint.opacity(0.16))
+                        .frame(width: 52, height: 52)
+                    Image(systemName: session.isMuted ? "speaker.slash.fill" : (session.pid == 0 ? "speaker.wave.2.bubble.fill" : "app.fill"))
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.name)
+                Text(session.title)
                     .font(.system(size: 21, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text("\(session.pid == 0 ? "System sounds" : "PID \(session.pid)") • \(session.outputDeviceName ?? "Windows default output")")
+                sessionDetail(session)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .frame(width: 340, alignment: .leading)
@@ -1465,7 +1484,7 @@ struct TVAudioOutputPickerSheet: View {
             TVAmbientBackground(isOnline: vm.metrics.isOnline)
 
             VStack(alignment: .leading, spacing: 24) {
-                TVSectionHeader("Select Audio Output", subtitle: "Route \(currentSession.name) (PID \(currentSession.pid)) to any audio output device on your PC (\(vm.audioOutputs.count) available)", tint: TVPalette.purple) {
+                TVSectionHeader("Select Audio Output", subtitle: "Route \(currentSession.title) (PID \(currentSession.pid)) to any audio output device on your PC (\(vm.audioOutputs.count) available)", tint: TVPalette.purple) {
                     Button {
                         dismiss()
                     } label: {
@@ -1503,7 +1522,7 @@ struct TVAudioOutputPickerSheet: View {
                                                 .font(.system(size: 20, weight: .bold))
                                                 .foregroundStyle(.white)
                                                 .lineLimit(1)
-                                            Text(isSelected ? "Current output for \(currentSession.name)" : "Press Select on Siri Remote to route audio here")
+                                            Text(isSelected ? "Current output for \(currentSession.title)" : "Press Select on Siri Remote to route audio here")
                                                 .font(.system(size: 14, weight: .medium))
                                                 .foregroundStyle(isSelected ? TVPalette.mint : Color.secondary)
                                                 .lineLimit(1)
@@ -1590,13 +1609,15 @@ struct TVTaskManagerTab: View {
                 } else {
                     ForEach(sortedProcesses) { proc in
                         HStack(spacing: 22) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill((proc.canTerminate ? TVPalette.accent : Color.secondary).opacity(0.16))
-                                    .frame(width: 52, height: 52)
-                                Image(systemName: proc.canTerminate ? "app.fill" : "lock.shield.fill")
-                                    .font(.system(size: 22, weight: .semibold))
-                                    .foregroundStyle(proc.canTerminate ? TVPalette.accent : .secondary)
+                            OrbitAppIconView(store: vm.appIcons, iconID: proc.iconID, size: 52) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill((proc.canTerminate ? TVPalette.accent : Color.secondary).opacity(0.16))
+                                        .frame(width: 52, height: 52)
+                                    Image(systemName: proc.canTerminate ? "app.fill" : "lock.shield.fill")
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .foregroundStyle(proc.canTerminate ? TVPalette.accent : .secondary)
+                                }
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(proc.name)

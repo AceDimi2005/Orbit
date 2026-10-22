@@ -458,7 +458,9 @@ struct MacProcessesView: View {
 
     private func selectionSummary(_ process: MacProcess) -> some View {
         HStack(spacing: 8) {
-            MacIconBadge(systemName: glyph(for: process), tint: badgeTint(for: process), size: 24)
+            OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 24) {
+                MacIconBadge(systemName: glyph(for: process), tint: badgeTint(for: process), size: 24)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(process.name)
                     .font(.system(.caption, weight: .bold))
@@ -555,7 +557,9 @@ struct MacProcessesView: View {
                     .controlSize(.small)
                     .frame(width: 22, height: 22)
             } else {
-                MacIconBadge(systemName: glyph(for: process), tint: badgeTint(for: process), size: 22)
+                OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 22) {
+                    MacIconBadge(systemName: glyph(for: process), tint: badgeTint(for: process), size: 22)
+                }
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(process.name)

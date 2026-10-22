@@ -50,7 +50,7 @@ Accesul respectă permisiunile contului Windows; tokenurile și stocarea intern�
 
 În **Tools → Clipboard**, folosește **Paste from iPhone → Send text to PC** sau **Read PC clipboard → Copy to iPhone**. Se transferă numai text și linkuri, la cerere, până la **1 MiB**. Orbit nu urmărește clipboardul în fundal și nu salvează un istoric; textul ecranului este șters la ieșire sau la schimbarea PC-ului.
 
-În **Tools → Audio mixer**, sesiunile aplicațiilor au volum și mute proprii, iar **Output** permite alegerea unei ieșiri active sau **System default** pentru aplicația respectivă. Pornește redarea dacă o aplicație nu apare. Glisările sunt grupate și livrate în ordine prin Windows Core Audio. Windows sau aplicația pot cere repornirea redării pentru schimbarea ieșirii; vezi [compatibilitatea și limitele mixerului](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
+În **Tools → Audio mixer**, sesiunile aplicațiilor au volum și mute proprii, iar **Output** permite alegerea unei ieșiri active sau **System default** pentru aplicația respectivă. Lista e ordonată ca în Windows Task Manager: întâi **Apps** (aplicațiile cu fereastră), apoi **Background processes**, la final **Windows** (System sounds); în fiecare grup, aplicațiile care redau acum apar primele și sunt marcate cu **Playing**. Fiecare aplicație are numele și iconul ei din Windows (agent 4.4+). Pornește redarea dacă o aplicație nu apare. Glisările sunt grupate și livrate în ordine prin Windows Core Audio. Windows sau aplicația pot cere repornirea redării pentru schimbarea ieșirii; vezi [compatibilitatea și limitele mixerului](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
 
 În **Tools → Sessions & graphs**, jocurile detectate pornesc automat o sesiune; **+** pornește o înregistrare manuală pentru activitatea desktopului. Oprește înregistrarea când ai terminat. Agentul salvează o măsurătoare la **5 secunde**, păstrează cel mult **100 de sesiuni / 30 de zile** și permite ștergerea sesiunilor încheiate. Graficele interactive includ FPS, încărcare și temperaturi CPU/GPU, putere, RAM, VRAM și trafic. Mediile și vârfurile folosesc citirile disponibile; senzorii lipsă rămân goluri, fără valori zero inventate. Sesiunile se păstrează pe PC, inclusiv dacă telefonul se deconectează. Acestea sunt mostre periodice, nu o captură completă a fiecărui cadru.
 
@@ -64,7 +64,7 @@ Puterea CPU este valoarea **CPU package**, iar puterea GPU provine din senzorul 
 
 ### Task Manager
 
-Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descrescător după **CPU, GPU, RAM sau VRAM**, ori alfabetic. Memoria GPU dedicată și cea partajată din RAM sunt afișate separat. Citirile GPU folosesc contoarele Windows disponibile în driver; procentul reprezintă motorul cel mai ocupat al procesului. Un senzor sau o mostră lipsă apare ca **—**, inclusiv la prima citire.
+Deschide **Tools → Task Manager**, caută numele/PID-ul și sortează descrescător după **CPU, GPU, RAM sau VRAM**, ori alfabetic. Procesele care au icon în Windows îl afișează și în Orbit (agent 4.4+). Memoria GPU dedicată și cea partajată din RAM sunt afișate separat. Citirile GPU folosesc contoarele Windows disponibile în driver; procentul reprezintă motorul cel mai ocupat al procesului. Un senzor sau o mostră lipsă apare ca **—**, inclusiv la prima citire.
 
 **End task** cere confirmare și verifică identitatea PID + momentul creării procesului pentru a evita închiderea unui PID reutilizat. Pe Windows, terminarea este forțată și nu garantează salvarea lucrului. Procesele critice și agentul Orbit sunt protejate; aplicațiile nu sunt închise automat. Vezi [detaliile și limitele Windows](Orbit-Windows-Agent/README.md#task-manager-de-pe-telefon).
 
@@ -178,6 +178,12 @@ Testul de compatibilitate JSON agent–iOS (Python cu dependențele agentului ș
 python Orbit-iOS/Tests/check_protocol.py
 ```
 
+Ordinea mixerului audio și iconurile aplicațiilor, de la agent la modelele Swift de pe iPhone, Mac și Apple TV, plus încărcarea iconurilor în loturi:
+
+```sh
+python Orbit-iOS/Tests/check_app_icons.py
+```
+
 Verificări complete pe macOS, cu Swift și dependențele agentului: transfer HTTPS și asociere prin PIN între clientul Swift real și serverul Python. Folosesc certificate și date temporare; prima verificare SRP descarcă și compilează pachetele Swift fixate în proiect.
 
 ```sh
@@ -248,7 +254,7 @@ Access follows the Windows account's permissions; Orbit tokens and private inter
 
 In **Tools → Clipboard**, use **Paste from iPhone → Send text to PC** or **Read PC clipboard → Copy to iPhone**. Only text and links are transferred, on request, up to **1 MiB**. Orbit does not watch the clipboard in the background or save clipboard history. Text on this screen is cleared when you leave or change PCs.
 
-In **Tools → Audio mixer**, application sessions have individual volume and mute controls, and **Output** chooses an active device or **System default** for that application. Start playback if an app is missing. Slider updates are combined and sent in order through Windows Core Audio. Windows or the app may require playback to restart before an output change takes effect; see [mixer compatibility and limits (Romanian)](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
+In **Tools → Audio mixer**, application sessions have individual volume and mute controls, and **Output** chooses an active device or **System default** for that application. The list follows Windows Task Manager: **Apps** (applications with a window) first, then **Background processes**, then **Windows** (System sounds); inside each group, apps playing right now come first and are marked **Playing**. Each app shows its Windows name and icon (agent 4.4+). Start playback if an app is missing. Slider updates are combined and sent in order through Windows Core Audio. Windows or the app may require playback to restart before an output change takes effect; see [mixer compatibility and limits (Romanian)](Orbit-Windows-Agent/README.md#clipboard-și-mixer-audio).
 
 In **Tools → Sessions & graphs**, detected games start sessions automatically; **+** starts a manual recording for desktop work. Stop recording when finished. The agent saves a reading every **5 seconds**, keeps at most **100 sessions / 30 days**, and allows completed sessions to be deleted. Interactive graphs include FPS, CPU/GPU load and temperatures, power, RAM, VRAM, and traffic. Averages and peaks use available measurements; missing sensors remain gaps without invented zeros. Sessions stay on the PC and continue if the phone disconnects. These are periodic samples, not a complete capture of every frame.
 
@@ -262,7 +268,7 @@ CPU power is the **CPU package** reading; GPU power comes from the graphics card
 
 ### Task Manager
 
-Open **Tools → Task Manager**, search by name/PID, and sort descending by **CPU, GPU, RAM, or VRAM**, or alphabetically. Dedicated GPU memory and shared GPU memory from RAM appear separately. GPU readings use driver-provided Windows counters; the percentage represents the process's busiest GPU engine. Missing sensors or samples show **—**, including the first reading.
+Open **Tools → Task Manager**, search by name/PID, and sort descending by **CPU, GPU, RAM, or VRAM**, or alphabetically. Processes that have an icon in Windows show it in Orbit too (agent 4.4+). Dedicated GPU memory and shared GPU memory from RAM appear separately. GPU readings use driver-provided Windows counters; the percentage represents the process's busiest GPU engine. Missing sensors or samples show **—**, including the first reading.
 
 **End task** asks for confirmation and verifies PID + process creation time to avoid closing a reused PID. Termination on Windows is forceful and does not guarantee saved work. Critical processes and Orbit Agent are protected; applications are never ended automatically. See the [Windows details and limitations (Romanian)](Orbit-Windows-Agent/README.md#task-manager-de-pe-telefon).
 
@@ -374,6 +380,12 @@ Check JSON compatibility between the agent and iOS (requires Python with the age
 
 ```sh
 python Orbit-iOS/Tests/check_protocol.py
+```
+
+Audio mixer order and app icons, from the agent to the Swift models on iPhone, Mac and Apple TV, plus batched icon loading:
+
+```sh
+python Orbit-iOS/Tests/check_app_icons.py
 ```
 
 End-to-end checks on macOS with Swift and the agent dependencies: HTTPS transfers and PIN pairing between the production Swift client and Python server. They use temporary certificates and data; the first SRP check resolves and builds the pinned Swift packages.

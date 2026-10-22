@@ -191,6 +191,22 @@ struct TVAudioSession: Codable, Identifiable, Equatable {
     var processCreateTime: Double?
     var outputDeviceID: String?
     var outputDeviceName: String?
+    /// Agent 4.4+: the name Windows' own mixer shows, whether a stream plays right now,
+    /// the Task Manager group (app, background, system) and the icon.
+    var displayName: String? = nil
+    var isActive: Bool? = nil
+    var kind: String? = nil
+    var iconID: String? = nil
+
+    var title: String {
+        guard let displayName, !displayName.isEmpty else { return name }
+        return displayName
+    }
+
+    var detail: String {
+        if pid == 0 { return "System sounds" }
+        return title == name ? "PID \(pid)" : "\(name) • PID \(pid)"
+    }
 }
 
 struct TVAudioOutputDevice: Codable, Identifiable, Equatable {
@@ -208,6 +224,8 @@ struct TVProcessItem: Codable, Identifiable, Equatable {
     var vramMB: Double?
     var status: String
     var canTerminate: Bool
+    /// Agent 4.4+: opaque ID for `GET /api/icons`; nil when the executable has no icon.
+    var iconID: String? = nil
     var id: String { "\(pid):\(createTime)" }
 }
 
@@ -279,6 +297,8 @@ final class OrbitTVViewModel: ObservableObject {
 
     // Audio Mixer
     @Published var audioSessions: [TVAudioSession] = []
+    /// Windows app icons for process and audio rows, loaded on demand.
+    let appIcons = OrbitAppIconStore()
     @Published var audioOutputs: [TVAudioOutputDevice] = []
     @Published var audioRoutingAvailable: Bool = false
 
@@ -403,10 +423,10 @@ final class OrbitTVViewModel: ObservableObject {
             TVSunshineGame(id: "6", title: "God of War Ragnarök", genre: "Action Adventure · HDR", iconSymbol: "flame.fill", accentHex: "#59F0A8")
         ]
         audioSessions = [
-            TVAudioSession(id: "demo-1", pid: 4100, name: "Cyberpunk2077.exe", volume: 85, isMuted: false, processCreateTime: 1, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)"),
-            TVAudioSession(id: "demo-2", pid: 5210, name: "Discord.exe", volume: 70, isMuted: false, processCreateTime: 2, outputDeviceID: "tv-2", outputDeviceName: "SteelSeries Arctis Nova Pro Wireless"),
-            TVAudioSession(id: "demo-3", pid: 6320, name: "Spotify.exe", volume: 40, isMuted: false, processCreateTime: 3, outputDeviceID: "tv-3", outputDeviceName: "Realtek Digital Output (Optical S/PDIF)"),
-            TVAudioSession(id: "demo-4", pid: 7110, name: "Chrome.exe", volume: 50, isMuted: true, processCreateTime: 4, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)")
+            TVAudioSession(id: "demo-1", pid: 4100, name: "Cyberpunk2077.exe", volume: 85, isMuted: false, processCreateTime: 1, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)", displayName: "Cyberpunk 2077", isActive: true, kind: "app"),
+            TVAudioSession(id: "demo-3", pid: 6320, name: "Spotify.exe", volume: 40, isMuted: false, processCreateTime: 3, outputDeviceID: "tv-3", outputDeviceName: "Realtek Digital Output (Optical S/PDIF)", displayName: "Spotify", isActive: true, kind: "app"),
+            TVAudioSession(id: "demo-2", pid: 5210, name: "Discord.exe", volume: 70, isMuted: false, processCreateTime: 2, outputDeviceID: "tv-2", outputDeviceName: "SteelSeries Arctis Nova Pro Wireless", displayName: "Discord", isActive: false, kind: "app"),
+            TVAudioSession(id: "demo-4", pid: 7110, name: "Chrome.exe", volume: 50, isMuted: true, processCreateTime: 4, outputDeviceID: "tv-1", outputDeviceName: "LG OLED TV (NVIDIA High Definition Audio)", displayName: "Google Chrome", isActive: false, kind: "app")
         ]
         audioOutputs = [
             TVAudioOutputDevice(id: "tv-1", name: "LG OLED TV (NVIDIA High Definition Audio)"),
@@ -669,8 +689,18 @@ final class OrbitTVViewModel: ObservableObject {
 
     // MARK: - Audio Mixer on Apple TV
 
+    /// Points the shared icon store at the current PC (process and audio mixer rows).
+    func prepareAppIcons() {
+        guard !isDemoMode, let pc = currentPC else { appIcons.reset(); return }
+        appIcons.configure(scope: pc.id) { [weak self] ids in
+            guard let self, self.currentPC?.id == pc.id else { throw CancellationError() }
+            return try await self.client(for: pc).get("/api/icons", query: [URLQueryItem(name: "ids", value: ids.joined(separator: ","))])
+        }
+    }
+
     func refreshAudioMixer() async {
         if isDemoMode { return }
+        prepareAppIcons()
         guard metrics.isOnline, let apiClient = try? client() else { return }
         if let reply: TVAudioSessionsReply = try? await apiClient.get("/api/audio/sessions"), reply.available {
             audioSessions = reply.sessions
@@ -722,6 +752,7 @@ final class OrbitTVViewModel: ObservableObject {
 
     func refreshProcesses() async {
         if isDemoMode { return }
+        prepareAppIcons()
         guard metrics.isOnline, !isLoadingProcesses else { return }
         isLoadingProcesses = true
         defer { isLoadingProcesses = false }

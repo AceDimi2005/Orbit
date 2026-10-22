@@ -81,11 +81,15 @@ API: `GET /api/files/roots`, `GET /api/files/list`, `GET /api/files/download`, `
 
 În **Tools → Audio mixer**, glisează volumul sau schimbă mute pentru fiecare sesiune Windows Core Audio, inclusiv sesiunile de pe alte ieșiri audio active. O aplicație poate avea mai multe sesiuni; pornește redarea dacă nu apare. Sesiunile dispărute produc o eroare explicită, fără a schimba volumul master. Comenzile sliderului sunt grupate și trimise în ordine; nu coboară întâi volumul la zero. Lista se actualizează cât ecranul este deschis și indică ieșirea curentă.
 
+Ordinea este cea din Windows Task Manager: întâi **aplicațiile** (procese cu o fereastră pe bara de activități; Chrome sau Discord redau sunetul dintr-un proces ajutător al aceluiași executabil, care contează tot ca aplicație), apoi **procesele din fundal**, la final **System sounds**. În fiecare grup, sesiunile care redau acum (`isActive`, starea Active din Core Audio) apar primele. Fiecare rând are numele afișat de mixerul Windows (`displayName`: numele sesiunii sau descrierea executabilului, de exemplu „Google Chrome”) și iconul aplicației.
+
 **Output** permite alegerea unei ieșiri active sau **System default** pentru aplicația respectivă. Agentul verifică sesiunea și momentul creării procesului înainte de fiecare modificare, apoi solicită preferința Windows pentru rolurile console, multimedia și communications. Nu schimbă ieșirea implicită a întregului PC. Windows poate păstra preferința; unele aplicații schimbă dispozitivul numai după repornirea redării sau aplicației, iar cele care aleg explicit propriul dispozitiv o pot ignora. Interfața confirmă salvarea preferinței, nu pretinde că sunetul s-a mutat deja. Dacă o modificare parțială eșuează, agentul încearcă restabilirea rolurilor modificate fără a atinge un PID reutilizat.
 
 Rutarea cere **Windows 10 versiunea 2004/build 19041 sau mai nou ori Windows 11**, plus un vtable oferit printr-unul dintre cele două IID-uri cunoscute. Folosește interfața internă Windows `AudioPolicyConfig`, care nu este un API public Microsoft stabil; activarea și rezultatele sunt verificate, iar versiunile nesuportate afișează motivul. Volumul și mute pot rămâne disponibile fără rutare; alternativ folosește **Windows Settings → System → Sound → Volume mixer**. ABI-ul factual este verificat față de [definițiile originale EarTrumpet](https://github.com/File-New-Project/EarTrumpet/tree/master/EarTrumpet/Interop/MMDeviceAPI), cu [notificarea completă de licență](THIRD_PARTY_NOTICES.md); mecanismul de activare folosește [RoGetActivationFactory documentat de Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/roapi/nf-roapi-rogetactivationfactory). Nu există înlocuire cu o comandă de schimbare a dispozitivului global.
 
 API-urile `GET/PUT /api/clipboard`, `GET /api/audio/sessions`, `POST /api/audio/session`, `GET /api/audio/outputs` și `POST /api/audio/route` cer tokenul principal, HTTPS și o sesiune Windows disponibilă. Rutarea trimite `id`, `expectedCreateTime` și `deviceID`; `deviceID` gol înseamnă revenire la preferința System default a aplicației. Nu salvează textul clipboardului pe disc.
+
+Sesiunile audio (agent 4.4+) au și `displayName`, `isActive`, `kind` (`app`, `background` sau `system`) și `iconID`.
 
 ## Sesiuni, grafice și mai multe PC-uri
 
@@ -227,6 +231,10 @@ Citirile GPU folosesc direct Windows **PDH**, fără Afterburner sau PresentMon:
 **End task** necesită confirmare. Pe Windows, terminarea unui proces este forțată și nu garantează salvarea documentelor sau închiderea ordonată a aplicației. Procesele critice de sistem și agentul Orbit sunt protejate. Nu există terminare automată sau comandă de închidere a tuturor proceselor.
 
 API-ul folosește `GET /api/processes` și `POST /api/processes/{pid}/terminate`, ambele cu tokenul principal de control. Cererea de terminare transmite și momentul creării procesului (`createTime` din lista primită) și acceptă opțiunea `force`. Agentul verifică PID-ul împreună cu momentul creării înainte de terminare; un PID reutilizat nu este suficient pentru a autoriza închiderea noului proces. Lipsa permisiunilor, procesele protejate sau o listă devenită veche produc o eroare explicită; reîmprospătează lista și verifică procesul. Nu trimite comenzi de terminare cu tokenul de widget.
+
+### Iconuri pentru aplicații
+
+Rândurile din `GET /api/processes` și `GET /api/audio/sessions` au un `iconID` opac: un HMAC al căii executabilului, cu o cheie care există doar în procesul agentului, deci căile nu pleacă de pe PC. `GET /api/icons?ids=a,b,c` (tokenul principal, maximum 48 de ID-uri) răspunde cu `{"icons": {"<id>": "<PNG base64>" | null}, "size": 128}`: `null` înseamnă că fișierul nu are icon propriu, iar ID-urile pe care agentul nu le-a listat lipsesc din răspuns. Iconul vine din resursa executabilului ([SHDefExtractIconW](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shdefextracticonw)), din iconul declarat de sesiunea audio (System sounds folosește difuzorul din `AudioSrv.dll`, ca mixerul Windows) sau, pentru aplicațiile din Microsoft Store fără icon în executabil, din logo-ul declarat în `AppxManifest.xml`. Iconurile sunt extrase la prima cerere și păstrate în memorie cât rulează agentul.
 
 ## Wake-on-LAN și comenzi
 

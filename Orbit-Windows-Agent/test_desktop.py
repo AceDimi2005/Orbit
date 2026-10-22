@@ -256,6 +256,122 @@ class AudioMixerTests(unittest.TestCase):
         self.assertEqual(len(result["devices"]), 1)
 
 
+def app_session(instance, pid, name, executable=None, state=1, display=None, icon_path=None):
+    item = session(instance, pid, name)
+    item.Process.exe.return_value = executable
+    item.State = state
+    if display is not None:
+        item.DisplayName = display
+    if icon_path is not None:
+        item.IconPath = icon_path
+    if pid == 0:
+        item.Process = None
+    return item
+
+
+class AudioMixerOrderTests(unittest.TestCase):
+    """Apps with a window first, then background processes, then System sounds."""
+
+    def listed(self, items, windows=(), executables=(), descriptions=None):
+        descriptions = descriptions or {}
+        context = (set(windows), {value.casefold() for value in executables})
+        with patch.object(desktop, "_audio_sessions", lambda: sessions(items)), \
+             patch.object(desktop, "_application_context", return_value=context), \
+             patch.object(desktop, "_file_description", side_effect=lambda path: descriptions.get(path)):
+            return desktop.list_audio_sessions()
+
+    def test_apps_come_first_and_playing_sessions_lead_each_group(self):
+        items = [
+            app_session("sys", 0, "System sounds"),
+            app_session("helper", 30, "nvcontainer.exe", "C:\\NVIDIA\\nvcontainer.exe", state=1),
+            app_session("chat", 20, "Discord.exe", "C:\\Discord\\Discord.exe", state=0),
+            app_session("music", 21, "Spotify.exe", "C:\\Spotify\\Spotify.exe", state=1),
+            app_session("chrome", 22, "chrome.exe", "C:\\Chrome\\chrome.exe", state=1),
+            app_session("idle", 31, "Updater.exe", "C:\\Updater\\Updater.exe", state=0),
+        ]
+        descriptions = {"C:\\Chrome\\chrome.exe": "Google Chrome", "C:\\Spotify\\Spotify.exe": "Spotify"}
+        # Chrome plays from a helper process; its browser process (another PID) owns the window.
+        result = self.listed(items, windows={20, 21, 99}, executables={"C:\\chrome\\CHROME.exe"},
+                             descriptions=descriptions)
+        self.assertEqual([(row["displayName"], row["kind"], row["isActive"]) for row in result], [
+            ("Google Chrome", "app", True), ("Spotify", "app", True), ("Discord", "app", False),
+            ("nvcontainer", "background", True), ("Updater", "background", False),
+            ("System sounds", "system", True)])
+        self.assertEqual(result[0]["name"], "chrome.exe")
+
+    def test_session_names_win_over_descriptions_but_not_resource_strings(self):
+        items = [app_session("a", 40, "game.exe", "C:\\Game\\game.exe", display="Galaxy Racer"),
+                 app_session("b", 41, "tool.exe", "C:\\Tool\\tool.exe", display="@%SystemRoot%\\x.dll,-5")]
+        result = self.listed(items, descriptions={"C:\\Tool\\tool.exe": "Capture Tool"})
+        self.assertEqual({row["name"]: row["displayName"] for row in result},
+                         {"game.exe": "Galaxy Racer", "tool.exe": "Capture Tool"})
+
+    def test_icons_are_opaque_ids_for_the_executable_or_session_icon(self):
+        items = [app_session("a", 50, "game.exe", "C:\\Game\\game.exe"),
+                 app_session("b", 51, "ghost.exe", None)]
+        registry = desktop.ICONS
+        result = self.listed(items)
+        by_name = {row["name"]: row for row in result}
+        self.assertEqual(by_name["game.exe"]["iconID"], registry.register("C:\\Game\\game.exe"))
+        self.assertNotIn("Game", by_name["game.exe"]["iconID"])
+        self.assertIsNone(by_name["ghost.exe"]["iconID"])
+        with patch.object(desktop.os.path, "isfile", return_value=True):
+            custom = self.listed([app_session("c", 52, "game.exe", "C:\\Game\\game.exe",
+                                              icon_path="C:\\Game\\art.ico,1")])
+        self.assertEqual(custom[0]["iconID"], registry.register("C:\\Game\\art.ico", 1))
+
+    def test_system_sounds_use_the_windows_speaker_icon(self):
+        with patch.object(desktop, "system_sounds_icon_location", return_value=("C:\\Windows\\System32\\AudioSrv.dll", -203)), \
+             patch.object(desktop.os.path, "isfile", return_value=True):
+            result = self.listed([app_session("sys", 0, "System sounds")])
+        self.assertEqual(result[0]["iconID"], desktop.ICONS.register("C:\\Windows\\System32\\AudioSrv.dll", -203))
+        self.assertEqual((result[0]["kind"], result[0]["displayName"]), ("system", "System sounds"))
+
+    def test_taskbar_windows_and_store_app_frames_mark_apps(self):
+        # hwnd: (visible, owner, exstyle, title length, class, pid, children)
+        windows = {
+            1: (True, None, 0, 9, "Chrome_WidgetWin_1", 100, []),
+            2: (False, None, 0, 5, "Hidden", 200, []),
+            3: (True, 1, 0, 4, "Dialog", 300, []),
+            4: (True, None, 0x80, 4, "Tool", 400, []),
+            5: (True, None, 0, 0, "Untitled", 500, []),
+            6: (True, None, 0, 12, "ApplicationFrameWindow", 600, [61, 62]),
+            61: (True, None, 0, 0, "ApplicationFrameInputSinkWindow", 600, []),
+            62: (True, None, 0, 0, "Windows.UI.Core.CoreWindow", 700, []),
+            7: (True, None, 0, 7, "Normal", 800, [71]),
+            71: (True, None, 0, 0, "Embedded", 900, []),
+        }
+
+        def owner_pid(window, process):
+            process._obj.value = windows[window][5]
+            return 1
+
+        def class_name(window, buffer, size):
+            buffer.value = windows[window][4]
+            return len(buffer.value)
+
+        user32 = SimpleNamespace(
+            EnumWindows=lambda callback, _: [callback(window, 0) for window in (1, 2, 3, 4, 5, 6, 7)] and True,
+            EnumChildWindows=lambda parent, callback, _: [callback(child, 0) for child in windows[parent][6]] and True,
+            IsWindowVisible=lambda window: windows[window][0],
+            GetWindow=lambda window, kind: windows[window][1],
+            GetWindowLongW=lambda window, index: windows[window][2],
+            GetWindowTextLengthW=lambda window: windows[window][3],
+            GetClassNameW=class_name,
+            GetWindowThreadProcessId=owner_pid)
+        # The Store app (700) counts through its frame; children of other apps (900) do not.
+        self.assertEqual(desktop._window_owner_pids(user32, lambda function: function), {100, 600, 700, 800})
+
+    def test_window_detection_is_windows_only_and_never_raises(self):
+        with patch.object(desktop.os, "name", "posix"):
+            self.assertEqual(desktop._visible_window_pids(), set())
+            self.assertIsNone(desktop._file_description("C:\\Game\\game.exe"))
+        with patch.object(desktop, "_visible_window_pids", return_value={7, 8}), \
+             patch.object(desktop.psutil, "Process", side_effect=[MagicMock(exe=MagicMock(return_value="C:\\A.exe")),
+                                                                  desktop.psutil.AccessDenied(8)]):
+            self.assertEqual(desktop._application_context(), ({7, 8}, {"c:\\a.exe"}))
+
+
 class AudioPolicyAdapterTests(unittest.TestCase):
     def test_exact_known_iinspectable_slot_and_argument_layout(self):
         adapter = policy_adapter.AudioPolicyConfig.__new__(policy_adapter.AudioPolicyConfig)

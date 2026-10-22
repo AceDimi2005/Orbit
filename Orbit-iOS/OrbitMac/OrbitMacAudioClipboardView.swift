@@ -267,9 +267,20 @@ struct MacAudioView: View {
                 .macGlass(cornerRadius: 20, tint: theme.accent)
             }
         } else {
-            VStack(spacing: 8) {
-                ForEach(vm.audioSessions) { session in
-                    MacAudioclipSessionRow(session: session, draggingIDs: $draggingIDs)
+            // Like Windows Task Manager: apps, then background processes, then Windows.
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(OrbitAudioSessionKind.groups(vm.audioSessions, kind: \.kind)) { group in
+                    VStack(alignment: .leading, spacing: 8) {
+                        if group.kind != nil {
+                            Text(group.title)
+                                .font(.system(.subheadline, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 4)
+                        }
+                        ForEach(group.sessions) { session in
+                            MacAudioclipSessionRow(session: session, draggingIDs: $draggingIDs)
+                        }
+                    }
                 }
             }
             .animation(.snappy(duration: 0.25), value: vm.audioSessions.map(\.id))
@@ -330,7 +341,13 @@ private struct MacAudioclipSessionRow: View {
     private var tint: Color { MacAudioclipIcon.tint(for: symbol, theme: theme) }
     private var isRouting: Bool { vm.audioRoutingSessionID == session.id }
     private var meta: String {
-        var parts = ["PID \(session.pid)"]
+        var parts: [String] = []
+        if session.pid == 0 {
+            parts.append("Windows system sounds")
+        } else {
+            if session.title != session.name { parts.append(session.name) }
+            parts.append("PID \(session.pid)")
+        }
         if let device = session.outputDeviceName, !device.isEmpty { parts.append(device) }
         return parts.joined(separator: " · ")
     }
@@ -338,14 +355,18 @@ private struct MacAudioclipSessionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                MacIconBadge(systemName: symbol, tint: tint, size: 36, filled: symbol == "gamecontroller.fill")
+                OrbitAppIconView(store: vm.appIcons, iconID: session.iconID, size: 36, dimmed: session.isMuted) {
+                    MacIconBadge(systemName: symbol, tint: tint, size: 36, filled: symbol == "gamecontroller.fill")
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                        Text(session.name)
+                        Text(session.title)
                             .font(.system(.headline, weight: .semibold))
                             .lineLimit(1)
                         if session.isMuted {
                             MacStatusPill(text: "Muted", tint: .orange, icon: "speaker.slash.fill")
+                        } else if session.isActive == true {
+                            MacStatusPill(text: "Playing", tint: .mint, icon: "waveform")
                         }
                     }
                     Text(meta)
@@ -368,7 +389,7 @@ private struct MacAudioclipSessionRow: View {
         .animation(.easeOut(duration: 0.15), value: hovered)
         .onHover { hovered = $0 }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(session.name), \(MacFormat.percent(session.volume))\(session.isMuted ? ", muted" : "")")
+        .accessibilityLabel("\(session.title), \(MacFormat.percent(session.volume))\(session.isMuted ? ", muted" : "")")
     }
 
     private var routingMenu: some View {
@@ -398,7 +419,7 @@ private struct MacAudioclipSessionRow: View {
             .fixedSize()
             .disabled(vm.audioRoutingSessionID != nil)
             .help("Route this app's audio to another playback device")
-            .accessibilityLabel("Output device for \(session.name)")
+            .accessibilityLabel("Output device for \(session.title)")
         }
     }
 
@@ -409,8 +430,8 @@ private struct MacAudioclipSessionRow: View {
             Image(systemName: session.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
         }
         .buttonStyle(MacIconButtonStyle(tint: session.isMuted ? .orange : .white, size: 30))
-        .help(session.isMuted ? "Unmute \(session.name)" : "Mute \(session.name)")
-        .accessibilityLabel(session.isMuted ? "Unmute \(session.name)" : "Mute \(session.name)")
+        .help(session.isMuted ? "Unmute \(session.title)" : "Mute \(session.title)")
+        .accessibilityLabel(session.isMuted ? "Unmute \(session.title)" : "Mute \(session.title)")
     }
 
     private var volumeRow: some View {
@@ -423,7 +444,7 @@ private struct MacAudioclipSessionRow: View {
                 vm.setAudioDragging(session.id, editing)
             }
             .tint(session.isMuted ? .orange : tint)
-            .accessibilityLabel("\(session.name) volume")
+            .accessibilityLabel("\(session.title) volume")
             Image(systemName: "speaker.wave.3.fill")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)

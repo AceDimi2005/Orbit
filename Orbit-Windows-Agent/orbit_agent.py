@@ -28,6 +28,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, W
 from pydantic import BaseModel
 
 from orbit_processes import collect_processes, terminate_process
+from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
 from orbit_files import create_files_router
 from orbit_desktop import create_desktop_router
 from orbit_history import SessionRecorder, create_history_router
@@ -51,7 +52,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.3.1"
+AGENT_VERSION = "4.4.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -451,6 +452,18 @@ def list_processes(authorization: str = Header(None)):
     verify_token(authorization)
     require_windows()
     return collect_processes()
+
+
+@app.get("/api/icons")
+def app_icons(ids: str = Query(..., max_length=MAX_IDS_PER_REQUEST * 33), authorization: str = Header(None)):
+    """PNG icons (base64) for icon IDs from the process list and the audio mixer.
+    `null` means the file has no icon of its own; IDs this agent never listed are left out."""
+    verify_token(authorization)
+    try:
+        wanted = parse_icon_ids(ids)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"icons": ICONS.lookup(wanted), "size": ICON_PIXELS}
 
 
 @app.post("/api/processes/{pid}/terminate")

@@ -16,10 +16,16 @@ import psutil
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from orbit_audio_policy import AudioPolicyConfig, AudioPolicyUnavailable
+from orbit_icons import ICONS, parse_icon_location, system_sounds_icon_location
 
 MAX_CLIPBOARD_BYTES = 1024 * 1024
 _CLIPBOARD_LOCK = threading.Lock()
 _AUDIO_LOCK = threading.Lock()
+_DESCRIPTION_LOCK = threading.Lock()
+_DESCRIPTIONS = {}
+# Mixer order, like Windows Task Manager: apps with a window, then background
+# processes, then System sounds. Inside each group, sessions playing come first.
+SESSION_KIND_ORDER = {"app": 0, "background": 1, "system": 2}
 
 
 class DesktopUnavailable(RuntimeError):
@@ -218,9 +224,182 @@ def _session_identity(session):
     return digest, pid
 
 
-def _session_snapshot(session):
+def _printable(text):
+    return "".join(character for character in str(text) if ord(character) >= 32).strip()
+
+
+def _read_file_description(path):
+    """The FileDescription Windows shows for an executable ("Google Chrome")."""
+    version = ctypes.WinDLL("version", use_last_error=True)
+    version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    version.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    version.GetFileVersionInfoW.restype = wintypes.BOOL
+    version.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.POINTER(wintypes.UINT)]
+    version.VerQueryValueW.restype = wintypes.BOOL
+    handle = wintypes.DWORD()
+    size = version.GetFileVersionInfoSizeW(path, ctypes.byref(handle))
+    if not size or size > 4 * 1024 * 1024:
+        return None
+    block = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(path, 0, size, block):
+        return None
+    pointer, length = ctypes.c_void_p(), wintypes.UINT()
+    languages = []
+    if (version.VerQueryValueW(block, "\\VarFileInfo\\Translation", ctypes.byref(pointer), ctypes.byref(length))
+            and pointer.value and length.value >= 4):
+        count = min(length.value // 4, 16)
+        words = (ctypes.c_uint16 * (count * 2)).from_address(pointer.value)
+        languages = [(words[2 * index], words[2 * index + 1]) for index in range(count)]
+    for language, codepage in languages + [(0x0409, 0x04B0), (0x0409, 0x04E4), (0x0000, 0x04B0)]:
+        key = f"\\StringFileInfo\\{language:04x}{codepage:04x}\\FileDescription"
+        if (version.VerQueryValueW(block, key, ctypes.byref(pointer), ctypes.byref(length))
+                and pointer.value and length.value > 1):
+            text = ctypes.wstring_at(pointer.value, min(length.value, 512)).split("\0", 1)[0]
+            if text.strip():
+                return text
+    return None
+
+
+def _file_description(path):
+    if os.name != "nt" or not isinstance(path, str) or not path:
+        return None
+    key = path.casefold()
+    with _DESCRIPTION_LOCK:
+        if key in _DESCRIPTIONS:
+            return _DESCRIPTIONS[key]
+    try:
+        description = _read_file_description(path)
+    except Exception:
+        description = None
+    description = _printable(description)[:120] if description else None
+    with _DESCRIPTION_LOCK:
+        if len(_DESCRIPTIONS) >= 2048:
+            _DESCRIPTIONS.clear()
+        _DESCRIPTIONS[key] = description or None
+    return description or None
+
+
+def _window_owner_pids(user32, callback_type):
+    """PIDs owning a visible, unowned, titled, non-tool top-level window (the
+    taskbar's apps). Store apps draw inside ApplicationFrameHost's frame window:
+    their own process owns a child of that frame, so frames count their children."""
+    pids = set()
+
+    def owner(window):
+        process = wintypes.DWORD()
+        if user32.GetWindowThreadProcessId(window, ctypes.byref(process)) and process.value:
+            pids.add(int(process.value))
+
+    def visit_child(window, _):
+        owner(window)
+        return True
+
+    child_callback = callback_type(visit_child)
+
+    def visit(window, _):
+        if (user32.IsWindowVisible(window) and not user32.GetWindow(window, 4)  # GW_OWNER
+                and not user32.GetWindowLongW(window, -20) & 0x80  # WS_EX_TOOLWINDOW
+                and user32.GetWindowTextLengthW(window) > 0):
+            owner(window)
+            name = ctypes.create_unicode_buffer(64)
+            if user32.GetClassNameW(window, name, 64) and name.value == "ApplicationFrameWindow":
+                user32.EnumChildWindows(window, child_callback, 0)
+        return True
+
+    callback = callback_type(visit)
+    user32.EnumWindows(callback, 0)
+    return pids
+
+
+def _visible_window_pids():
+    """Processes with a window on the taskbar: what Task Manager calls apps."""
+    if os.name != "nt":
+        return set()
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        for function, arguments, result in (
+            (user32.EnumWindows, [callback_type, wintypes.LPARAM], wintypes.BOOL),
+            (user32.EnumChildWindows, [wintypes.HWND, callback_type, wintypes.LPARAM], wintypes.BOOL),
+            (user32.IsWindowVisible, [wintypes.HWND], wintypes.BOOL),
+            (user32.GetWindow, [wintypes.HWND, wintypes.UINT], wintypes.HWND),
+            (user32.GetWindowLongW, [wintypes.HWND, ctypes.c_int], wintypes.LONG),
+            (user32.GetWindowTextLengthW, [wintypes.HWND], ctypes.c_int),
+            (user32.GetClassNameW, [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+            (user32.GetWindowThreadProcessId, [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
+        ):
+            function.argtypes = arguments
+            function.restype = result
+        return _window_owner_pids(user32, callback_type)
+    except Exception:
+        return set()
+
+
+def _application_context():
+    """PIDs and executables that own windows. Chrome or Discord play audio from a
+    helper process of the same executable, so the executable counts too."""
+    pids = _visible_window_pids()
+    executables = set()
+    for pid in pids:
+        try:
+            executable = psutil.Process(pid).exe()
+        except (psutil.Error, OSError):
+            continue
+        if isinstance(executable, str) and executable:
+            executables.add(executable.casefold())
+    return pids, executables
+
+
+def _session_executable(session, pid):
+    if pid <= 0:
+        return None
+    try:
+        process = session.Process
+        executable = process.exe() if process is not None else None
+    except Exception:
+        return None
+    return executable if isinstance(executable, str) and executable else None
+
+
+def _display_name(session, pid, name, executable):
+    """What Windows' own mixer shows: the session's name, else the file description."""
+    if pid == 0:
+        return "System sounds"
+    try:
+        label = session.DisplayName
+    except Exception:
+        label = None
+    if isinstance(label, str):
+        label = _printable(label)
+        if label and not label.startswith("@"):  # "@dll,-id" strings are unresolved resources.
+            return label[:120]
+    description = _file_description(executable)
+    if description:
+        return description
+    base = name[:-4] if name.casefold().endswith(".exe") else name
+    return base or name
+
+
+def _session_icon(session, pid, executable):
+    try:
+        location = parse_icon_location(session.IconPath)
+    except Exception:
+        location = None
+    if location is None and pid == 0:
+        location = system_sounds_icon_location()
+    if location is not None and os.path.isfile(location[0]):
+        icon = ICONS.register(*location)
+        if icon:
+            return icon
+    return ICONS.register(executable) if executable else None
+
+
+def _session_snapshot(session, context=None):
     identity, pid = _session_identity(session)
-    if int(session.State) == 2:  # AudioSessionStateExpired
+    state = int(session.State)
+    if state == 2:  # AudioSessionStateExpired
         raise AudioSessionGone("This audio session has ended. Refresh the mixer.")
     volume = session.SimpleAudioVolume
     level = float(volume.GetMasterVolume()) * 100
@@ -235,24 +414,42 @@ def _session_snapshot(session):
     except Exception:
         name = f"Application {pid}"
         created = None
-    name = "".join(character for character in str(name) if ord(character) >= 32)[:260]
-    return {"id": identity, "pid": pid, "name": name or f"Application {pid}",
+    name = _printable(name)[:260] or f"Application {pid}"
+    executable = _session_executable(session, pid)
+    window_pids, window_executables = context if context is not None else _application_context()
+    if pid == 0:
+        kind = "system"
+    elif pid in window_pids or (executable is not None and executable.casefold() in window_executables):
+        kind = "app"
+    else:
+        kind = "background"
+    return {"id": identity, "pid": pid, "name": name,
+            "displayName": _display_name(session, pid, name, executable),
             "volume": round(min(100.0, level), 1), "isMuted": bool(volume.GetMute()),
+            "isActive": state == 1,  # AudioSessionStateActive: a stream is playing.
+            "kind": kind,
+            "iconID": _session_icon(session, pid, executable),
             "processCreateTime": created,
             "outputDeviceID": getattr(session, "orbitOutputID", None),
             "outputDeviceName": getattr(session, "orbitOutputName", None)}
 
 
+def session_importance(item):
+    return (SESSION_KIND_ORDER.get(item.get("kind"), 1), not item.get("isActive"),
+            str(item.get("displayName") or item["name"]).casefold(), item["pid"], item["id"])
+
+
 def list_audio_sessions():
     with _AUDIO_LOCK, _audio_sessions() as sessions:
+        context = _application_context()
         result = []
         for session in sessions:
             try:
-                result.append(_session_snapshot(session))
+                result.append(_session_snapshot(session, context))
             except Exception:
                 # Sessions can disappear while the enumerator is being read.
                 continue
-        return sorted(result, key=lambda item: (item["name"].casefold(), item["pid"], item["id"]))
+        return sorted(result, key=session_importance)
 
 
 def update_audio_session(identity, volume=None, muted=None):

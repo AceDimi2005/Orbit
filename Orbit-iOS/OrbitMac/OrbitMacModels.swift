@@ -265,6 +265,8 @@ struct MacProcess: Codable, Identifiable, Hashable {
     var gpuEngine: String? = nil
     var status: String
     var canTerminate: Bool
+    /// Agent 4.4+: opaque ID for `GET /api/icons`; nil when the executable has no icon.
+    var iconID: String? = nil
     var id: String { "\(pid):\(createTime)" }
 }
 
@@ -310,6 +312,17 @@ struct MacAudioSession: Codable, Identifiable, Hashable {
     var processCreateTime: Double?
     var outputDeviceID: String?
     var outputDeviceName: String?
+    /// Agent 4.4+: the name Windows' own mixer shows, whether a stream plays right now,
+    /// the Task Manager group (app, background, system) and the icon.
+    var displayName: String? = nil
+    var isActive: Bool? = nil
+    var kind: String? = nil
+    var iconID: String? = nil
+
+    var title: String {
+        guard let displayName, !displayName.isEmpty else { return name }
+        return displayName
+    }
 }
 
 struct MacAudioOutput: Codable, Identifiable, Hashable { let id: String; let name: String }

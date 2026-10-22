@@ -164,11 +164,13 @@ struct PCProcess: Codable, Identifiable {
     var gpuEngine: String? = nil
     var status: String
     var canTerminate: Bool
+    /// Agent 4.4+: opaque ID for `GET /api/icons`; nil when the executable has no icon.
+    var iconID: String? = nil
     // Local origin is never sent by the agent or reused after switching PCs.
     var originGeneration: Int? = nil
     var id: String { "\(originGeneration ?? -1):\(pid):\(createTime)" }
     private enum CodingKeys: String, CodingKey {
-        case pid, name, createTime, memoryMB, cpuPercent, gpuPercent, vramMB, sharedGpuMemoryMB, gpuEngine, status, canTerminate
+        case pid, name, createTime, memoryMB, cpuPercent, gpuPercent, vramMB, sharedGpuMemoryMB, gpuEngine, status, canTerminate, iconID
     }
 }
 struct PCProcessList: Decodable {
@@ -398,6 +400,8 @@ final class OrbitViewModel: ObservableObject {
     @Published var isLoadingWidgetToken = false
     @Published var widgetSetupError: String?
     @Published var processes: [PCProcess] = []
+    /// Windows app icons for process and audio rows, loaded on demand.
+    let appIcons = OrbitAppIconStore()
     @Published var isLoadingProcesses = false
     @Published var processesError: String?
     @Published var processActionStatus: String?
@@ -490,6 +494,7 @@ final class OrbitViewModel: ObservableObject {
     }
     func resetConnection() {
         generation += 1
+        appIcons.reset()
         volumeCommands.cancel()
         lastVolumeChangeTime = .distantPast; isDraggingVolume = false
         metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; sunshineInfo = nil; lastUpdated = nil; pingMs = 0
@@ -517,9 +522,20 @@ final class OrbitViewModel: ObservableObject {
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 { throw OrbitError(message: "Pairing token rejected. Copy the token shown by Orbit Agent.") }
             let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
-            throw OrbitError(message: detail ?? "Agent returned error \(http.statusCode).")
+            throw OrbitError(message: detail ?? "Agent returned error \(http.statusCode).", statusCode: http.statusCode)
         }
         return data
+    }
+
+    /// Points the shared icon store at this connection (Task Manager and audio mixer rows).
+    func prepareAppIcons() {
+        guard !isDemoMode else { appIcons.reset(); return }
+        let version = generation
+        appIcons.configure(scope: "\(version)") { [weak self] ids in
+            guard let self, self.generation == version else { throw CancellationError() }
+            let data = try await self.request("/api/icons", query: [URLQueryItem(name: "ids", value: ids.joined(separator: ","))])
+            return try JSONDecoder().decode(OrbitAppIconBatch.self, from: data)
+        }
     }
     func recalculateBroadcastIfNeeded() {
         let address = WakeOnLANService.ipv4ForWake(host: cleanHost(), knownAddress: lastKnownPCIPv4)

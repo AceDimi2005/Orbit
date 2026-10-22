@@ -197,6 +197,22 @@ private struct AudioMixerSession: Codable, Identifiable {
     var processCreateTime: Double?
     var outputDeviceID: String?
     var outputDeviceName: String?
+    /// Agent 4.4+: the name Windows' own mixer shows, whether a stream plays right now,
+    /// the Task Manager group (app, background, system) and the icon.
+    var displayName: String? = nil
+    var isActive: Bool? = nil
+    var kind: String? = nil
+    var iconID: String? = nil
+
+    var title: String {
+        guard let displayName, !displayName.isEmpty else { return name }
+        return displayName
+    }
+
+    var detail: String {
+        if pid == 0 { return "Windows system sounds" }
+        return title == name ? "PID \(pid)" : "\(name) · PID \(pid)"
+    }
 }
 
 private struct AudioOutputDevice: Decodable, Identifiable { let id: String; let name: String }
@@ -258,9 +274,10 @@ private final class AudioMixerModel: ObservableObject {
         if vm.isDemoMode {
             if sessions.isEmpty {
                 sessions = [
-                    AudioMixerSession(id: "demo-1", pid: 4100, name: "Example Game", volume: 80, isMuted: false, processCreateTime: 1, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)"),
-                    AudioMixerSession(id: "demo-2", pid: 5210, name: "Voice Chat", volume: 65, isMuted: false, processCreateTime: 2, outputDeviceID: "out-2", outputDeviceName: "Headset Earphone"),
-                    AudioMixerSession(id: "demo-3", pid: 6320, name: "Music Player", volume: 45, isMuted: false, processCreateTime: 3, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)")
+                    AudioMixerSession(id: "demo-1", pid: 4100, name: "Example Game", volume: 80, isMuted: false, processCreateTime: 1, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)", isActive: true, kind: "app"),
+                    AudioMixerSession(id: "demo-2", pid: 5210, name: "Voice Chat", volume: 65, isMuted: false, processCreateTime: 2, outputDeviceID: "out-2", outputDeviceName: "Headset Earphone", isActive: false, kind: "app"),
+                    AudioMixerSession(id: "demo-3", pid: 6320, name: "Music Player", volume: 45, isMuted: false, processCreateTime: 3, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)", isActive: true, kind: "background"),
+                    AudioMixerSession(id: "demo-4", pid: 0, name: "System sounds", volume: 100, isMuted: false, processCreateTime: nil, outputDeviceID: "out-1", outputDeviceName: "Speakers (Realtek Audio)", isActive: false, kind: "system")
                 ]
                 outputs = [
                     AudioOutputDevice(id: "out-1", name: "Speakers (Realtek Audio)"),
@@ -271,7 +288,8 @@ private final class AudioMixerModel: ObservableObject {
             }
             return
         }
-        guard !isLoading, vm.metrics.isOnline else { return }
+        // A slider in use keeps its row where it is: the agent's order can change between polls.
+        guard !isLoading, dragging.isEmpty, vm.metrics.isOnline else { return }
         let generation = vm.connectionID
         let currentLifetime = lifetime
         let initialRevisions = revisions
@@ -396,7 +414,9 @@ private final class AudioMixerModel: ObservableObject {
                     if self.revisions[id] == command.revision, !self.dragging.contains(id),
                        reply.session.id == id, reply.session.volume.isFinite, (0...100).contains(reply.session.volume),
                        let index = self.sessions.firstIndex(where: { $0.id == id }) {
-                        self.sessions[index] = reply.session
+                        // Only the levels: name, group and icon come from the list.
+                        self.sessions[index].volume = reply.session.volume
+                        self.sessions[index].isMuted = reply.session.isMuted
                     }
                     self.error = nil
                 } catch {
@@ -467,17 +487,25 @@ struct AudioMixerView: View {
                 Section { Label(status, systemImage: "speaker.wave.2").font(.caption).foregroundStyle(.mint) }
                     .orbitRow(tint: .mint)
             }
-            Section("Applications") {
-                if mixer.isLoading && mixer.sessions.isEmpty {
-                    HStack { ProgressView(); Text("Reading audio sessions…").padding(.leading, 8) }
-                } else if mixer.sessions.isEmpty {
-                    OrbitEmptyState(icon: "speaker.wave.2", title: "No active audio sessions",
-                                    message: "Play audio in any PC app to control its volume here.", tint: .purple)
-                } else {
-                    ForEach(mixer.sessions) { session in sessionRow(session) }
+            if mixer.sessions.isEmpty {
+                Section("Applications") {
+                    if mixer.isLoading {
+                        HStack { ProgressView(); Text("Reading audio sessions…").padding(.leading, 8) }
+                    } else {
+                        OrbitEmptyState(icon: "speaker.wave.2", title: "No active audio sessions",
+                                        message: "Play audio in any PC app to control its volume here.", tint: .purple)
+                    }
+                }
+                .orbitRow()
+            } else {
+                // Like Windows Task Manager: apps, then background processes, then Windows.
+                ForEach(OrbitAudioSessionKind.groups(mixer.sessions, kind: \.kind)) { group in
+                    Section(group.title) {
+                        ForEach(group.sessions) { session in sessionRow(session) }
+                    }
+                    .orbitRow()
                 }
             }
-            .orbitRow()
         }
         .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Audio Mixer")
@@ -493,6 +521,7 @@ struct AudioMixerView: View {
         }
         .refreshable { await mixer.refresh(vm) }
         .task(id: vm.connectionID) {
+            vm.prepareAppIcons()
             while !Task.isCancelled {
                 if scenePhase == .active { await mixer.refresh(vm) }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
@@ -532,15 +561,26 @@ struct AudioMixerView: View {
         .opacity(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false ? 0.5 : 1)
     }
 
+    /// "Playing · chrome.exe · PID 22" on one line: the status first, truncated at the end.
+    private func sessionDetail(_ session: AudioMixerSession) -> Text {
+        let detail = Text(session.detail).foregroundStyle(.secondary)
+        guard session.isActive == true else { return detail }
+        return Text("\(Image(systemName: "waveform")) Playing").fontWeight(.semibold).foregroundStyle(.mint)
+            + Text(" · ").foregroundStyle(.secondary) + detail
+    }
+
     private func sessionRow(_ session: AudioMixerSession) -> some View {
         let tint: Color = session.isMuted ? .orange : .purple
         return VStack(spacing: 10) {
             HStack(spacing: 12) {
-                OrbitIconBadge(systemName: session.pid == 0 ? "speaker.wave.2.bubble.fill" : "app.fill", tint: tint, size: 36)
+                OrbitAppIconView(store: vm.appIcons, iconID: session.iconID, size: 36, dimmed: session.isMuted) {
+                    OrbitIconBadge(systemName: session.pid == 0 ? "speaker.wave.2.bubble.fill" : "app.fill", tint: tint, size: 36)
+                }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(session.pid == 0 ? "Windows system sounds" : "PID \(session.pid)")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(session.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    sessionDetail(session)
+                        .font(.caption2)
+                        .lineLimit(1)
                 }
                 Spacer()
                 if mixer.sendingIDs.contains(session.id) { ProgressView().controlSize(.mini) }
@@ -561,14 +601,14 @@ struct AudioMixerView: View {
                         .foregroundStyle(tint)
                 }
                 .buttonStyle(.orbitPressable)
-                .accessibilityLabel("\(session.isMuted ? "Unmute" : "Mute") \(session.name)")
+                .accessibilityLabel("\(session.isMuted ? "Unmute" : "Mute") \(session.title)")
             }
             Slider(value: Binding(get: {
                 mixer.sessions.first(where: { $0.id == session.id })?.volume ?? session.volume
             }, set: { mixer.setVolume(vm, id: session.id, volume: $0) }), in: 0...100, step: 1,
                    onEditingChanged: { mixer.setDragging(session.id, $0) })
                 .tint(tint)
-                .accessibilityLabel("Volume for \(session.name)")
+                .accessibilityLabel("Volume for \(session.title)")
             HStack {
                 Label(session.outputDeviceName ?? "Current output", systemImage: "hifispeaker")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -590,7 +630,7 @@ struct AudioMixerView: View {
                             .foregroundStyle(theme.accent)
                     }
                     .disabled(!mixer.routingAvailable || mixer.routingSessionID != nil || session.pid == 0 || session.processCreateTime == nil)
-                    .accessibilityLabel("Choose output for \(session.name)")
+                    .accessibilityLabel("Choose output for \(session.title)")
                 }
             }
         }

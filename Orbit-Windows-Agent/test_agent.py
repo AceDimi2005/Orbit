@@ -1,4 +1,5 @@
 """Safe regression tests: Windows control, sensor and process APIs are mocked."""
+import base64
 import copy
 import io
 import os
@@ -125,6 +126,22 @@ class APITests(unittest.TestCase):
                 self.assertEqual(self.client.post("/api/processes/42/terminate?expectedCreateTime=100", headers=headers).status_code, 401)
             collect.assert_not_called()
             end.assert_not_called()
+
+    def test_icons_need_the_control_token_and_only_answer_listed_ids(self):
+        import orbit_icons
+        png = orbit_icons.encode_png(1, 1, b"\x00\x80\xff\xff")
+        registry = orbit_icons.IconRegistry(extractor=lambda path, index: png if path.endswith("Game.exe") else None)
+        listed, iconless, unknown = registry.register("C:\\Game.exe"), registry.register("C:\\Tool.exe"), "e" * 32
+        with patch.object(agent, "ICONS", registry):
+            query = f"/api/icons?ids={listed},{iconless},{unknown}"
+            self.assertEqual(self.client.get(query).status_code, 401)
+            self.assertEqual(self.client.get(query, headers={"Authorization": "Bearer wrong"}).status_code, 401)
+            reply = self.client.get(query, headers=AUTH)
+            self.assertEqual(reply.status_code, 200)
+            self.assertEqual(reply.json(), {"icons": {listed: base64.b64encode(png).decode(), iconless: None},
+                                            "size": orbit_icons.ICON_PIXELS})
+            for bad in ("", "../x", "A" * 32, ",".join(f"{index:032x}" for index in range(49))):
+                self.assertEqual(self.client.get(f"/api/icons?ids={bad}", headers=AUTH).status_code, 422)
 
     def test_process_snapshot_and_identity_checked_end(self):
         payload = {"processes": [], "capturedAt": 100, "totalCount": 0}

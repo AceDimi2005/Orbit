@@ -106,6 +106,8 @@ final class OrbitMacViewModel: ObservableObject {
     @Published var sunshineInfo: MacSunshineInfo?
     @Published var isLoadingGames = false
     @Published var audioSessions: [MacAudioSession] = []
+    /// Windows app icons for process and audio rows, loaded on demand.
+    let appIcons = OrbitAppIconStore()
     @Published var audioOutputs: [MacAudioOutput] = []
     @Published var audioRoutingAvailable = false
     @Published var audioRoutingReason: String?
@@ -301,9 +303,20 @@ final class OrbitMacViewModel: ObservableObject {
         return try OrbitAPIClient(host: target.address, port: target.securePort, token: token, fingerprint: target.certificateFingerprint)
     }
 
+    /// Points the shared icon store at the current PC (process table and audio mixer rows).
+    func prepareAppIcons() {
+        guard !isDemoMode, let pc = currentPC else { appIcons.reset(); return }
+        let version = generation
+        appIcons.configure(scope: "\(pc.id)#\(version)") { [weak self] ids in
+            guard let self, self.generation == version else { throw CancellationError() }
+            return try await self.client(for: pc).get("/api/icons", query: [URLQueryItem(name: "ids", value: ids.joined(separator: ","))])
+        }
+    }
+
     /// Bumps the generation so in-flight replies for the previous PC are discarded.
     func resetConnection() {
         generation += 1
+        appIcons.reset()
         hasSyncedExtras = false
         metrics = MacPCMetrics()
         if let pc = currentPC { metrics.hostname = pc.name }
@@ -359,9 +372,9 @@ final class OrbitMacViewModel: ObservableObject {
             MacSunshineGame(id: "demo-2", title: "Example launcher", genre: "Simulated preview", iconSymbol: "tv.and.mediabox.fill", accentHex: "9D7BFF")
         ]
         audioSessions = [
-            MacAudioSession(id: "demo-1", pid: 4100, name: "Example game", volume: 80, isMuted: false, processCreateTime: 1, outputDeviceID: "out-1", outputDeviceName: "Speakers (Example)"),
-            MacAudioSession(id: "demo-2", pid: 5210, name: "Voice chat", volume: 65, isMuted: false, processCreateTime: 2, outputDeviceID: "out-2", outputDeviceName: "Headset (Example)"),
-            MacAudioSession(id: "demo-3", pid: 6320, name: "Music player", volume: 45, isMuted: true, processCreateTime: 3, outputDeviceID: "out-1", outputDeviceName: "Speakers (Example)")
+            MacAudioSession(id: "demo-1", pid: 4100, name: "Example game", volume: 80, isMuted: false, processCreateTime: 1, outputDeviceID: "out-1", outputDeviceName: "Speakers (Example)", isActive: true, kind: "app"),
+            MacAudioSession(id: "demo-2", pid: 5210, name: "Voice chat", volume: 65, isMuted: false, processCreateTime: 2, outputDeviceID: "out-2", outputDeviceName: "Headset (Example)", isActive: false, kind: "app"),
+            MacAudioSession(id: "demo-3", pid: 6320, name: "Music player", volume: 45, isMuted: true, processCreateTime: 3, outputDeviceID: "out-1", outputDeviceName: "Speakers (Example)", isActive: true, kind: "background")
         ]
         audioOutputs = [MacAudioOutput(id: "out-1", name: "Speakers (Example)"), MacAudioOutput(id: "out-2", name: "Headset (Example)")]
         audioRoutingAvailable = true
