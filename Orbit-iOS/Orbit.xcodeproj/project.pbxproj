@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000105 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* OrbitActivityViews.swift */; };
+		A20000000000000000000115 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* OrbitActivityViews.swift */; };
 		A40000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A10000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A40000000000000000000103 /* OrbitGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000103 /* OrbitGlass.swift */; };
@@ -226,6 +228,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000115 /* OrbitActivityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitActivityViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000114 /* AppIconSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSettingsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000113 /* AppIcon-Minimal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Minimal.icon"; sourceTree = "<group>"; };
 		B20000000000000000000112 /* AppIcon-Matrix.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Matrix.icon"; sourceTree = "<group>"; };
@@ -487,6 +490,7 @@
 				B20000000000000000000007 /* OrbitTelemetryWidgets.swift */,
 				B20000000000000000000005 /* Info.plist */,
 				B20000000000000000000016 /* PrivacyInfo.xcprivacy */,
+				B20000000000000000000115 /* OrbitActivityViews.swift */,
 			);
 			path = OrbitWidgets;
 			sourceTree = "<group>";
@@ -814,6 +818,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000115 /* OrbitActivityViews.swift in Sources */,
 				A20000000000000000000114 /* AppIconSettingsView.swift in Sources */,
 				A2000000000000000000010D /* OrbitVitals.swift in Sources */,
 				A2000000000000000000010C /* WelcomeView.swift in Sources */,
@@ -867,6 +872,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000105 /* OrbitActivityViews.swift in Sources */,
 				A10000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A10000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A10000000000000000000102 /* OrbitComponents.swift in Sources */,
