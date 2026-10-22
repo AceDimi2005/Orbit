@@ -65,7 +65,6 @@ struct PlayView: View {
                 .frame(maxWidth: 1100)
                 .frame(maxWidth: .infinity)
             }
-            .scrollEdgeEffectStyle(.soft, for: .top)
             .background(OrbitPalette.canvas)
             .navigationTitle("Play")
             .searchable(text: $search, prompt: "Games and apps")
@@ -73,8 +72,9 @@ struct PlayView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Stream Settings", systemImage: "slider.horizontal.3") { showsSettings = true }
+                        .tint(.primary)
                 }
-                ToolbarItem(placement: .topBarTrailing) { moreMenu }
+                ToolbarItem(placement: .topBarTrailing) { moreMenu.tint(.primary) }
             }
             .sheet(item: $selected) { game in
                 GameDetailView(vm: vm, sunshine: sunshine, game: game, showsSettings: $showsSettings)
@@ -404,10 +404,10 @@ private struct GameDetailView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 32)
             }
-            .background(OrbitPalette.canvas)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", systemImage: "checkmark") { dismiss() }
+                    Button(role: .close) { dismiss() }
+                        .tint(.primary)
                 }
             }
         }

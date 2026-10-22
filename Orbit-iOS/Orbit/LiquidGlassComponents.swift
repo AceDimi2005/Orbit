@@ -37,64 +37,15 @@ enum OrbitHaptics {
 
 // MARK: - Glass surface
 
-/// A restrained material surface shared by every screen. The improved style uses
-/// an opaque tinted surface with a soft specular edge; the classic style keeps
-/// translucent materials. Both respect Reduce Transparency.
+
+/// Grouped content: a quiet solid surface (the redesign keeps Liquid Glass for controls).
 struct LiquidGlassCard: ViewModifier {
-    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
-    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var cornerRadius: CGFloat = 22
     var tint: Color = .white
     var elevated: Bool = false
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .background {
-                // Shadows are cast by the card silhouette only, never by the
-                // glyphs inside it (important for the translucent Glass style).
-                ZStack {
-                    if theme.isFlat {
-                        shape.fill(theme.surface)
-                    } else if style == .improved || reduceTransparency {
-                        shape
-                            .fill(theme.surface)
-                            .overlay {
-                                shape.fill(
-                                    LinearGradient(
-                                        colors: [tint.opacity(elevated ? 0.12 : 0.07), tint.opacity(0.015), .clear],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                            }
-                    } else {
-                        shape
-                            .fill(.ultraThinMaterial)
-                            .overlay { shape.fill(tint.opacity(elevated ? 0.09 : 0.05)) }
-                    }
-                }
-                .compositingGroup()
-                .shadow(color: .black.opacity(theme.isFlat ? 0.0 : (style == .improved ? 0.28 : 0.18)), radius: elevated ? 22 : 12, y: elevated ? 10 : 5)
-                .shadow(color: elevated && !reduceGlow && !theme.isFlat ? tint.opacity(0.12) : .clear, radius: 30, y: 8)
-            }
-            .overlay {
-                if theme.isFlat {
-                    shape.strokeBorder(theme.hairline, lineWidth: 1)
-                } else {
-                    // Specular top edge + soft outer hairline.
-                    shape.strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(elevated ? 0.26 : 0.18), .white.opacity(0.06), tint.opacity(0.10)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-                }
-            }
+        content.background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: max(cornerRadius, 18), style: .continuous))
     }
 }
 
@@ -106,50 +57,13 @@ extension View {
 
 // MARK: - Ambient background
 
+
+/// The canvas behind every screen: plain black.
 struct OrbitAmbientBackground: View {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
-    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
-    @AppStorage("orbit.reduceGlow") private var reduceGlow = false
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var isOnline: Bool
 
-    // The glow is static: a perpetually drifting blur costs CPU on every frame
-    // for no information. Noir shows the plain black background.
     var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            ZStack {
-                theme.background
-                if !theme.isFlat {
-                    LinearGradient(
-                        colors: [theme.background.opacity(0), .black.opacity(0.35)],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-                }
-                if !reduceGlow && !reduceTransparency && !theme.isFlat {
-                    let strength = style == .improved ? 0.9 : 1.25
-                    Ellipse()
-                        .fill(theme.accent.opacity(0.13 * strength))
-                        .frame(width: size.width * 1.15, height: size.height * 0.42)
-                        .blur(radius: 110)
-                        .offset(x: -size.width * 0.30, y: -size.height * 0.30)
-                    Ellipse()
-                        .fill(theme.secondary.opacity(0.10 * strength))
-                        .frame(width: size.width * 0.95, height: size.height * 0.38)
-                        .blur(radius: 120)
-                        .offset(x: size.width * 0.38, y: size.height * 0.22)
-                    Circle()
-                        .fill((isOnline ? theme.accent : Color.orange).opacity(0.06 * strength))
-                        .frame(width: size.width * 0.7)
-                        .blur(radius: 90)
-                        .offset(x: size.width * 0.1, y: size.height * 0.62)
-                }
-            }
-            .frame(width: size.width, height: size.height)
-            .clipped()
-        }
-        .ignoresSafeArea()
+        OrbitPalette.canvas.ignoresSafeArea()
     }
 }
 
@@ -181,53 +95,30 @@ extension OrbitTheme {
 
 // MARK: - Shared primitives
 
-/// Rounded-square icon badge used for rows, tiles and headers.
+
+/// A row or header symbol. Plain glyphs, no colored tiles: color is kept for status.
 struct OrbitIconBadge: View {
     var systemName: String
     var tint: Color
     var size: CGFloat = 36
     var filled: Bool = false
-    @Environment(\.orbitTheme) private var theme
-
-    /// Noir keeps badges monochrome: a filled badge uses the theme accent, everything
-    /// else is a white glyph on a neutral tile, so colour is reserved for status.
-    private var fillStyle: AnyShapeStyle {
-        if theme.isFlat {
-            return filled ? AnyShapeStyle(theme.accent) : AnyShapeStyle(Color.white.opacity(0.08))
-        }
-        return filled
-            ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
-    }
-    private var glyphColor: Color {
-        if filled { return Color.black.opacity(0.85) }
-        return theme.isFlat ? Color.white.opacity(0.92) : tint
-    }
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(fillStyle)
-                .overlay(
-                    RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                        .strokeBorder(.white.opacity(filled ? 0.22 : (theme.isFlat ? 0.10 : 0.08)), lineWidth: 1)
-                )
-            Image(systemName: systemName)
-                .font(.system(size: size * 0.44, weight: .semibold))
-                .foregroundStyle(glyphColor)
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        Image(systemName: systemName)
+            .font(.system(size: size * 0.5, weight: .medium))
+            .foregroundStyle(filled ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
-/// Small eyebrow-style header for grouped content.
+
+/// Section title in sentence case with an optional trailing control.
 struct LegacyOrbitSectionHeader<Trailing: View>: View {
     var title: String
     var icon: String? = nil
     var tint: Color? = nil
     var trailing: Trailing
-    @Environment(\.orbitAccent) private var accent
 
     init(_ title: String, icon: String? = nil, tint: Color? = nil, @ViewBuilder trailing: () -> Trailing) {
         self.title = title
@@ -237,16 +128,10 @@ struct LegacyOrbitSectionHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            if let icon {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(tint ?? accent)
-            }
-            Text(title.uppercased())
-                .font(.system(.caption2, weight: .bold))
-                .tracking(1.1)
-                .foregroundStyle(.white.opacity(0.62))
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
             Spacer(minLength: 0)
             trailing
         }
@@ -261,43 +146,29 @@ extension LegacyOrbitSectionHeader where Trailing == EmptyView {
     }
 }
 
-/// Capsule status indicator, optionally pulsing while live.
+
+/// A status light with its label; it pulses while something is live.
 struct OrbitStatusPill: View {
     var text: String
     var tint: Color
     var pulsing: Bool = false
     var icon: String? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
 
     var body: some View {
         HStack(spacing: 6) {
             if let icon {
-                Image(systemName: icon).font(.system(size: 10, weight: .bold))
+                Image(systemName: icon)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint)
+                Text(text)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             } else {
-                ZStack {
-                    if pulsing && !reduceMotion {
-                        Circle().fill(tint.opacity(0.5))
-                            .frame(width: 7, height: 7)
-                            .scaleEffect(pulse ? 2.2 : 1)
-                            .opacity(pulse ? 0 : 0.8)
-                    }
-                    Circle().fill(tint).frame(width: 7, height: 7)
-                }
-                .frame(width: 10, height: 10)
+                OrbitStatusLabel(text: text, color: tint, pulsing: pulsing)
+                    .font(.footnote)
+                    .lineLimit(1)
             }
-            Text(text)
-                .font(.system(.caption2, weight: .bold))
-                .lineLimit(1)
-        }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
-        .onAppear {
-            guard pulsing && !reduceMotion else { return }
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true }
         }
     }
 }
@@ -324,7 +195,6 @@ struct OrbitRingGauge: View {
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .shadow(color: reduceGlow || theme.isFlat ? .clear : tint.opacity(0.55), radius: 6)
                     .animation(.snappy(duration: 0.45), value: clamped)
             }
         }
@@ -419,36 +289,29 @@ extension ButtonStyle where Self == OrbitPressableStyle {
     static var orbitPressable: OrbitPressableStyle { OrbitPressableStyle() }
 }
 
-/// Prominent gradient call-to-action.
+
+/// The main action of a screen: a full-width tinted glass button.
 struct OrbitProminentButtonStyle: ButtonStyle {
     var colors: [Color]
     var foreground: Color = .black
     var cornerRadius: CGFloat = 16
     @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.orbitTheme) private var theme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline.weight(.bold))
-            .foregroundStyle(foreground)
+            .font(.headline)
+            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 15)
-            .background(
-                LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(.white.opacity(0.25), lineWidth: 1)
-            )
-            .shadow(color: theme.isFlat ? .clear : (colors.first ?? .clear).opacity(configuration.isPressed ? 0.15 : 0.35), radius: 16, y: 8)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .opacity(isEnabled ? 1 : 0.5)
-            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: configuration.isPressed)
+            .padding(.vertical, 14)
+            .glassEffect(.regular.tint(colors.first ?? OrbitPalette.accent).interactive(), in: Capsule())
+            .opacity(isEnabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(OrbitMotion.quick, value: configuration.isPressed)
     }
 }
 
-/// Subtle translucent secondary button.
+
+/// A secondary action: a glass capsule. A tint other than white colors the label.
 struct OrbitGlassButtonStyle: ButtonStyle {
     var tint: Color = .white
     var cornerRadius: CGFloat = 14
@@ -457,18 +320,18 @@ struct OrbitGlassButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(tint == .white ? Color.white : tint)
-            .padding(.horizontal, 14)
+            .foregroundStyle(tint == .white ? Color.primary : tint)
+            .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(tint.opacity(tint == .white ? 0.08 : 0.14), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(tint.opacity(0.18), lineWidth: 1))
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .opacity(!isEnabled ? 0.45 : (configuration.isPressed ? 0.85 : 1))
-            .animation(.spring(response: 0.26, dampingFraction: 0.72), value: configuration.isPressed)
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .opacity(isEnabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(OrbitMotion.quick, value: configuration.isPressed)
     }
 }
 
-/// Square quick-action tile used on the dashboard and remote.
+
+/// A square action: symbol over a short label, on a quiet surface; tinted while active.
 struct OrbitActionTile: View {
     var title: String
     var icon: String
@@ -481,25 +344,18 @@ struct OrbitActionTile: View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(isActive ? Color.black.opacity(0.85) : tint)
+                    .font(.system(size: 17, weight: .medium))
                     .frame(height: 20)
                 Text(title)
-                    .font(.system(.caption, weight: .semibold))
-                    .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.white.opacity(0.9))
+                    .font(.caption.weight(.medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
+            .foregroundStyle(isActive ? Color.white : Color.primary)
             .frame(maxWidth: .infinity, minHeight: minHeight)
             .padding(.horizontal, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(isActive ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Color.white.opacity(0.055)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(isActive ? tint.opacity(0.4) : .white.opacity(0.07), lineWidth: 1)
-            )
+            .background(isActive ? AnyShapeStyle(tint) : AnyShapeStyle(OrbitPalette.well),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.orbitPressable)
         .accessibilityLabel(title)
@@ -604,24 +460,19 @@ struct HardwareMetricCard: View {
 
 // MARK: - Misc
 
+
+/// The Orbit mark, as used in older screens.
 struct LegacyOrbitMark: View {
     var size: CGFloat = 72
 
     var body: some View {
-        Image("LegacyOrbitMark")
-            .resizable()
-            .scaledToFill()
+        OrbitMark(status: .online, size: size * 0.8)
             .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: size * 0.23, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.35), radius: size * 0.12, y: size * 0.06)
-            .accessibilityHidden(true)
     }
 }
 
+
+/// An inline note: a symbol, a short title and one or two lines of explanation.
 struct OrbitNotice: View {
     var title: String
     var message: String
@@ -629,21 +480,24 @@ struct OrbitNotice: View {
     var tint: Color = .cyan
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            OrbitIconBadge(systemName: icon, tint: tint, size: 34)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: icon)
+                .font(.body.weight(.medium))
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.subheadline.weight(.semibold))
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                Text(message).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
             }
             Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlass(cornerRadius: 18, tint: tint)
+        .background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
 
-/// Friendly placeholder with an optional action, used instead of bare text.
+
+/// A calm placeholder for empty lists, with an optional action.
 struct OrbitEmptyState: View {
     var icon: String
     var title: String
@@ -653,55 +507,43 @@ struct OrbitEmptyState: View {
     var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle().fill(tint.opacity(0.12)).frame(width: 64, height: 64)
-                Circle().strokeBorder(tint.opacity(0.25), lineWidth: 1).frame(width: 64, height: 64)
-                Image(systemName: icon)
-                    .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(tint)
-            }
-            VStack(spacing: 4) {
-                Text(title).font(.headline.weight(.bold))
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(title).font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .buttonStyle(OrbitGlassButtonStyle(tint: tint))
-                    .padding(.top, 2)
+                    .buttonStyle(OrbitGlassButtonStyle())
+                    .padding(.top, 4)
             }
         }
-        .padding(.vertical, 22)
+        .padding(.vertical, 24)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
     }
 }
 
-/// Applies the Orbit look to a `List`/`Form`: hidden system background with
-/// the ambient theme behind it. Combine with `.orbitRow()` on sections.
+
+/// Lists and forms on the black canvas.
 struct OrbitListChrome: ViewModifier {
     var isOnline: Bool
     func body(content: Content) -> some View {
         content
             .scrollContentBackground(.hidden)
-            .background(OrbitAmbientBackground(isOnline: isOnline))
+            .background(OrbitPalette.canvas)
     }
 }
 
+
 struct OrbitRowBackground: ViewModifier {
-    @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
-    @AppStorage("orbit.style") private var style: OrbitVisualStyle = .improved
     var tint: Color?
     func body(content: Content) -> some View {
-        content.listRowBackground(
-            ZStack {
-                theme.surface.opacity(theme.isFlat ? 1 : (style == .improved ? 0.92 : 0.6))
-                if let tint, !theme.isFlat { tint.opacity(0.06) }
-            }
-        )
+        content.listRowBackground(OrbitPalette.surface)
     }
 }
 
@@ -710,7 +552,8 @@ extension View {
     func orbitRow(tint: Color? = nil) -> some View { modifier(OrbitRowBackground(tint: tint)) }
 }
 
-/// Labelled value used in hero cards (e.g. "PING  4 ms").
+
+/// A small labelled value ("Ping 4 ms").
 struct OrbitStatChip: View {
     var label: String
     var value: String
@@ -718,24 +561,16 @@ struct OrbitStatChip: View {
     var icon: String? = nil
 
     var body: some View {
-        HStack(spacing: 5) {
-            if let icon {
-                Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(tint.opacity(0.9))
-            }
-            Text(label.uppercased())
-                .font(.system(.caption2, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(.white.opacity(0.5))
+        HStack(spacing: 4) {
+            Text(label)
+                .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(.caption, weight: .bold))
+                .fontWeight(.semibold)
                 .monospacedDigit()
-                .foregroundStyle(.white.opacity(0.92))
                 .contentTransition(.numericText())
                 .lineLimit(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(.white.opacity(0.06), in: Capsule())
+        .font(.footnote)
     }
 }
 

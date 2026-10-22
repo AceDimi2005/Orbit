@@ -40,7 +40,7 @@ struct VitalDetailView: View {
                     if !samples.isEmpty { stats }
                     if !relatedProcesses.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            OrbitSectionHeader("Using the most")
+                            OrbitSectionHeader("Using the Most")
                             VStack(spacing: 0) {
                                 ForEach(Array(relatedProcesses.enumerated()), id: \.element.id) { index, process in
                                     if index > 0 { Divider().overlay(OrbitPalette.hairline) }
@@ -54,12 +54,12 @@ struct VitalDetailView: View {
                 .padding(.horizontal, OrbitMetrics.gutter)
                 .padding(.bottom, 32)
             }
-            .background(OrbitPalette.canvas)
             .navigationTitle(vital.label)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", systemImage: "checkmark") { dismiss() }
+                    Button(role: .close) { dismiss() }
+                        .tint(.primary)
                 }
             }
             .task {

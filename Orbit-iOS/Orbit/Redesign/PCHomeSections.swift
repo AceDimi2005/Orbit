@@ -125,9 +125,19 @@ struct PCVitalsSection: View {
         return Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: count)
     }
 
+    private func tile(_ metric: DashboardMetric) -> some View {
+        Button {
+            OrbitHaptics.tap()
+            vital = metric
+        } label: {
+            PCVitalTile(vital: PCVital(metric, vm: vm))
+        }
+        .buttonStyle(PCTileButtonStyle())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            OrbitSectionHeader("Right now") {
+            OrbitSectionHeader("Right Now") {
                 Button("Edit") { showsCustomize = true }
             }
             if vm.metrics.telemetryAvailable == false {
@@ -136,16 +146,13 @@ struct PCVitalsSection: View {
                     .foregroundStyle(.secondary)
                     .orbitSurface()
             } else {
+                let shown = metrics
+                let paired = columns.count > 1 && shown.count % 2 == 1 ? Array(shown.dropLast()) : shown
                 LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(metrics) { metric in
-                        Button {
-                            OrbitHaptics.tap()
-                            vital = metric
-                        } label: {
-                            PCVitalTile(vital: PCVital(metric, vm: vm))
-                        }
-                        .buttonStyle(PCTileButtonStyle())
-                    }
+                    ForEach(paired) { metric in tile(metric) }
+                }
+                if paired.count < shown.count, let last = shown.last {
+                    tile(last)
                 }
             }
         }
@@ -304,7 +311,7 @@ struct PCActivitySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            OrbitSectionHeader("Using the most") {
+            OrbitSectionHeader("Using the Most") {
                 NavigationLink("Task Manager", value: PCHomeDestination.processes)
             }
             VStack(spacing: 0) {

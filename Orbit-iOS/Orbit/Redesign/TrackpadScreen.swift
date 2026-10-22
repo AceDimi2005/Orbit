@@ -28,9 +28,10 @@ struct TrackpadScreen: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Close", systemImage: "xmark") { dismiss() }
+                        Button(role: .close) { dismiss() }
+                            .tint(.primary)
                     }
-                    ToolbarItem(placement: .topBarTrailing) { moreMenu }
+                    ToolbarItem(placement: .topBarTrailing) { moreMenu.tint(.primary) }
                     ToolbarItemGroup(placement: .keyboard) { keyboardKeys }
                 }
                 .background {

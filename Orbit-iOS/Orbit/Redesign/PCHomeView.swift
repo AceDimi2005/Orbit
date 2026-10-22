@@ -38,13 +38,13 @@ struct PCHomeView: View {
                 .frame(maxWidth: .infinity)
                 .animation(OrbitMotion.standard, value: state)
             }
-            .scrollEdgeEffectStyle(.soft, for: .top)
             .background(OrbitPalette.canvas)
-            .navigationTitle(vm.isConfigured || vm.isDemoMode ? vm.selectedPCName : "Orbit")
+            .navigationTitle(vm.isConfigured || vm.isDemoMode ? vm.selectedPCName : "Your PC")
             .toolbarTitleMenu { pcMenu }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Settings", systemImage: "gearshape") { vm.isShowingIPConfigSheet = true }
+                        .tint(.primary)
                 }
             }
             .refreshable { await vm.refreshMetrics() }
@@ -193,10 +193,9 @@ private struct PCStatusHeader: View {
     private var title: String {
         switch state {
         case .setup: return "No PC yet"
-        case .demo: return "Online"
+        case .demo, .online: return PCTakeaway(metrics: vm.metrics).headline
         case .connecting: return "Connecting…"
         case .waking: return "Waking up…"
-        case .online: return "Online"
         case .locked: return "Locked"
         case .offline: return "Asleep or off"
         }
@@ -209,14 +208,32 @@ private struct PCStatusHeader: View {
         case .connecting: return "Reaching Orbit Companion on \(vm.cleanHost())"
         case .waking: return "Sent the wake-up signal. This takes up to a minute."
         case .online, .locked:
-            var parts: [String] = []
+            var parts: [String] = ["Online"]
             if vm.pingMs > 0 { parts.append("\(vm.pingMs) ms") }
             if vm.metrics.uptimeSeconds > 0 { parts.append("up \(OrbitFormat.duration(seconds: vm.metrics.uptimeSeconds))") }
-            if state == .locked { parts.append("Windows is locked") }
-            return parts.isEmpty ? "Connected" : parts.joined(separator: " · ")
+            if state == .locked { parts[0] = "Windows is locked" }
+            return parts.joined(separator: " · ")
         case .offline:
-            return vm.pcMAC.isEmpty ? "Orbit can't reach it right now." : "Orbit can wake it over your network."
+            let reach = vm.pcMAC.isEmpty ? "Orbit can't reach it right now." : "Orbit can wake it over your network."
+            guard let last = vm.lastUpdated else { return reach }
+            return "Last update \(last.formatted(date: .omitted, time: .shortened)). \(reach)"
         }
+    }
+}
+
+/// One sentence about how the PC is doing, from the readings that matter most.
+struct PCTakeaway {
+    var metrics: PCMetrics
+
+    var headline: String {
+        if let temp = metrics.cpuTemp, temp >= 90 { return "Processor is hot · \(Int(temp))°" }
+        if let temp = metrics.gpuTemp, temp >= 85 { return "Graphics card is hot · \(Int(temp))°" }
+        if metrics.cpuUsage >= 85 { return "Processor is busy · \(Int(metrics.cpuUsage))%" }
+        if let gpu = metrics.gpuUsage, gpu >= 90, metrics.activeGame == nil { return "Graphics card is busy · \(Int(gpu))%" }
+        if metrics.ramTotalGB > 0, metrics.ramUsedGB / metrics.ramTotalGB >= 0.9 { return "Memory is almost full" }
+        if metrics.activeGame != nil { return "In game" }
+        if let cpu = metrics.cpuTemp, cpu < 65, (metrics.gpuTemp ?? 0) < 65, metrics.cpuUsage < 30 { return "Running cool and quiet" }
+        return metrics.cpuUsage < 30 ? "Idle" : "Running smoothly"
     }
 }
 

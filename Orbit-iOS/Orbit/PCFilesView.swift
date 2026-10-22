@@ -416,11 +416,7 @@ struct PCFilesView: View {
     }
 
     private func sectionTitle(_ title: String, icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .font(.caption.weight(.bold))
-            .tracking(0.6)
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
+        Text(title)
     }
 
     private func locationTile(_ name: String, icon: String) -> some View {
@@ -452,27 +448,23 @@ struct PCFilesView: View {
     }
 
     private func driveRow(_ location: PCFileLocation) -> some View {
-        let letter = String(location.path.replacingOccurrences(of: "\\", with: "").replacingOccurrences(of: ":", with: "").prefix(1)).uppercased()
         let external = location.kind == "external"
         return Button { open(location.path) } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(external ? Color.orange.opacity(0.18) : theme.accent.opacity(0.16))
-                        .frame(width: 36, height: 36)
-                    Text(letter.isEmpty ? "?" : letter)
-                        .font(.system(size: 15, weight: .heavy, design: .rounded))
-                        .foregroundStyle(external ? Color.orange : theme.accent)
-                }
+            HStack(spacing: 14) {
+                Image(systemName: external ? "externaldrive" : "internaldrive")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(location.name).foregroundStyle(.primary).lineLimit(1)
-                    Text(external ? "Removable drive" : "Local drive").font(.caption2).foregroundStyle(.secondary)
+                    Text(external ? "Removable drive" : "Local drive").font(.footnote).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: external ? "externaldrive.fill" : "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 4)
         }
+        .tint(.primary)
         .disabled(!enabled)
     }
 
@@ -605,11 +597,13 @@ struct PCFilesView: View {
                         .pickerStyle(.inline)
                     }
                     Button("Refresh", systemImage: "arrow.clockwise") { refreshID = UUID() }
-                } label: { Image(systemName: "plus.circle") }
+                } label: { Image(systemName: "plus") }
+                .tint(.primary)
                 .disabled(!enabled || transferTitle != nil)
                 .accessibilityLabel("Add or upload")
             } else {
                 Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                    .tint(.primary)
                     .disabled(!enabled || transferTitle != nil)
                     .accessibilityLabel("Refresh locations")
             }

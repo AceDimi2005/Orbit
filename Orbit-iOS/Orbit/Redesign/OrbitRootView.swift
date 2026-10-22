@@ -50,11 +50,11 @@ struct OrbitRootView: View {
         }
         .onChange(of: vm.metrics.sessionLocked, initial: true) { _, locked in stream.pcLocked = locked == true }
         .sheet(isPresented: $vm.showOnboarding) {
-            OnboardingView(vm: vm)
+            WelcomeView(vm: vm)
                 .interactiveDismissDisabled(!vm.hasCompletedOnboarding)
         }
         .sheet(isPresented: $vm.isShowingIPConfigSheet) {
-            SettingsView(vm: vm, isPresentedAsSheet: true)
+            SettingsHubView(vm: vm)
         }
         .sheet(isPresented: $showsPro) { OrbitProPaywallView() }
         .confirmationDialog(confirmation?.question ?? "", isPresented: Binding(

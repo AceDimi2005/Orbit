@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A2000000000000000000010C /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010C /* WelcomeView.swift */; };
+		A2000000000000000000010B /* SettingsHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010B /* SettingsHubView.swift */; };
 		A2000000000000000000010A /* PlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010A /* PlayView.swift */; };
 		A20000000000000000000109 /* TrackpadScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000109 /* TrackpadScreen.swift */; };
 		A20000000000000000000108 /* VitalDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000108 /* VitalDetailView.swift */; };
@@ -201,6 +203,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000010C /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
+		B2000000000000000000010B /* SettingsHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHubView.swift; sourceTree = "<group>"; };
 		B2000000000000000000010A /* PlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayView.swift; sourceTree = "<group>"; };
 		B20000000000000000000109 /* TrackpadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackpadScreen.swift; sourceTree = "<group>"; };
 		B20000000000000000000108 /* VitalDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VitalDetailView.swift; sourceTree = "<group>"; };
@@ -357,6 +361,8 @@
 				B20000000000000000000108 /* VitalDetailView.swift */,
 				B20000000000000000000109 /* TrackpadScreen.swift */,
 				B2000000000000000000010A /* PlayView.swift */,
+				B2000000000000000000010B /* SettingsHubView.swift */,
+				B2000000000000000000010C /* WelcomeView.swift */,
 			);
 			path = Redesign;
 			sourceTree = "<group>";
@@ -753,6 +759,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2000000000000000000010C /* WelcomeView.swift in Sources */,
+				A2000000000000000000010B /* SettingsHubView.swift in Sources */,
 				A2000000000000000000010A /* PlayView.swift in Sources */,
 				A20000000000000000000109 /* TrackpadScreen.swift in Sources */,
 				A20000000000000000000108 /* VitalDetailView.swift in Sources */,
