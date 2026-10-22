@@ -200,10 +200,7 @@ private struct ProcessRowLabel: View {
     var body: some View {
         HStack(spacing: 10) {
             OrbitAppIconView(store: store, iconID: process.iconID, size: 30) {
-                Image(systemName: "app")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
+                OrbitIconMonogram(name: process.name, size: 30)
             }
             HStack(spacing: 5) {
                 Text(process.name)
@@ -267,10 +264,7 @@ private struct ProcessDetailSheet: View {
             OrbitPage(spacing: 22) {
                 HStack(spacing: 14) {
                     OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 52) {
-                        Image(systemName: "app")
-                            .font(.title)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 52, height: 52)
+                        OrbitIconMonogram(name: process.name, size: 52)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(process.name)

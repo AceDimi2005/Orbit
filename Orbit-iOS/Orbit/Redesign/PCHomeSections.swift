@@ -269,10 +269,7 @@ struct PCProcessRow: View {
     var body: some View {
         HStack(spacing: 12) {
             OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 30) {
-                Image(systemName: "app")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
+                OrbitIconMonogram(name: process.name, size: 30)
             }
             Text(process.name)
                 .font(.subheadline.weight(.medium))

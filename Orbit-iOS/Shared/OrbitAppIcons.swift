@@ -172,6 +172,35 @@ struct OrbitAppIconView<Fallback: View>: View {
     }
 }
 
+/// The stand-in for an app without a Windows icon, and for one still loading: the name's first
+/// letter on the same tile the icons sit on, so it reads as an app and not as an empty box.
+struct OrbitIconMonogram: View {
+    var name: String
+    var size: CGFloat
+
+    var body: some View {
+        Text(Self.letter(for: name))
+            .font(.system(size: size * 0.46, weight: .semibold, design: .rounded))
+            .foregroundStyle(.secondary)
+            .frame(width: size, height: size)
+            .background {
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                    )
+            }
+            .accessibilityHidden(true)
+    }
+
+    /// "chrome.exe" → "C"; a name without a letter or digit gets a dot.
+    static func letter(for name: String) -> String {
+        let base = name.lowercased().hasSuffix(".exe") ? String(name.dropLast(4)) : name
+        return base.first(where: { $0.isLetter || $0.isNumber }).map { String($0).uppercased() } ?? "•"
+    }
+}
+
 /// How the agent groups audio sessions (agent 4.4+), in the order Windows Task Manager uses.
 enum OrbitAudioSessionKind: String, CaseIterable, Identifiable {
     case app, background, system

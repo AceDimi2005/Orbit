@@ -430,9 +430,7 @@ struct MacProcessSummaryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             OrbitAppIconView(store: vm.appIcons, iconID: process.iconID, size: 22) {
-                Image(systemName: "app")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                OrbitIconMonogram(name: process.name, size: 22)
             }
             Text(process.name)
                 .lineLimit(1)
