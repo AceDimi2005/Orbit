@@ -87,10 +87,10 @@ struct MacPCsView: View {
     private var demoBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles").foregroundStyle(.orange)
-            Text("Demo mode · simulated data. Connect to a saved PC or switch demo off below to go live.")
+            Text("You're looking at sample data.")
                 .font(.caption.weight(.semibold))
             Spacer()
-            Button("Leave Demo Mode") { vm.setDemoMode(false) }
+            Button("Leave the Demo") { vm.setDemoMode(false) }
                 .buttonStyle(MacHoverButtonStyle(tint: .orange))
         }
         .padding(.horizontal, 14)
@@ -103,7 +103,7 @@ struct MacPCsView: View {
     private var savedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             MacSectionHeader("Your PCs",
-                             subtitle: vm.savedPCs.isEmpty ? "Nothing is paired on this Mac yet" : "Select a PC to connect. Pairing tokens stay in your Keychain.",
+                             subtitle: vm.savedPCs.isEmpty ? "No PCs on this Mac yet" : "Choose the PC Orbit shows",
                              icon: "desktopcomputer") {
                 if !vm.savedPCs.isEmpty { MacStatChip(label: "Saved", value: "\(vm.savedPCs.count)") }
             }
@@ -157,7 +157,7 @@ struct MacPCsView: View {
 
     private var nearbySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Nearby", subtitle: "PCs running Orbit Agent on this network (Bonjour)", icon: "dot.radiowaves.left.and.right") {
+            MacSectionHeader("Nearby", subtitle: "PCs with Orbit Companion on this network", icon: "dot.radiowaves.left.and.right") {
                 if vm.isScanning { MacStatusPill(text: "Scanning", tint: theme.accent, pulsing: true) }
                 Button { rescan() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(MacIconButtonStyle(size: 26))
@@ -191,9 +191,9 @@ struct MacPCsView: View {
                 Image(systemName: "wifi.slash").foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(vm.isScanning ? "Listening for Orbit Agent…" : "Discovery is paused")
+                Text(vm.isScanning ? "Looking for PCs…" : "Not looking right now")
                     .font(.subheadline.weight(.semibold))
-                Text("Start Orbit Agent on the PC and keep both devices on the same network. Allow Local Network access for Orbit if macOS asks.")
+                Text("Open Orbit Companion on the PC and keep both on the same network. Allow Local Network access if macOS asks.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -228,7 +228,7 @@ struct MacPCsView: View {
 
     private var manualSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("By Address", subtitle: "Pair by address when Bonjour is blocked (VLANs, guest Wi-Fi, firewalls)", icon: "number")
+            MacSectionHeader("By Address", subtitle: "When your PC doesn't show up nearby, enter its address", icon: "number")
             HStack(alignment: .bottom, spacing: 10) {
                 MacPcsField(title: "Host or IPv4", placeholder: "192.168.1.50", text: $manualHost, monospaced: true, submit: { probeManual() })
                 MacPcsField(title: "Discovery port", placeholder: "\(MacPcsFormat.defaultDiscoveryPort)", text: $manualPort, monospaced: true, width: 130, submit: { probeManual() })
@@ -244,9 +244,9 @@ struct MacPCsView: View {
                 }
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
                 .disabled(vm.isProbing || manualHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Ask the agent at this address for its certificate fingerprint")
+                .help("Find Orbit Companion at this address")
             }
-            Text("Orbit asks the agent's public discovery endpoint (default port \(MacPcsFormat.defaultDiscoveryPort)) for its certificate fingerprint, then opens the PIN sheet. Found PCs also appear under Nearby.")
+            Text("Orbit checks the PC at this address (port \(MacPcsFormat.defaultDiscoveryPort) unless you add another), then asks for the code it shows.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -271,7 +271,7 @@ struct MacPCsView: View {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     iPhoneHint("icloud", "Same Apple Account", "Sign in to iCloud on both devices; the pairing syncs through iCloud Key-Value Storage.")
-                    iPhoneHint("wifi", "Same Wi-Fi", "Or open Orbit on your iPhone on this network; the Mac finds it over Bonjour and copies the pairing.")
+                    iPhoneHint("wifi", "Same Wi-Fi", "Or open Orbit on your iPhone on this network; the Mac finds it and copies the pairing.")
                 }
                 Spacer(minLength: 8)
                 Button { Task { await vm.syncFromiPhone(silent: false) } } label: {
@@ -438,7 +438,7 @@ private struct MacPcsSavedCard: View {
                     .textSelection(.enabled)
                 HStack(spacing: 6) {
                     MacStatusPill(text: pc.isSecure ? "Encrypted" : "Legacy", tint: pc.isSecure ? Color.mint : Color.orange, icon: pc.isSecure ? "lock.fill" : "lock.open")
-                    MacStatChip(label: "Agent port", value: "\(pc.agentPort)")
+                    MacStatChip(label: "Port", value: "\(pc.agentPort)")
                     if isLive { MacStatChip(label: "Ping", value: "\(vm.pingMs) ms") }
                 }
             }
@@ -668,7 +668,7 @@ private struct MacPcsPairingSheet: View {
         return VStack(alignment: .leading, spacing: 16) {
             Text("Enter the 6-digit PIN shown on your PC")
                 .font(.subheadline.weight(.semibold))
-            Text("Orbit Agent shows the code in its window and as a Windows notification. Each request issues a new code.")
+            Text("Orbit Companion shows the code on the PC. Each request makes a new one.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 16) {

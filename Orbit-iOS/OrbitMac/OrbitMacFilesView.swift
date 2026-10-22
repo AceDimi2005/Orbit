@@ -431,7 +431,7 @@ struct MacFilesView: View {
                     }
                     if roots.roots.isEmpty && roots.shortcuts.isEmpty {
                         MacEmptyState(icon: "externaldrive.badge.questionmark", title: "No locations",
-                                      message: "The Orbit Agent did not report any drives or folders for this PC.", tint: theme.accent)
+                                      message: "The PC didn't report any drives or folders.", tint: theme.accent)
                     }
                 }
                 .padding(16)
@@ -439,7 +439,7 @@ struct MacFilesView: View {
             .macGlass(cornerRadius: 18)
         } else if let error = vm.filesError {
             MacEmptyState(icon: "folder.badge.gearshape", title: "File access unavailable",
-                          message: "\(error) If this keeps happening, turn on file access in the Orbit Agent settings on Windows.",
+                          message: "\(error) If this keeps happening, turn on file access in Orbit Companion on the PC.",
                           tint: .orange, actionTitle: "Try Again") { Task { await vm.refreshFiles() } }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .macGlass(cornerRadius: 18, tint: .orange)

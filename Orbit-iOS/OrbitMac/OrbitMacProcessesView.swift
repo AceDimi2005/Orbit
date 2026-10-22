@@ -634,7 +634,7 @@ struct MacProcessesView: View {
             MacEmptyState(
                 icon: "list.bullet.rectangle.portrait",
                 title: "Pair your PC",
-                message: "Running applications on your Windows PC appear here once Orbit is connected. Import the PC you paired on iPhone, or pair directly with the 6-digit code shown by Orbit Agent.",
+                message: "What's running on your PC appears here once it's connected. Pair your PC, or use the one you added on your iPhone.",
                 tint: theme.accent,
                 actionTitle: "Pair or import a PC"
             ) {

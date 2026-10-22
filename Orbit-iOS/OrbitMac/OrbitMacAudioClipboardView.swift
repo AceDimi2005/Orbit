@@ -57,7 +57,7 @@ struct MacAudioView: View {
     private var masterHint: String {
         volumeKnown
             ? "⌘⌥↑ and ⌘⌥↓ nudge the volume · ⌘⇧M toggles mute"
-            : "The agent did not report a system volume. Check the default playback device on the PC."
+            : "The PC didn't report its volume. Check its default playback device."
     }
 
     private var masterCard: some View {
@@ -130,7 +130,7 @@ struct MacAudioView: View {
                 }
             }
             if vm.audioOutputs.isEmpty {
-                Text(vm.audioUpdated == nil && !vm.isDemoMode ? "Reading playback devices…" : "The agent did not report any playback devices.")
+                Text(vm.audioUpdated == nil && !vm.isDemoMode ? "Reading playback devices…" : "The PC didn't report any playback devices.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -300,7 +300,7 @@ struct MacAudioView: View {
         MacEmptyState(
             icon: "wifi.slash",
             title: "\(vm.selectedPCName) is offline",
-            message: vm.connectionError.map { "The audio mixer needs a live connection. \($0)" } ?? "The audio mixer needs a live connection to the Orbit Agent.",
+            message: vm.connectionError.map { "Sound needs the PC to be connected. \($0)" } ?? "Sound needs the PC to be connected.",
             tint: .orange,
             actionTitle: vm.isWaking ? "Waking…" : "Retry",
             action: { Task { await vm.refreshMetrics() } }
@@ -727,7 +727,7 @@ struct MacClipboardView: View {
         MacEmptyState(
             icon: "wifi.slash",
             title: "\(vm.selectedPCName) is offline",
-            message: vm.connectionError.map { "The shared clipboard needs a live connection. \($0)" } ?? "The shared clipboard needs a live connection to the Orbit Agent.",
+            message: vm.connectionError.map { "The clipboard needs the PC to be connected. \($0)" } ?? "The clipboard needs the PC to be connected.",
             tint: .orange,
             actionTitle: vm.isWaking ? "Waking…" : "Retry",
             action: { Task { await vm.refreshMetrics() } }

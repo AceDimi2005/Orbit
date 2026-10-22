@@ -348,7 +348,7 @@ fileprivate struct MacPreviewCanvas: View {
     private func content(size: CGSize) -> some View {
         if !vm.isConfigured {
             MacEmptyState(icon: "desktopcomputer", title: "Pair your PC",
-                          message: "Import the PC you already paired on your iPhone, or pair directly with the 6-digit code shown by Orbit Agent on Windows.",
+                          message: "Pair your PC, or use the one you added on your iPhone.",
                           tint: theme.accent, actionTitle: "Open My PCs") { goToPCs() }
         } else if vm.isDemoMode {
             MacEmptyState(icon: "sparkles", title: "Demo mode",

@@ -109,7 +109,7 @@ struct MacRemoteView: View {
         MacEmptyState(
             icon: "computermouse.fill",
             title: "Pair your PC to use remote control",
-            message: "Import the PC you already paired on your iPhone, or pair directly with the 6-digit code shown by Orbit Agent on Windows. The trackpad, keyboard, media and gamepad controls appear here once a PC is connected.",
+            message: "Pair your PC, or use the one you added on your iPhone. The trackpad, keyboard and media controls appear here once it's connected.",
             tint: theme.accent,
             actionTitle: "Pair or import a PC"
         ) { vm.selectedSection = .pcs }
@@ -140,7 +140,7 @@ struct MacRemoteView: View {
                 Text(vm.isWaking ? "Waking \(name)…" : "Connecting to \(name)…")
                     .font(.headline.weight(.bold))
                     .padding(.top, 12)
-                Text("Remote controls unlock as soon as Orbit Agent replies.")
+                Text("The controls appear as soon as the PC answers.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
@@ -149,7 +149,7 @@ struct MacRemoteView: View {
                 MacEmptyState(
                     icon: "wifi.slash",
                     title: "\(name) is offline",
-                    message: vm.connectionError ?? "Remote control needs a live connection to Orbit Agent on your PC.",
+                    message: vm.connectionError ?? "Remote needs the PC to be connected.",
                     tint: .orange,
                     actionTitle: canWake ? "Power On" : "Retry"
                 ) {
@@ -336,7 +336,7 @@ struct MacRemoteView: View {
                 .accessibilityLabel("Send text")
             }
             if typedText.count > 1000 {
-                Text("Orbit Agent accepts up to 1000 characters per send.")
+                Text("Up to 1,000 characters at a time.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
@@ -450,7 +450,7 @@ struct MacRemoteView: View {
 
     private var gamepadCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Gamepad", subtitle: "Agent keyboard mapping: W A S D · Space · Esc · E · R", icon: "gamecontroller.fill")
+            MacSectionHeader("Gamepad", subtitle: "Buttons press W A S D, Space, Esc, E and R on the PC", icon: "gamecontroller.fill")
             HStack(alignment: .center, spacing: 0) {
                 dpad
                 Spacer(minLength: 12)
