@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A60000000000000000000109 /* OrbitMacStreamWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000118 /* OrbitMacStreamWindow.swift */; };
+		A60000000000000000000108 /* MacReadingsCustomizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000117 /* MacReadingsCustomizer.swift */; };
+		A60000000000000000000107 /* MacPCPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000116 /* MacPCPage.swift */; };
+		A60000000000000000000106 /* MacVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* MacVitals.swift */; };
 		A40000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A10000000000000000000104 /* OrbitVitals.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitVitals.swift */; };
 		A40000000000000000000103 /* OrbitGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000103 /* OrbitGlass.swift */; };
@@ -137,7 +141,6 @@
 		A60000000000000000000005 /* OrbitMacViewModel+Services.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000006 /* OrbitMacViewModel+Services.swift */; };
 		A60000000000000000000006 /* OrbitMacRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000007 /* OrbitMacRootView.swift */; };
 		A60000000000000000000007 /* OrbitMacMenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000008 /* OrbitMacMenuBarView.swift */; };
-		A60000000000000000000008 /* OrbitMacOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000009 /* OrbitMacOverviewView.swift */; };
 		A60000000000000000000009 /* OrbitMacRemoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000A /* OrbitMacRemoteView.swift */; };
 		A6000000000000000000000A /* OrbitMacPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000B /* OrbitMacPreviewView.swift */; };
 		A6000000000000000000000B /* OrbitMacFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6000000000000000000000C /* OrbitMacFilesView.swift */; };
@@ -226,6 +229,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000118 /* OrbitMacStreamWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacStreamWindow.swift; sourceTree = "<group>"; };
+		B20000000000000000000117 /* MacReadingsCustomizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacReadingsCustomizer.swift; sourceTree = "<group>"; };
+		B20000000000000000000116 /* MacPCPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPCPage.swift; sourceTree = "<group>"; };
+		B20000000000000000000115 /* MacVitals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacVitals.swift; sourceTree = "<group>"; };
 		B20000000000000000000114 /* AppIconSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSettingsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000113 /* AppIcon-Minimal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Minimal.icon"; sourceTree = "<group>"; };
 		B20000000000000000000112 /* AppIcon-Matrix.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-Matrix.icon"; sourceTree = "<group>"; };
@@ -314,7 +321,6 @@
 		B60000000000000000000006 /* OrbitMacViewModel+Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OrbitMacViewModel+Services.swift"; sourceTree = "<group>"; };
 		B60000000000000000000007 /* OrbitMacRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacRootView.swift; sourceTree = "<group>"; };
 		B60000000000000000000008 /* OrbitMacMenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacMenuBarView.swift; sourceTree = "<group>"; };
-		B60000000000000000000009 /* OrbitMacOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacOverviewView.swift; sourceTree = "<group>"; };
 		B6000000000000000000000A /* OrbitMacRemoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacRemoteView.swift; sourceTree = "<group>"; };
 		B6000000000000000000000B /* OrbitMacPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacPreviewView.swift; sourceTree = "<group>"; };
 		B6000000000000000000000C /* OrbitMacFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacFilesView.swift; sourceTree = "<group>"; };
@@ -382,6 +388,16 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		C20000000000000000000103 /* Redesign */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000115 /* MacVitals.swift */,
+				B20000000000000000000116 /* MacPCPage.swift */,
+				B20000000000000000000117 /* MacReadingsCustomizer.swift */,
+			);
+			path = Redesign;
+			sourceTree = "<group>";
+		};
 		C20000000000000000000102 /* Icons */ = {
 			isa = PBXGroup;
 			children = (
@@ -568,7 +584,6 @@
 				B60000000000000000000006 /* OrbitMacViewModel+Services.swift */,
 				B60000000000000000000007 /* OrbitMacRootView.swift */,
 				B60000000000000000000008 /* OrbitMacMenuBarView.swift */,
-				B60000000000000000000009 /* OrbitMacOverviewView.swift */,
 				B6000000000000000000000A /* OrbitMacRemoteView.swift */,
 				B6000000000000000000000B /* OrbitMacPreviewView.swift */,
 				B6000000000000000000000C /* OrbitMacFilesView.swift */,
@@ -582,6 +597,8 @@
 				B60000000000000000000014 /* Info.plist */,
 				B60000000000000000000016 /* OrbitMac.entitlements */,
 				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
+				C20000000000000000000103 /* Redesign */,
+				B20000000000000000000118 /* OrbitMacStreamWindow.swift */,
 			);
 			path = OrbitMac;
 			sourceTree = "<group>";
@@ -944,6 +961,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000109 /* OrbitMacStreamWindow.swift in Sources */,
+				A60000000000000000000108 /* MacReadingsCustomizer.swift in Sources */,
+				A60000000000000000000107 /* MacPCPage.swift in Sources */,
+				A60000000000000000000106 /* MacVitals.swift in Sources */,
 				A60000000000000000000104 /* OrbitVitals.swift in Sources */,
 				A60000000000000000000103 /* OrbitGlass.swift in Sources */,
 				A60000000000000000000102 /* OrbitComponents.swift in Sources */,
@@ -956,7 +977,6 @@
 				A60000000000000000000005 /* OrbitMacViewModel+Services.swift in Sources */,
 				A60000000000000000000006 /* OrbitMacRootView.swift in Sources */,
 				A60000000000000000000007 /* OrbitMacMenuBarView.swift in Sources */,
-				A60000000000000000000008 /* OrbitMacOverviewView.swift in Sources */,
 				A60000000000000000000009 /* OrbitMacRemoteView.swift in Sources */,
 				A6000000000000000000000A /* OrbitMacPreviewView.swift in Sources */,
 				A6000000000000000000000B /* OrbitMacFilesView.swift in Sources */,

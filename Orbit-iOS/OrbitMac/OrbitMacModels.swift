@@ -661,55 +661,56 @@ typealias MacSyncedPCItem = OrbitSyncedPCItem
 // MARK: - Navigation
 
 enum MacSection: String, CaseIterable, Identifiable, Codable {
-    case overview, remote, preview, files, processes, audio, clipboard, sessions, library, pcs
+    // Raw values are stored (`mac.section`); the order is the sidebar's and the View menu's.
+    case overview, library, files, remote, preview, audio, clipboard, processes, sessions, pcs
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .overview: "Overview"
-        case .remote: "Remote"
-        case .preview: "Desktop Preview"
+        case .overview: "PC"
+        case .library: "Play"
         case .files: "Files"
-        case .processes: "Processes"
-        case .audio: "Audio Mixer"
+        case .remote: "Remote"
+        case .preview: "Screen"
+        case .audio: "Sound"
         case .clipboard: "Clipboard"
-        case .sessions: "Sessions"
-        case .library: "Stream"
-        case .pcs: "My PCs"
+        case .processes: "Activity"
+        case .sessions: "History"
+        case .pcs: "PCs"
         }
     }
     var symbol: String {
         switch self {
-        case .overview: "gauge.with.dots.needle.67percent"
-        case .remote: "computermouse.fill"
+        case .overview: "desktopcomputer"
+        case .library: "gamecontroller"
+        case .files: "folder"
+        case .remote: "hand.point.up.left"
         case .preview: "display"
-        case .files: "folder.fill"
-        case .processes: "list.bullet.rectangle.portrait.fill"
-        case .audio: "slider.vertical.3"
-        case .clipboard: "doc.on.clipboard.fill"
-        case .sessions: "chart.xyaxis.line"
-        case .library: "play.rectangle.fill"
-        case .pcs: "desktopcomputer"
+        case .audio: "speaker.wave.2"
+        case .clipboard: "doc.on.clipboard"
+        case .processes: "list.bullet.rectangle"
+        case .sessions: "clock.arrow.circlepath"
+        case .pcs: "rectangle.stack"
         }
     }
     /// ⌘1 … ⌘0 shortcuts in the View menu.
     var shortcutKey: Character {
         switch self {
         case .overview: "1"
-        case .remote: "2"
-        case .preview: "3"
-        case .files: "4"
-        case .processes: "5"
+        case .library: "2"
+        case .files: "3"
+        case .remote: "4"
+        case .preview: "5"
         case .audio: "6"
         case .clipboard: "7"
-        case .sessions: "8"
-        case .library: "9"
+        case .processes: "8"
+        case .sessions: "9"
         case .pcs: "0"
         }
     }
-    static let monitorGroup: [MacSection] = [.overview, .sessions, .processes]
-    static let controlGroup: [MacSection] = [.remote, .preview, .audio, .clipboard, .files, .library]
-    static let setupGroup: [MacSection] = [.pcs]
+    static let mainGroup: [MacSection] = [.overview, .library, .files]
+    static let controlGroup: [MacSection] = [.remote, .preview, .audio, .clipboard]
+    static let monitorGroup: [MacSection] = [.processes, .sessions]
 }
 
 // MARK: - Formatting helpers shared by the Mac views

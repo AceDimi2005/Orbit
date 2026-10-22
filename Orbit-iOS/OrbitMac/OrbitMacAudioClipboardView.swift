@@ -62,7 +62,7 @@ struct MacAudioView: View {
 
     private var masterCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            MacSectionHeader("Master volume", subtitle: vm.selectedPCName, icon: "speaker.wave.3.fill") {
+            MacSectionHeader("Volume", subtitle: vm.selectedPCName, icon: "speaker.wave.3.fill") {
                 MacStatusPill(text: isMuted ? "Muted" : "Live", tint: isMuted ? .orange : .mint, pulsing: !isMuted)
             }
             HStack(alignment: .center, spacing: 16) {
@@ -679,7 +679,7 @@ struct MacClipboardView: View {
 
     private var macPreviewCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MacSectionHeader("On this Mac", subtitle: macPreviewSubtitle, icon: "laptopcomputer") {
+            MacSectionHeader("On This Mac", subtitle: macPreviewSubtitle, icon: "laptopcomputer") {
                 Button {
                     refreshMacPreview()
                 } label: {

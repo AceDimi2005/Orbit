@@ -228,7 +228,7 @@ struct MacPCsView: View {
 
     private var manualSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Manual", subtitle: "Pair by address when Bonjour is blocked (VLANs, guest Wi-Fi, firewalls)", icon: "number")
+            MacSectionHeader("By Address", subtitle: "Pair by address when Bonjour is blocked (VLANs, guest Wi-Fi, firewalls)", icon: "number")
             HStack(alignment: .bottom, spacing: 10) {
                 MacPcsField(title: "Host or IPv4", placeholder: "192.168.1.50", text: $manualHost, monospaced: true, submit: { probeManual() })
                 MacPcsField(title: "Discovery port", placeholder: "\(MacPcsFormat.defaultDiscoveryPort)", text: $manualPort, monospaced: true, width: 130, submit: { probeManual() })
@@ -812,10 +812,9 @@ private struct MacPcsField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title.uppercased())
-                .font(.system(.caption2, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(.white.opacity(0.5))
+            Text(title)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
                 .font(monospaced ? .system(.body, design: .monospaced) : .body)

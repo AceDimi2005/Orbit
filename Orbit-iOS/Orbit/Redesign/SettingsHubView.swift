@@ -394,20 +394,5 @@ struct AccentSettingsView: View {
 
 extension OrbitTheme {
     /// Plain color names for the redesigned accent picker; stored values stay the same.
-    var accentName: String {
-        switch self {
-        case .noir: return "Orbit Blue"
-        case .ocean: return "Teal"
-        case .aurora: return "Mint"
-        case .violet: return "Indigo"
-        case .ember: return "Orange"
-        case .graphite: return "Graphite"
-        case .cyberpunk: return "Pink"
-        case .solarGold: return "Gold"
-        case .crimson: return "Red"
-        case .matrix: return "Green"
-        case .arctic: return "Ice"
-        case .sakura: return "Rose"
-        }
-    }
+    var accentName: String { OrbitAccent.name(theme: rawValue) }
 }

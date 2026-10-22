@@ -637,9 +637,8 @@ struct MacSessionsView: View {
         if let stat = session.statistics[selectedMetric.rawValue] {
             HStack(spacing: 8) {
                 Text("Reported by the PC")
-                    .font(.system(.caption2, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
                 MacStatChip(label: "Avg", value: selectedMetric.formatted(stat.average))
                 MacStatChip(label: "Peak", value: selectedMetric.formatted(stat.peak))
                 MacStatChip(label: "Readings", value: "\(stat.count)")

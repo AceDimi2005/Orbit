@@ -137,6 +137,29 @@ def write_icons():
         print("wrote", package.relative_to(ROOT))
 
 
+# MARK: - Mac menu bar
+
+MAC_ASSETS = ROOT / "Orbit-iOS/OrbitMac/Assets.xcassets"
+
+
+def write_menu_bar_mark():
+    """The mark as a template image for the Mac menu bar (the system colors it)."""
+    imageset = MAC_ASSETS / "OrbitMenuBarMark.imageset"
+    imageset.mkdir(parents=True, exist_ok=True)
+    # Square view box around the ring and the satellite above it.
+    body = (f'<path fill="#000000" d="{ring_path()}"/>\n'
+            f'  <circle cx="{CENTER:.0f}" cy="{CENTER - RADIUS:.0f}" r="{SATELLITE:.0f}" fill="#000000"/>')
+    (imageset / "mark.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="185 177 654 654">\n'
+        f"  {body}\n</svg>\n")
+    (imageset / "Contents.json").write_text(json.dumps({
+        "images": [{"filename": "mark.svg", "idiom": "universal"}],
+        "info": {"author": "xcode", "version": 1},
+        "properties": {"preserves-vector-representation": True, "template-rendering-intent": "template"},
+    }, indent=2) + "\n")
+    print("wrote", imageset.relative_to(ROOT))
+
+
 # MARK: - Apple TV
 
 SS = 4  # supersampling for smooth edges
@@ -215,4 +238,5 @@ def write_tv():
 
 if __name__ == "__main__":
     write_icons()
+    write_menu_bar_mark()
     write_tv()

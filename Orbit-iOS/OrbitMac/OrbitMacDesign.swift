@@ -21,89 +21,16 @@ enum MacTheme: String, CaseIterable, Identifiable {
     case noir, ocean, aurora, violet, ember, graphite, cyberpunk, solarGold, crimson, matrix, arctic, sakura
 
     var id: String { rawValue }
-    /// Noir: pure black, one accent, flat surfaces, no glow. The default.
-    var isFlat: Bool { self == .noir }
-    var hairline: Color { isFlat ? .white.opacity(0.14) : .white.opacity(0.10) }
-    var title: String {
-        switch self {
-        case .noir: "Noir"
-        case .ocean: "Ocean"
-        case .aurora: "Aurora"
-        case .violet: "Violet"
-        case .ember: "Ember"
-        case .graphite: "Graphite"
-        case .cyberpunk: "Cyberpunk"
-        case .solarGold: "Solar Gold"
-        case .crimson: "Crimson"
-        case .matrix: "Matrix"
-        case .arctic: "Arctic"
-        case .sakura: "Sakura"
-        }
-    }
-    var accent: Color {
-        switch self {
-        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
-        case .ocean: Color(red: 0.30, green: 0.85, blue: 0.97)
-        case .aurora: Color(red: 0.45, green: 0.92, blue: 0.73)
-        case .violet: Color(red: 0.76, green: 0.66, blue: 1)
-        case .ember: Color(red: 1, green: 0.70, blue: 0.43)
-        case .graphite: Color(red: 0.82, green: 0.88, blue: 0.97)
-        case .cyberpunk: Color(red: 1.0, green: 0.18, blue: 0.68)
-        case .solarGold: Color(red: 0.98, green: 0.82, blue: 0.34)
-        case .crimson: Color(red: 1.0, green: 0.32, blue: 0.38)
-        case .matrix: Color(red: 0.18, green: 0.98, blue: 0.42)
-        case .arctic: Color(red: 0.62, green: 0.92, blue: 1.0)
-        case .sakura: Color(red: 1.0, green: 0.62, blue: 0.82)
-        }
-    }
-    var secondary: Color {
-        switch self {
-        case .noir: Color(red: 0.36, green: 0.86, blue: 1.0)
-        case .ocean: Color(red: 0.42, green: 0.52, blue: 1.0)
-        case .aurora: Color(red: 0.36, green: 0.80, blue: 0.98)
-        case .violet: Color(red: 1.0, green: 0.55, blue: 0.82)
-        case .ember: Color(red: 1.0, green: 0.42, blue: 0.48)
-        case .graphite: Color(red: 0.55, green: 0.64, blue: 0.80)
-        case .cyberpunk: Color(red: 0.18, green: 0.92, blue: 1.0)
-        case .solarGold: Color(red: 1.0, green: 0.55, blue: 0.25)
-        case .crimson: Color(red: 1.0, green: 0.56, blue: 0.30)
-        case .matrix: Color(red: 0.55, green: 1.0, blue: 0.70)
-        case .arctic: Color(red: 0.74, green: 0.72, blue: 1.0)
-        case .sakura: Color(red: 0.96, green: 0.82, blue: 1.0)
-        }
-    }
-    var background: Color {
-        switch self {
-        case .noir: .black
-        case .ocean: Color(red: 0.035, green: 0.05, blue: 0.085)
-        case .aurora: Color(red: 0.03, green: 0.06, blue: 0.05)
-        case .violet: Color(red: 0.05, green: 0.035, blue: 0.085)
-        case .ember: Color(red: 0.08, green: 0.045, blue: 0.03)
-        case .graphite: Color(red: 0.045, green: 0.05, blue: 0.06)
-        case .cyberpunk: Color(red: 0.065, green: 0.025, blue: 0.10)
-        case .solarGold: Color(red: 0.07, green: 0.055, blue: 0.025)
-        case .crimson: Color(red: 0.08, green: 0.025, blue: 0.035)
-        case .matrix: Color(red: 0.02, green: 0.06, blue: 0.03)
-        case .arctic: Color(red: 0.03, green: 0.06, blue: 0.10)
-        case .sakura: Color(red: 0.075, green: 0.035, blue: 0.065)
-        }
-    }
-    var surface: Color {
-        switch self {
-        case .noir: Color(red: 0.063, green: 0.063, blue: 0.07)
-        case .ocean: Color(red: 0.085, green: 0.11, blue: 0.16)
-        case .aurora: Color(red: 0.07, green: 0.12, blue: 0.10)
-        case .violet: Color(red: 0.115, green: 0.09, blue: 0.17)
-        case .ember: Color(red: 0.15, green: 0.095, blue: 0.07)
-        case .graphite: Color(red: 0.10, green: 0.11, blue: 0.13)
-        case .cyberpunk: Color(red: 0.125, green: 0.055, blue: 0.19)
-        case .solarGold: Color(red: 0.135, green: 0.11, blue: 0.055)
-        case .crimson: Color(red: 0.155, green: 0.06, blue: 0.075)
-        case .matrix: Color(red: 0.045, green: 0.115, blue: 0.065)
-        case .arctic: Color(red: 0.07, green: 0.12, blue: 0.175)
-        case .sakura: Color(red: 0.14, green: 0.08, blue: 0.125)
-        }
-    }
+    /// Every theme is flat now: one accent, no glow.
+    var isFlat: Bool { true }
+    var hairline: Color { OrbitPalette.hairline }
+    /// The accent's plain name ("Orbit Blue", "Teal", …), the same on every device.
+    var title: String { OrbitAccent.name(theme: rawValue) }
+    /// The redesign keeps a black canvas and solid surfaces; a theme is just its accent.
+    var accent: Color { OrbitAccent.color(theme: rawValue) }
+    var secondary: Color { accent }
+    var background: Color { OrbitPalette.canvas }
+    var surface: Color { OrbitPalette.surface }
     var heroGradient: LinearGradient {
         LinearGradient(colors: [accent, secondary], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
@@ -309,61 +236,9 @@ struct MacRing: View {
     }
 }
 
-struct MacSparklineShape: Shape {
-    var values: [Double]
-    var closed: Bool = false
 
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let finite = values.filter { $0.isFinite }
-        guard finite.count > 1, rect.width > 0, rect.height > 0 else { return path }
-        let minimum = finite.min() ?? 0
-        let maximum = finite.max() ?? 1
-        let span = max(maximum - minimum, 0.0001)
-        let step = rect.width / CGFloat(finite.count - 1)
-        let inset: CGFloat = 2
-        let points: [CGPoint] = finite.enumerated().map { index, value in
-            let normalized = CGFloat((value - minimum) / span)
-            return CGPoint(x: rect.minX + CGFloat(index) * step, y: rect.maxY - inset - normalized * (rect.height - inset * 2))
-        }
-        path.move(to: points[0])
-        for index in 1..<points.count {
-            let previous = points[index - 1]
-            let current = points[index]
-            let mid = CGPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
-            path.addQuadCurve(to: mid, control: previous)
-        }
-        if let last = points.last { path.addLine(to: last) }
-        if closed, let last = points.last, let first = points.first {
-            path.addLine(to: CGPoint(x: last.x, y: rect.maxY))
-            path.addLine(to: CGPoint(x: first.x, y: rect.maxY))
-            path.closeSubpath()
-        }
-        return path
-    }
-}
 
-struct MacSparkline: View {
-    var values: [Double]
-    var tint: Color
-    var lineWidth: CGFloat = 1.8
-    var showsFill: Bool = true
 
-    var body: some View {
-        ZStack {
-            if showsFill {
-                MacSparklineShape(values: values, closed: true)
-                    .fill(LinearGradient(colors: [tint.opacity(0.28), tint.opacity(0)], startPoint: .top, endPoint: .bottom))
-            }
-            MacSparklineShape(values: values)
-                .stroke(
-                    LinearGradient(colors: [tint.opacity(0.35), tint], startPoint: .leading, endPoint: .trailing),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-                )
-        }
-        .accessibilityHidden(true)
-    }
-}
 
 // MARK: - Buttons
 
@@ -470,95 +345,7 @@ struct MacActionTile: View {
 
 // MARK: - Cards
 
-struct MacMetricCard: View {
-    @AppStorage("mac.monochromeMetrics") private var monochrome = false
-    @AppStorage("mac.theme") private var theme: MacTheme = .noir
-    @AppStorage("mac.reduceGlow") private var reduceGlow = false
-    let title: String
-    let subtitle: String
-    let valueText: String
-    let progress: Double?
-    let icon: String
-    let accent: Color
-    var detail: String? = nil
-    var history: [Double] = []
-    var showsRing: Bool = false
 
-    private var metricAccent: Color { monochrome || theme.isFlat ? theme.accent : accent }
-    private var glow: Bool { !reduceGlow && !theme.isFlat }
-    private var isHot: Bool { progress != nil && (progress ?? 0) >= 0.9 }
-    private var barTint: Color { isHot ? Color(red: 1.0, green: 0.42, blue: 0.38) : metricAccent }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                MacIconBadge(systemName: icon, tint: metricAccent, size: 26)
-                Text(title)
-                    .font(.system(.subheadline, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if showsRing, let progress {
-                    MacRing(progress: progress, lineWidth: 3.5, tint: barTint)
-                        .frame(width: 22, height: 22)
-                }
-            }
-            ZStack(alignment: .bottomLeading) {
-                if history.count >= 3 {
-                    MacSparkline(values: history, tint: metricAccent.opacity(0.9), lineWidth: 1.6)
-                        .frame(height: 30)
-                        .padding(.leading, 70)
-                        .padding(.bottom, 2)
-                        .opacity(0.75)
-                }
-                Text(valueText)
-                    .font(.system(size: 28, weight: .bold))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                    .contentTransition(.numericText())
-                    .foregroundStyle(.white)
-                    .shadow(color: glow ? metricAccent.opacity(0.25) : .clear, radius: 10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(subtitle)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .contentTransition(.numericText())
-                }
-            }
-            .frame(minHeight: 28, alignment: .topLeading)
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.07))
-                    if let progress, progress.isFinite {
-                        Capsule()
-                            .fill(LinearGradient(colors: [barTint.opacity(0.7), barTint], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: max(4, geometry.size.width * min(1, max(0, progress))))
-                            .shadow(color: glow ? barTint.opacity(0.6) : .clear, radius: 4)
-                            .animation(.snappy(duration: 0.4), value: progress)
-                    }
-                }
-            }
-            .frame(height: 4)
-            .accessibilityHidden(true)
-        }
-        .padding(15)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 18, tint: metricAccent)
-        .macHoverLift()
-        .accessibilityElement(children: .combine)
-    }
-}
 
 
 /// An inline note: a symbol, a short title and a line or two of explanation.

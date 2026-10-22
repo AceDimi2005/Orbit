@@ -903,6 +903,8 @@ final class MoonlightHostCoordinator: ObservableObject {
     private var httpsPort = 47984
     private var generation = 0
     private var pairingTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = -1
     private var artworkTasks: Set<Int> = []
 
     var isConfigured: Bool { !pcID.isEmpty && !address.isEmpty }
@@ -984,12 +986,27 @@ final class MoonlightHostCoordinator: ObservableObject {
 
     /// Reads server info (and the app list when paired). Never throws; errors land in `lastError`.
     func refresh() async {
-        guard isConfigured, !isRefreshing, !isPairing else { return }
+        guard isConfigured, !isPairing else { return }
+        // One refresh per PC at a time, running on its own: views call this from `.task(id:)`,
+        // which is cancelled whenever its key changes (the PC coming online, Sunshine's ports
+        // arriving). Tied to that task, the request was cut off half-way, left "cancelled" as the
+        // error and the follow-up call was skipped as a duplicate. Later callers now wait for it.
+        if let running = refreshTask, refreshGeneration == generation {
+            await running.value
+            return
+        }
         let version = generation
-        isRefreshing = true
-        defer { if version == generation { isRefreshing = false } }
-        // A pairing found under another profile id is used right away.
-        if await refreshOnce(version: version) { _ = await refreshOnce(version: version) }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            self.isRefreshing = true
+            defer { if version == self.generation { self.isRefreshing = false } }
+            // A pairing found under another profile id is used right away.
+            if await self.refreshOnce(version: version) { _ = await self.refreshOnce(version: version) }
+        }
+        refreshTask = task
+        refreshGeneration = version
+        await task.value
+        if refreshGeneration == version { refreshTask = nil }
     }
 
     /// One server info (+ app list) pass. Returns true when it adopted a pairing and should run again.
@@ -1038,6 +1055,8 @@ final class MoonlightHostCoordinator: ObservableObject {
             pairingWasRefused(error)
         } catch {
             guard version == generation else { return false }
+            // A cancelled request says nothing about Sunshine; keep what was known.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return false }
             reachable = false
             info = nil
             lastError = (error as? MoonlightError)?.message ?? error.localizedDescription

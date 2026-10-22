@@ -147,7 +147,7 @@ struct MacPreviewView: View {
 
     private var guideCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Control mode", subtitle: "Turn on Control above the picture to drive the PC", icon: "cursorarrow.click.2")
+            MacSectionHeader("Control", subtitle: "Turn on Control above the picture to drive the PC", icon: "cursorarrow.click.2")
             guideRow("Click and drag", "Press on the picture to click; hold and move to drag. Right-click opens context menus, the middle button works too.", icon: "cursorarrow.click")
             guideRow("Scroll", "The mouse wheel or trackpad scrolls whatever is under the PC cursor.", icon: "arrow.up.and.down")
             guideRow("Type", "Printable keys, Return, Delete, Tab, Space and Esc go to the PC while the picture has focus. ⌘ shortcuts stay on the Mac.", icon: "keyboard")
@@ -179,10 +179,9 @@ struct MacPreviewView: View {
             optionRow("Start automatically", "Begin streaming when this page or the preview window opens and the PC is online.", isOn: $autoStart)
             optionRow("Keep the window on top", "The detached preview floats above other apps and follows you across Spaces.", isOn: $alwaysOnTop)
             Divider().overlay(.white.opacity(0.1))
-            Text("SHORTCUTS")
-                .font(.system(.caption2, weight: .bold))
-                .tracking(1)
-                .foregroundStyle(.white.opacity(0.5))
+            Text("Shortcuts")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
             ForEach(Self.shortcuts) { shortcut in
                 HStack(spacing: 10) {
                     Text(shortcut.keys)
@@ -335,7 +334,7 @@ fileprivate struct MacPreviewCanvas: View {
             let size = geometry.size
             let fitted = fittedRect(in: size)
             ZStack {
-                LinearGradient(colors: [Color(white: 0.06), .black], startPoint: .top, endPoint: .bottom)
+                Color.black
                 content(size: size)
                 if controlEnabled, vm.isStreaming, let rect = fitted {
                     controlOverlay(in: rect)
@@ -683,22 +682,18 @@ fileprivate struct MacPreviewPlayButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack {
-                Circle().fill(LinearGradient(colors: [tint, tint.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Circle().strokeBorder(.white.opacity(0.28), lineWidth: 1)
-                Image(systemName: "play.fill")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(Color.black.opacity(0.85))
-                    .offset(x: 3)
-            }
-            .frame(width: 84, height: 84)
-            .shadow(color: reduceGlow ? .clear : tint.opacity(hovered ? 0.6 : 0.35), radius: hovered ? 26 : 16, y: 6)
-            .scaleEffect(hovered ? 1.06 : 1)
-            .contentShape(Circle())
+            Image(systemName: "play.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.white)
+                .offset(x: 2)
+                .frame(width: 84, height: 84)
+                .glassEffect(.regular.tint(tint).interactive(), in: Circle())
+                .scaleEffect(hovered ? 1.04 : 1)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovered)
+        .animation(OrbitMotion.quick, value: hovered)
         .help("Start the desktop preview")
         .accessibilityLabel("Start desktop preview")
     }

@@ -162,20 +162,5 @@ enum PCPowerAction: String, Identifiable {
 
 extension OrbitTheme {
     /// The accent used by the redesigned app: one color for interactive and live elements.
-    var orbitTint: Color {
-        switch self {
-        case .noir: return OrbitPalette.accent
-        case .ocean: return Color(red: 64 / 255, green: 200 / 255, blue: 224 / 255)
-        case .aurora: return Color(red: 102 / 255, green: 212 / 255, blue: 207 / 255)
-        case .violet: return Color(red: 94 / 255, green: 92 / 255, blue: 230 / 255)
-        case .ember: return OrbitPalette.warm
-        case .graphite: return Color(red: 174 / 255, green: 174 / 255, blue: 178 / 255)
-        case .cyberpunk: return Color(red: 255 / 255, green: 55 / 255, blue: 95 / 255)
-        case .solarGold: return Color(red: 230 / 255, green: 184 / 255, blue: 76 / 255)
-        case .crimson: return OrbitPalette.critical
-        case .matrix: return OrbitPalette.online
-        case .arctic: return Color(red: 154 / 255, green: 216 / 255, blue: 255 / 255)
-        case .sakura: return Color(red: 255 / 255, green: 143 / 255, blue: 183 / 255)
-        }
-    }
+    var orbitTint: Color { OrbitAccent.color(theme: rawValue) }
 }

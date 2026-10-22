@@ -463,7 +463,7 @@ struct MacRemoteView: View {
 
     private var quickActionsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Quick actions", subtitle: hasActiveGame ? "Quit Game ends \(vm.metrics.activeGame ?? "the active game")" : "Sleep asks for confirmation", icon: "bolt.fill")
+            MacSectionHeader("Quick Actions", subtitle: hasActiveGame ? "Quit Game ends \(vm.metrics.activeGame ?? "the active game")" : "Sleep asks for confirmation", icon: "bolt.fill")
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 ForEach(quickActions) { item in
                     MacActionTile(title: item.title, icon: item.icon, tint: item.tint, isActive: item.id == "kill_game" && hasActiveGame) {

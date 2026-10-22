@@ -70,13 +70,17 @@ struct OrbitMacApp: App {
                     viewModel.setAppActive(phase != .background)
                     if phase == .active { OrbitProStore.shared.refreshIfNeeded() }
                 }
-                .onAppear { OrbitProStore.shared.start() }
+                .onAppear {
+                    OrbitProStore.shared.start()
+                    #if DEBUG
+                    MacSnapshot.scheduleIfRequested(vm: viewModel)
+                    #endif
+                }
                 .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in MacProLockdown.enforce() }
                 .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in MacProLockdown.enforce() }
                 .onOpenURL { url in handle(url) }
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1240, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) { }
@@ -84,20 +88,20 @@ struct OrbitMacApp: App {
                 Button("Refresh Now") { Task { await viewModel.refreshMetrics() } }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
-                Button("Power On (Wake-on-LAN)") { Task { await viewModel.wakePC() } }
+                Button("Wake PC") { Task { await viewModel.wakePC() } }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                     .disabled(viewModel.isWaking || viewModel.currentPC == nil)
-                Button("Lock PC") { Task { await viewModel.sendAction("lock") } }
+                Button("Lock") { Task { await viewModel.sendAction("lock") } }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                     .disabled(!viewModel.metrics.isOnline)
-                Button("Sleep") { Task { await viewModel.sendAction("sleep") } }
+                Button("Sleep…") { viewModel.selectedSection = .overview; NotificationCenter.default.post(name: .macConfirmPower, object: "sleep") }
                     .disabled(!viewModel.metrics.isOnline)
                 Button("Restart…") { viewModel.selectedSection = .overview; NotificationCenter.default.post(name: .macConfirmPower, object: "restart") }
                     .disabled(!viewModel.metrics.isOnline)
                 Button("Shut Down…") { viewModel.selectedSection = .overview; NotificationCenter.default.post(name: .macConfirmPower, object: "shutdown") }
                     .disabled(!viewModel.metrics.isOnline)
                 Divider()
-                Button(viewModel.metrics.isMuted ? "Unmute PC" : "Mute PC") { Task { await viewModel.sendAction("mute") } }
+                Button(viewModel.metrics.isMuted ? "Unmute" : "Mute") { Task { await viewModel.sendAction("mute") } }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
                     .disabled(!viewModel.metrics.isOnline)
                 Button("Volume Up") { viewModel.adjustVolume(by: 5) }
@@ -112,12 +116,12 @@ struct OrbitMacApp: App {
                     .disabled(!viewModel.metrics.isOnline || viewModel.isDemoMode)
                 Button("Stream Settings…") { viewModel.selectedSection = .library; viewModel.pendingStreamAction = .settings }
                 Divider()
-                Button(viewModel.isStreaming ? "Stop Desktop Preview" : "Start Desktop Preview") {
+                Button(viewModel.isStreaming ? "Stop Watching the Screen" : "Watch the Screen") {
                     if viewModel.isStreaming { viewModel.stopPreview() } else { viewModel.selectedSection = .preview; viewModel.startPreview() }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(!viewModel.metrics.isOnline && !viewModel.isStreaming)
-                Button("Open Desktop Preview Window") { openWindow(id: "preview") }
+                Button("Open Screen in a Window") { openWindow(id: "preview") }
                     .keyboardShortcut("d", modifiers: [.command, .option])
                 Divider()
                 Menu("Switch PC") {
@@ -128,9 +132,10 @@ struct OrbitMacApp: App {
                             if pc.id == viewModel.selectedPCID { Label(pc.name, systemImage: "checkmark") } else { Text(pc.name) }
                         }
                     }
-                    if viewModel.savedPCs.isEmpty { Text("No saved PCs") }
+                    if viewModel.savedPCs.isEmpty { Text("No PCs yet") }
                     Divider()
-                    Button("Pair a PC…") { viewModel.selectedSection = .pcs }
+                    Button("Add PC…") { viewModel.selectedSection = .pcs }
+                    Button("Manage PCs…") { viewModel.selectedSection = .pcs }
                 }
             }
             CommandGroup(after: .sidebar) {
@@ -151,7 +156,7 @@ struct OrbitMacApp: App {
             }
         }
 
-        Window("Desktop Preview", id: "preview") {
+        Window("Screen", id: "preview") {
             MacPreviewWindowView()
                 .environmentObject(viewModel)
                 .macAppearance()
@@ -191,7 +196,7 @@ struct OrbitMacApp: App {
             MacMenuBarLabel(metric: viewModel.menuBarMetric)
                 .environmentObject(viewModel)
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
     }
 
     /// `orbit://` deep links shared with the iOS app.
@@ -204,16 +209,17 @@ struct OrbitMacApp: App {
         case "preview": viewModel.selectedSection = .preview
         case "settings", "pcs": viewModel.selectedSection = .pcs
         case "wake": Task { await viewModel.wakePC() }
-        case "sleep": Task { await viewModel.sendAction("sleep") }
-        case "shutdown": Task { await viewModel.sendAction("shutdown") }
-        case "restart": Task { await viewModel.sendAction("restart") }
+        // A link alone never powers a PC down: anything on the Mac can open a URL.
+        case "sleep", "shutdown", "restart":
+            viewModel.selectedSection = .overview
+            NotificationCenter.default.post(name: .macConfirmPower, object: url.host?.lowercased())
         default: viewModel.selectedSection = .overview
         }
     }
 }
 
 extension Notification.Name {
-    /// Posted by menu commands; the Overview shows the confirmation dialog.
+    /// Posted by menu commands and links; the main window asks before powering the PC down.
     static let macConfirmPower = Notification.Name("OrbitMac.confirmPower")
 }
 
@@ -236,13 +242,78 @@ struct MacMenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: vm.metrics.isOnline || vm.isDemoMode ? "circle.hexagongrid.circle.fill" : "circle.hexagongrid.circle")
+            // A template image: the menu bar colors it like every other status item.
+            Image("OrbitMenuBarMark")
+                .accessibilityLabel("Orbit")
             if let text { Text(text).monospacedDigit() }
         }
     }
 }
 
 #if DEBUG
+/// `ORBIT_SNAPSHOT=1 ORBIT_SNAPSHOT_SECTIONS=overview,library OrbitMac.app/Contents/MacOS/OrbitMac` shows each
+/// section in turn and saves the main window as `Snapshots/<section>.png` in the app's Application
+/// Support folder (inside its container), so layouts can be checked without screen recording.
+/// `ORBIT_SNAPSHOT_DELAY` (seconds before the first one, default 8) and `ORBIT_SNAPSHOT_QUIT=1` are optional.
+enum MacSnapshot {
+    @MainActor static func scheduleIfRequested(vm: OrbitMacViewModel) {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["ORBIT_SNAPSHOT"] == "1" else { return }
+        let names = (environment["ORBIT_SNAPSHOT_SECTIONS"] ?? "overview").split(separator: ",").map(String.init)
+        let delay = Double(environment["ORBIT_SNAPSHOT_DELAY"] ?? "") ?? 8
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            for name in names {
+                guard let section = MacSection(rawValue: name) else { continue }
+                vm.selectedSection = section
+                try? await Task.sleep(for: .seconds(3))
+                save(name)
+                render(name, section: section, vm: vm)
+            }
+            if environment["ORBIT_SNAPSHOT_QUIT"] == "1" { NSApp.terminate(nil) }
+        }
+    }
+
+    /// SwiftUI's own renderer, for pages whose window capture leaves parts out.
+    @MainActor private static func render(_ name: String, section: MacSection, vm: OrbitMacViewModel) {
+        let sunshine = MoonlightHostCoordinator()
+        if let pc = vm.currentPC { sunshine.configure(pcID: pc.id, address: pc.address) }
+        let content: AnyView
+        switch section {
+        case .overview: content = AnyView(MacPCPage(sunshine: sunshine, scrolls: false) {})
+        case .library: content = AnyView(MacLibraryView(sunshine: sunshine, scrolls: false))
+        default: return
+        }
+        let page = content
+            .environmentObject(vm)
+            .macAppearance()
+            .environment(\.colorScheme, .dark)
+            .frame(width: 1060)
+            .background(Color.black)
+        let renderer = ImageRenderer(content: page)
+        renderer.scale = 2
+        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { print("render: failed"); return }
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Snapshots")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("\(name)-rendered.png")
+        try? png.write(to: file)
+        print("render: \(file.path)")
+    }
+
+    @MainActor private static func save(_ name: String) {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 600 }),
+              let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { print("snapshot: no window"); return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Snapshots")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("\(name).png")
+        try? rep.representation(using: .png, properties: [:])?.write(to: file)
+        print("snapshot: \(file.path)")
+    }
+}
+
 /// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file|agent OrbitMac.app/Contents/MacOS/OrbitMac` runs the
 /// Sunshine steps for the selected PC (or `ORBIT_PC_ID`) from inside the signed, sandboxed app
 /// with the same code the UI uses, prints every result and exits. `pair` lets the agent type the

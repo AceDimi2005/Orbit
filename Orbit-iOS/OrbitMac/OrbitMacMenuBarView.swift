@@ -1,171 +1,86 @@
+import AppKit
 import SwiftUI
 
-/// Menu bar popover: at-a-glance telemetry, volume and power without opening the window.
+/// The menu bar extra is a plain menu, like the system's own: how the PC is doing, a few
+/// readings, the actions people reach for without opening the window, and the way back in.
 struct MacMenuBarView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
-    @Environment(\.macTheme) private var theme
     @Environment(\.openWindow) private var openWindow
 
+    private var state: MacPCState { MacPCState(vm: vm) }
+    private var online: Bool { vm.metrics.isOnline && !vm.isDemoMode }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            if vm.metrics.hasTelemetry {
-                HStack(spacing: 10) {
-                    gauge("CPU", value: vm.metrics.cpuUsage, detail: vm.metrics.cpuTemp.map { "\(Int($0))°C" }, tint: MacMetric.cpuLoad.accent)
-                    gauge("GPU", value: vm.metrics.gpuUsage, detail: vm.metrics.gpuTemp.map { "\(Int($0))°C" }, tint: MacMetric.gpuLoad.accent)
-                    gauge("RAM", value: vm.metrics.ramUsagePercent, detail: vm.metrics.ramTotalGB > 0 ? "\(MacFormat.decimal(vm.metrics.ramUsedGB)) GB" : nil, tint: MacMetric.memory.accent)
-                    gauge("VRAM", value: vm.metrics.vramUsagePercent, detail: vm.metrics.vramUsedGB.map { "\(MacFormat.decimal($0)) GB" }, tint: MacMetric.vram.accent)
+        Text(statusLine)
+        if vm.metrics.hasTelemetry || vm.isDemoMode {
+            ForEach(readings, id: \.self) { Text($0) }
+        }
+        Divider()
+        Button("Open Orbit") { open() }
+        Divider()
+        if online {
+            Button(vm.metrics.isMuted ? "Unmute" : "Mute") { Task { await vm.sendAction("mute") } }
+            Button("Lock") { Task { await vm.sendAction("lock") } }
+            Button("Sleep…") { confirm(.sleep) }
+            Button("Restart…") { confirm(.restart) }
+            Button("Shut Down…") { confirm(.shutdown) }
+        } else if vm.currentPC != nil && !vm.isDemoMode {
+            Button(vm.isWaking ? "Waking…" : "Wake PC") { Task { await vm.wakePC() } }
+                .disabled(vm.isWaking || vm.currentPC?.macAddress.isEmpty != false)
+        }
+        if vm.savedPCs.count > 1 {
+            Divider()
+            Menu("Switch PC") {
+                ForEach(vm.savedPCs) { pc in
+                    Toggle(pc.name, isOn: Binding(get: { pc.id == vm.selectedPCID && !vm.isDemoMode }, set: { if $0 { vm.selectPC(pc) } }))
                 }
-                HStack(spacing: 8) {
-                    MacStatChip(label: "Power", value: MacFormat.whole(vm.metrics.totalPowerWatts, unit: "W"))
-                    MacStatChip(label: "FPS", value: vm.metrics.fps.flatMap { $0 > 0 ? "\(Int($0.rounded()))" : nil } ?? "—")
-                    MacStatChip(label: "Net", value: MacFormat.transferRate(vm.metrics.networkDownloadMBps))
-                    Spacer()
-                }
-                if let game = vm.metrics.activeGame, !game.isEmpty {
-                    Label(game, systemImage: "gamecontroller.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.mint)
-                        .lineLimit(1)
-                }
-                volumeRow
-            } else if vm.metrics.isOnline {
-                Text("Collecting the first readings…").font(.caption).foregroundStyle(.secondary)
-            }
-            Divider().overlay(.white.opacity(0.1))
-            HStack(spacing: 8) {
-                if vm.metrics.isOnline {
-                    menuButton("Lock", icon: "lock.fill", tint: theme.accent) { Task { await vm.sendAction("lock") } }
-                    menuButton("Sleep", icon: "moon.fill", tint: .indigo) { Task { await vm.sendAction("sleep") } }
-                    menuButton("Screenshot", icon: "camera.viewfinder", tint: .mint) { Task { await vm.sendAction("screenshot") } }
-                } else {
-                    menuButton(vm.isWaking ? "Waking…" : "Power On", icon: "power", tint: .mint) { Task { await vm.wakePC() } }
-                        .disabled(vm.isWaking || vm.currentPC == nil)
-                }
-                Spacer()
-                Button {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Label("Open Orbit", systemImage: "macwindow")
-                }
-                .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
-            }
-            HStack {
-                if !vm.savedPCs.isEmpty {
-                    Menu {
-                        ForEach(vm.savedPCs) { pc in
-                            Button(pc.name) { vm.selectPC(pc) }
-                        }
-                    } label: {
-                        Label("Switch PC", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-                Spacer()
-                Button("Quit Orbit") { NSApp.terminate(nil) }
-                    .buttonStyle(.plain)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .keyboardShortcut("q")
             }
         }
-        .padding(14)
-        .frame(width: 340)
-        .background(MacAmbientBackground(isOnline: vm.metrics.isOnline))
+        Divider()
+        SettingsLink { Text("Settings…") }
+            .keyboardShortcut(",")
+        Button("Quit Orbit") { NSApp.terminate(nil) }
+            .keyboardShortcut("q")
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                MacRing(progress: vm.metrics.hasTelemetry ? vm.metrics.cpuUsage / 100 : nil, lineWidth: 4, tint: theme.accent)
-                    .frame(width: 40, height: 40)
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(vm.metrics.isOnline || vm.isDemoMode ? AnyShapeStyle(theme.heroGradient) : AnyShapeStyle(Color.secondary))
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(vm.isConfigured ? vm.selectedPCName : "No PC paired")
-                    .font(.system(.subheadline, weight: .bold))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    MacStatusPill(text: vm.isDemoMode ? "Demo" : (vm.metrics.isOnline ? "Online" : (vm.currentPC == nil ? "Not paired" : "Offline")),
-                                  tint: vm.isDemoMode ? .orange : (vm.metrics.isOnline ? .mint : (vm.currentPC == nil ? .secondary : .orange)),
-                                  pulsing: vm.metrics.isOnline && !vm.isDemoMode)
-                    if vm.metrics.isOnline && !vm.isDemoMode {
-                        Text("\(vm.pingMs) ms").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    if vm.metrics.hasTelemetry {
-                        Text("up \(vm.metrics.formattedUptime)").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Spacer()
-            Button {
-                Task { await vm.refreshMetrics() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(MacIconButtonStyle(size: 26))
-            .help("Refresh")
+    private var statusLine: String {
+        let name = vm.isConfigured ? vm.selectedPCName : "No PC yet"
+        let status: String
+        switch state {
+        case .setup: status = "not paired"
+        case .demo: status = "demo"
+        case .connecting: status = "connecting…"
+        case .waking: status = "waking up…"
+        case .locked: status = "locked"
+        case .offline: status = "offline"
+        case .online: status = OrbitTakeaway(vm.metrics).headline.lowercased(with: .current)
         }
+        return "\(name) — \(status)"
     }
 
-    private func gauge(_ title: String, value: Double?, detail: String?, tint: Color) -> some View {
-        VStack(spacing: 5) {
-            ZStack {
-                MacRing(progress: value.map { $0 / 100 }, lineWidth: 4.5, tint: tint)
-                    .frame(width: 54, height: 54)
-                VStack(spacing: -1) {
-                    Text(value.map { "\(Int($0.rounded()))" } ?? "—")
-                        .font(.system(size: 15, weight: .bold))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                    Text(title)
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(tint)
-                }
-            }
-            Text(detail ?? "—")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    /// Two or three lines of readings, the way they read on the PC page.
+    private var readings: [String] {
+        let m = vm.metrics
+        var lines: [String] = []
+        let cpu = [OrbitFormat.percent(m.cpuUsage).map { "\($0)%" }, OrbitFormat.temperature(m.cpuTemp)].compactMap { $0 }
+        if !cpu.isEmpty { lines.append("Processor " + cpu.joined(separator: " · ")) }
+        let gpu = [OrbitFormat.percent(m.gpuUsage).map { "\($0)%" }, OrbitFormat.temperature(m.gpuTemp)].compactMap { $0 }
+        if !gpu.isEmpty { lines.append("Graphics " + gpu.joined(separator: " · ")) }
+        if let game = m.activeGame, !game.isEmpty {
+            let fps = m.fps.flatMap { $0 > 0 ? " · \(Int($0.rounded())) fps" : nil } ?? ""
+            lines.append("Playing \(game)\(fps)")
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .macGlass(cornerRadius: 12, tint: tint)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title) \(value.map { "\(Int($0.rounded())) percent" } ?? "unavailable")")
+        return lines
     }
 
-    private var volumeRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                Task { await vm.sendAction("mute") }
-            } label: {
-                Image(systemName: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-            }
-            .buttonStyle(MacIconButtonStyle(tint: vm.metrics.isMuted ? .orange : .white, size: 26))
-            Slider(value: Binding(get: { vm.metrics.volume }, set: { vm.setVolume($0) }), in: 0...100) { editing in
-                vm.isDraggingVolume = editing
-            }
-            .tint(vm.metrics.isMuted ? .orange : theme.accent)
-            Text(vm.metrics.volumeAvailable == false ? "—" : (vm.metrics.isMuted ? "Muted" : "\(Int(vm.metrics.volume))%"))
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(vm.metrics.isMuted ? .orange : .white)
-                .frame(width: 44, alignment: .trailing)
-        }
-        .disabled(vm.metrics.volumeAvailable == false)
+    private func open() {
+        openWindow(id: "main")
+        NSApp.activate()
     }
 
-    private func menuButton(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.semibold))
-        }
-        .buttonStyle(MacHoverButtonStyle(tint: tint))
-        .help(title)
+    /// Destructive actions are confirmed in the main window, never straight from a menu.
+    private func confirm(_ action: MacPowerConfirmation) {
+        open()
+        NotificationCenter.default.post(name: .macConfirmPower, object: action.rawValue)
     }
 }

@@ -2,52 +2,66 @@ import AppKit
 import MoonlightCore
 import SwiftUI
 
-/// Stream section: the PC desktop and the apps Sunshine publishes, streamed in Orbit's own
-/// window with video, audio, mouse, keyboard and controllers; launch-only stays available.
+/// Play: the PC's games with their art, streamed to this Mac or started on the PC. The card at
+/// the top says whether streaming is ready and offers the one thing to do next.
 struct MacLibraryView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
-    @Environment(\.macTheme) private var theme
-    @AppStorage("mac.reduceGlow") private var reduceGlow = false
+    /// Owned by the window, shared with the PC page.
+    @ObservedObject var sunshine: MoonlightHostCoordinator
+    /// False only for DEBUG snapshots: SwiftUI's image renderer draws nothing inside a ScrollView.
+    var scrolls = true
+    @ObservedObject private var stream = MoonlightStreamController.shared
+    @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @AppStorage(MacStreamBackend.storageKey) private var streamBackendRaw = MacStreamBackend.orbit.rawValue
+    @Environment(\.openWindow) private var openWindow
     @State private var search = ""
     @State private var launchingID: String?
     @State private var launchStatus: String?
-    @State private var loadError: String?
-    @State private var confirmStop = false
     @State private var moonlightInstalled: Bool?
-    @StateObject private var sunshine = MoonlightHostCoordinator()
-    @ObservedObject private var stream = MoonlightStreamController.shared
-    @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
-    @Environment(\.openWindow) private var openWindow
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
-    @State private var confirmForgetPairing = false
+    @State private var confirmsForgetPairing = false
 
     private static let refreshFailurePrefix = "Could not refresh the Sunshine library"
-    private static let launchWarningPrefixes = ["Could not", "Launch stopped", "Moonlight is not installed"]
-    private static let moonlightSite = "https://moonlight-stream.org"
-    private let columns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)]
+    private static let launchWarningPrefixes = ["Could not", "Launch stopped", "Moonlight"]
 
-    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+    private var pcName: String { vm.selectedPCName }
+    private var streamBackend: MacStreamBackend { MacStreamBackend(rawValue: streamBackendRaw) ?? .orbit }
+    private var usesMoonlightApp: Bool { streamBackend == .moonlight }
 
-    private func syncSunshine() async {
-        guard !vm.isDemoMode, let pc = vm.currentPC else { return }
-        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
-        if vm.metrics.isOnline { await sunshine.refresh() }
+    /// Built-in streaming needs the Sunshine pairing; the Moonlight app only needs the PC online.
+    private var canStream: Bool {
+        guard vm.metrics.isOnline, !vm.isDemoMode else { return false }
+        return usesMoonlightApp ? moonlightInstalled == true : (sunshine.isPaired && sunshine.reachable)
+    }
+
+    /// Favorites first, then Sunshine's order; the desktop has its own button above.
+    private var games: [MacSunshineGame] {
+        let ordered = (vm.games.filter(\.isFavorite) + vm.games.filter { !$0.isFavorite })
+            .filter { $0.title.caseInsensitiveCompare("Desktop") != .orderedSame }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return ordered }
+        return ordered.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.genre.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
-        MacPage {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                if vm.isDemoMode { demoNotice }
-                if vm.isDemoMode || vm.currentPC != nil { streamHero }
-                content
-                footer
+        Group {
+            if scrolls { ScrollView { page } } else { page }
+        }
+        .background(OrbitPalette.canvas)
+        .searchable(text: $search, placement: .toolbar, prompt: "Games and apps")
+        .toolbar {
+            ToolbarItem {
+                Button("Stream Settings", systemImage: "slider.horizontal.3") {
+                    if usesMoonlightApp { vm.openMoonlight() } else { showsStreamSettings = true }
+                }
+                .help(usesMoonlightApp ? "Resolution, bitrate and codec are set in the Moonlight app" : "Resolution, frame rate, bitrate, codec, HDR, audio and input")
             }
         }
-        .task { await initialLoad() }
-        .task(id: sunshineKey) { await syncSunshine() }
+        .task {
+            moonlightInstalled = Self.detectMoonlight()
+            await refreshLibrary()
+        }
         .onChange(of: vm.pendingStreamAction, initial: true) { _, action in
             guard let action else { return }
             vm.pendingStreamAction = nil
@@ -56,611 +70,206 @@ struct MacLibraryView: View {
             case .settings: showsStreamSettings = true
             }
         }
-        .sheet(isPresented: $showsPairing) {
-            MoonlightPairingView(host: sunshine, pcName: pcName, accent: theme.accent, automation: pairingAutomation) { showsPairing = false }
-                .frame(width: 520)
-                .background(theme.background)
-        }
-        .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
-                .frame(width: 560, height: 680)
-                .background(theme.background)
-        }
-        .confirmationDialog("Forget the Sunshine pairing?", isPresented: $confirmForgetPairing, titleVisibility: .visible) {
-            Button("Forget Pairing", role: .destructive) { sunshine.forgetPairing() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Orbit drops its Sunshine pairing for \(pcName). Remove \"\(MoonlightHostCoordinator.deviceName)\" in Sunshine's web UI too if you no longer want it listed.")
-        }
         .onChange(of: vm.selectedPCID) { _, _ in
             search = ""
             launchingID = nil
             launchStatus = nil
-            loadError = nil
-            Task { await refresh() }
         }
-        // The view model also refreshes the library on its own (first poll after
-        // reconnecting), so drop a stale failure notice once apps arrive that way.
-        .onChange(of: vm.games) { _, games in
-            if !games.isEmpty { loadError = nil }
+        .sheet(isPresented: $showsPairing) {
+            MoonlightPairingView(host: sunshine, pcName: pcName, accent: .accentColor, automation: pairingAutomation) { showsPairing = false }
+                .frame(width: 520)
+                .background(OrbitPalette.canvas)
         }
-        .confirmationDialog("Stop the running game?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Stop Game", role: .destructive) { Task { await vm.sendAction("kill_game") } }
+        .sheet(isPresented: $showsStreamSettings) {
+            MoonlightStreamSettingsView(store: streamSettings, accent: .accentColor, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
+                .frame(width: 560, height: 680)
+                .background(OrbitPalette.canvas)
+        }
+        .confirmationDialog("Forget the Sunshine pairing?", isPresented: $confirmsForgetPairing, titleVisibility: .visible) {
+            Button("Forget Pairing", role: .destructive) { sunshine.forgetPairing() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Orbit asks \(pcName) to end \(vm.metrics.activeGame ?? "the active game"). Unsaved progress may be lost.")
+            Text("Orbit stops streaming from \(pcName) until you pair again. Remove \"\(MoonlightHostCoordinator.deviceName)\" in Sunshine on the PC too if you no longer want it listed.")
         }
     }
 
-    // MARK: - Derived state
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 30) {
+            streamCard
+            if let launchStatus { statusRow(launchStatus) }
+            library
+        }
+        .padding(.horizontal, 36)
+        .padding(.top, 26)
+        .padding(.bottom, 44)
+        .frame(maxWidth: 1180, alignment: .leading)
+        .frame(maxWidth: .infinity)
+    }
 
-    private var pcName: String { vm.selectedPCName }
-    private var fpsHistory: [Double] { vm.history.values(for: .fps) }
-    private var favoriteCount: Int { vm.games.filter(\.isFavorite).count }
-    private var fpsText: String { vm.metrics.fps.flatMap { $0 > 0 ? "\(Int($0.rounded()))" : nil } ?? "—" }
+    // MARK: Stream card
 
-    /// Favourites first, then the order Sunshine reports; filtered by the local search box.
-    private var filteredGames: [MacSunshineGame] {
-        let ordered = vm.games.filter(\.isFavorite) + vm.games.filter { !$0.isFavorite }
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return ordered }
-        return ordered.filter { game in
-            game.title.localizedCaseInsensitiveContains(query)
-                || game.genre.localizedCaseInsensitiveContains(query)
-                || (game.cmd?.localizedCaseInsensitiveContains(query) ?? false)
+    @ViewBuilder
+    private var streamCard: some View {
+        if vm.isDemoMode {
+            card(title: "Sample library", message: "Connect a PC to stream its games to this Mac.") {
+                Button("Connect a PC…") { vm.setDemoMode(false); vm.selectedSection = .pcs }
+                    .buttonStyle(MacHoverButtonStyle(prominent: true))
+            }
+        } else if vm.currentPC == nil {
+            card(title: "No PC yet", message: "Pair your Windows PC to stream its desktop and games here.") {
+                Button("Pair a PC…") { vm.selectedSection = .pcs }
+                    .buttonStyle(MacHoverButtonStyle(prominent: true))
+            }
+        } else if !vm.metrics.isOnline {
+            card(title: "Your PC is asleep or off", message: "Wake it to play your games here or start them on the PC.") {
+                Button {
+                    Task { await vm.wakePC() }
+                } label: {
+                    Label(vm.isWaking ? "Waking…" : "Wake PC", systemImage: "power")
+                }
+                .buttonStyle(MacHoverButtonStyle(prominent: true))
+                .disabled(vm.isWaking || vm.currentPC?.macAddress.isEmpty != false)
+            }
+        } else if usesMoonlightApp {
+            card(title: "Streams open in Moonlight",
+                 message: moonlightInstalled == true
+                    ? "Stream buttons hand the session to the Moonlight app, with its own settings. Pair Moonlight with \(pcName) once inside Moonlight."
+                    : "The Moonlight app isn't installed on this Mac. Get it, or switch back to streaming inside Orbit.") {
+                if moonlightInstalled == true {
+                    Button {
+                        vm.streamInMoonlight(appTitle: sunshine.desktopApp?.title ?? "Desktop")
+                    } label: {
+                        Label("Stream Desktop", systemImage: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(MacHoverButtonStyle(prominent: true))
+                } else {
+                    Button("Get Moonlight") { vm.openMoonlight() }
+                        .buttonStyle(MacHoverButtonStyle(prominent: true))
+                }
+            }
+        } else if sunshine.isPairing {
+            card(title: "Pairing with Sunshine…", message: sunshine.pairingStage ?? "Waiting for the PC.") {
+                Button("Cancel") { sunshine.cancelPairing() }
+                    .buttonStyle(MacHoverButtonStyle())
+            }
+        } else if sunshine.isPaired && sunshine.reachable {
+            card(title: sunshine.isBusy ? "A stream is open" : "Stream your PC", message: settingsSummary, live: true) {
+                Button {
+                    if let app = sunshine.desktopApp { start(app) }
+                } label: {
+                    Label(sunshine.isBusy ? "Resume" : "Stream Desktop", systemImage: "play.fill")
+                }
+                .buttonStyle(MacHoverButtonStyle(prominent: true))
+                .disabled(sunshine.desktopApp == nil)
+                .help("Stream the PC's desktop in its own window (⇧⌘S)")
+                if vm.metrics.sessionLocked == true {
+                    Button {
+                        if let app = sunshine.desktopApp { start(app, unlock: true) }
+                    } label: {
+                        Label("Unlock…", systemImage: "lock.open")
+                    }
+                    .buttonStyle(MacHoverButtonStyle())
+                    .help("Opens the sign-in screen and types the password you enter, once. It's never saved.")
+                }
+                if sunshine.isBusy {
+                    Button("End Stream") { Task { await sunshine.quitRunningApp() } }
+                        .buttonStyle(MacHoverButtonStyle())
+                        .help("Ask Sunshine to end the running app and its stream")
+                }
+            }
+        } else if sunshine.reachable {
+            let automatic = pairingAutomation?.canSubmitPIN == true
+            card(title: "Stream games to this Mac",
+                 message: automatic
+                    ? "Pair Orbit with Sunshine on your PC once. Orbit types the code on the PC for you."
+                    : "Pair Orbit with Sunshine on your PC once, with the code Orbit shows.") {
+                Button(automatic ? "Pair Automatically" : "Pair with Sunshine…") { showsPairing = true }
+                    .buttonStyle(MacHoverButtonStyle(prominent: true))
+            }
+        } else {
+            card(title: "Sunshine isn't answering",
+                 message: sunshine.isPaired
+                    ? "Start Sunshine on \(pcName) to stream. You can still start games on the PC."
+                    : "Install or start Sunshine on \(pcName) to stream its games here. You can still start them on the PC.") {
+                Button("Try Again") { Task { await sunshine.refresh() } }
+                    .buttonStyle(MacHoverButtonStyle())
+                    .disabled(sunshine.isRefreshing)
+            }
         }
     }
 
-    /// Sunshine's Web UI on the paired PC (its documented default port is 47990).
+    /// The card's frame: title, one line of state, actions, and the streaming menu.
+    private func card<Actions: View>(title: String, message: String, live: Bool = false, @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.title2.weight(.semibold))
+                    Text(message)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .orbitLiveNumber()
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                if sunshine.isRefreshing { ProgressView().controlSize(.small) }
+                streamingMenu
+            }
+            HStack(spacing: 10) {
+                actions()
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private var streamingMenu: some View {
+        Menu {
+            Picker("Stream With", selection: $streamBackendRaw) {
+                ForEach(MacStreamBackend.allCases) { backend in Text(backend.title).tag(backend.rawValue) }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Button("Refresh Library") { Task { await refreshLibrary(); await sunshine.refresh() } }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(vm.isDemoMode || !vm.metrics.isOnline)
+            if let url = sunshineWebURL {
+                Button("Open Sunshine on the PC") { NSWorkspace.shared.open(url) }
+            }
+            if sunshine.isPaired {
+                Divider()
+                Button("Forget Sunshine Pairing…") { confirmsForgetPairing = true }
+            } else if sunshine.reachable && !usesMoonlightApp {
+                Divider()
+                Button("Pair with Sunshine…") { showsPairing = true }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 22, height: 22)
+        }
+        .menuStyle(.button)
+        .buttonStyle(MacIconButtonStyle(size: 30))
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Streaming options")
+        .accessibilityLabel("Streaming options")
+    }
+
+    private var settingsSummary: String {
+        let settings = streamSettings.settings
+        var parts = ["\(settings.pixelSize.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
+        parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
+        if settings.requestsHDR { parts.append("HDR") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Sunshine's web UI on the PC (its default port is 47990).
     private var sunshineWebURL: URL? {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return nil }
         let host = pc.address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty, !host.contains(":"), !host.contains("/") else { return nil }
-        return URL(string: "https://\(host):47990/")
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        MacSectionHeader("Stream", subtitle: "Play \(pcName) on this Mac: desktop or any Sunshine app, with audio, mouse, keyboard and controllers", icon: "play.rectangle.fill") {
-            HStack(spacing: 10) {
-                if vm.isLoadingGames && !vm.games.isEmpty {
-                    ProgressView().controlSize(.small)
-                }
-                searchField
-                refreshButton
-            }
-        }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            TextField("Search apps", text: $search)
-                .textFieldStyle(.plain)
-                .font(.callout)
-                .onExitCommand { search = "" }
-            if !search.isEmpty {
-                Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Clear search")
-                    .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(width: 210)
-        .background(Color.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
-    }
-
-    private var refreshButton: some View {
-        Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
-            .buttonStyle(MacIconButtonStyle(size: 26))
-            .keyboardShortcut("r", modifiers: [.command, .option])
-            .disabled(vm.isDemoMode || !vm.metrics.isOnline || vm.isLoadingGames)
-            .help("Refresh the Sunshine app list (⌥⌘R)")
-            .accessibilityLabel("Refresh library")
-    }
-
-    private var demoNotice: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "sparkles").foregroundStyle(.orange)
-            Text("Demo mode · simulated library. Launching only updates the preview telemetry.")
-                .font(.caption.weight(.semibold))
-            Spacer()
-            Button("Pair a PC") { vm.setDemoMode(false); vm.selectedSection = .pcs }
-                .buttonStyle(MacHoverButtonStyle(tint: .orange))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .macGlass(cornerRadius: 14, tint: .orange)
-    }
-
-    // MARK: - Content states
-
-    @ViewBuilder
-    private var content: some View {
-        if vm.currentPC == nil && !vm.isDemoMode {
-            unpairedState
-        } else if !vm.metrics.isOnline {
-            offlineState
-        } else {
-            statsRow
-            if let game = vm.metrics.activeGame, !game.isEmpty { nowPlaying(game) }
-            if let launchStatus { launchStatusRow(launchStatus) }
-            if let loadError {
-                MacNotice(title: "Library unavailable", message: loadError, icon: "exclamationmark.triangle.fill", tint: .orange)
-            }
-            libraryBody
-        }
-    }
-
-    @ViewBuilder
-    private var libraryBody: some View {
-        if vm.isLoadingGames && vm.games.isEmpty {
-            loadingCard
-        } else if vm.games.isEmpty {
-            if loadError == nil { emptyState }
-            addAppsNotice
-        } else if filteredGames.isEmpty {
-            filteredEmpty
-        } else {
-            grid
-        }
-    }
-
-    private var statsRow: some View {
-        HStack(spacing: 8) {
-            MacStatChip(label: "Apps", value: "\(vm.games.count)", icon: "square.grid.2x2")
-            if favoriteCount > 0 {
-                MacStatChip(label: "Favorites", value: "\(favoriteCount)", icon: "star.fill", tint: .yellow)
-            }
-            if !search.isEmpty {
-                MacStatChip(label: "Matching", value: "\(filteredGames.count)", icon: "magnifyingglass")
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var sunshineTint: Color {
-        switch sunshine.statusTone {
-        case .good: return .mint
-        case .active: return theme.accent
-        case .warning: return .orange
-        case .neutral: return .secondary
-        }
-    }
-
-    private var heroTint: Color {
-        if vm.isDemoMode { return .orange }
-        if !vm.metrics.isOnline { return .orange }
-        return sunshineTint
-    }
-
-    private var heroStatus: String {
-        if vm.isDemoMode { return "Demo" }
-        if !vm.metrics.isOnline { return "PC offline" }
-        return sunshine.statusText
-    }
-
-    private var heroMessage: String {
-        if vm.isDemoMode { return "Pair your Windows PC in My PCs. Orbit then streams its desktop and games right here, with video, audio, mouse, keyboard and controllers." }
-        if !vm.metrics.isOnline { return "Power the PC on and Orbit reconnects by itself. Streaming needs the PC awake and Sunshine running." }
-        if usesMoonlightApp { return "Stream buttons hand the session to the Moonlight app on this Mac. Switch to Orbit for built-in streaming with mouse and keyboard capture (⌃⌥⇧Z releases, ⌃⌥⇧Q ends)." }
-        return sunshine.summary(pcName: pcName)
-    }
-
-    /// The Stream card: pairing state, running session, the one-click desktop stream and the
-    /// settings in use. Same card as at the top of the iPhone's Stream tab.
-    private var streamHero: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 14) {
-                MacIconBadge(systemName: "play.rectangle.fill", tint: heroTint, size: 46, filled: sunshine.isPaired && vm.metrics.isOnline)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text("Stream \(pcName)")
-                            .font(.title3.weight(.bold))
-                            .lineLimit(1)
-                        MacStatusPill(text: heroStatus, tint: heroTint, pulsing: sunshine.isBusy && vm.metrics.isOnline)
-                        if !vm.isDemoMode, vm.metrics.isOnline {
-                            if sunshine.isPaired {
-                                MacStatChip(label: "Apps", value: "\(sunshine.apps.count)")
-                            } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
-                                MacStatChip(label: "Host", value: info.hostname)
-                            }
-                        }
-                    }
-                    Text(heroMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if !vm.isDemoMode, vm.metrics.isOnline, let error = sunshine.lastError, !sunshine.isPairing {
-                        Text(error).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 8)
-                if sunshine.isRefreshing || sunshine.isPairing { ProgressView().controlSize(.small) }
-                backendPicker
-            }
-            HStack(spacing: 10) {
-                if vm.isDemoMode {
-                    Button { vm.setDemoMode(false); vm.selectedSection = .pcs } label: { Label("Pair a PC", systemImage: "desktopcomputer") }
-                        .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
-                    streamSettingsButton
-                } else if !vm.metrics.isOnline {
-                    Button { Task { await vm.wakePC() } } label: { Label(vm.isWaking ? "Waking…" : "Power On", systemImage: "power") }
-                        .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
-                        .disabled(vm.isWaking)
-                        .help("Send a Wake-on-LAN packet")
-                    streamSettingsButton
-                } else if usesMoonlightApp {
-                    streamDesktopButton
-                    streamSettingsButton
-                    if moonlightInstalled == false {
-                        Button { open(Self.moonlightSite) } label: { Label("Get Moonlight", systemImage: "arrow.down.circle") }
-                            .buttonStyle(MacHoverButtonStyle())
-                            .help("Open moonlight-stream.org in your browser")
-                    }
-                    Spacer(minLength: 0)
-                    if let url = sunshineWebURL {
-                        Button { NSWorkspace.shared.open(url) } label: { Label("Sunshine Web UI", systemImage: "globe") }
-                            .buttonStyle(MacHoverButtonStyle())
-                            .help("Open \(url.absoluteString)")
-                    }
-                } else if sunshine.isPairing {
-                    Button { sunshine.cancelPairing() } label: { Label("Cancel Pairing", systemImage: "xmark") }
-                        .buttonStyle(MacHoverButtonStyle(tint: .orange))
-                } else if sunshine.isPaired {
-                    streamDesktopButton
-                    streamSettingsButton
-                    if vm.metrics.sessionLocked == true {
-                        Button {
-                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
-                        } label: { Label("Unlock PC…", systemImage: "lock.open.fill") }
-                            .buttonStyle(MacHoverButtonStyle(tint: .yellow))
-                            .disabled(!canStream || sunshine.desktopApp == nil)
-                            .help("Open the stream at the sign-in screen and type the Windows password there (nothing is saved)")
-                    }
-                    if sunshine.isBusy {
-                        Button { Task { await sunshine.quitRunningApp() } } label: { Label("Quit Session", systemImage: "stop.fill") }
-                            .buttonStyle(MacHoverButtonStyle(tint: .orange))
-                            .help("Ask Sunshine to end the running app and its stream")
-                    }
-                    Spacer(minLength: 0)
-                    Button { Task { await sunshine.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                        .buttonStyle(MacIconButtonStyle(size: 26))
-                        .disabled(sunshine.isRefreshing)
-                        .help("Refresh Sunshine status")
-                        .accessibilityLabel("Refresh Sunshine status")
-                    Button { confirmForgetPairing = true } label: { Image(systemName: "link.badge.minus") }
-                        .buttonStyle(MacIconButtonStyle(size: 26))
-                        .help("Forget the Sunshine pairing")
-                        .accessibilityLabel("Forget the Sunshine pairing")
-                } else {
-                    let automatic = pairingAutomation?.canSubmitPIN == true
-                    Button { showsPairing = true } label: {
-                        Label(automatic ? "Pair automatically" : "Pair with Sunshine", systemImage: automatic ? "wand.and.stars" : "link")
-                    }
-                    .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: sunshine.reachable))
-                    .disabled(!sunshine.reachable)
-                    .help(sunshine.reachable ? "Pair Orbit with Sunshine once; afterwards Stream connects straight away" : "Sunshine did not answer on the PC")
-                    streamSettingsButton
-                    Spacer(minLength: 0)
-                    if let url = sunshineWebURL {
-                        Button { NSWorkspace.shared.open(url) } label: { Label("Sunshine Web UI", systemImage: "globe") }
-                            .buttonStyle(MacHoverButtonStyle())
-                            .help("Open \(url.absoluteString)")
-                    }
-                }
-            }
-            Text(usesMoonlightApp ? (moonlightInstalled == true ? "Streams open in the Moonlight app with its own settings; pair Moonlight with the PC once." : "The Moonlight app is not installed on this Mac.") : settingsSummary)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 20, tint: heroTint, elevated: true)
-    }
-
-    private var unpairedState: some View {
-        VStack(spacing: 0) {
-            MacEmptyState(
-                icon: "desktopcomputer",
-                title: "No PC paired",
-                message: "Pair your Windows PC, or import the one you already paired on your iPhone, to browse the apps Sunshine publishes for streaming.",
-                tint: theme.accent,
-                actionTitle: "Pair or import a PC",
-                action: { vm.selectedSection = .pcs }
-            )
-            Button("Try Demo Mode") { vm.setDemoMode(true) }
-                .buttonStyle(MacHoverButtonStyle())
-                .padding(.bottom, 24)
-        }
-        .frame(maxWidth: .infinity)
-        .macGlass(cornerRadius: 22, tint: theme.accent, elevated: true)
-    }
-
-    private var offlineMessage: String {
-        var text = "Connect to your PC to load the apps Sunshine publishes. Send a Wake-on-LAN packet or retry the connection."
-        if let error = vm.connectionError, !error.isEmpty { text += "\n\(error)" }
-        return text
-    }
-
-    /// Wake-on-LAN and reconnect outcomes only reach `statusBanner`; show them here
-    /// unless the banner just repeats the offline message already in the card.
-    private var offlineBanner: String? {
-        let banner = vm.statusBanner.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !banner.isEmpty, !banner.hasPrefix("\(pcName) is offline") else { return nil }
-        return banner
-    }
-
-    private var offlineState: some View {
-        VStack(spacing: 0) {
-            MacEmptyState(
-                icon: "wifi.slash",
-                title: "\(pcName) is offline",
-                message: offlineMessage,
-                tint: .orange,
-                actionTitle: vm.isWaking ? "Waking…" : "Power On",
-                action: { Task { await vm.wakePC() } }
-            )
-            .disabled(vm.isWaking)
-            HStack(spacing: 10) {
-                Button { Task { await vm.refreshMetrics() } } label: { Label("Retry", systemImage: "arrow.clockwise") }
-                    .buttonStyle(MacHoverButtonStyle())
-                Button { vm.selectedSection = .pcs } label: { Label("My PCs", systemImage: "desktopcomputer") }
-                    .buttonStyle(MacHoverButtonStyle())
-            }
-            if let banner = offlineBanner {
-                Text(banner)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 480)
-                    .padding(.top, 12)
-                    .padding(.horizontal, 20)
-            }
-        }
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity)
-        .macGlass(cornerRadius: 22, tint: .orange, elevated: true)
-    }
-
-    private var loadingCard: some View {
-        HStack(spacing: 12) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Reading the Sunshine app list…").font(.subheadline.weight(.semibold))
-                Text("Orbit asks the agent on \(pcName) for the applications Sunshine publishes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 16, tint: theme.accent)
-    }
-
-    private var emptyState: some View {
-        MacEmptyState(
-            icon: "square.grid.2x2",
-            title: "No apps published",
-            message: "Sunshine on \(pcName) has not published any applications yet, so there is nothing to launch. Add apps in the Sunshine Web UI, then refresh.",
-            tint: theme.accent,
-            actionTitle: "Refresh",
-            action: { Task { await refresh() } }
-        )
-        .macGlass(cornerRadius: 22, tint: theme.accent)
-    }
-
-    private var addAppsNotice: some View {
-        MacNotice(
-            title: "How to add apps",
-            message: "On the PC, open the Sunshine Web UI (default https://localhost:47990), choose Applications → Add, give the app a name and its command or executable, then Save. Orbit lists it after the next refresh.",
-            icon: "plus.app",
-            tint: theme.accent
-        )
-    }
-
-    private var filteredEmpty: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("No apps match “\(search)”").font(.subheadline.weight(.semibold))
-            Text("\(vm.games.count) app\(vm.games.count == 1 ? " is" : "s are") published on \(pcName). Clear the search to see them all.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Clear Search") { search = "" }
-                .buttonStyle(MacHoverButtonStyle())
-                .padding(.top, 2)
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity)
-        .macGlass(cornerRadius: 18)
-    }
-
-    private var grid: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-            ForEach(filteredGames) { game in
-                let app = sunshine.app(titled: game.title)
-                MacLibraryTile(
-                    game: game,
-                    symbol: MacLibraryIcon.symbol(for: game),
-                    accent: theme.isFlat ? theme.accent : MacLibraryIcon.accent(for: game, fallback: theme.accent),
-                    artwork: app.flatMap { sunshine.artwork[$0.id] },
-                    isRunning: app != nil && app?.id == sunshine.info?.currentGame,
-                    isLaunching: launchingID == game.id,
-                    isBusy: launchingID != nil,
-                    onLaunch: { launch(game) },
-                    onStream: canStream ? (usesMoonlightApp ? { vm.streamInMoonlight(appTitle: game.title) } : app.map { app in { startStream(app) } }) : nil,
-                    onSettings: usesMoonlightApp ? nil : { showsStreamSettings = true }
-                )
-                .onAppear { if let app { sunshine.loadArtwork(for: app) } }
-            }
-        }
-        .animation(.snappy(duration: 0.25), value: filteredGames)
-    }
-
-    // MARK: - Now Playing
-
-    private var gameTint: Color { theme.isFlat ? theme.accent : .mint }
-    private var nowPlayingGradient: LinearGradient {
-        LinearGradient(colors: [gameTint.opacity(theme.isFlat ? 0.08 : 0.16), gameTint.opacity(0.03), .clear], startPoint: .leading, endPoint: .trailing)
-    }
-
-    private func nowPlaying(_ title: String) -> some View {
-        HStack(spacing: 14) {
-            MacIconBadge(systemName: "gamecontroller.fill", tint: gameTint, size: 46, filled: true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("NOW PLAYING")
-                    .font(.system(.caption2, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(gameTint)
-                Text(title)
-                    .font(.system(.title3, weight: .bold))
-                    .lineLimit(1)
-                nowPlayingDetails
-            }
-            Spacer(minLength: 8)
-            if fpsHistory.count >= 3 {
-                MacSparkline(values: fpsHistory, tint: gameTint, lineWidth: 1.6)
-                    .frame(width: 150, height: 34)
-                    .opacity(0.7)
-            }
-            fpsReadout
-            Button { confirmStop = true } label: { Label("Stop Game", systemImage: "stop.fill") }
-                .buttonStyle(MacHoverButtonStyle(tint: .orange))
-                .help("Ask the PC to end the running game")
-            Button {
-                if !usesMoonlightApp, canStream, let app = sunshine.app(titled: title) { startStream(app) } else { vm.streamInMoonlight(appTitle: title) }
-            } label: { Label("Stream", systemImage: usesMoonlightApp ? "arrow.up.forward.app" : "play.rectangle.fill") }
-                .buttonStyle(MacHoverButtonStyle(tint: gameTint, prominent: true))
-                .disabled(!canStream)
-                .help(usesMoonlightApp ? "Open this app's stream in the Moonlight app" : "Watch and control this app from this Mac")
-        }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(nowPlayingGradient))
-        .macGlass(cornerRadius: 20, tint: gameTint, elevated: true)
-    }
-
-    @ViewBuilder
-    private var nowPlayingDetails: some View {
-        HStack(spacing: 8) {
-            if let process = vm.metrics.activeGameProcess, !process.isEmpty {
-                MacStatChip(label: "Process", value: process, icon: "terminal")
-            }
-            if let fps = vm.metrics.fps, fps > 0 {
-                MacStatChip(label: "Frametime", value: "\(MacFormat.decimal(1000 / fps, digits: 1)) ms", icon: "timer")
-                if let source = vm.metrics.fpsSource, !source.isEmpty {
-                    MacStatChip(label: "Source", value: source)
-                }
-            } else if let reason = vm.metrics.fpsUnavailableReason, !reason.isEmpty {
-                Text(reason).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private var fpsReadout: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text(fpsText)
-                .font(.system(size: 32, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(gameTint)
-                .contentTransition(.numericText())
-                .shadow(color: reduceGlow ? .clear : gameTint.opacity(0.45), radius: 10)
-            Text("FPS").font(.caption.weight(.bold)).foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(fpsText) frames per second")
-    }
-
-    private func launchStatusRow(_ status: String) -> some View {
-        let failed = Self.launchWarningPrefixes.contains { status.hasPrefix($0) }
-        return HStack(spacing: 10) {
-            Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .foregroundStyle(failed ? Color.orange : Color.mint)
-            Text(status).font(.caption.weight(.medium)).lineLimit(2)
-            Spacer(minLength: 8)
-            Button { launchStatus = nil } label: { Image(systemName: "xmark") }
-                .buttonStyle(MacIconButtonStyle(size: 22))
-                .help("Dismiss")
-                .accessibilityLabel("Dismiss launch status")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .macGlass(cornerRadius: 14, tint: failed ? .orange : .mint)
-    }
-
-    // MARK: - Footer
-
-    private var footerMessage: String {
-        if usesMoonlightApp {
-            return "Stream buttons open the Moonlight app (`Moonlight stream <pc> \"<app>\"`). Pair Moonlight with \(pcName) once inside Moonlight."
-        }
-        if sunshine.isPaired {
-            return "Press Stream on an app, or Stream Desktop above, to play \(pcName) in its own window (⇧⌘S). Click the video to capture the mouse and keyboard; ⌃⌥⇧Z releases them and ⌃⌥⇧Q ends the stream."
-        }
-        return "Pair with Sunshine once (PIN) and Orbit streams \(pcName) here with full mouse, keyboard and controller input."
-    }
-
-    private var footer: some View {
-        HStack(alignment: .center, spacing: 14) {
-            MacIconBadge(systemName: "play.tv", tint: theme.accent, size: 36)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Streaming").font(.subheadline.weight(.semibold))
-                Text(footerMessage).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer(minLength: 8)
-            if let url = sunshineWebURL {
-                Button { NSWorkspace.shared.open(url) } label: { Label("Sunshine Web UI", systemImage: "globe") }
-                    .buttonStyle(MacHoverButtonStyle())
-                    .help("Open \(url.absoluteString) — Sunshine's default Web UI port is 47990")
-            }
-            if usesMoonlightApp {
-                Button {
-                    vm.openMoonlight()
-                    moonlightInstalled = Self.detectMoonlight()
-                } label: {
-                    Label(moonlightInstalled == true ? "Moonlight App" : "Get Moonlight", systemImage: "arrow.up.forward.app")
-                }
-                .buttonStyle(MacHoverButtonStyle())
-                .keyboardShortcut("m", modifiers: [.command, .option])
-                .help("Open the Moonlight app, or its download page if it is not installed (⌥⌘M)")
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 18, tint: theme.accent)
-    }
-
-    // MARK: - Streaming
-
-    private var streamBackend: MacStreamBackend {
-        get { MacStreamBackend(rawValue: streamBackendRaw) ?? .orbit }
-        nonmutating set { streamBackendRaw = newValue.rawValue }
-    }
-    private var usesMoonlightApp: Bool { streamBackend == .moonlight }
-    /// Built-in streaming needs the Sunshine pairing; the Moonlight app only needs the PC online.
-    private var canStream: Bool {
-        guard vm.metrics.isOnline, !vm.isDemoMode else { return false }
-        return usesMoonlightApp ? moonlightInstalled == true : (sunshine.isPaired && sunshine.reachable)
-    }
-
-    private var backendPicker: some View {
-        Picker("Stream with", selection: Binding(get: { streamBackend }, set: { streamBackend = $0 })) {
-            ForEach(MacStreamBackend.allCases) { backend in Text(backend.title).tag(backend) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 190)
-        .help("Built-in streaming inside Orbit, or hand the session to the separate Moonlight app")
+        return URL(string: "https://\(host):\(vm.sunshineInfo?.webUIPort ?? 47990)/")
     }
 
     /// The agent on the PC can type the pairing PIN and start Sunshine (agent 4.3+).
@@ -670,81 +279,131 @@ struct MacLibraryView: View {
                                           sunshineRunning: vm.sunshineInfo?.running ?? true, client: { try vm.client() })
     }
 
-    private var streamDesktopButton: some View {
-        Button {
-            if usesMoonlightApp { vm.streamInMoonlight(appTitle: sunshine.desktopApp?.title ?? "Desktop") }
-            else if let app = sunshine.desktopApp { startStream(app) }
-        } label: {
-            Label(sunshine.isBusy ? "Resume Stream" : "Stream Desktop", systemImage: usesMoonlightApp ? "arrow.up.forward.app" : "play.rectangle.fill")
+    private func statusRow(_ status: String) -> some View {
+        let failed = Self.launchWarningPrefixes.contains { status.hasPrefix($0) }
+        return HStack(spacing: 10) {
+            Image(systemName: failed ? "exclamationmark.triangle" : "checkmark.circle")
+                .foregroundStyle(failed ? OrbitPalette.warm : OrbitPalette.online)
+            Text(status)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button {
+                launchStatus = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
         }
-        .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
-        .disabled(!canStream || (!usesMoonlightApp && sunshine.desktopApp == nil))
-        .help(usesMoonlightApp ? "Open the desktop stream in the Moonlight app (⇧⌘S)" : (sunshine.desktopApp == nil ? "Sunshine publishes no apps yet" : "Stream the PC desktop in a window (⇧⌘S)"))
+        .font(.callout)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(OrbitPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
+
+    // MARK: Library
 
     @ViewBuilder
-    private var streamSettingsButton: some View {
-        if usesMoonlightApp {
-            Button { vm.openMoonlight() } label: { Label("Moonlight Settings", systemImage: "arrow.up.forward.app") }
-                .buttonStyle(MacHoverButtonStyle())
-                .help("Resolution, bitrate and codec are set inside the Moonlight app")
-        } else {
-            Button { showsStreamSettings = true } label: { Label("Stream Settings", systemImage: "slider.horizontal.3") }
-                .buttonStyle(MacHoverButtonStyle())
-                .help("Resolution, frame rate, bitrate, codec, HDR, audio, input and network")
+    private var library: some View {
+        if vm.isDemoMode || (vm.currentPC != nil && vm.metrics.isOnline) {
+            VStack(alignment: .leading, spacing: 16) {
+                OrbitSectionHeader(search.isEmpty ? "Library" : "Results") {
+                    if vm.isLoadingGames { ProgressView().controlSize(.small) }
+                }
+                if vm.isLoadingGames && vm.games.isEmpty {
+                    placeholder(symbol: nil, title: "Reading your library…", message: "Orbit asks the PC for the games Sunshine publishes.")
+                } else if games.isEmpty && search.isEmpty {
+                    placeholder(symbol: "square.grid.2x2", title: "No games yet",
+                                message: "Games you add to Sunshine on the PC appear here. In Sunshine, choose Applications, then Add.") {
+                        if let url = sunshineWebURL {
+                            Button("Open Sunshine on the PC") { NSWorkspace.shared.open(url) }
+                                .buttonStyle(MacHoverButtonStyle())
+                        }
+                    }
+                } else if games.isEmpty {
+                    placeholder(symbol: "magnifyingglass", title: "No matches", message: "Try another name.")
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 22, alignment: .top)], alignment: .leading, spacing: 26) {
+                        ForEach(games) { game in tile(game) }
+                    }
+                    .animation(OrbitMotion.standard, value: games)
+                }
+            }
         }
     }
 
-    /// ⇧⌘S and the hero button: stream the desktop, or start pairing when that is still missing.
-    private func streamDesktop() {
-        if vm.isDemoMode { launchStatus = "Demo mode: pair a real PC in My PCs to stream it here."; return }
-        guard vm.metrics.isOnline else { launchStatus = "\(pcName) is offline. Power it on, then press Stream Desktop again."; return }
-        if usesMoonlightApp { vm.streamInMoonlight(appTitle: sunshine.desktopApp?.title ?? "Desktop"); return }
-        if canStream, let app = sunshine.desktopApp {
-            startStream(app)
-        } else if !sunshine.isPaired {
-            if sunshine.reachable { showsPairing = true } else { launchStatus = "Sunshine did not answer on \(pcName). Is it running?" }
-        } else if sunshine.desktopApp == nil {
-            launchStatus = "Sunshine publishes no apps yet. Add Desktop in its web UI, then refresh."
+    private func tile(_ game: MacSunshineGame) -> some View {
+        let app = sunshine.app(titled: game.title)
+        let running = (app != nil && app?.id == sunshine.info?.currentGame)
+            || vm.metrics.activeGame.map { $0.caseInsensitiveCompare(game.title) == .orderedSame } == true
+        let streamAction: (() -> Void)? = {
+            guard canStream else { return nil }
+            if usesMoonlightApp { return { vm.streamInMoonlight(appTitle: game.title) } }
+            return app.map { app in { start(app) } }
+        }()
+        return MacGameTile(game: game,
+                           artwork: app.flatMap { sunshine.artwork[$0.id] }.flatMap(NSImage.init(data:)),
+                           isRunning: running,
+                           isLaunching: launchingID == game.id,
+                           canStart: vm.metrics.isOnline || vm.isDemoMode,
+                           onStream: streamAction,
+                           onStart: { launch(game) })
+            .onAppear { if let app { sunshine.loadArtwork(for: app) } }
+    }
+
+    private func placeholder<Action: View>(symbol: String?, title: String, message: String, @ViewBuilder action: () -> Action = { EmptyView() }) -> some View {
+        VStack(spacing: 10) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(.tertiary)
+            } else {
+                ProgressView()
+            }
+            Text(title).font(.headline)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            action()
+                .padding(.top, 4)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 
-    private var settingsSummary: String {
-        let settings = streamSettings.settings
-        let size = settings.pixelSize
-        var parts = ["\(size.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
-        parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
-        if settings.requestsHDR { parts.append("HDR") }
-        parts.append(settings.audio.title)
-        return parts.joined(separator: " · ")
-    }
+    // MARK: Actions
 
-    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
-        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, promptUnlock: promptUnlock))
+    private func start(_ app: MoonlightApp, unlock: Bool = false) {
+        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, promptUnlock: unlock))
         openWindow(id: "stream")
     }
 
-    // MARK: - Actions
-
-    @MainActor
-    private func initialLoad() async {
-        moonlightInstalled = Self.detectMoonlight()
-        await refresh()
+    /// ⇧⌘S: stream the desktop, or ask for what is missing first.
+    private func streamDesktop() {
+        if vm.isDemoMode { launchStatus = "The demo can't stream. Connect a PC to stream it here."; return }
+        guard vm.metrics.isOnline else { launchStatus = "Launch stopped: \(pcName) is asleep or off."; return }
+        if usesMoonlightApp { vm.streamInMoonlight(appTitle: sunshine.desktopApp?.title ?? "Desktop"); return }
+        if canStream, let app = sunshine.desktopApp {
+            start(app)
+        } else if !sunshine.isPaired {
+            if sunshine.reachable { showsPairing = true } else { launchStatus = "Could not reach Sunshine on \(pcName). Is it running?" }
+        } else if sunshine.desktopApp == nil {
+            launchStatus = "Could not find the desktop in Sunshine. Add Desktop in Sunshine's applications, then refresh."
+        }
     }
 
     @MainActor
-    private func refresh() async {
+    private func refreshLibrary() async {
         guard !vm.isDemoMode, vm.currentPC != nil, vm.metrics.isOnline else { return }
-        loadError = nil
         await vm.refreshGames()
-        if vm.statusBanner.hasPrefix(Self.refreshFailurePrefix) { loadError = vm.statusBanner }
+        if vm.statusBanner.hasPrefix(Self.refreshFailurePrefix) { launchStatus = vm.statusBanner }
     }
 
-    /// Launches through the view model, which also opens Moonlight when the
-    /// `mac.autoOpenMoonlight` preference is on, and surfaces the outcome.
-    /// `launchGame` returns `Void`, so the result is read back from `statusBanner`
-    /// right after the await (same actor, no suspension in between). If the user
-    /// switched PCs meanwhile the banner belongs to the new PC and is ignored.
+    /// Starts a game on the PC through the agent; the outcome comes back in `statusBanner`.
     private func launch(_ game: MacSunshineGame) {
         guard launchingID == nil else { return }
         let pcID = vm.selectedPCID
@@ -753,16 +412,10 @@ struct MacLibraryView: View {
         launchStatus = nil
         Task { @MainActor in
             await vm.launchGame(game)
-            // Always release the busy flag, even when the outcome is discarded
-            // below, so the tiles never stay disabled after a PC/demo switch.
             if launchingID == game.id { launchingID = nil }
             guard vm.selectedPCID == pcID, vm.isDemoMode == demo else { return }
             launchStatus = vm.statusBanner
         }
-    }
-
-    private func open(_ string: String) {
-        if let url = URL(string: string) { NSWorkspace.shared.open(url) }
     }
 
     private static func detectMoonlight() -> Bool {
@@ -773,131 +426,86 @@ struct MacLibraryView: View {
 
 // MARK: - Tile
 
-/// Tall glass card for one Sunshine app. Launch appears on hover, keyboard focus or while launching.
-private struct MacLibraryTile: View {
-    let game: MacSunshineGame
-    let symbol: String
-    let accent: Color
-    var artwork: Data? = nil
-    var isRunning = false
-    let isLaunching: Bool
-    let isBusy: Bool
-    let onLaunch: () -> Void
-    var onStream: (() -> Void)? = nil
-    var onSettings: (() -> Void)? = nil
+/// A game's cover and name. Pointing at it offers Stream and Start on PC; double-click streams.
+private struct MacGameTile: View {
+    var game: MacSunshineGame
+    var artwork: NSImage?
+    var isRunning: Bool
+    var isLaunching: Bool
+    var canStart: Bool
+    var onStream: (() -> Void)?
+    var onStart: () -> Void
     @State private var hovered = false
-    @FocusState private var launchFocused: Bool
-
-    private var showsLaunch: Bool { hovered || launchFocused || isLaunching }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 8) {
-                if artwork != nil {
-                    MoonlightArtwork(data: artwork)
-                        .frame(width: 56, height: 56)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1))
-                } else {
-                    MacIconBadge(systemName: symbol, tint: accent, size: 56, filled: showsLaunch)
+        VStack(alignment: .leading, spacing: 10) {
+            MacGameCover(game: game, artwork: artwork)
+                .aspectRatio(3 / 4, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    if isRunning {
+                        Label("Playing", systemImage: "play.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .orbitGlass()
+                            .padding(8)
+                    }
                 }
-                Spacer(minLength: 0)
-                if isRunning {
-                    MacStatusPill(text: "Running", tint: accent, pulsing: true)
+                .overlay(alignment: .bottom) {
+                    if hovered || isLaunching {
+                        HStack(spacing: 8) {
+                            if let onStream {
+                                Button(action: onStream) {
+                                    Label("Stream", systemImage: "play.fill")
+                                }
+                                .buttonStyle(MacHoverButtonStyle(prominent: true))
+                            }
+                            Button(action: onStart) {
+                                if isLaunching {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("Start on PC", systemImage: "desktopcomputer")
+                                        .labelStyle(.iconOnly)
+                                }
+                            }
+                            .buttonStyle(MacHoverButtonStyle())
+                            .disabled(!canStart || isLaunching)
+                            .help("Start \(game.title) on the PC")
+                        }
+                        .padding(10)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
+                .scaleEffect(hovered ? 1.02 : 1)
+            HStack(spacing: 6) {
+                Text(game.title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                 if game.isFavorite {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.yellow)
-                        .help("Marked as a favourite")
-                        .accessibilityLabel("Favourite")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Favorite")
                 }
             }
-            titleBlock
-            Spacer(minLength: 0)
-            launchArea
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 196, alignment: .topLeading)
-        .macGlass(cornerRadius: 18, tint: accent, hovered: hovered)
-        .macHoverLift()
+        .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onTapGesture(count: 2) { if let onStream { onStream() } else if !isBusy { onLaunch() } }
-        .contextMenu { contextItems }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(game.title)
-    }
-
-    private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(game.title)
-                .font(.system(.headline, weight: .bold))
-                .foregroundStyle(.white.opacity(0.95))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
-            if !game.genre.isEmpty {
-                Text(game.genre)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            if let cmd = game.cmd, !cmd.isEmpty {
-                Text(cmd)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(cmd)
-            }
+        .animation(OrbitMotion.quick, value: hovered)
+        .onTapGesture(count: 2) { if let onStream { onStream() } else if canStart { onStart() } }
+        .contextMenu {
+            if let onStream { Button("Stream on This Mac", action: onStream) }
+            Button("Start on PC", action: onStart).disabled(!canStart)
+            Divider()
+            Button("Copy Name") { copy(game.title) }
+            if let cmd = game.cmd, !cmd.isEmpty { Button("Copy Command") { copy(cmd) } }
         }
-    }
-
-    private var launchArea: some View {
-        ZStack(alignment: .leading) {
-            Text(onStream != nil ? "Double-click to stream" : "Double-click to launch")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .opacity(showsLaunch ? 0 : 1)
-                .accessibilityHidden(true)
-            Button(action: { if let onStream { onStream() } else { onLaunch() } }) {
-                HStack(spacing: 6) {
-                    if isLaunching {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: onStream != nil ? "play.rectangle.fill" : "play.fill")
-                    }
-                    Text(isLaunching ? "Launching…" : (onStream != nil ? "Stream" : "Launch"))
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(MacHoverButtonStyle(tint: accent, prominent: true))
-            .focused($launchFocused)
-            .disabled(isBusy && !isLaunching)
-            .opacity(showsLaunch ? 1 : 0)
-            .help("Launch \(game.title) through Sunshine")
-            .accessibilityLabel("Launch \(game.title)")
-        }
-        .frame(height: 34)
-        .animation(.easeOut(duration: 0.15), value: showsLaunch)
-    }
-
-    @ViewBuilder
-    private var contextItems: some View {
-        Button { onLaunch() } label: { Label("Launch", systemImage: "play.fill") }
-            .disabled(isBusy)
-        if let onStream {
-            Button { onStream() } label: { Label("Stream", systemImage: "play.rectangle.fill") }
-        }
-        if let onSettings {
-            Button { onSettings() } label: { Label("Stream Settings…", systemImage: "slider.horizontal.3") }
-        }
-        Button { copy(game.title) } label: { Label("Copy Name", systemImage: "doc.on.doc") }
-        if let cmd = game.cmd, !cmd.isEmpty {
-            Button { copy(cmd) } label: { Label("Copy Command", systemImage: "terminal") }
-        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "Stream") { onStream?() }
+        .accessibilityAction(named: "Start on PC") { onStart() }
     }
 
     private func copy(_ text: String) {
@@ -906,54 +514,25 @@ private struct MacLibraryTile: View {
     }
 }
 
-// MARK: - Icon & accent resolution
-
-/// Picks a glyph for an app: the symbol the agent reports when it is a real SF
-/// Symbol, otherwise an honest name-based fallback.
-private enum MacLibraryIcon {
-    static func symbol(for game: MacSunshineGame) -> String {
-        let provided = game.iconSymbol.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !provided.isEmpty, NSImage(systemSymbolName: provided, accessibilityDescription: nil) != nil {
-            return provided
-        }
-        let name = game.title.lowercased()
-        if name.contains("desktop") { return "display" }
-        if name.contains("big picture") || name.contains("playnite") || name.contains("launcher") { return "play.rectangle.fill" }
-        return "gamecontroller.fill"
-    }
-
-    static func accent(for game: MacSunshineGame, fallback: Color) -> Color {
-        let hex = game.accentHex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard hex.count == 6, hex.allSatisfy(\.isHexDigit) else { return fallback }
-        return Color(hex: hex)
-    }
-}
-
-
-// MARK: - Stream window
-
-/// The `stream` window: shows the live session and closes itself once the stream ends.
-struct MacStreamWindowView: View {
-    @EnvironmentObject var vm: OrbitMacViewModel
-    @Environment(\.macTheme) private var theme
-    @Environment(\.dismissWindow) private var dismissWindow
-    @ObservedObject private var stream = MoonlightStreamController.shared
+/// The game's art, or a quiet typographic cover when Sunshine has none.
+struct MacGameCover: View {
+    var game: MacSunshineGame
+    var artwork: NSImage?
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            if stream.isPresented {
-                MoonlightStreamScreen(controller: stream, accent: theme.accent)
+            if let artwork {
+                Image(nsImage: artwork)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
             } else {
-                VStack(spacing: 10) {
-                    Image(systemName: "play.rectangle").font(.system(size: 34, weight: .medium)).foregroundStyle(.secondary)
-                    Text("No stream running").font(.headline)
-                    Text("Choose an app in Stream and press Stream, or press ⇧⌘S for the desktop.").font(.callout).foregroundStyle(.secondary)
-                }
+                // The name is right under the cover, so the placeholder doesn't repeat it.
+                OrbitPalette.well
+                Image(systemName: game.title.localizedCaseInsensitiveContains("steam") ? "play.rectangle" : "gamecontroller")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundStyle(.tertiary)
             }
         }
-        .onChange(of: stream.isPresented) { _, presented in
-            if !presented { dismissWindow(id: "stream") }
-        }
+        .background(OrbitPalette.surface)
     }
 }

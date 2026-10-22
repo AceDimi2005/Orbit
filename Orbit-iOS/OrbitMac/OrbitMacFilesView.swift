@@ -947,7 +947,7 @@ private struct MacFilesLocationTile: View {
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.white.opacity(0.07))
-                            Capsule().fill(LinearGradient(colors: [tint.opacity(0.7), tint], startPoint: .leading, endPoint: .trailing))
+                            Capsule().fill(tint)
                                 .frame(width: max(4, geometry.size.width * CGFloat(usage.fraction)))
                         }
                     }
@@ -1006,7 +1006,7 @@ private struct MacFilesMoveSheet: View {
             TextField("C:\\Users\\…", text: $destination)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
-            MacSectionHeader("Quick picks", icon: "bolt.fill")
+            MacSectionHeader("Quick Picks", icon: "bolt.fill")
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(quickPicks) { pick in

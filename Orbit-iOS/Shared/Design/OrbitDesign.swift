@@ -40,6 +40,48 @@ enum OrbitPalette {
     }
 }
 
+/// The accent colors people choose from. Every platform stores the choice under the same
+/// theme names ("noir", "ocean", …); these are the colors and names the redesign shows.
+enum OrbitAccent {
+    /// Free on every device; the rest come with Orbit Pro.
+    static let included = ["noir", "ocean", "aurora", "violet", "ember", "graphite"]
+    static let pro = ["cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
+
+    static func color(theme: String) -> Color {
+        switch theme {
+        case "ocean": return Color(red: 64 / 255, green: 200 / 255, blue: 224 / 255)
+        case "aurora": return Color(red: 102 / 255, green: 212 / 255, blue: 207 / 255)
+        case "violet": return Color(red: 94 / 255, green: 92 / 255, blue: 230 / 255)
+        case "ember": return OrbitPalette.warm
+        case "graphite": return Color(red: 174 / 255, green: 174 / 255, blue: 178 / 255)
+        case "cyberpunk": return Color(red: 255 / 255, green: 55 / 255, blue: 95 / 255)
+        case "solarGold": return Color(red: 230 / 255, green: 184 / 255, blue: 76 / 255)
+        case "crimson": return OrbitPalette.critical
+        case "matrix": return OrbitPalette.online
+        case "arctic": return Color(red: 154 / 255, green: 216 / 255, blue: 255 / 255)
+        case "sakura": return Color(red: 255 / 255, green: 143 / 255, blue: 183 / 255)
+        default: return OrbitPalette.accent
+        }
+    }
+
+    static func name(theme: String) -> String {
+        switch theme {
+        case "ocean": return "Teal"
+        case "aurora": return "Mint"
+        case "violet": return "Indigo"
+        case "ember": return "Orange"
+        case "graphite": return "Graphite"
+        case "cyberpunk": return "Pink"
+        case "solarGold": return "Gold"
+        case "crimson": return "Red"
+        case "matrix": return "Green"
+        case "arctic": return "Ice"
+        case "sakura": return "Rose"
+        default: return "Orbit Blue"
+        }
+    }
+}
+
 enum OrbitMetrics {
     /// Corner radius of grouped surfaces; controls inside them use the concentric radius.
     static let surfaceRadius: CGFloat = 26

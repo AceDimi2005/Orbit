@@ -257,7 +257,7 @@ struct MacProcessesView: View {
     }
 
     private var header: some View {
-        MacSectionHeader("Running applications", subtitle: headerSubtitle, icon: "list.bullet.rectangle.portrait.fill") {
+        MacSectionHeader("Running Now", subtitle: headerSubtitle, icon: "list.bullet.rectangle.portrait.fill") {
             HStack(spacing: 8) {
                 MacStatusPill(text: statusPillText, tint: statusPillTint, pulsing: isLive)
                     .id(isLive) // MacStatusPill only starts its pulse onAppear; re-create it when Live toggles.
@@ -630,7 +630,7 @@ struct MacProcessesView: View {
 
     private var notPairedState: some View {
         VStack(alignment: .leading, spacing: 14) {
-            MacSectionHeader("Running applications", icon: "list.bullet.rectangle.portrait.fill")
+            MacSectionHeader("Running Now", icon: "list.bullet.rectangle.portrait.fill")
             MacEmptyState(
                 icon: "list.bullet.rectangle.portrait",
                 title: "Pair your PC",
@@ -646,7 +646,7 @@ struct MacProcessesView: View {
 
     private var offlineState: some View {
         VStack(alignment: .leading, spacing: 14) {
-            MacSectionHeader("Running applications", subtitle: vm.connectionError, icon: "list.bullet.rectangle.portrait.fill")
+            MacSectionHeader("Running Now", subtitle: vm.connectionError, icon: "list.bullet.rectangle.portrait.fill")
             VStack(spacing: 6) {
                 MacEmptyState(
                     icon: "power",
@@ -690,7 +690,7 @@ private struct MacProcessesMeter: View {
                 Capsule().fill(Color.white.opacity(0.08))
                 if let fraction {
                     Capsule()
-                        .fill(LinearGradient(colors: [tint.opacity(0.7), tint], startPoint: .leading, endPoint: .trailing))
+                        .fill(tint)
                         .frame(width: max(3, geometry.size.width * min(1, max(0, fraction))))
                 }
             }

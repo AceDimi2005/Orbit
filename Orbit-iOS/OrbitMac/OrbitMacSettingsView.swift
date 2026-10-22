@@ -16,7 +16,7 @@ struct MacSettingsView: View {
             MacSettingsGeneralTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             MacSettingsAppearanceTab()
-                .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                .tabItem { Label("Accent Color", systemImage: "paintpalette") }
             MacSettingsConnectionTab()
                 .tabItem { Label("Connection", systemImage: "network") }
             MacSettingsAboutTab()
@@ -275,202 +275,111 @@ private struct MacSettingsGeneralTab: View {
 // MARK: - Appearance
 
 private struct MacSettingsAppearanceTab: View {
-    @EnvironmentObject var vm: OrbitMacViewModel
-    @Environment(\.macTheme) private var theme
     @AppStorage("mac.theme") private var selectedTheme: MacTheme = .noir
     @ObservedObject private var proStore = OrbitProStore.shared
     @State private var showsProPaywall = false
-    @AppStorage("mac.reduceGlow") private var reduceGlow = false
-    @AppStorage("mac.monochromeMetrics") private var monochrome = false
-
-    /// Eager grid: a lazy container inside a `List`-backed grouped `Form` row can
-    /// measure a zero height on macOS, so the swatches are laid out in fixed rows.
-    private static let swatchColumns = 4
-    private var themeRows: [[MacTheme]] {
-        let all = MacTheme.allCases
-        return stride(from: 0, to: all.count, by: Self.swatchColumns).map { start in
-            Array(all[start..<min(start + Self.swatchColumns, all.count)])
-        }
-    }
 
     var body: some View {
         Form {
             Section {
-                themeGrid
-                    .padding(.vertical, 6)
-            } header: {
-                Text("Theme")
+                preview
             } footer: {
-                Text(proStore.isProUnlocked
-                     ? "Applies to every Orbit window, the menu bar popover and the preview below."
-                     : "Applies to every Orbit window and the menu bar popover. Themes with a lock are part of Orbit Pro.")
+                Text("The canvas stays black; the accent marks what you can click and what is live. Your iPhone has the same colors.")
+            }
+            Section("Included") {
+                swatches(MacTheme.allCases.filter { !$0.isPro })
             }
             Section {
-                Toggle("Reduce glow", isOn: $reduceGlow)
-                Toggle("Monochrome metrics", isOn: $monochrome)
+                swatches(MacTheme.allCases.filter(\.isPro))
             } header: {
-                Text("Effects")
+                Text("Orbit Pro")
             } footer: {
-                Text("Reduce glow removes the ambient blur and value halos. Monochrome metrics colour every card with the theme accent instead of per-sensor colours.")
-            }
-            Section {
-                previewRow
-                    .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
-                    .listRowBackground(Color.clear)
-            } header: {
-                Text("Preview")
-            } footer: {
-                Text(vm.metrics.hasTelemetry ? "Live readings from \(vm.selectedPCName)." : "Cards show “—” until a PC reports readings.")
+                if !proStore.isProUnlocked { Text("These colors come with Orbit Pro.") }
             }
         }
         .formStyle(.grouped)
         .sheet(isPresented: $showsProPaywall) { OrbitProUnlockView(accent: selectedTheme.accent) { showsProPaywall = false } }
     }
 
-    private var themeGrid: some View {
-        Grid(horizontalSpacing: 10, verticalSpacing: 12) {
-            ForEach(themeRows.indices, id: \.self) { rowIndex in
-                GridRow {
-                    ForEach(themeRows[rowIndex]) { option in
-                        MacSettingsThemeSwatch(option: option, isSelected: option == selectedTheme) {
-                            if option.isPro && !proStore.isProUnlocked {
-                                showsProPaywall = true
-                            } else {
-                                withAnimation(.snappy(duration: 0.25)) { selectedTheme = option }
-                            }
-                        }
-                        .overlay(alignment: .topTrailing) {
-                            if option.isPro && !proStore.isProUnlocked {
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(.black)
-                                    .padding(4)
-                                    .background(Color.yellow, in: Circle())
-                                    .allowsHitTesting(false)
-                            }
-                        }
+    private var preview: some View {
+        HStack(spacing: 16) {
+            OrbitMark(status: .online, size: 40, tint: selectedTheme.accent)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Running cool and quiet")
+                    .font(.headline)
+                OrbitMeter(fraction: 0.62, style: AnyShapeStyle(selectedTheme.accent))
+                    .frame(width: 180)
+            }
+            Spacer()
+            Text(selectedTheme.title)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+        .animation(OrbitMotion.standard, value: selectedTheme)
+    }
+
+    /// Eager rows: a lazy grid inside a grouped `Form` row can measure a zero height on macOS.
+    private func swatches(_ options: [MacTheme]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(options) { option in
+                let locked = option.isPro && !proStore.isProUnlocked
+                MacSettingsThemeSwatch(option: option, isSelected: option == selectedTheme, isLocked: locked) {
+                    if locked {
+                        showsProPaywall = true
+                    } else {
+                        withAnimation(OrbitMotion.standard) { selectedTheme = option }
                     }
                 }
             }
         }
-    }
-
-    // Only live readings feed the preview; stale values linger in `metrics` after
-    // the PC drops offline, so everything is gated on `hasTelemetry`.
-    private var cpuLoad: Double? { vm.metrics.hasTelemetry ? vm.metrics.cpuUsage : nil }
-    private var gpuLoad: Double? { vm.metrics.hasTelemetry ? vm.metrics.gpuUsage : nil }
-    private var cpuTemperatureText: String? {
-        guard vm.metrics.hasTelemetry, let temp = vm.metrics.cpuTemp else { return nil }
-        return "\(Int(temp.rounded()))°C"
-    }
-    private var gpuTemperatureText: String? {
-        guard vm.metrics.hasTelemetry, let temp = vm.metrics.gpuTemp else { return nil }
-        return "\(Int(temp.rounded()))°C"
-    }
-
-    private var statusText: String {
-        if vm.isDemoMode { return "Demo" }
-        if vm.currentPC == nil { return "Not paired" }
-        return vm.metrics.isOnline ? "Online" : "Offline"
-    }
-    private var statusTint: Color {
-        if vm.isDemoMode { return .orange }
-        return vm.metrics.isOnline ? .mint : (vm.currentPC == nil ? .secondary : .orange)
-    }
-
-    private var previewRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
-                MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
-                MacStatChip(label: "Up", value: vm.metrics.formattedUptime)
-                Spacer(minLength: 0)
-                Button("Reset to Noir") { withAnimation(.snappy(duration: 0.25)) { selectedTheme = .noir } }
-                    .buttonStyle(MacHoverButtonStyle(tint: selectedTheme.accent, prominent: true))
-                    .disabled(selectedTheme == .noir)
-            }
-            HStack(spacing: 10) {
-                MacMetricCard(title: MacMetric.cpuLoad.title, subtitle: vm.metrics.cpuName, valueText: MacFormat.percent(cpuLoad), progress: cpuLoad.map { $0 / 100 },
-                              icon: MacMetric.cpuLoad.symbol, accent: MacMetric.cpuLoad.accent, detail: cpuTemperatureText,
-                              history: vm.history.values(for: .cpuLoad), showsRing: true)
-                MacMetricCard(title: MacMetric.gpuLoad.title, subtitle: vm.metrics.gpuName, valueText: MacFormat.percent(gpuLoad), progress: gpuLoad.map { $0 / 100 },
-                              icon: MacMetric.gpuLoad.symbol, accent: MacMetric.gpuLoad.accent, detail: gpuTemperatureText,
-                              history: vm.history.values(for: .gpuLoad), showsRing: true)
-            }
-        }
-        .padding(14)
-        .background { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(selectedTheme.background) }
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08), lineWidth: 1) }
+        .padding(.vertical, 6)
     }
 }
 
-/// One theme tile: gradient fill, background dot, checkmark when selected.
+/// One accent: a color dot with a ring when chosen, its name, a lock when it needs Orbit Pro.
 private struct MacSettingsThemeSwatch: View {
     let option: MacTheme
     let isSelected: Bool
+    var isLocked = false
     let action: () -> Void
     @State private var hovered = false
 
-    private var borderColor: Color {
-        if isSelected { return Color.white.opacity(0.95) }
-        return Color.white.opacity(hovered ? 0.35 : 0.12)
-    }
-    private var glowOpacity: Double { (isSelected || hovered) ? 0.35 : 0 }
-
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                tile
+            VStack(spacing: 7) {
+                ZStack {
+                    Circle()
+                        .fill(option.accent)
+                        .frame(width: 28, height: 28)
+                    Circle()
+                        .strokeBorder(Color.white, lineWidth: 2)
+                        .frame(width: 36, height: 36)
+                        .opacity(isSelected ? 1 : 0)
+                    if isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 38, height: 38)
+                .scaleEffect(hovered ? 1.06 : 1)
                 Text(option.title)
-                    .font(.caption.weight(isSelected ? .bold : .medium))
-                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-            .scaleEffect(hovered ? 1.03 : 1)
-            .animation(.easeOut(duration: 0.15), value: hovered)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .help(option.title)
-        .accessibilityLabel(option.title)
+        .animation(OrbitMotion.quick, value: hovered)
+        .help(option.title + (isLocked ? " · Orbit Pro" : ""))
+        .accessibilityLabel(option.title + (isLocked ? ", Orbit Pro" : ""))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    private var tile: some View {
-        ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(option.heroGradient)
-                .frame(height: 56)
-                .overlay(alignment: .bottomLeading) { backgroundDot }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(borderColor, lineWidth: isSelected ? 2 : 1)
-                )
-                .shadow(color: option.accent.opacity(glowOpacity), radius: 10, y: 4)
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 15, weight: .bold))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(Color.white, Color.black.opacity(0.55))
-                    .padding(5)
-            }
-        }
-    }
-
-    private var backgroundDot: some View {
-        Circle()
-            .fill(option.background)
-            .frame(width: 14, height: 14)
-            .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
-            .padding(7)
     }
 }
 
-// MARK: - Connection
-
-/// Editable Wake-on-LAN fields, compared against a baseline to detect edits.
 private struct MacSettingsWakeDraft: Equatable {
     var macAddress = ""
     var autoBroadcast = true

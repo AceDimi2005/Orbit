@@ -293,18 +293,11 @@ struct GameArtwork: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
-                LinearGradient(colors: [Color(hex: game.accentHex).opacity(0.55), OrbitPalette.surface],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                VStack(alignment: .leading) {
-                    Spacer()
-                    Text(game.title)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.7)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // The name is shown with the cover, so the placeholder doesn't repeat it.
+                OrbitPalette.well
+                Image(systemName: game.title.localizedCaseInsensitiveContains("steam") ? "play.rectangle" : "gamecontroller")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundStyle(.tertiary)
             }
         }
         .background(OrbitPalette.surface)

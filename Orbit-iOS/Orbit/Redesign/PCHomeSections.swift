@@ -211,9 +211,12 @@ struct PCActivitySection: View {
     @ObservedObject var vm: OrbitViewModel
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Busiest first (processor or graphics, whichever is higher), then the biggest in memory,
+    /// so a quiet PC still lists what is holding its memory rather than a row of 0 %.
     private var top: [PCProcess] {
-        Array(vm.processes.filter { ($0.cpuPercent ?? 0) > 0 || ($0.memoryMB ?? 0) > 0 }
-            .sorted { ($0.cpuPercent ?? -1, $0.memoryMB ?? -1) > ($1.cpuPercent ?? -1, $1.memoryMB ?? -1) }
+        func load(_ process: PCProcess) -> Int { Int(max(process.cpuPercent ?? 0, process.gpuPercent ?? 0).rounded()) }
+        return Array(vm.processes.filter { ($0.cpuPercent ?? 0) > 0 || ($0.memoryMB ?? 0) > 0 }
+            .sorted { (load($0), $0.memoryMB ?? -1) > (load($1), $1.memoryMB ?? -1) }
             .prefix(3))
     }
 
