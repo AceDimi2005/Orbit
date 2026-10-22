@@ -16,12 +16,14 @@ struct PCHomeView: View {
     @State private var showsCustomize = false
     @State private var vital: DashboardMetric?
     @State private var confirmation: PCPowerAction?
+    @EnvironmentObject private var companion: PCCompanion
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: OrbitMetrics.sectionSpacing) {
                     PCStatusHeader(vm: vm, state: state)
+                    PCPowerStatus()
                     switch state {
                     case .setup:
                         PCSetupCard(vm: vm, showsDiscovery: $showsDiscovery)
@@ -74,7 +76,11 @@ struct PCHomeView: View {
                 Button(action.confirmTitle, role: action == .lock ? nil : .destructive) {
                     confirmation = nil
                     OrbitHaptics.warning()
-                    Task { await vm.sendPowerAction(action.rawValue) }
+                    Task {
+                        await vm.sendPowerAction(action.rawValue)
+                        // Orbit Companion 5 gives Windows 30 seconds, counted down at the top.
+                        await companion.refreshPower()
+                    }
                 }
             }
             Button("Cancel", role: .cancel) { confirmation = nil }

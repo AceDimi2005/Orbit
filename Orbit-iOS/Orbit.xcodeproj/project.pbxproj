@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000125 /* PCCompanionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000013B /* PCCompanionViews.swift */; };
+		A20000000000000000000124 /* PCCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000013A /* PCCompanion.swift */; };
 		A20000000000000000000123 /* OrbitDebugScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000139 /* OrbitDebugScreens.swift */; };
 		A20000000000000000000122 /* OrbitHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000138 /* OrbitHaptics.swift */; };
 		A20000000000000000000121 /* LiveActivitySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000137 /* LiveActivitySettingsView.swift */; };
@@ -264,6 +266,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000013B /* PCCompanionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCCompanionViews.swift; sourceTree = "<group>"; };
+		B2000000000000000000013A /* PCCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCCompanion.swift; sourceTree = "<group>"; };
 		B20000000000000000000139 /* OrbitDebugScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDebugScreens.swift; sourceTree = "<group>"; };
 		B20000000000000000000138 /* OrbitHaptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitHaptics.swift; sourceTree = "<group>"; };
 		B20000000000000000000137 /* LiveActivitySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivitySettingsView.swift; sourceTree = "<group>"; };
@@ -489,6 +493,8 @@
 				B2000000000000000000010B /* SettingsHubView.swift */,
 				B2000000000000000000010C /* WelcomeView.swift */,
 				B20000000000000000000114 /* AppIconSettingsView.swift */,
+				B2000000000000000000013A /* PCCompanion.swift */,
+				B2000000000000000000013B /* PCCompanionViews.swift */,
 			);
 			path = Redesign;
 			sourceTree = "<group>";
@@ -924,6 +930,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000125 /* PCCompanionViews.swift in Sources */,
+				A20000000000000000000124 /* PCCompanion.swift in Sources */,
 				A20000000000000000000123 /* OrbitDebugScreens.swift in Sources */,
 				A20000000000000000000122 /* OrbitHaptics.swift in Sources */,
 				A20000000000000000000121 /* LiveActivitySettingsView.swift in Sources */,

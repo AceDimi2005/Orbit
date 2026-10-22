@@ -7,25 +7,10 @@ import WidgetKit
 
 /// The accent colors by their stored names. The same values as `OrbitTheme.orbitTint` in
 /// the app; widgets and the Live Activity only know the name.
+/// The accent names the app stores, mapped through the shared table every Orbit app uses.
 enum OrbitAccentPalette {
-    static func color(_ name: String?) -> Color {
-        switch name ?? "noir" {
-        case "ocean": return Color(red: 64 / 255, green: 200 / 255, blue: 224 / 255)
-        case "aurora": return Color(red: 102 / 255, green: 212 / 255, blue: 207 / 255)
-        case "violet": return Color(red: 94 / 255, green: 92 / 255, blue: 230 / 255)
-        case "ember": return OrbitPalette.warm
-        case "graphite": return Color(red: 174 / 255, green: 174 / 255, blue: 178 / 255)
-        case "cyberpunk": return Color(red: 255 / 255, green: 55 / 255, blue: 95 / 255)
-        case "solarGold": return Color(red: 230 / 255, green: 184 / 255, blue: 76 / 255)
-        case "crimson": return OrbitPalette.critical
-        case "matrix": return OrbitPalette.online
-        case "arctic": return Color(red: 154 / 255, green: 216 / 255, blue: 255 / 255)
-        case "sakura": return Color(red: 255 / 255, green: 143 / 255, blue: 183 / 255)
-        default: return OrbitPalette.accent
-        }
-    }
-
-    static let proNames: Set<String> = ["cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
+    static func color(_ name: String?) -> Color { OrbitAccent.color(theme: name ?? "noir") }
+    static let proNames: Set<String> = Set(OrbitAccent.pro)
 }
 
 // MARK: - Mark

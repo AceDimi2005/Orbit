@@ -283,21 +283,12 @@ struct TVCoverArt: View {
                 if let artwork {
                     MoonlightArtwork(data: artwork)
                 } else {
-                    // Sized to the poster, so long words shrink instead of breaking mid-word.
+                    // The name is shown with the cover, so the placeholder doesn't repeat it.
                     GeometryReader { proxy in
-                        VStack(alignment: .leading, spacing: 0) {
-                            Image(systemName: Self.symbol(game.iconSymbol))
-                                .font(.system(size: proxy.size.width * 0.2, weight: .light))
-                                .foregroundStyle(.tertiary)
-                            Spacer(minLength: 12)
-                            Text(game.title)
-                                .font(.system(size: proxy.size.width * 0.13, weight: .bold))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(3)
-                                .minimumScaleFactor(0.7)
-                        }
-                        .padding(proxy.size.width * 0.1)
-                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                        Image(systemName: Self.symbol(game.iconSymbol))
+                            .font(.system(size: proxy.size.width * 0.24, weight: .light))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: proxy.size.width, height: proxy.size.height)
                     }
                 }
             }

@@ -207,6 +207,16 @@ struct TrackpadScreen: View {
                 Text("Fast").tag(3.0)
             }
             .pickerStyle(.menu)
+            Section {
+                Button("Middle Click", systemImage: "computermouse") {
+                    OrbitHaptics.tap()
+                    Task { await vm.sendCursorInput(click: "middle") }
+                }
+                Button("Double Click", systemImage: "cursorarrow.click.2") {
+                    OrbitHaptics.tap()
+                    Task { await vm.sendCursorInput(click: "double") }
+                }
+            }
             Section("Windows") {
                 Button("Show Desktop", systemImage: "menubar.dock.rectangle") { send("show_desktop") }
                 Button("Task View", systemImage: "rectangle.3.group") { send("task_view") }

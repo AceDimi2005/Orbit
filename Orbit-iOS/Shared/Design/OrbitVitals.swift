@@ -195,6 +195,6 @@ struct OrbitTakeaway {
         if m.ramTotalGB > 0, m.ramUsedGB / m.ramTotalGB >= 0.9 { headline = "Memory is almost full"; return }
         if let game = m.activeGame, !game.isEmpty { headline = "In game"; return }
         if let cpu = m.cpuTemp, cpu < 65, (m.gpuTemp ?? 0) < 65, m.cpuUsage < 30 { headline = "Running cool and quiet"; return }
-        headline = m.cpuUsage < 30 ? "Idle" : "Running smoothly"
+        headline = m.cpuUsage < 30 ? "Quiet right now" : "Running smoothly"
     }
 }

@@ -116,10 +116,12 @@ struct PCControlsSection: View {
                 Menu {
                     Button("Lock", systemImage: "lock") { Task { await vm.sendPowerAction("lock") } }
                     Button("Turn On Display", systemImage: "display") { Task { await vm.sendPowerAction("restore_display") } }
+                    Button("HDR On or Off", systemImage: "sun.max") { Task { await vm.sendPowerAction("toggle_hdr") } }
                     Divider()
                     Button("Sleep", systemImage: "moon") { confirmation = .sleep }
                     Button("Restart", systemImage: "arrow.clockwise") { confirmation = .restart }
                     Button("Shut Down", systemImage: "power", role: .destructive) { confirmation = .shutdown }
+                    PCPowerLaterMenu(gameRunning: !(vm.metrics.activeGame ?? "").isEmpty)
                 } label: {
                     PCControlTileLabel(title: "Power", systemImage: "power")
                 }
@@ -167,6 +169,8 @@ struct PCControlTileLabel: View {
 struct PCSoundSection: View {
     @ObservedObject var vm: OrbitViewModel
     @Binding var showsMixer: Bool
+    @EnvironmentObject private var companion: PCCompanion
+    @Environment(\.scenePhase) private var scenePhase
 
     private var available: Bool { vm.metrics.volumeAvailable != false && !vm.isDemoMode }
 
@@ -201,6 +205,13 @@ struct PCSoundSection: View {
             }
             .orbitSurface(padding: 16, radius: 22)
             .disabled(!available)
+            PCSoundExtras()
+        }
+        .task(id: vm.connectionID) {
+            while !Task.isCancelled {
+                if scenePhase == .active, vm.metrics.isOnline, !vm.isDemoMode { await companion.refreshSound() }
+                do { try await Task.sleep(for: .seconds(10)) } catch { break }
+            }
         }
     }
 }
@@ -289,9 +300,10 @@ struct PCAboutSection: View {
         VStack(alignment: .leading, spacing: 12) {
             OrbitSectionHeader("This PC")
             VStack(spacing: 0) {
-                row("Processor", vm.metrics.cpuName)
+                // Names set in Specifications win over what Windows reports.
+                row("Processor", vm.componentName("cpu", detected: vm.metrics.cpuName))
                 Divider().overlay(OrbitPalette.hairline)
-                row("Graphics", vm.metrics.gpuName)
+                row("Graphics", vm.componentName("gpu", detected: vm.metrics.gpuName))
                 if vm.metrics.ramTotalGB > 0 {
                     Divider().overlay(OrbitPalette.hairline)
                     row("Memory", "\(OrbitFormat.gigabytes(vm.metrics.ramTotalGB, digits: 0) ?? "") GB")

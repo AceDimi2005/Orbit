@@ -63,6 +63,8 @@ def main():
         sources.mkdir(parents=True)
         for name in ("OrbitAPIClient.swift", "OrbitPairing.swift"):
             shutil.copy2(ROOT / "Orbit-iOS" / "Orbit" / name, sources / name)
+        # Pairing names the device type (Orbit Companion 5) from the shared API models.
+        shutil.copy2(ROOT / "Orbit-iOS" / "Shared" / "OrbitCompanionAPI.swift", sources / "OrbitCompanionAPI.swift")
         (sources / "Probe.swift").write_text(SWIFT)
         (root / "Package.swift").write_text('''// swift-tools-version:5.9
 import PackageDescription

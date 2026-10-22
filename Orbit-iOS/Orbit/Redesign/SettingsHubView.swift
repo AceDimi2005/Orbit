@@ -16,6 +16,8 @@ struct SettingsHubView: View {
     @State private var showsStreamSettings = false
     @State private var showsCustomize = false
     @AppStorage("orbit.appIcon") private var currentIcon: OrbitAppIcon = .classic
+    @AppStorage("orbit.haptics") private var hapticsEnabled = true
+    @EnvironmentObject private var companion: PCCompanion
 
     var body: some View {
         NavigationStack {
@@ -53,6 +55,12 @@ struct SettingsHubView: View {
                     if vm.isConfigured {
                         NavigationLink("Connection & Wake") { PCConnectionSettingsView(vm: vm) }
                     }
+                    if companion.has("devices") {
+                        NavigationLink("Devices") { PCDevicesView(vm: vm).environmentObject(companion) }
+                    }
+                    if companion.has("activity") {
+                        NavigationLink("Activity on the PC") { PCActivityLogView().environmentObject(companion) }
+                    }
                 }
 
                 Section("Appearance") {
@@ -73,6 +81,7 @@ struct SettingsHubView: View {
                         LabeledContent("App Icon") { Text(currentIcon == .current ? currentIcon.title : OrbitAppIcon.current.title) }
                     }
                     Button("Readings on the PC Tab…") { showsCustomize = true }
+                    Toggle("Haptics", isOn: $hapticsEnabled)
                 }
 
                 Section {

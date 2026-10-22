@@ -25,28 +25,13 @@ enum TVMetrics {
 enum TVAccent {
     static let themeKey = "orbit.theme"
 
-    private static let tints: [String: Color] = [
-        "noir": OrbitPalette.accent,
-        "ocean": Color(red: 64 / 255, green: 200 / 255, blue: 224 / 255),
-        "aurora": Color(red: 102 / 255, green: 212 / 255, blue: 207 / 255),
-        "violet": Color(red: 94 / 255, green: 92 / 255, blue: 230 / 255),
-        "ember": OrbitPalette.warm,
-        "graphite": Color(red: 174 / 255, green: 174 / 255, blue: 178 / 255),
-        "cyberpunk": Color(red: 255 / 255, green: 55 / 255, blue: 95 / 255),
-        "solarGold": Color(red: 230 / 255, green: 184 / 255, blue: 76 / 255),
-        "crimson": OrbitPalette.critical,
-        "matrix": OrbitPalette.online,
-        "arctic": Color(red: 154 / 255, green: 216 / 255, blue: 255 / 255),
-        "sakura": Color(red: 255 / 255, green: 143 / 255, blue: 183 / 255)
-    ]
-    private static let proThemes: Set<String> = ["cyberpunk", "solarGold", "crimson", "matrix", "arctic", "sakura"]
-
+    /// The iPhone's choice (synced through iCloud), from the shared table every Orbit app uses.
     @MainActor
     static var current: Color {
         let raw = NSUbiquitousKeyValueStore.default.string(forKey: themeKey) ?? UserDefaults.standard.string(forKey: themeKey)
-        guard let raw, let tint = tints[raw] else { return OrbitPalette.accent }
-        if proThemes.contains(raw), !OrbitProStore.shared.isProUnlocked { return OrbitPalette.accent }
-        return tint
+        guard let raw else { return OrbitPalette.accent }
+        if OrbitAccent.pro.contains(raw), !OrbitProStore.shared.isProUnlocked { return OrbitPalette.accent }
+        return OrbitAccent.color(theme: raw)
     }
 }
 

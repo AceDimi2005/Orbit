@@ -1,6 +1,7 @@
 import Foundation
 import MoonlightCore
 import SwiftUI
+import UIKit
 #if canImport(WatchConnectivity)
 import WatchConnectivity
 #endif
@@ -110,7 +111,17 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         if let gpuPower = vm.metrics.gpuPowerWatts { payload["gpuPowerWatts"] = gpuPower }
         if let fps = vm.metrics.fps { payload["fps"] = fps }
         if let game = vm.metrics.activeGame { payload["activeGame"] = game }
+        // The watch takes the accent chosen on iPhone (RRGGBB; empty means Orbit Blue).
+        let theme = OrbitTheme(rawValue: UserDefaults.standard.string(forKey: "orbit.theme") ?? "") ?? .noir
+        payload["tintHex"] = theme == .noir ? "" : Self.hex(theme.orbitTint)
         return payload
+    }
+
+    private static func hex(_ color: Color) -> String {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        func byte(_ value: CGFloat) -> Int { Int((min(1, max(0, value)) * 255).rounded()) }
+        return String(format: "%02X%02X%02X", byte(red), byte(green), byte(blue))
     }
 
     func pushStateToWatch(force: Bool = false) {

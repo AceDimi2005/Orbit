@@ -11,6 +11,7 @@ enum OrbitTab: Hashable {
 struct OrbitRootView: View {
     @StateObject private var vm = OrbitViewModel()
     @StateObject private var sunshine = MoonlightHostCoordinator()
+    @StateObject private var companion = PCCompanion()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
     @State private var tab: OrbitTab = .pc
@@ -40,6 +41,19 @@ struct OrbitRootView: View {
         .tint(theme.orbitTint)
         .onChange(of: tab) { _, _ in OrbitHaptics.selection() }
         .task(id: sunshineKey) { await syncSunshine() }
+        .task(id: "\(vm.connectionID)|\(vm.metrics.isOnline)|\(vm.isDemoMode)") {
+            // Orbit Companion 5: what the PC can do, and any power timer or countdown pending.
+            companion.attach(vm)
+            companion.reset(for: "\(vm.connectionID)|\(vm.isDemoMode)")
+            guard vm.metrics.isOnline, !vm.isDemoMode else { return }
+            await companion.refreshCapabilities()
+            while !Task.isCancelled {
+                await companion.refreshPower()
+                let soon = companion.power?.timer?.state == "countdown" || (companion.power?.timer?.remainingSeconds ?? .max) < 90
+                do { try await Task.sleep(for: .seconds(soon ? 3 : 15)) } catch { break }
+            }
+        }
+        .environmentObject(companion)
         .overlay {
             if vm.smartLaunchStep != .idle {
                 SmartLaunchOverlay(vm: vm).transition(.opacity)
@@ -59,6 +73,7 @@ struct OrbitRootView: View {
         }
         .sheet(isPresented: $vm.isShowingIPConfigSheet) {
             SettingsHubView(vm: vm)
+                .environmentObject(companion)
         }
         .sheet(isPresented: $showsPro) { OrbitProPaywallView() }
         .confirmationDialog(confirmation?.question ?? "", isPresented: Binding(
@@ -68,7 +83,10 @@ struct OrbitRootView: View {
                 Button(action.confirmTitle, role: .destructive) {
                     confirmation = nil
                     OrbitHaptics.warning()
-                    Task { await vm.sendPowerAction(action.rawValue) }
+                    Task {
+                        await vm.sendPowerAction(action.rawValue)
+                        await companion.refreshPower()
+                    }
                 }
             }
             Button("Cancel", role: .cancel) { confirmation = nil }
