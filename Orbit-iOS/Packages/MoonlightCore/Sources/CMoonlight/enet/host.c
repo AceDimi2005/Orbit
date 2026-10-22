@@ -173,6 +173,24 @@ enet_host_random (ENetHost * host)
     return n ^ (n >> 14);
 }
 
+/** Connects the host's UDP socket to the one remote address it will talk to.
+    Datagrams are then sent without a destination address and only that address
+    can reach the socket. Orbit change (2026-10-22): the macOS App Sandbox refuses
+    datagrams on unconnected sockets without com.apple.security.network.server.
+    @param host host created without a bind address that has no peers yet
+    @param address the remote address that enet_host_connect() will be given
+    @returns 0 on success, < 0 on failure
+*/
+int
+enet_host_connect_socket (ENetHost * host, const ENetAddress * address)
+{
+    if (enet_socket_connect (host -> socket, address) < 0)
+      return -1;
+
+    host -> connectedSocket = 1;
+    return 0;
+}
+
 /** Initiates a connection to a foreign host.
     @param host host seeking the connection
     @param address destination for the connection

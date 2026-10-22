@@ -54,10 +54,10 @@ static void AudioPingThreadProc(void* context) {
             pingCount++;
             AudioPingPayload.sequenceNumber = BE32(pingCount);
 
-            sendto(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendUdpSocket(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), &saddr, AddrLen);
         }
         else {
-            sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendUdpSocket(rtpSocket, legacyPingData, sizeof(legacyPingData), &saddr, AddrLen);
         }
 
         PltSleepMsInterruptible(&udpPingThread, 500);
@@ -88,6 +88,8 @@ int initializeAudioStream(void) {
 // number is parsed out of it. Alternatively, it's also called if parsing fails
 // and will use the well known audio port instead.
 int notifyAudioPortNegotiationComplete(void) {
+    int err;
+
     LC_ASSERT(!pingThreadStarted);
     LC_ASSERT(AudioPortNumber != 0);
 
@@ -98,9 +100,16 @@ int notifyAudioPortNegotiationComplete(void) {
         return LastSocketFail();
     }
 
+    err = connectUdpSocket(rtpSocket, &RemoteAddr, AddrLen, AudioPortNumber);
+    if (err != 0) {
+        closeSocket(rtpSocket);
+        rtpSocket = INVALID_SOCKET;
+        return err;
+    }
+
     // We may receive audio before our threads are started, but that's okay. We'll
     // drop the first 1 second of audio packets to catch up with the backlog.
-    int err = PltCreateThread("AudioPing", AudioPingThreadProc, NULL, &udpPingThread);
+    err = PltCreateThread("AudioPing", AudioPingThreadProc, NULL, &udpPingThread);
     if (err != 0) {
         return err;
     }

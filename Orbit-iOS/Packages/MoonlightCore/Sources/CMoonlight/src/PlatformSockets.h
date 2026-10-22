@@ -120,12 +120,27 @@ void addrToUrlSafeString(struct sockaddr_storage* addr, char* string, size_t str
 #define SOCK_QOS_TYPE_AUDIO 1
 #define SOCK_QOS_TYPE_VIDEO 2
 
+// Orbit change (2026-10-22): the macOS App Sandbox only lets an app with
+// com.apple.security.network.client make outgoing connections. bind() and
+// datagrams that arrive on unconnected UDP sockets both need
+// com.apple.security.network.server, so on macOS each stream socket is
+// connect()ed to its port on the host instead: the sandbox treats that as an
+// outgoing flow and the kernel picks the same local address bind() would use.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
+#define LC_CONNECTED_UDP_SOCKETS 1
+#endif
+#endif
+
 SOCKET createSocket(int addressFamily, int socketType, int protocol, bool nonBlocking);
 SOCKET connectTcpSocket(struct sockaddr_storage* dstaddr, SOCKADDR_LEN addrlen, unsigned short port, int timeoutSec);
 int getLocalAddressByUdpConnect(const struct sockaddr_storage* targetAddr, SOCKADDR_LEN targetAddrLen,  unsigned short targetPort,
                                 struct sockaddr_storage* localAddr, SOCKADDR_LEN* localAddrLen);
 int sendMtuSafe(SOCKET s, char* buffer, int size);
 SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCKADDR_LEN addrLen, int bufferSize, int socketQosType);
+int connectUdpSocket(SOCKET s, struct sockaddr_storage* remoteAddr, SOCKADDR_LEN addrLen, unsigned short port);
+int sendUdpSocket(SOCKET s, const char* buffer, int size, LC_SOCKADDR* addr, SOCKADDR_LEN addrLen);
 int enableNoDelay(SOCKET s);
 int setSocketNonBlocking(SOCKET s, bool enabled);
 int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect);

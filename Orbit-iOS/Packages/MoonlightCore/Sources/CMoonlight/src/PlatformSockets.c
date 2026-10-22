@@ -322,6 +322,7 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
     struct sockaddr_in *n3ds_addr = &bindAddr;
     n3ds_addr->sin_port = htons(n3ds_udp_port++);
 #endif
+#ifndef LC_CONNECTED_UDP_SOCKETS
     if (bind(s, (struct sockaddr*) &bindAddr, addrLen) == SOCKET_ERROR) {
         err = LastSocketError();
         Limelog("bind() failed: %d\n", err);
@@ -329,6 +330,9 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
         SetLastSocketError(err);
         return INVALID_SOCKET;
     }
+#endif
+    // With LC_CONNECTED_UDP_SOCKETS the caller binds the socket implicitly
+    // through connectUdpSocket() (see PlatformSockets.h).
 
 #if defined(LC_DARWIN)
     {
@@ -404,6 +408,44 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
     }
 
     return s;
+}
+
+// Points a stream socket from bindUdpSocket() at its port on the host. Only
+// needed with LC_CONNECTED_UDP_SOCKETS; elsewhere the socket stays unconnected.
+int connectUdpSocket(SOCKET s, struct sockaddr_storage* remoteAddr, SOCKADDR_LEN addrLen, unsigned short port) {
+#ifdef LC_CONNECTED_UDP_SOCKETS
+    LC_SOCKADDR connAddr;
+
+    LC_ASSERT(port != 0);
+
+    memcpy(&connAddr, remoteAddr, addrLen);
+    SET_PORT(&connAddr, port);
+
+    if (connect(s, (struct sockaddr*)&connAddr, addrLen) == SOCKET_ERROR) {
+        int err = LastSocketError();
+        Limelog("UDP connect() to port %u failed: %d\n", port, err);
+        return err != 0 ? err : -1;
+    }
+#else
+    (void)s;
+    (void)remoteAddr;
+    (void)addrLen;
+    (void)port;
+#endif
+
+    return 0;
+}
+
+// Sends a datagram to the host on a stream socket. A socket connected by
+// connectUdpSocket() must use send(): sendto() with an address fails with EISCONN.
+int sendUdpSocket(SOCKET s, const char* buffer, int size, LC_SOCKADDR* addr, SOCKADDR_LEN addrLen) {
+#ifdef LC_CONNECTED_UDP_SOCKETS
+    (void)addr;
+    (void)addrLen;
+    return (int)send(s, buffer, size, 0);
+#else
+    return (int)sendto(s, buffer, size, 0, (struct sockaddr*)addr, addrLen);
+#endif
 }
 
 int setSocketNonBlocking(SOCKET s, bool enabled) {

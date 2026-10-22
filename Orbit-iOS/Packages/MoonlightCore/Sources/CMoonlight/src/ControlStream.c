@@ -1766,13 +1766,30 @@ int startControlStream(void) {
         enet_address_set_port(&remoteAddress, ControlPortNumber);
 
         // Create a client
+#ifdef LC_CONNECTED_UDP_SOCKETS
+        // Not bound here: enet_host_connect_socket() below binds it implicitly
+        // (see LC_CONNECTED_UDP_SOCKETS in PlatformSockets.h)
+        client = enet_host_create(RemoteAddr.ss_family, NULL, 1, CTRL_CHANNEL_COUNT, 0, 0);
+#else
         client = enet_host_create(RemoteAddr.ss_family,
                                   LocalAddr.ss_family != 0 ? &localAddress : NULL,
                                   1, CTRL_CHANNEL_COUNT, 0, 0);
+#endif
         if (client == NULL) {
             stopping = true;
             return -1;
         }
+
+#ifdef LC_CONNECTED_UDP_SOCKETS
+        if (enet_host_connect_socket(client, &remoteAddress) < 0) {
+            err = LastSocketFail();
+            Limelog("Failed to connect the control stream socket to UDP port %u: %d\n", ControlPortNumber, err);
+            stopping = true;
+            enet_host_destroy(client);
+            client = NULL;
+            return err;
+        }
+#endif
 
         client->intercept = ignoreDisconnectIntercept;
 

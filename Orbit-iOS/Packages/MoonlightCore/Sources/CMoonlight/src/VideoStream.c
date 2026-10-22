@@ -71,10 +71,10 @@ static void VideoPingThreadProc(void* context) {
             pingCount++;
             VideoPingPayload.sequenceNumber = BE32(pingCount);
 
-            sendto(rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendUdpSocket(rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), &saddr, AddrLen);
         }
         else {
-            sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendUdpSocket(rtpSocket, legacyPingData, sizeof(legacyPingData), &saddr, AddrLen);
         }
 
         PltSleepMsInterruptible(&udpPingThread, 500);
@@ -334,6 +334,14 @@ int startVideoStream(void* rendererContext, int drFlags) {
     if (rtpSocket == INVALID_SOCKET) {
         VideoCallbacks.cleanup();
         return LastSocketError();
+    }
+
+    err = connectUdpSocket(rtpSocket, &RemoteAddr, AddrLen, VideoPortNumber);
+    if (err != 0) {
+        closeSocket(rtpSocket);
+        rtpSocket = INVALID_SOCKET;
+        VideoCallbacks.cleanup();
+        return err;
     }
 
     VideoCallbacks.start();

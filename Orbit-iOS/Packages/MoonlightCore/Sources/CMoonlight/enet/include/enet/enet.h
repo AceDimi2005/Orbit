@@ -365,6 +365,7 @@ typedef struct _ENetHost
 {
    ENetSocket           socket;
    int                  wildcardBind;
+   int                  connectedSocket;             /**< set by enet_host_connect_socket(): datagrams go to the connected address */
    ENetAddress          address;                     /**< Internet address of the host */
    enet_uint32          incomingBandwidth;           /**< downstream bandwidth of the host */
    enet_uint32          outgoingBandwidth;           /**< upstream bandwidth of the host */
@@ -541,6 +542,7 @@ ENET_API enet_uint32  enet_crc32 (const ENetBuffer *, size_t);
 ENET_API ENetHost * enet_host_create (int, const ENetAddress *, size_t, size_t, enet_uint32, enet_uint32);
 ENET_API void       enet_host_destroy (ENetHost *);
 ENET_API ENetPeer * enet_host_connect (ENetHost *, const ENetAddress *, size_t, enet_uint32);
+ENET_API int        enet_host_connect_socket (ENetHost *, const ENetAddress *);
 ENET_API int        enet_host_check_events (ENetHost *, ENetEvent *);
 ENET_API int        enet_host_service (ENetHost *, ENetEvent *, enet_uint32);
 ENET_API void       enet_host_flush (ENetHost *);

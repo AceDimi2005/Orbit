@@ -1021,6 +1021,16 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             return -1;
         }
 
+#ifdef LC_CONNECTED_UDP_SOCKETS
+        // See LC_CONNECTED_UDP_SOCKETS in PlatformSockets.h
+        if (enet_host_connect_socket(client, &address) < 0) {
+            Limelog("RTSP: Failed to connect the socket to UDP port %u: error %d\n", RtspPortNumber, LastSocketFail());
+            enet_host_destroy(client);
+            client = NULL;
+            return -1;
+        }
+#endif
+
         // Connect to the host
         peer = enet_host_connect(client, &address, 1, 0);
         if (peer == NULL) {

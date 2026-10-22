@@ -10,6 +10,18 @@ Local Swift package that gives Orbit in-app game streaming from a Sunshine host.
 | `Sources/MoonlightCore` | Orbit's Swift layer: `PlatformCrypto.swift` (AES-GCM/CBC hooks on CryptoKit/CommonCrypto), `VideoRenderer.swift` (VideoToolbox through `AVSampleBufferDisplayLayer`), `AudioRenderer.swift` (Opus → `AVAudioEngine`), `ControllerBridge.swift` (GameController + rumble), `StreamSession.swift` (connection lifecycle, statistics, input), `StreamSurface.swift` (touch/mouse/keyboard views), `StreamSettings.swift` | Same as the app |
 | `Copus` dependency | libopus packaged by [alta/swift-opus](https://github.com/alta/swift-opus) | BSD-3-Clause |
 
+## Local changes to the vendored code
+
+- 2026-10-22, macOS only (`LC_CONNECTED_UDP_SOCKETS` in `src/PlatformSockets.h`): the video,
+  audio and control (ENet) sockets are `connect()`ed to their port on the host instead of being
+  bound to a local address. The Mac App Sandbox refuses `bind()` and datagrams on unconnected UDP
+  sockets unless the app has `com.apple.security.network.server`, which App Review rejects for an
+  app that runs no server. Touched files: `src/PlatformSockets.{c,h}`, `src/VideoStream.c`,
+  `src/AudioStream.c`, `src/ControlStream.c`, `src/RtspConnection.c`, and in ENet
+  `enet_host_connect_socket()` (`host.c`, `enet.h`), `protocol.c` (no destination address on a
+  connected socket) and `unix.c` (`ECONNREFUSED` from an ICMP port unreachable is transient).
+  iOS and tvOS keep upstream behaviour.
+
 Because moonlight-common-c is GPL-3.0, any Orbit binary that links this package must be
 distributed under GPL-3.0-compatible terms (source available, same license for the combined
 work). The rest of the repository stays MIT; the obligation attaches to the shipped app.

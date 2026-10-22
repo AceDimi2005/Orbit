@@ -749,6 +749,9 @@ enet_socket_send (ENetSocket socket,
         case EHOSTDOWN:
 #endif
         case EHOSTUNREACH:
+        // Orbit change (2026-10-22): a socket connected by enet_host_connect_socket()
+        // reports an ICMP port unreachable from an earlier datagram here.
+        case ECONNREFUSED:
             return 0;
 
         default:
@@ -806,6 +809,13 @@ enet_socket_receive (ENetSocket socket,
     if (recvLength == -1)
     {
        if (errno == EWOULDBLOCK)
+         return 0;
+
+       // Orbit change (2026-10-22): a socket connected by enet_host_connect_socket()
+       // reports an ICMP port unreachable from an earlier datagram here (for example
+       // a connect request that reached the host before it opened the port). Treat it
+       // like no data, as Windows does with WSAECONNRESET; the peer timeout still applies.
+       if (errno == ECONNREFUSED)
          return 0;
 
        return -1;
