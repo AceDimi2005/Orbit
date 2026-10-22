@@ -119,7 +119,7 @@ private struct MacSettingsGeneralTab: View {
             if let loginError {
                 Text(loginError).foregroundStyle(.orange)
             } else {
-                Text("Orbit keeps polling your PC in the background so the menu bar readout stays current.")
+                Text("Orbit keeps checking on your PC in the background, so the menu bar stays current.")
             }
         }
     }
@@ -127,31 +127,31 @@ private struct MacSettingsGeneralTab: View {
     private var menuBarSection: some View {
         Section {
             Toggle("Show Orbit in the menu bar", isOn: $vm.menuBarEnabled)
-            Picker("Menu bar readout", selection: $vm.menuBarMetric) {
+            Picker("Show in the Menu Bar", selection: $vm.menuBarMetric) {
                 ForEach(MacSettingsMenuBarMetric.allCases) { option in
                     Text(option.title).tag(option.rawValue)
                 }
             }
             .disabled(!vm.menuBarEnabled)
         } header: {
-            Text("Menu bar")
+            Text("Menu Bar")
         } footer: {
-            Text("The readout is hidden while the PC is offline or does not report that sensor. Nothing is estimated.")
+            Text("Hidden while the PC is offline or doesn't report that reading.")
         }
     }
 
     private var telemetrySection: some View {
         Section {
-            Picker("Refresh interval", selection: $refreshInterval) {
+            Picker("Check the PC Every", selection: $refreshInterval) {
                 ForEach(Self.intervals, id: \.self) { seconds in
                     Text(Self.intervalTitle(seconds)).tag(seconds)
                 }
             }
             LabeledContent("Last update", value: vm.lastUpdated.map { $0.formatted(date: .omitted, time: .standard) } ?? "—")
         } header: {
-            Text("Telemetry")
+            Text("Readings")
         } footer: {
-            Text("Shorter intervals give smoother sparklines and cost a little more network and CPU on both machines. Changes apply immediately.")
+            Text("More often means smoother charts and a little more work for both computers.")
         }
     }
 
@@ -174,7 +174,7 @@ private struct MacSettingsGeneralTab: View {
         } header: {
             Text("Notifications")
         } footer: {
-            Text("Orbit posts a notification when a paired PC reconnects. macOS asks for permission the first time.")
+            Text("A notification when your PC comes back online.")
         }
     }
 
@@ -198,19 +198,19 @@ private struct MacSettingsGeneralTab: View {
             }
             Toggle("Open Moonlight after launching a game", isOn: $autoOpenMoonlight)
         } header: {
-            Text("Remote & preview")
+            Text("Remote and Screen")
         } footer: {
-            Text("Pointer speed scales trackpad movement sent to the PC from the Remote section.")
+            Text("Pointer speed is how far the PC's pointer moves for each swipe in Remote.")
         }
     }
 
     private var dataSection: some View {
         Section {
-            Toggle("Demo mode", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
+            Toggle("Demo Mode", isOn: Binding(get: { vm.isDemoMode }, set: { vm.setDemoMode($0) }))
         } header: {
-            Text("Data")
+            Text("Demo")
         } footer: {
-            Text("Demo mode shows clearly labelled simulated readings and never contacts a PC. Turn it off to reconnect to your paired PC.")
+            Text("Sample readings that never reach a PC. Turn it off to see your own PC again.")
         }
     }
 
