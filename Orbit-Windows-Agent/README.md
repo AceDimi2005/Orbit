@@ -317,7 +317,7 @@ Fereastra rulează numai pe PC: un server local pe **`127.0.0.1:8767`** (nu este
 
 Paginile:
 
-- **Overview**: numele PC-ului și verdictul conexiunii („Devices on Dimi-Home 5G can reach this PC” sau „Phones cannot reach this PC”), codul de asociere mare, cu dispozitivul care îl cere și timpul rămas, cât timp o asociere așteaptă, drumul conexiunii (rețea → Windows Firewall → Orbit → dispozitivele tale), acțiunile de azi, jocul pornit și temporizatorul de alimentare, primele dispozitive și ultimele acțiuni.
+- **Overview**: numele PC-ului și verdictul conexiunii („Devices on Home Wi-Fi can reach this PC” sau „Phones cannot reach this PC”), codul de asociere mare, cu dispozitivul care îl cere și timpul rămas, cât timp o asociere așteaptă, drumul conexiunii (rețea → Windows Firewall → Orbit → dispozitivele tale), acțiunile de azi, jocul pornit și temporizatorul de alimentare, primele dispozitive și ultimele acțiuni.
 - **Devices**: toate dispozitivele, cu permisiunile și ultima conexiune; redenumire, permisiuni (comutatoare pentru fiecare scope) și **Remove**, cu o confirmare care numește dispozitivul. **Add a device** explică asocierea prin cod și poate crea un token manual, afișat o singură dată și copiat privat.
 - **Activity**: jurnalul complet, filtrat pe tipuri (Power, Files, Devices, Screen, Input, Audio, Apps, Settings).
 - **Settings**: pornire cu Windows, pornire înainte de autentificare (Windows cere permisiunea), notificările (cu o previzualizare a notificării așa cum apare), monitorizarea (jocuri suplimentare, adaptorul de rețea, captura PresentMon, LibreHardwareMonitor) și actualizările (verificare zilnică opțională, care doar anunță; instalare și **Restart Orbit**). Fiecare modificare se salvează imediat.
@@ -368,5 +368,7 @@ API-ul de status include `agentVersion`, `sensorSource`, `sensorStatus`, `gpuSou
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m unittest discover -p "test_*.py" -v
 ```
+
+Pe Windows, `python ci\smoke_windows.py` verifică în plus căile Windows reale, numai în citire: importă toate modulele, pornește agentul în consolă pe porturi libere (fără tray și fără Bonjour) și îl întreabă ca o aplicație, extrage iconuri din `notepad.exe` și `AudioSrv.dll,-203`, citește o descriere de fișier, `EnumWindows` și lista proceselor cu iconuri, o bibliotecă Steam de test, `powercfg /list` și diagnosticarea rețelei. Workflow-ul GitHub Actions `.github/workflows/companion-windows.yml` rulează testele unitare și acest smoke test pe `windows-latest`, cu Python 3.12, la fiecare push în `main`, `orbit-redesign` și ramura agentului.
 
 Testele folosesc fișiere temporare și adaptoare Windows simulate; nu trimit comenzi PC reale. Verifică autentificarea și separarea tokenurilor, cerința HTTPS pentru noile funcții, identitatea TLS persistentă, accesul și mutările fișierelor, transferurile întrerupte și coliziunile, clipboardul Unicode, sesiunile audio/cleanup COM, retenția/golurile/reluarea istoricului și regresiile de monitorizare, FPS, Task Manager și volum. Comenzile native, transferurile pe volume Windows reale, Recycle Bin, mixerul, senzorii și FPS-ul trebuie validate separat pe un PC Windows real. Buildul iOS și compatibilitatea JSON se verifică prin comenzile din [README-ul principal](../README.md#verificări-de-dezvoltare).
