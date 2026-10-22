@@ -11,8 +11,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("Orbit PC Companion - System Tray Agent")]
 [assembly: AssemblyCompany("Orbit")]
 [assembly: AssemblyProduct("Orbit PC Companion")]
-[assembly: AssemblyVersion("4.1.0.0")]
-[assembly: AssemblyFileVersion("4.1.0.0")]
+[assembly: AssemblyVersion("5.0.0.0")]
+[assembly: AssemblyFileVersion("5.0.0.0")]
 
 namespace OrbitCompanion
 {

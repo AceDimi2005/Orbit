@@ -1,4 +1,6 @@
 """GitHub release and repository update checker & self-updater for Orbit PC Companion."""
+from dataclasses import dataclass, field
+import hashlib
 import io
 import json
 import logging
@@ -6,12 +8,16 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import webbrowser
 import zipfile
+
+import orbit_paths
 
 LOGGER = logging.getLogger("orbit.updater")
 
@@ -28,8 +34,27 @@ TRUSTED_GITHUB_HOSTS = {
     " release-assets.githubusercontent.com".strip(),
 }
 UPDATABLE_EXTENSIONS = {".py", ".bat", ".ps1", ".txt", ".md", ".ico", ".json", ".cs"}
-PRESERVED_FILENAMES = {".orbit-token", ".orbit-widget-token"}
+PRESERVED_FILENAMES = {".orbit-token", ".orbit-widget-token", ".orbit-sunshine-login"}
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+REQUIREMENTS_FILE = "requirements.txt"
+PIP_TIMEOUT_SECONDS = 15 * 60
+
+
+class FrozenBuildError(RuntimeError):
+    MESSAGE = ("This is the standalone OrbitCompanion.exe. It cannot replace its own files: "
+               "download the new OrbitCompanion.exe from the Orbit releases page on the PC.")
+
+    def __init__(self, message=None):
+        super().__init__(message or self.MESSAGE)
+
+
+@dataclass
+class UpdateResult:
+    files: list = field(default_factory=list)
+    # "unchanged": requirements.txt did not change; "installed": pip updated the venv;
+    # "failed": pip did not finish (the old packages stay); "manual": no private venv found.
+    dependencies: str = "unchanged"
+    dependencyMessage: str = ""
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
 _AGENT_VERSION_ASSIGN_RE = re.compile(r'^\s*AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
@@ -76,7 +101,7 @@ def _fetch_bytes(url, opener=None, timeout=6.0, accept="application/vnd.github+j
         url,
         headers={
             "Accept": accept,
-            "User-Agent": "OrbitPCCompanion-Updater/4.1",
+            "User-Agent": "OrbitPCCompanion-Updater/5.0",
         },
     )
     open_func = opener or urlopen
@@ -248,11 +273,27 @@ def _find_agent_root_in_zip(namelist):
     raise ValueError("Archive does not contain Orbit-Windows-Agent/orbit_agent.py")
 
 
+def _default_target():
+    if orbit_paths.is_frozen():
+        # __file__ lives in the temporary _MEIPASS folder of a one-file build.
+        raise FrozenBuildError()
+    return orbit_paths.runtime_directory()
+
+
+def _file_digest(path):
+    """SHA-256 of a text file with CRLF read as LF: a git checkout on Windows can hold CRLF
+    while GitHub's archive holds LF, and that alone is not a dependency change."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    except OSError:
+        return None
+
+
 def apply_update_archive(zip_bytes, target_dir=None):
     """Safely extract updated Orbit-Windows-Agent files into target_dir while preserving secrets."""
     if len(zip_bytes) > MAX_ARCHIVE_BYTES:
         raise ValueError("Update archive exceeds maximum permitted size.")
-    destination = Path(target_dir).resolve() if target_dir is not None else Path(__file__).resolve().parent
+    destination = Path(target_dir).resolve() if target_dir is not None else _default_target()
     destination.mkdir(parents=True, exist_ok=True)
 
     updated_files = []
@@ -288,10 +329,52 @@ def apply_update_archive(zip_bytes, target_dir=None):
     return updated_files
 
 
-def download_and_apply_update(download_url, target_dir=None, opener=None, timeout=15.0):
-    """Download a GitHub zip archive and apply updated companion files."""
+def venv_python(target_dir):
+    """The private environment's console python.exe (pip needs a console stream), or None."""
+    folder = Path(target_dir) / ".venv"
+    for candidate in (folder / "Scripts" / "python.exe", folder / "bin" / "python3", folder / "bin" / "python"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def install_requirements(target_dir, runner=None, timeout=PIP_TIMEOUT_SECONDS):
+    """pip-install requirements.txt into the companion's own .venv. Returns (status, message)."""
+    python = venv_python(target_dir)
+    requirements = Path(target_dir) / REQUIREMENTS_FILE
+    if python is None or not requirements.is_file():
+        return "manual", "Run install_orbit.bat once so the new dependencies are installed."
+    command = [str(python), "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", str(requirements)]
+    run = runner or (lambda arguments: subprocess.run(
+        arguments, cwd=str(target_dir), capture_output=True, text=True, timeout=timeout,
+        creationflags=0x08000000 if os.name == "nt" else 0))
+    try:
+        completed = run(command)
+    except (OSError, subprocess.SubprocessError) as error:
+        LOGGER.warning("Dependency update failed: %s", error)
+        return "failed", "pip could not run. Run install_orbit.bat on the PC."
+    if getattr(completed, "returncode", 1) != 0:
+        tail = (getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or "").strip()[-600:]
+        LOGGER.warning("Dependency update failed (pip exit %s): %s", getattr(completed, "returncode", "?"), tail)
+        return "failed", "pip could not install the new dependencies. Run install_orbit.bat on the PC."
+    return "installed", "Dependencies updated."
+
+
+def apply_update(download_url, target_dir=None, opener=None, timeout=15.0, pip_runner=None):
+    """Download, apply and, when requirements.txt changed, reinstall dependencies into .venv."""
+    target = Path(target_dir).resolve() if target_dir is not None else _default_target()
+    before = _file_digest(target / REQUIREMENTS_FILE)
     zip_bytes = _fetch_bytes(download_url, opener=opener, timeout=timeout, accept="application/octet-stream")
-    return apply_update_archive(zip_bytes, target_dir=target_dir)
+    files = apply_update_archive(zip_bytes, target_dir=target)
+    result = UpdateResult(files=files)
+    if REQUIREMENTS_FILE in files and _file_digest(target / REQUIREMENTS_FILE) != before:
+        result.dependencies, result.dependencyMessage = install_requirements(target, runner=pip_runner)
+    return result
+
+
+def download_and_apply_update(download_url, target_dir=None, opener=None, timeout=15.0):
+    """Download a GitHub zip archive and apply updated companion files (list of file names)."""
+    return apply_update(download_url, target_dir=target_dir, opener=opener, timeout=timeout).files
 
 
 def open_releases_page(url=GITHUB_RELEASES_PAGE):

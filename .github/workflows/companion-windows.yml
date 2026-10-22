@@ -1,0 +1,52 @@
+name: Orbit PC Companion (Windows)
+
+# The companion runs on Windows; this job runs its unit tests there and a smoke test of
+# the real Windows code paths. Nothing it does changes the runner beyond a temp folder.
+on:
+  push:
+    branches: [main, orbit-redesign]
+    paths:
+      - "Orbit-Windows-Agent/**"
+      - ".github/workflows/companion-windows.yml"
+  pull_request:
+    branches: [main, orbit-redesign]
+    paths:
+      - "Orbit-Windows-Agent/**"
+      - ".github/workflows/companion-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Unit tests and smoke test on windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: Orbit-Windows-Agent
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            Orbit-Windows-Agent/requirements.txt
+            Orbit-Windows-Agent/requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+
+      - name: Unit tests
+        run: python -m unittest discover -p "test_*.py" -v
+
+      - name: Windows smoke test
+        if: ${{ !cancelled() }}
+        run: python ci/smoke_windows.py

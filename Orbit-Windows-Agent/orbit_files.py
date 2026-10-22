@@ -24,6 +24,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path as PathParameter, Qu
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+import orbit_paths
+from orbit_access import note
+
 MAX_PREVIEW_BYTES = 64 * 1024 ** 2
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_DOWNLOAD_BYTES = 16 * 1024 ** 3
@@ -37,8 +40,13 @@ MAX_ARCHIVE_JOBS = 2
 ARCHIVE_TTL_SECONDS = 10 * 60
 ARCHIVE_SWEEP_SECONDS = 30
 CHUNK_BYTES = 256 * 1024
-AGENT_DIRECTORY = Path(__file__).absolute().parent
-SECRET_NAMES = frozenset({".orbit-token", ".orbit-widget-token", "server-key.pem", "server-cert.pem", ".orbit-tls-key.pem", ".env"})
+# The installed companion folder. In OrbitCompanion.exe, __file__ points into the
+# temporary unpack folder, so this follows the executable instead.
+AGENT_DIRECTORY = orbit_paths.runtime_directory().absolute()
+SECRET_NAMES = orbit_paths.SECRET_FILE_NAMES
+# Files the agent itself may point anywhere through environment variables.
+SECRET_PATH_VARIABLES = ("ORBIT_TOKEN_FILE", "ORBIT_WIDGET_TOKEN_FILE", "ORBIT_TOKEN_PATH", "ORBIT_WIDGET_TOKEN_PATH",
+                         "ORBIT_SUNSHINE_LOGIN_FILE")
 RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)", re.I)
 PREVIEW_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".heic", ".gif", ".webp", ".pdf", ".txt", ".md", ".log", ".json", ".csv", ".xml", ".html", ".rtf", ".mp4", ".mov", ".mp3", ".m4a"})
 
@@ -66,6 +74,19 @@ def _fail(status, message):
     raise HTTPException(status, message)
 
 
+def _size(count):
+    value = float(count or 0)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "bytes" else f"{value:.1f} {unit}"
+        value /= 1024
+
+
+def _folder_name(path):
+    path = Path(path)
+    return path.name or str(path)
+
+
 def require_secure(request: Request):
     if request.url.scheme != "https":
         _fail(426, "Files require the trusted HTTPS connection. Pair the secure companion in Orbit settings.")
@@ -82,16 +103,23 @@ def _within(path, parent):
 def _protected_paths():
     from orbit_tls import data_directory
     from orbit_history import default_history_path
-    result = [AGENT_DIRECTORY / ".orbit-token", AGENT_DIRECTORY / ".orbit-widget-token",
-              data_directory().absolute()]
+    result = [AGENT_DIRECTORY / name for name in sorted(SECRET_NAMES)]
+    result.append(data_directory().absolute())
     history = default_history_path().expanduser().absolute()
     if not os.environ.get("ORBIT_HISTORY_FILE"):
         result.append(history.parent)
     result.extend(Path(str(history) + suffix) for suffix in ("", "-wal", "-shm", "-journal"))
-    for name in ("ORBIT_TOKEN_FILE", "ORBIT_WIDGET_TOKEN_FILE", "ORBIT_TOKEN_PATH", "ORBIT_WIDGET_TOKEN_PATH"):
+    for name in SECRET_PATH_VARIABLES:
         if os.environ.get(name):
             result.append(Path(os.environ[name]).absolute())
+    # Credential and state files the running agent registered (token files,
+    # Sunshine login, device registry, activity log, settings).
+    result.extend(orbit_paths.registered_protected_paths())
     return result
+
+
+def _program_directories():
+    return [AGENT_DIRECTORY, *[folder for folder in orbit_paths.program_directories() if folder != AGENT_DIRECTORY]]
 
 
 def _name(name):
@@ -99,7 +127,7 @@ def _name(name):
             or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
             or RESERVED.match(name.split(".", 1)[0].rstrip(" "))):
         _fail(422, "Choose a valid Windows file name without slashes, reserved device names, or trailing spaces.")
-    if name.casefold() in SECRET_NAMES or name.casefold().startswith(".orbit-upload-"):
+    if name.casefold() in SECRET_NAMES or orbit_paths.is_secret_name(name):
         _fail(403, "Orbit credentials and internal transfer files are protected.")
     return name
 
@@ -128,7 +156,7 @@ def checked_path(value, *, directory=None, writing=False):
         # WindowsPath comparisons are case insensitive on Windows.
         if _within(path, protected.absolute()):
             _fail(403, "Orbit's private settings and credentials are protected.")
-    if writing and _within(path, AGENT_DIRECTORY):
+    if writing and any(_within(path, folder) for folder in _program_directories()):
         _fail(403, "Changes to the running companion's folder are unavailable.")
     try:
         for ancestor in [*reversed(path.parents), path]:
@@ -150,7 +178,7 @@ def checked_path(value, *, directory=None, writing=False):
                 _name(part)
             if any(_within(canonical, protected.absolute().resolve(strict=False)) for protected in _protected_paths()):
                 _fail(403, "Orbit's private settings and credentials are protected.")
-            if writing and _within(canonical, AGENT_DIRECTORY.resolve(strict=False)):
+            if writing and any(_within(canonical, folder.resolve(strict=False)) for folder in _program_directories()):
                 _fail(403, "Changes to the running companion's folder are unavailable.")
             path = canonical
         if path.exists():
@@ -376,6 +404,7 @@ def download_response(path, request):
                "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{info.st_size}"
+    note(summary=f"Downloaded {target.name} ({_size(info.st_size)})" if not partial or start == 0 else f"Resumed downloading {target.name}")
     return _ClosingStreamingResponse(stream, content(), status_code=206 if partial else 200,
                              media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream", headers=headers)
 
@@ -412,6 +441,7 @@ async def receive_upload(request, directory, name):
         # link is atomic and fails if another process created the destination.
         # Unlike replace(), it can never overwrite an existing file.
         os.link(temporary, destination)
+        note(summary=f"Uploaded {destination.name} ({_size(total)}) to {_folder_name(parent)}")
         return {"path": str(destination), "name": destination.name, "sizeBytes": total}
     except HTTPException:
         raise
@@ -796,7 +826,8 @@ class ArchiveManager:
 
 
 def _mutation_target(path):
-    if _within(AGENT_DIRECTORY, path) or any(_within(protected.absolute(), path) for protected in _protected_paths()):
+    if (any(_within(folder, path) for folder in _program_directories())
+            or any(_within(protected.absolute(), path) for protected in _protected_paths())):
         _fail(403, "Folders containing the running companion or its private settings are protected.")
 
 
@@ -907,7 +938,9 @@ def create_files_router(verify_control, archive_manager=None):
 
     @router.post("/archive", status_code=202)
     def prepare_archive(body: PathBody):
-        return archives.create(body.path)
+        job = archives.create(body.path)
+        note(summary=f"Prepared {job['name']}")
+        return job
 
     @router.get("/archive/{identifier}")
     def archive_status(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
@@ -915,7 +948,10 @@ def create_files_router(verify_control, archive_manager=None):
 
     @router.get("/archive/{identifier}/download")
     def archive_download(request: Request, identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
-        return archives.download(identifier, request)
+        name = archives.status(identifier)["name"]
+        response = archives.download(identifier, request)
+        note(summary=f"Downloaded {name}")
+        return response
 
     @router.delete("/archive/{identifier}")
     def archive_cancel(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
@@ -947,21 +983,28 @@ def create_files_router(verify_control, archive_manager=None):
             target.mkdir()
         except OSError as exc:
             _os_error(exc)
+        note(summary=f"Created folder {target.name} in {_folder_name(parent)}")
         return {"ok": True, "path": str(target)}
 
     @router.post("/rename")
     def rename(body: RenameBody):
         source = _exists(checked_path(body.path, writing=True))
-        return rename_or_move(str(source), str(source.parent / _name(body.name)))
+        result = rename_or_move(str(source), str(source.parent / _name(body.name)))
+        note(summary=f"Renamed {source.name} to {body.name}")
+        return result
 
     @router.post("/move")
     def move(body: MoveBody):
         source = _exists(checked_path(body.path, writing=True))
         folder = _exists(checked_path(body.destinationDirectory, directory=True, writing=True))
-        return rename_or_move(str(source), str(folder / source.name))
+        result = rename_or_move(str(source), str(folder / source.name))
+        note(summary=f"Moved {source.name} to {_folder_name(folder)}")
+        return result
 
     @router.post("/trash")
     def trash(body: PathBody):
-        return recycle_path(body.path)
+        result = recycle_path(body.path)
+        note(summary=f"Moved {Path(result['path']).name} to the Recycle Bin")
+        return result
 
     return router

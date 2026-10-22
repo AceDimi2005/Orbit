@@ -4,7 +4,6 @@ import base64
 import copy
 import ctypes
 import hmac
-import io
 import ipaddress
 import json
 import logging
@@ -21,13 +20,29 @@ import urllib.request
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
+import sys
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from fastapi import (Body, FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, Response, WebSocket,
+                     WebSocketDisconnect)
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
+import orbit_paths
+from orbit_access import AccessMiddleware, current_principal, error_response, note, websocket_principal
+from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
+from orbit_power import (ACTION_WORDS, COUNTDOWN_SECONDS, GUID as POWER_PLAN_ID, NothingToCancel, PowerScheduler,
+                         PowerUnavailable, TIMER_ACTIONS, WindowsPower, shutdown_comment)
+from orbit_diagnostics import Diagnostics
+from orbit_input import InputBlocked, InputError, send_keyboard
+from orbit_library import GAME_ID, GameLibrary
+from orbit_settings import Settings, SettingsError
+from orbit_window import WindowSessions, create_window_app, open_app_window, WINDOW_PORT
+from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
+                           invalid_token, scope_missing)
 from orbit_processes import collect_processes, terminate_process
+from orbit_tls import data_directory
+from orbit_screen import FrameSource, NoDisplay, StreamSlots, stream_frames
 from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
 from orbit_files import create_files_router
 from orbit_desktop import create_desktop_router
@@ -52,7 +67,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.4.0"
+AGENT_VERSION = "5.0.0"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -64,8 +79,8 @@ ADVERTISEMENT = None
 # per-user instance once that starts.
 BOOT_MODE = False
 CERTIFICATE_FINGERPRINT = ""
-import sys as _sys
-_RUNTIME_DIR = Path(_sys.executable).resolve().parent if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent
+# The installed folder; in OrbitCompanion.exe that is next to the executable, not _MEIPASS.
+_RUNTIME_DIR = orbit_paths.runtime_directory()
 TOKEN_PATH = Path(os.getenv("ORBIT_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-token")))
 WIDGET_TOKEN_PATH = Path(os.getenv("ORBIT_WIDGET_TOKEN_FILE", str(_RUNTIME_DIR / ".orbit-widget-token")))
 SUNSHINE_APPS_PATHS = [
@@ -80,6 +95,60 @@ if os.getenv("ORBIT_SUNSHINE_CONF"):
     SUNSHINE_CONF_PATHS.insert(0, Path(os.environ["ORBIT_SUNSHINE_CONF"]))
 # Sunshine's web UI login, saved from the app so Orbit can enter pairing PINs itself.
 SUNSHINE_CREDENTIALS_PATH = Path(os.getenv("ORBIT_SUNSHINE_LOGIN_FILE", str(_RUNTIME_DIR / ".orbit-sunshine-login")))
+# Paired devices (token hashes and scopes) live with the TLS identity in %LOCALAPPDATA%\Orbit.
+DEVICES_PATH = Path(os.getenv("ORBIT_DEVICES_FILE") or str(data_directory() / "devices.json"))
+DEVICE_REGISTRY = None
+# What paired devices did (never typed text, clipboard or file contents) and the settings.
+ACTIVITY_PATH = data_directory() / "activity.sqlite3"
+SETTINGS_PATH = data_directory() / "settings.json"
+POWER_STATE_PATH = data_directory() / "power.json"
+ACTIVITY = None
+SETTINGS = None
+for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH, SETTINGS_PATH, POWER_STATE_PATH,
+                *(Path(str(ACTIVITY_PATH) + suffix) for suffix in ("", "-wal", "-shm", "-journal"))):
+    orbit_paths.protect_path(_secret)
+# What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
+FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
+            "activity", "notifications", "power.countdown", "power.cancel", "library",
+            "power.timer", "power.keepAwake", "power.plans", "audio.default", "audio.microphone",
+            "input.unicode", "input.shortcuts", "settings", "window"]
+POWER = WindowsPower()
+INPUT_SESSIONS = InputSessions()
+
+
+def _notification_settings():
+    settings = SETTINGS
+    return settings.notifications() if settings is not None else {}
+
+
+def _gaming():
+    with STATE_LOCK:
+        return bool(STATE.get("activeGame"))
+
+
+# Shows Windows notifications through the tray balloon once the tray is up (None: log only).
+NOTIFIER = Notifier(show=None, settings=_notification_settings, gaming=_gaming)
+
+
+def _running_game_title():
+    """The game the telemetry worker sees right now, for "when the game exits" timers."""
+    with STATE_LOCK:
+        fresh = time.monotonic() - LAST_TELEMETRY <= 10
+        return STATE.get("activeGame") if fresh else None
+
+
+def _record_power(action, summary, requested_by, result="ok"):
+    log = ACTIVITY
+    if log is not None:
+        log.record(None, requested_by or PC_ACTOR[1], "power", action, summary, result)
+
+
+def open_power_scheduler():
+    return PowerScheduler(POWER, POWER_STATE_PATH, notify=lambda title, message: NOTIFIER.notify("power", title, message),
+                          game=_running_game_title, record=_record_power)
+
+
+POWER_SCHEDULER = None
 SUNSHINE_EXECUTABLE_PATHS = [
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
     Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
@@ -97,7 +166,7 @@ STATE = {
     "cpuTemp": None, "cpuUsage": 0.0, "liquidTemp": None, "gpuTemp": None,
     "gpuUsage": None, "gpuPowerWatts": None, "vramUsedGB": None, "vramTotalGB": None,
     "ramUsedGB": 0.0, "ramTotalGB": 0.0, "ssdUsedTB": 0.0, "ssdTotalTB": 0.0,
-    "uptimeSeconds": 0, "activeGame": None, "activeGameProcess": None,
+    "uptimeSeconds": 0, "activeGame": None, "activeGameProcess": None, "activeGameID": None, "activeGameTitle": None,
     "volume": 0.0, "isMuted": False, "volumeAvailable": False, "hdrEnabled": None, "sessionLocked": None,
     "fps": None, "fpsSource": None, "fpsUnavailableReason": "Waiting for telemetry",
     "telemetryAvailable": False, "lastUpdated": None,
@@ -129,6 +198,27 @@ def load_token_file(path):
     return token
 
 
+def write_private_file(path, text):
+    """Replace a credential file atomically, readable only by this account where the OS allows."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".orbit-tmp-{secrets.token_hex(6)}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(text)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def load_api_token(path=TOKEN_PATH):
     token = os.getenv("ORBIT_API_TOKEN", "").strip() or load_token_file(path)
     if len(token) < 24 or token == "endspec-secret-token":
@@ -143,19 +233,63 @@ def load_widget_token(path=WIDGET_TOKEN_PATH):
     return token
 
 
+def bearer_token(authorization):
+    if isinstance(authorization, str) and authorization[:7].lower() == "bearer ":
+        return authorization[7:].strip() or None
+    return None
+
+
+def _same_secret(candidate, secret):
+    # Bytes, so a header with non-ASCII characters is simply wrong, never a server error.
+    return bool(candidate and secret and hmac.compare_digest(candidate.encode("utf-8", "surrogateescape"),
+                                                             secret.encode("utf-8")))
+
+
+def authenticate(authorization, address=None):
+    """The paired device behind a bearer token. Until the device list is loaded (unit tests,
+    tools that skip the lifespan), the master token stands for the legacy device."""
+    token = bearer_token(authorization)
+    registry = DEVICE_REGISTRY
+    if registry is not None:
+        return registry.authenticate(token, address)
+    if _same_secret(token, API_TOKEN):
+        return LEGACY_PRINCIPAL
+    raise invalid_token()
+
+
 def authorized(authorization):
-    return bool(API_TOKEN and isinstance(authorization, str)
-                and hmac.compare_digest(authorization, f"Bearer {API_TOKEN}"))
+    try:
+        authenticate(authorization)
+        return True
+    except AccessError:
+        return False
 
 
 def verify_token(authorization: str = Header(None)):
-    if not authorized(authorization):
-        raise HTTPException(status_code=401, detail="Invalid Orbit token", headers={"WWW-Authenticate": "Bearer"})
+    """Any paired device; the access middleware has already checked the route's scope."""
+    return authenticate(authorization)
+
+
+def caller(request, authorization=None):
+    """The device behind this request (set by the access middleware)."""
+    principal = getattr(request.state, "orbit_principal", None) if request is not None else None
+    return principal or current_principal() or authenticate(authorization)
+
+
+def require_scope(principal, scope):
+    if not principal.has(scope):
+        raise scope_missing(scope)
 
 
 def require_windows():
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="PC controls require Windows")
+
+
+def require_https(request):
+    """Credentials and administration only travel over the pinned HTTPS port (8766)."""
+    if request.url.scheme not in ("https", "wss"):
+        raise HTTPException(status_code=426, detail="This needs Orbit's encrypted connection (HTTPS port 8766). Update the app or pair this PC again.")
 
 
 @contextmanager
@@ -196,6 +330,14 @@ def inventory_worker():
             STATE["gpuName"] = next((gpu["name"] for gpu in specs["gpus"] if gpu["name"]), "Unavailable")
     except Exception:
         LOGGER.exception("Hardware inventory failed; basic inventory remains available")
+
+
+def library_worker():
+    """Scan the game library once at start, so status can name the running game."""
+    try:
+        LIBRARY.scan()
+    except Exception:
+        LOGGER.exception("Game library scan failed")
 
 
 def sensor_worker():
@@ -256,8 +398,11 @@ def telemetry_worker():
                 sensor_cache = copy.deepcopy(SENSOR_GPU_CACHE)
                 sensor_age = time.monotonic() - LAST_SENSOR
             update.update(select_gpu_metrics(gpus, sensor_cache, sensor_age))
-            game = detect_game()
-            update.update(activeGame=game["name"] if game else None,
+            game = detect_game(roots=LIBRARY.install_roots())
+            # A game from the library gets its real title and ID instead of its exe name.
+            match = LIBRARY.match_executable(game.get("exe")) if game else None
+            title = match["title"] if match else (game["name"] if game else None)
+            update.update(activeGame=title, activeGameTitle=title, activeGameID=match["id"] if match else None,
                           activeGameProcess=game["process"] if game else None)
             update.update(read_fps(game))
             update.update(audio_metrics())
@@ -294,15 +439,39 @@ def record_history(metrics):
             LOGGER.exception("Could not save this session sample")
 
 
+def open_device_registry(master_token):
+    registry = DeviceRegistry(DEVICES_PATH)
+    registry.migrate_legacy(master_token)
+    registry.start()
+    return registry
+
+
+def open_activity_log():
+    ACTIVITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return ActivityLog(ACTIVITY_PATH)
+
+
+def open_settings():
+    settings = Settings(SETTINGS_PATH)
+    settings.apply_environment()
+    return settings
+
+
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER
+    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY, ACTIVITY, SETTINGS, POWER_SCHEDULER
     API_TOKEN = load_api_token()
     WIDGET_TOKEN = load_widget_token()
+    SETTINGS = open_settings()
+    ACTIVITY = open_activity_log()
+    DEVICE_REGISTRY = open_device_registry(API_TOKEN)
+    POWER_SCHEDULER = open_power_scheduler()
+    POWER_SCHEDULER.start()
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
     STOP_EVENT.clear()
-    threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
+    threads = [threading.Thread(target=worker, daemon=True)
+               for worker in (inventory_worker, telemetry_worker, sensor_worker, library_worker)]
     for thread in threads:
         thread.start()
     if ADVERTISEMENT is not None:
@@ -321,10 +490,66 @@ async def lifespan(application):
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
     if recorder is not None:
         recorder.close()
+    registry, DEVICE_REGISTRY = DEVICE_REGISTRY, None
+    if registry is not None:
+        registry.close()
+    scheduler, POWER_SCHEDULER = POWER_SCHEDULER, None
+    if scheduler is not None:
+        scheduler.close()
+    log, ACTIVITY = ACTIVITY, None
+    if log is not None:
+        log.close()
 
 
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def record_event(principal, category, action, summary, result="ok", status=None):
+    """One activity entry for something that did not go through the HTTP middleware
+    (WebSockets, pairing, the window on the PC). `principal` None means this PC."""
+    log = ACTIVITY
+    if log is None:
+        return
+    device_id, name = (principal.device_id, principal.name) if principal is not None else PC_ACTOR
+    log.record(device_id, name, category, action, summary, result, status)
+
+
+def activity_observer(context, status):
+    """After every authenticated request: the activity log, input sessions, notifications."""
+    principal = context.principal
+    if context.path.startswith("/api/input/") and status is not None and status < 400:
+        note_input_session(principal)
+    if not context.policy.logs(context.method):
+        return
+    category, action, summary = describe(context, status)
+    result = result_for(status)
+    log = ACTIVITY
+    if log is not None:
+        log.record(principal.device_id, principal.name, category, action, summary, result, status)
+    if result != "ok":
+        return
+    if category == "files" and action in ("files.upload", "files.download", "files.archive.download", "files.trash"):
+        NOTIFIER.notify("files", "Orbit · Files", f"{principal.name}: {summary}", key=principal.device_id)
+    elif category == "power" and action in ("action.restart", "action.shutdown", "action.sleep"):
+        NOTIFIER.notify("power", "Orbit · Power", f"{summary}. Requested from {principal.name}.")
+
+
+def note_input_session(principal):
+    key = principal.device_id or principal.name
+    if INPUT_SESSIONS.touch(key):
+        record_event(principal, "input", "input.session", "Started controlling the mouse and keyboard")
+        NOTIFIER.notify("inputSession", "Orbit · Remote input",
+                        f"{principal.name} is controlling the mouse and keyboard.", key=key)
+
+
+app.add_middleware(AccessMiddleware, authenticate=lambda authorization, address: authenticate(authorization, address),
+                   observer=lambda context, status: activity_observer(context, status))
+
+
+@app.exception_handler(AccessError)
+async def access_error_handler(request, error):
+    return error_response(error)
 app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
@@ -337,6 +562,100 @@ def discover():
     return {"service": "orbit-agent", "version": 3, "agentVersion": AGENT_VERSION,
             "name": socket.gethostname(), "securePort": SECURE_PORT,
             "fingerprint": CERTIFICATE_FINGERPRINT, "pairingAvailable": PAIRING_MANAGER is not None}
+
+
+@app.get("/api/capabilities")
+def get_capabilities(request: Request, authorization: str = Header(None)):
+    """What this agent supports and what the calling device may do."""
+    principal = caller(request, authorization)
+    return {"apiVersion": 2, "agentVersion": AGENT_VERSION,
+            "scopes": [scope for scope in SCOPES if principal.has(scope)],
+            "features": list(FEATURES), "deviceID": principal.device_id, "deviceName": principal.name}
+
+
+def require_registry():
+    if DEVICE_REGISTRY is None:
+        raise HTTPException(status_code=503, detail="The device list is not ready. Restart Orbit PC Companion.")
+    return DEVICE_REGISTRY
+
+
+DEVICE_ID = PathParameter(pattern=r"^[0-9a-f]{32}$")
+
+
+class DeviceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=60)
+    platform: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=60)
+    scopes: list[str] | None = Field(default=None, max_length=len(SCOPES))
+
+
+class DeviceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    scopes: list[str] | None = Field(default=None, max_length=len(SCOPES))
+
+
+@app.get("/api/devices")
+def list_devices(request: Request, authorization: str = Header(None)):
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    return {"devices": require_registry().list(principal.device_id), "scopes": list(SCOPES),
+            "scopeDescriptions": dict(SCOPE_DESCRIPTIONS)}
+
+
+@app.post("/api/devices", status_code=201)
+def create_device(body: DeviceCreate, request: Request, authorization: str = Header(None)):
+    """A token for another device of the owner (for example an Apple Watch), shown once."""
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    scopes = body.scopes
+    try:
+        if scopes is not None and not set(scopes) <= set(SCOPES):
+            raise ValueError(f"Use only these scopes: {', '.join(SCOPES)}.")
+        if scopes is not None and not all(principal.has(scope) for scope in scopes):
+            raise scope_missing(next(scope for scope in scopes if not principal.has(scope)))
+        device, token = require_registry().register(body.name, body.platform, body.model, scopes)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    note(summary=f"Added {device['name']}", target=device["id"])
+    on_device_paired(device, None)
+    return {"device": device, "token": token}
+
+
+@app.patch("/api/devices/{device_id}")
+def update_device(body: DeviceUpdate, request: Request, device_id: str = DEVICE_ID, authorization: str = Header(None)):
+    principal = caller(request, authorization)
+    require_scope(principal, "admin")
+    if body.name is None and body.scopes is None:
+        raise HTTPException(status_code=422, detail="Send a new name or scopes.")
+    try:
+        device = require_registry().update(device_id, body.name, body.scopes, current_id=principal.device_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This device is not paired with the PC.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    changes = [f"renamed to {device['name']}" if body.name is not None else None,
+               f"access: {', '.join(device['scopes']) or 'none'}" if body.scopes is not None else None]
+    note(summary=f"Changed {device['name']} ({'; '.join(change for change in changes if change)})", target=device_id)
+    return device
+
+
+@app.delete("/api/devices/{device_id}")
+def revoke_device(request: Request, device_id: str = DEVICE_ID, authorization: str = Header(None)):
+    """Admin devices remove any device; every device may remove itself ("Forget this PC")."""
+    principal = caller(request, authorization)
+    own = principal.device_id is not None and principal.device_id == device_id
+    if not own:
+        require_scope(principal, "admin")
+    registry = require_registry()
+    try:
+        name = registry.get(device_id)["name"]
+        registry.revoke(device_id, "Removed itself" if own else f"Removed from {principal.name}")
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This device is not paired with the PC.") from error
+    note(summary=f"{name} removed itself" if own else f"Removed {name}", target=device_id)
+    return {"status": "revoked", "id": device_id}
 
 
 def get_local_network_details(preferred_ip=None):
@@ -373,6 +692,58 @@ def get_local_network_details(preferred_ip=None):
 def pairing_payload(host):
     return {**get_local_network_details(host), "securePort": SECURE_PORT,
             "apiToken": API_TOKEN, "widgetToken": WIDGET_TOKEN, "agentVersion": AGENT_VERSION}
+
+
+def register_paired_device(client, peer):
+    """A PIN pairing just succeeded: give the device its own token. `apiToken` carries it
+    too, so apps that know nothing about devices keep working."""
+    registry = DEVICE_REGISTRY
+    if registry is None:
+        return {}
+    device, token = registry.register(client.get("name"), client.get("platform"), client.get("model"))
+    on_device_paired(device, peer)
+    return {"apiToken": token, "deviceToken": token, "deviceID": device["id"], "scopes": device["scopes"]}
+
+
+def on_device_paired(device, peer):
+    """A new device can use this PC: log it and tell the person at the PC."""
+    from orbit_devices import device_kind
+    manual = device.get("name") == MANUAL_DEVICE_NAME and not device.get("platform")
+    kind = device_kind(device.get("platform"))
+    # "Paired Apple TV", "Paired Living room (Apple TV)": the kind only when the name does not say it.
+    named = kind == "device" or kind.split()[-1].casefold() in device["name"].casefold()
+    summary = "Created a manual pairing token" if manual else f"Paired {device['name']}" + ("" if named else f" ({kind})")
+    actor = current_principal()
+    log = ACTIVITY
+    if log is not None:
+        if actor is not None:
+            log.record(actor.device_id, actor.name, "devices", "device.pair", summary)
+        elif manual or peer is None:
+            log.record(*PC_ACTOR, "devices", "device.pair", summary)
+        else:
+            log.record(device["id"], device["name"], "devices", "device.pair", f"{summary} from {peer}")
+    if not manual:
+        NOTIFIER.notify("newDevice", "Orbit · New device",
+                        f"{device['name']} can now use this PC. If this was not you, remove it in Orbit.")
+
+
+MANUAL_DEVICE_NAME = "Manual setup"
+
+
+def create_manual_device():
+    """A new "Manual setup" device and its token, for manual configuration in the app.
+    A previous manual token that was never used is retired, so the list stays clean."""
+    registry = DEVICE_REGISTRY
+    if registry is None:
+        return None, None
+    device, token = registry.register(MANUAL_DEVICE_NAME, None, None, replace_unused_named=MANUAL_DEVICE_NAME)
+    on_device_paired(device, None)
+    return device, token
+
+
+def mint_manual_token():
+    """For the tray's "Copy manual pairing token"."""
+    return create_manual_device()[1]
 
 
 @app.get("/api/network-info")
@@ -415,8 +786,9 @@ def get_status(authorization: str = Header(None)):
 
 
 @app.post("/api/widget/pairing")
-def widget_pairing(authorization: str = Header(None)):
+def widget_pairing(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
+    require_https(request)
     return {"token": WIDGET_TOKEN}
 
 
@@ -474,7 +846,9 @@ def end_process(pid: int, expectedCreateTime: float = Query(..., gt=0), force: b
     if not math.isfinite(expectedCreateTime):
         raise HTTPException(status_code=422, detail="A valid process creation time is required")
     try:
-        return terminate_process(pid, expectedCreateTime, force)
+        result = terminate_process(pid, expectedCreateTime, force)
+        note(summary=f"Ended {result.get('name') or f'process {pid}'}" + (" (forced)" if force else ""))
+        return result
     except ProcessLookupError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except PermissionError as error:
@@ -573,10 +947,12 @@ def cursor_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, hsc
 
 @app.websocket("/ws/input")
 async def websocket_input_stream(websocket: WebSocket):
-    if not authorized(websocket.headers.get("authorization")):
+    principal = websocket_principal(websocket, "/ws/input", authenticate)
+    if principal is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    note_input_session(principal)
     if os.name != "nt":
         await websocket.close(code=1011, reason="PC controls require Windows")
         return
@@ -590,6 +966,14 @@ async def websocket_input_stream(websocket: WebSocket):
             except ValueError:
                 continue
             if not isinstance(payload, dict):
+                continue
+            if "key" in payload or "text" in payload:
+                # Typing over the same low-latency socket: {"text"} or {"key", "modifiers"}.
+                try:
+                    send_keyboard(str(payload.get("text") or ""), str(payload.get("key") or ""),
+                                  payload.get("modifiers"), int(payload.get("repeat") or 1))
+                except (InputError, InputBlocked, ValueError, TypeError):
+                    pass
                 continue
             dx = int(payload.get("dx") or 0)
             dy = int(payload.get("dy") or 0)
@@ -644,29 +1028,37 @@ def watch_summary(authorization: str = Header(None)):
     }
 
 
+class KeyboardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str | None = Field(default=None, max_length=1000)
+    key: str | None = Field(default=None, max_length=40)
+    modifiers: list[str] | None = Field(default=None, max_length=4)
+    repeat: StrictInt = Field(default=1, ge=1, le=20)
+
+
+def type_on_pc(text, key, modifiers, repeat=1):
+    """SendInput: Unicode text in any layout, named keys and shortcuts (orbit_input)."""
+    try:
+        return send_keyboard(text, key, modifiers, repeat)
+    except InputError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except InputBlocked as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 @app.post("/api/input/keyboard")
-def keyboard_input(text: str = "", key: str = "", authorization: str = Header(None)):
+def keyboard_input(text: str = Query("", max_length=1000), key: str = Query("", max_length=40),
+                   modifiers: str = Query("", max_length=40), body: KeyboardRequest | None = Body(None),
+                   authorization: str = Header(None)):
+    """Old query form (`?text=…&key=ENTER`) or JSON: {"text"}, {"key": "c", "modifiers": ["ctrl"]},
+    {"key": "f5"}, {"key": "left", "repeat": 3}. The key or shortcut is sent before the text."""
     verify_token(authorization)
     require_windows()
-    special = {"ENTER": 0x0D, "BACKSPACE": 0x08, "SPACE": 0x20, "ESC": 0x1B, "WIN": 0x5B, "TAB": 0x09}
-    if (key and key.upper() not in special) or len(text) > 1000:
-        raise HTTPException(status_code=422, detail="Unsupported key or text too long")
-    u32 = ctypes.windll.user32
-    u32.VkKeyScanW.argtypes = [ctypes.c_wchar]
-    u32.VkKeyScanW.restype = ctypes.c_short
-    codes = [u32.VkKeyScanW(char) if ord(char) <= 0xFFFF else -1 for char in text]
-    if -1 in codes:
-        raise HTTPException(status_code=422, detail="Some characters are not available in the PC keyboard layout")
-    if key:
-        tap_key(special[key.upper()])
-    for code in codes:
-        modifiers = [vk for mask, vk in ((1, 0x10), (2, 0x11), (4, 0x12)) if (code >> 8) & mask]
-        for modifier in modifiers:
-            u32.keybd_event(modifier, 0, 0, 0)
-        tap_key(code & 0xFF)
-        for modifier in reversed(modifiers):
-            u32.keybd_event(modifier, 0, 2, 0)
-    return {"status": "sent"}
+    if body is not None:
+        sent = type_on_pc(body.text or "", body.key or "", body.modifiers, body.repeat)
+    else:
+        sent = type_on_pc(text, key, modifiers or None)
+    return {"status": "sent", "events": sent}
 
 
 @app.post("/api/input/gamepad")
@@ -700,11 +1092,12 @@ def execute_action(action_name: str, authorization: str = Header(None)):
                 raise OSError("LockWorkStation failed")
         elif action_name == "sleep":
             # Do not force suspension; let Windows honor its power policy.
-            if not ctypes.windll.powrprof.SetSuspendState(0, 0, 0):
-                raise OSError("SetSuspendState failed")
+            POWER.suspend(False)
         elif action_name in {"restart", "shutdown"}:
-            subprocess.run(["shutdown", "/r" if action_name == "restart" else "/s", "/t", "3"], check=True,
-                           timeout=5, capture_output=True, creationflags=0x08000000)
+            # Windows' own countdown: the person at the PC sees who asked, and
+            # POST /api/power/cancel (shutdown /a) stops it.
+            principal = current_principal()
+            POWER.countdown(action_name, COUNTDOWN_SECONDS, shutdown_comment(action_name, principal.name if principal else None))
         elif action_name in {"mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev", "fullscreen"}:
             tap_key({
                 "mute": 0xAD, "volume_up": 0xAF, "volume_down": 0xAE,
@@ -749,9 +1142,264 @@ def execute_action(action_name: str, authorization: str = Header(None)):
             u32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
             if not u32.PostMessageW(handle, 0x0010, 0, 0):
                 raise OSError("Windows rejected close request")
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
         raise HTTPException(status_code=503, detail="Windows could not execute this action") from error
+    if action_name in {"restart", "shutdown"}:
+        return {"status": "sent", "executed": action_name, "delaySeconds": COUNTDOWN_SECONDS}
     return {"status": "sent", "executed": action_name}
+
+
+@app.post("/api/power/cancel")
+def cancel_power_action(authorization: str = Header(None)):
+    """Stops a pending shutdown or restart (Windows' countdown) and any Orbit power timer."""
+    verify_token(authorization)
+    require_windows()
+    timer = POWER_SCHEDULER.cancel_timer() if POWER_SCHEDULER is not None else None
+    try:
+        POWER.abort()
+    except NothingToCancel as error:
+        if timer is None:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
+        raise HTTPException(status_code=503, detail="Windows could not cancel the shutdown") from error
+    note(summary="Cancelled the pending shutdown or restart" if timer is None
+         else f"Cancelled the {ACTION_WORDS[timer['action']][1].lower()} timer")
+    NOTIFIER.notify("power", "Orbit · Power", "The shutdown or restart was cancelled.")
+    return {"status": "cancelled"}
+
+
+def require_scheduler():
+    if POWER_SCHEDULER is None:
+        raise HTTPException(status_code=503, detail="Power timers are not ready. Restart Orbit PC Companion.")
+    return POWER_SCHEDULER
+
+
+class PowerTimerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(max_length=20)
+    inSeconds: StrictInt | None = None
+    when: str | None = Field(default=None, max_length=20)
+
+
+class KeepAwakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    minutes: StrictInt | None = None
+    display: StrictBool = False
+
+
+class PowerPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=POWER_PLAN_ID.pattern)
+
+
+def power_plans():
+    try:
+        return POWER.plans()
+    except (OSError, subprocess.SubprocessError, PowerUnavailable):
+        return []
+
+
+@app.get("/api/power")
+def get_power(authorization: str = Header(None)):
+    """The pending timer, keep-awake, Windows power plans and what this PC supports."""
+    verify_token(authorization)
+    scheduler = require_scheduler()
+    supports = POWER.capabilities()
+    return {"timer": scheduler.public_timer(), "keepAwake": scheduler.public_keep_awake(), "plans": power_plans(),
+            "supports": {"hibernate": bool(supports.get("hibernate")), "displayOff": bool(supports.get("displayOff"))}}
+
+
+@app.post("/api/power/timer")
+def set_power_timer(body: PowerTimerRequest, request: Request, authorization: str = Header(None)):
+    """{"action", "inSeconds"} or {"action", "when": "gameExits"}. Replaces any pending timer."""
+    principal = caller(request, authorization)
+    require_windows()
+    if body.action == "hibernate" and not POWER.capabilities().get("hibernate"):
+        raise HTTPException(status_code=409, detail="Hibernation is turned off on this PC.")
+    if body.action == "displayOff" and not POWER.capabilities().get("displayOff"):
+        raise HTTPException(status_code=409, detail="The display can only be turned off from the signed-in session.")
+    try:
+        timer, summary = require_scheduler().set_timer(body.action, body.inSeconds, body.when, principal.name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    note(summary=summary)
+    return timer
+
+
+@app.delete("/api/power/timer")
+def cancel_power_timer(authorization: str = Header(None)):
+    verify_token(authorization)
+    timer = require_scheduler().cancel_timer()
+    if timer is None:
+        raise HTTPException(status_code=404, detail="No power timer is set.")
+    summary = f"Cancelled the {ACTION_WORDS[timer['action']][1].lower()} timer"
+    note(summary=summary)
+    NOTIFIER.notify("power", "Orbit · Power", summary + ".")
+    return {"status": "cancelled"}
+
+
+@app.put("/api/power/keep-awake")
+def keep_pc_awake(body: KeepAwakeRequest, request: Request, authorization: str = Header(None)):
+    """Keeps Windows from sleeping (and the display on with "display": true) for `minutes`, or until stopped."""
+    principal = caller(request, authorization)
+    require_windows()
+    try:
+        result = require_scheduler().set_keep_awake(body.minutes, body.display, principal.name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    span = f"for {body.minutes} minutes" if body.minutes else "until turned off"
+    note(summary=f"Kept the PC awake {span}" + (" with the display on" if body.display else ""))
+    return result
+
+
+@app.delete("/api/power/keep-awake")
+def stop_keeping_pc_awake(authorization: str = Header(None)):
+    verify_token(authorization)
+    if not require_scheduler().stop_keep_awake():
+        raise HTTPException(status_code=404, detail="The PC is not being kept awake.")
+    note(summary="Let the PC sleep again")
+    return {"status": "stopped"}
+
+
+@app.put("/api/power/plan")
+def set_power_plan(body: PowerPlanRequest, authorization: str = Header(None)):
+    verify_token(authorization)
+    require_windows()
+    plans = power_plans()
+    plan = next((item for item in plans if item["id"] == body.id.lower()), None)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="This power plan does not exist on the PC.")
+    try:
+        POWER.set_plan(plan["id"])
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
+        raise HTTPException(status_code=503, detail="Windows could not switch the power plan.") from error
+    note(summary=f"Switched to the {plan['name']} power plan")
+    return {"plans": power_plans()}
+
+
+@app.get("/api/activity")
+def get_activity(request: Request, before: int | None = Query(None, ge=1), limit: int = Query(50, ge=1, le=200),
+                 category: str | None = Query(None, max_length=20), authorization: str = Header(None)):
+    """What paired devices did on this PC, newest first. Page with `nextBefore`."""
+    verify_token(authorization)
+    if category is not None and category not in ACTIVITY_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Unknown category. Use one of: {', '.join(ACTIVITY_CATEGORIES)}.")
+    if ACTIVITY is None:
+        raise HTTPException(status_code=503, detail="The activity log is not ready. Restart Orbit PC Companion.")
+    return {**ACTIVITY.entries(before=before, limit=limit, category=category), "categories": list(ACTIVITY_CATEGORIES)}
+
+
+def require_settings():
+    if SETTINGS is None:
+        raise HTTPException(status_code=503, detail="Settings are not ready. Restart Orbit PC Companion.")
+    return SETTINGS
+
+
+def settings_summary(changes):
+    words = []
+    if "runAtStartup" in changes:
+        words.append(f"turned {'on' if changes['runAtStartup'] else 'off'} Start with Windows")
+    if "notifications" in changes:
+        words.append("notifications: " + ", ".join(f"{key} {'on' if value else 'off'}" for key, value in changes["notifications"].items()))
+    if "monitoring" in changes:
+        words.append("monitoring: " + ", ".join(changes["monitoring"]))
+    if "updates" in changes:
+        words.append(f"turned {'on' if changes['updates'].get('checkAutomatically') else 'off'} daily update checks")
+    text = "; ".join(words)
+    return (text[:1].upper() + text[1:]) if text else "Changed settings"
+
+
+def current_settings():
+    from orbit_tray import BootTaskManager, StartupManager
+    settings = require_settings()
+    return {"runAtStartup": StartupManager().is_enabled(), "startBeforeSignIn": BootTaskManager().is_installed(),
+            "bootTaskAvailable": os.name == "nt",
+            "notifications": settings.notifications(), "monitoring": settings.monitoring(),
+            "updates": {**settings.updates(), "version": AGENT_VERSION, "frozen": orbit_paths.is_frozen()}}
+
+
+def apply_settings(changes):
+    """Validate everything first, then change: a rejected value leaves every setting as it was."""
+    from orbit_settings import MONITORING_ENVIRONMENT, clean_monitoring_value
+    from orbit_tray import StartupManager
+    settings = require_settings()
+    if "notifications" in changes:
+        unknown = set(changes["notifications"]) - set(settings.notifications())
+        if unknown or not changes["notifications"] or not all(isinstance(value, bool) for value in changes["notifications"].values()):
+            raise SettingsError("Notification settings are true or false: " + ", ".join(sorted(settings.notifications())) + ".")
+    if "monitoring" in changes:
+        if not isinstance(changes["monitoring"], dict) or not changes["monitoring"]:
+            raise SettingsError("Send at least one monitoring setting.")
+        for key, value in changes["monitoring"].items():
+            if key not in MONITORING_ENVIRONMENT:
+                raise SettingsError(f"Unknown monitoring setting: {key}.")
+            clean_monitoring_value(key, value)
+    if "updates" in changes and (set(changes["updates"]) != {"checkAutomatically"}
+                                 or not isinstance(changes["updates"]["checkAutomatically"], bool)):
+        raise SettingsError("The update setting is checkAutomatically, true or false.")
+    if "runAtStartup" in changes:
+        try:
+            StartupManager().set_enabled(bool(changes["runAtStartup"]))
+        except (RuntimeError, OSError) as error:
+            raise OSError(f"Windows did not change the startup setting: {error}") from error
+    if "notifications" in changes:
+        settings.update_notifications(changes["notifications"])
+    if "monitoring" in changes:
+        settings.update_monitoring(changes["monitoring"])
+    if "updates" in changes:
+        settings.update_updates(changes["updates"])
+    return current_settings()
+
+
+class SettingsChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runAtStartup: StrictBool | None = None
+    notifications: dict | None = None
+    monitoring: dict | None = None
+    updates: dict | None = None
+
+
+@app.get("/api/settings")
+def get_settings(authorization: str = Header(None)):
+    """Startup, notifications, monitoring and update settings (monitoring replaces the old
+    environment variables; values Windows' environment still sets are listed as managed)."""
+    verify_token(authorization)
+    return current_settings()
+
+
+@app.patch("/api/settings")
+def change_settings(body: SettingsChangeRequest, authorization: str = Header(None)):
+    verify_token(authorization)
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Send at least one setting.")
+    try:
+        result = apply_settings(changes)
+    except SettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    note(summary=settings_summary(changes))
+    return result
+
+
+@app.get("/api/settings/notifications")
+def get_notification_settings(authorization: str = Header(None)):
+    verify_token(authorization)
+    return require_settings().notifications()
+
+
+@app.patch("/api/settings/notifications")
+def update_notification_settings(changes: dict, authorization: str = Header(None)):
+    verify_token(authorization)
+    try:
+        result = require_settings().update_notifications(changes)
+    except SettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    note(summary="Changed notification settings: " + ", ".join(f"{key} {'on' if value else 'off'}" for key, value in changes.items()))
+    return result
 
 
 def sunshine_entries():
@@ -819,6 +1467,19 @@ def sunshine_executable():
     return next((path for path in SUNSHINE_EXECUTABLE_PATHS if path.is_file()), None)
 
 
+def sunshine_summary():
+    config = sunshine_config()
+    base = sunshine_base_port()
+    try:
+        app_count = len(sunshine_entries())
+        installed = any(path.is_file() for path in SUNSHINE_APPS_PATHS) or bool(config)
+    except HTTPException:
+        app_count, installed = 0, True
+    return {"installed": installed, "running": sunshine_running(), "httpPort": base, "httpsPort": base - 5,
+            "webUIPort": base + 1, "name": config.get("sunshine_name") or socket.gethostname(), "appCount": app_count,
+            "canSubmitPin": sunshine_credentials() is not None, "canStart": sunshine_executable() is not None}
+
+
 @app.get("/api/sunshine/info")
 def get_sunshine_info(authorization: str = Header(None)):
     """Where Orbit's Moonlight-protocol client should talk to Sunshine on this PC.
@@ -846,26 +1507,24 @@ class SunshineLogin(BaseModel):
 
 
 @app.post("/api/sunshine/credentials")
-def save_sunshine_credentials(login: SunshineLogin, authorization: str = Header(None)):
+def save_sunshine_credentials(login: SunshineLogin, request: Request, authorization: str = Header(None)):
     """Stores the Sunshine web UI login next to the agent token so `/api/sunshine/pin` can use it."""
     verify_token(authorization)
+    require_https(request)
     username = login.username.strip()
     if not username or not login.password or len(username) > 128 or len(login.password) > 512:
         raise HTTPException(status_code=422, detail="Enter the Sunshine web UI username and password.")
     try:
-        SUNSHINE_CREDENTIALS_PATH.write_text(json.dumps({"username": username, "password": login.password}), encoding="utf-8")
-        try:
-            os.chmod(SUNSHINE_CREDENTIALS_PATH, 0o600)
-        except OSError:
-            pass
+        write_private_file(SUNSHINE_CREDENTIALS_PATH, json.dumps({"username": username, "password": login.password}))
     except OSError as error:
         raise HTTPException(status_code=503, detail="Could not save the Sunshine login on this PC") from error
     return {"status": "saved", "canSubmitPin": True}
 
 
 @app.delete("/api/sunshine/credentials")
-def delete_sunshine_credentials(authorization: str = Header(None)):
+def delete_sunshine_credentials(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
+    require_https(request)
     try:
         SUNSHINE_CREDENTIALS_PATH.unlink()
     except FileNotFoundError:
@@ -1053,37 +1712,110 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
     raise HTTPException(status_code=404, detail="Application was not found in Sunshine")
 
 
+def _sunshine_entries_quietly():
+    try:
+        return sunshine_entries()
+    except HTTPException:
+        return []
+
+
+LIBRARY = GameLibrary(sunshine_entries=_sunshine_entries_quietly)
+COVER_ID = PathParameter(pattern=r"^[0-9a-f]{32}$")
+LIBRARY_GAME_ID = PathParameter(pattern=GAME_ID.pattern)
+
+
+def running_executables():
+    try:
+        return [process.info.get("exe") for process in psutil.process_iter(["exe"]) if process.info.get("exe")]
+    except (psutil.Error, OSError):
+        return []
+
+
+@app.get("/api/library")
+def get_library(authorization: str = Header(None)):
+    """Installed Steam, Epic and GOG games. Covers by opaque ID; never paths."""
+    verify_token(authorization)
+    return LIBRARY.snapshot(running_executables())
+
+
+@app.post("/api/library/rescan")
+def rescan_library(authorization: str = Header(None)):
+    verify_token(authorization)
+    LIBRARY.scan(force=True)
+    return LIBRARY.snapshot(running_executables())
+
+
+@app.get("/api/library/covers/{cover_id}")
+def get_library_cover(cover_id: str = COVER_ID, authorization: str = Header(None)):
+    verify_token(authorization)
+    try:
+        data, media_type = LIBRARY.covers.read(cover_id)
+    except (KeyError, OSError) as error:
+        raise HTTPException(status_code=404, detail="This cover is not available. Refresh the library.") from error
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/library/{game_id}/launch", status_code=202)
+def launch_library_game(game_id: str = LIBRARY_GAME_ID, authorization: str = Header(None)):
+    """Starts a game through its store: steam://rungameid/…, the Epic launcher URI, or GOG's exe."""
+    verify_token(authorization)
+    require_windows()
+    try:
+        game = LIBRARY.launch(game_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This game is not in the PC's library. Refresh the library.") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Windows could not start this game.") from error
+    note(summary=f"Launched {game['title']}")
+    return {"status": "launch_requested", "id": game_id, "title": game["title"]}
+
+
+SCREEN_STREAMS = StreamSlots()
+
+
+def screen_frame_source():
+    return FrameSource()
+
+
 @app.websocket("/ws/stream")
 async def websocket_video_stream(websocket: WebSocket):
-    if not authorized(websocket.headers.get("authorization")):
+    principal = websocket_principal(websocket, "/ws/stream", authenticate)
+    if principal is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
     if not HAS_SCREEN_CAPTURE:
         await websocket.close(code=1011, reason="Screen capture dependencies are unavailable")
         return
+    if not SCREEN_STREAMS.acquire():
+        await websocket.close(code=1013, reason="Two screen previews are already open")
+        return
+    record_event(principal, "screen", "screen.view", "Started viewing the screen")
+    NOTIFIER.notify("screenView", "Orbit · Screen", f"{principal.name} is viewing your screen.",
+                    key=principal.device_id or principal.name)
     try:
-        with mss.mss() as capture:
-            if len(capture.monitors) < 2:
-                await websocket.close(code=1011, reason="No display is available")
-                return
-            monitor = capture.monitors[1]
-            while True:
-                raw = capture.grab(monitor)
-                image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-                image.thumbnail((1280, 720))
-                buffer = io.BytesIO()
-                image.save(buffer, format="JPEG", quality=68)
-                await websocket.send_bytes(buffer.getvalue())
-                await asyncio.sleep(0.05)
+        # Capture and JPEG encoding run on the preview's own worker thread, so input and
+        # every other request keep flowing while a large desktop is being encoded.
+        await stream_frames(websocket.send_bytes, screen_frame_source())
     except WebSocketDisconnect:
         pass
+    except NoDisplay:
+        await _close_quietly(websocket, 1011, "No display is available")
     except Exception:
         LOGGER.exception("Screen preview failed")
-        try:
-            await websocket.close(code=1011, reason="Screen preview failed")
-        except RuntimeError:
-            pass
+        await _close_quietly(websocket, 1011, "Screen preview failed")
+    finally:
+        SCREEN_STREAMS.release()
+
+
+async def _close_quietly(websocket, code, reason):
+    try:
+        await websocket.close(code=code, reason=reason)
+    except RuntimeError:
+        pass
 
 
 @app.post("/api/internal/handover")
@@ -1091,9 +1823,11 @@ def api_handover(request: Request, authorization: str = Header(None)):
     """Asks this instance to exit so another one on the same PC can take the ports.
 
     Used by the per-user companion when it starts after the boot-time instance (which runs
-    before anyone signs in and cannot reach the desktop). Loopback only, token required.
+    before anyone signs in and cannot reach the desktop). Loopback only, and only with the
+    PC's own master token (`.orbit-token`), which device tokens never replace.
     """
-    verify_token(authorization)
+    if not _same_secret(bearer_token(authorization), API_TOKEN):
+        raise invalid_token()
     client = (request.client.host if request.client else "") or ""
     if client not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(status_code=403, detail="Hand-over is only accepted from this PC")
@@ -1140,28 +1874,221 @@ def api_check_for_updates(authorization: str = Header(None)):
 
 
 @app.post("/api/update/apply")
-def api_apply_update(authorization: str = Header(None)):
+def api_apply_update(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
-    from orbit_updater import check_for_updates, download_and_apply_update
+    require_https(request)
+    from orbit_updater import FrozenBuildError, apply_update, check_for_updates
+    if orbit_paths.is_frozen():
+        # OrbitCompanion.exe runs from a temporary unpack folder: writing .py files
+        # there would do nothing. Installing a new executable is the owner's step.
+        raise HTTPException(status_code=409, detail=FrozenBuildError.MESSAGE)
     try:
         info = check_for_updates(AGENT_VERSION)
     except Exception as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if not info.get("updateAvailable"):
+        note(summary=f"Checked for an update: {AGENT_VERSION} is the latest")
         return {"status": "up_to_date", "currentVersion": AGENT_VERSION, "latestVersion": info.get("latestVersion")}
     download_url = info.get("downloadUrl")
     if not download_url:
         raise HTTPException(status_code=409, detail="No downloadable update archive is available for this release")
     try:
-        updated = download_and_apply_update(download_url)
+        result = apply_update(download_url)
+        note(summary=f"Updated Orbit PC Companion to {info.get('latestVersion')}")
+    except FrozenBuildError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"Could not apply update: {error}") from error
     return {
         "status": "updated",
         "currentVersion": AGENT_VERSION,
         "latestVersion": info.get("latestVersion"),
-        "updatedFiles": updated,
+        "updatedFiles": result.files,
+        "dependencies": result.dependencies,
+        "restartRequired": True,
     }
+
+
+DIAGNOSTICS = Diagnostics(secure_port=SECURE_PORT, legacy_port=AGENT_PORT,
+                          address=lambda: get_local_network_details().get("ipAddress") or None,
+                          sunshine=sunshine_summary)
+
+
+class AgentWindowBackend:
+    """What the companion window on this PC may read and change (see orbit_window).
+    Everything it changes is recorded in Activity as done by "This PC"."""
+
+    def overview(self):
+        registry = require_registry()
+        devices = registry.list()
+        now = time.time()
+        online = sum(1 for device in devices if device.get("lastSeenAt") and now - (parse_timestamp(device["lastSeenAt"]) or 0) < 90)
+        network = get_local_network_details()
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        log = ACTIVITY
+        scheduler = POWER_SCHEDULER
+        with STATE_LOCK:
+            game = STATE.get("activeGame") if time.monotonic() - LAST_TELEMETRY <= 10 else None
+        return {"pc": {"name": network.get("hostname") or socket.gethostname(), "address": network.get("ipAddress") or None,
+                       "securePort": SECURE_PORT, "agentPort": AGENT_PORT, "version": AGENT_VERSION,
+                       "fingerprint": CERTIFICATE_FINGERPRINT or None, "bootMode": BOOT_MODE},
+                "pairing": PAIRING_MANAGER.pending() if PAIRING_MANAGER is not None else None,
+                "devices": devices,
+                "counts": {"devices": len(devices), "online": online, "actionsToday": log.count_since(midnight) if log else 0},
+                "activity": log.entries(limit=5)["entries"] if log else [],
+                "power": {"timer": scheduler.public_timer() if scheduler else None,
+                          "keepAwake": scheduler.public_keep_awake() if scheduler else None},
+                "game": game}
+
+    def devices(self):
+        return {"devices": require_registry().list(), "scopes": list(SCOPES)}
+
+    def update_device(self, device_id, name=None, scopes=None):
+        device = require_registry().update(device_id, name, scopes)
+        record_event(None, "devices", "device.update", f"Changed {device['name']} (access: {', '.join(device['scopes']) or 'none'})")
+        return device
+
+    def remove_device(self, device_id):
+        registry = require_registry()
+        name = registry.get(device_id)["name"]
+        registry.revoke(device_id, "Removed on this PC")
+        record_event(None, "devices", "device.revoke", f"Removed {name}")
+        return {"status": "revoked", "id": device_id}
+
+    def add_manual_device(self):
+        device, token = create_manual_device()
+        if token is None:
+            raise OSError("The device list is not ready. Restart Orbit PC Companion.")
+        try:
+            from orbit_desktop import copy_private_text
+            copy_private_text(token)
+            copied = True
+        except Exception:
+            copied = False
+        return {"device": device, "token": token, "copied": copied}
+
+    def activity(self, before=None, category=None, limit=50):
+        if category is not None and category not in ACTIVITY_CATEGORIES:
+            raise ValueError("Unknown kind of activity.")
+        if ACTIVITY is None:
+            raise OSError("The activity log is not ready.")
+        return ACTIVITY.entries(before=before, limit=limit, category=category)
+
+    def settings(self):
+        return current_settings()
+
+    def update_settings(self, changes):
+        result = apply_settings(changes)
+        record_event(None, "settings", "settings.change", settings_summary(changes))
+        return result
+
+    def set_boot_task(self, enabled):
+        from orbit_tray import BootTaskManager
+        try:
+            BootTaskManager().set_installed(bool(enabled))
+        except (RuntimeError, OSError) as error:
+            raise OSError(str(error)) from error
+        record_event(None, "settings", "settings.bootTask",
+                     "Asked Windows to start Orbit before sign-in" if enabled else "Asked Windows to stop starting Orbit before sign-in")
+        return {"status": "requested", "startBeforeSignIn": bool(enabled)}
+
+    def diagnostics(self, force=False):
+        return DIAGNOSTICS.report(force=force)
+
+    def fix(self, kind, interface_index=None):
+        if kind == "firewall":
+            DIAGNOSTICS.fix_firewall()
+            record_event(None, "settings", "network.firewall", "Asked Windows to add Orbit's firewall rules")
+        elif kind == "privateNetwork":
+            DIAGNOSTICS.make_private(interface_index)
+            record_event(None, "settings", "network.private", "Asked Windows to make this network Private")
+        else:
+            raise ValueError("Unknown fix.")
+        return {"status": "requested"}
+
+    def check_updates(self):
+        from orbit_updater import check_for_updates
+        try:
+            return check_for_updates(AGENT_VERSION)
+        except Exception as error:
+            raise OSError(str(error)) from error
+
+    def install_update(self):
+        from orbit_updater import FrozenBuildError, apply_update, check_for_updates
+        if orbit_paths.is_frozen():
+            raise PermissionError(FrozenBuildError.MESSAGE)
+        try:
+            info = check_for_updates(AGENT_VERSION)
+        except Exception as error:
+            raise OSError(str(error)) from error
+        if not info.get("updateAvailable") or not info.get("downloadUrl"):
+            return {"status": "up_to_date", "currentVersion": AGENT_VERSION, "latestVersion": info.get("latestVersion")}
+        try:
+            result = apply_update(info["downloadUrl"])
+        except FrozenBuildError as error:
+            raise PermissionError(str(error)) from error
+        except Exception as error:
+            raise OSError(f"Could not apply the update: {error}") from error
+        record_event(None, "update", "update.apply", f"Updated Orbit PC Companion to {info.get('latestVersion')}")
+        return {"status": "updated", "latestVersion": info.get("latestVersion"), "updatedFiles": result.files,
+                "dependencies": result.dependencies}
+
+    def restart(self):
+        restart_companion()
+        return {"status": "restarting"}
+
+
+def parse_timestamp(text):
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def restart_command(pid=None):
+    """How to start this companion again in the tray, after process `pid` has exited."""
+    pid = pid or os.getpid()
+    if orbit_paths.is_frozen():
+        return [sys.executable, "--after", str(pid), "--tray"]
+    from orbit_tray import resolve_pythonw_executable
+    script = orbit_paths.runtime_directory() / "orbit_agent.py"
+    return [str(resolve_pythonw_executable(script)), str(script), "--after", str(pid), "--tray"]
+
+
+def restart_companion(launcher=None, delay=0.8):
+    """Start a new companion that waits for this one to exit, then stop this one."""
+    launch = launcher or (lambda command: subprocess.Popen(command, close_fds=True,
+                                                           creationflags=0x00000008 | 0x00000200 if os.name == "nt" else 0))
+    launch(restart_command())
+    threading.Timer(delay, STOP_EVENT.set).start()
+
+
+def wait_for_previous(pid, timeout=30.0):
+    """--after <pid>: let the previous companion release the ports and the mutex first."""
+    try:
+        psutil.Process(int(pid)).wait(timeout=timeout)
+    except (psutil.Error, ValueError, TypeError):
+        pass
+
+
+def update_watch_worker(first_delay=600, interval=24 * 3600):
+    """Once a day (when allowed), say so on the PC if a newer companion is out. Never installs."""
+    told = set()
+    delay = first_delay
+    while not STOP_EVENT.wait(delay):
+        delay = interval
+        settings = SETTINGS
+        if settings is None or not settings.updates().get("checkAutomatically", True) or NOTIFIER.show is None:
+            continue
+        try:
+            from orbit_updater import check_for_updates
+            info = check_for_updates(AGENT_VERSION)
+        except Exception:
+            continue
+        latest = info.get("latestVersion")
+        if info.get("updateAvailable") and latest and latest not in told:
+            told.add(latest)
+            NOTIFIER.notify("updates", "Orbit · Update", f"Orbit PC Companion {latest} is available. Open Orbit to install it.")
 
 
 def tray_status_snapshot():
@@ -1177,6 +2104,20 @@ def tray_status_snapshot():
         "fingerprint": CERTIFICATE_FINGERPRINT,
         "activeGame": active_game,
     }
+
+
+def startup_banner(network, token, fingerprint, interactive):
+    """Console lines at start. The token never reaches the background log; an interactive
+    console shows only its last four characters."""
+    lines = [f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}",
+             f"PC IP: {network.get('ipAddress') or 'No active LAN adapter'}",
+             "In Orbit on iPhone, iPad, Mac or Apple TV, choose Find my PC. A one-use code will appear in a Windows dialog."]
+    if interactive and token:
+        lines.append(f"Manual pairing token: {orbit_paths.mask_secret(token)} (copy it from the Orbit tray menu)")
+    lines += [f"Encrypted connection port: {SECURE_PORT}",
+              f"Certificate SHA-256 (manual setup only): {fingerprint}",
+              "Use a trusted home network; do not port-forward this agent."]
+    return lines
 
 
 def _acquire_single_instance_mutex():
@@ -1196,8 +2137,16 @@ def _acquire_single_instance_mutex():
         return None
 
 
+WINDOW_SESSIONS = WindowSessions()
+
+
+def open_companion_window():
+    """Tray left click: a one-time code exchanged for the window's session cookie."""
+    code = WINDOW_SESSIONS.issue_launch_code()
+    return open_app_window(f"http://127.0.0.1:{WINDOW_PORT}/open?code={code}")
+
+
 if __name__ == "__main__":
-    import sys
     from orbit_tls import ensure_tls_identity, serve_both
     from orbit_tray import OrbitTrayIcon, StartupManager, ensure_background_stdio
 
@@ -1216,6 +2165,11 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     BOOT_MODE = "--boot" in args
+    POWER.interactive = not BOOT_MODE
+    if "--after" in args:
+        position = [arg.strip().lower() for arg in sys.argv].index("--after")
+        if position + 1 < len(sys.argv):
+            wait_for_previous(sys.argv[position + 1])
     log_file = ensure_background_stdio()
     mutex = _acquire_single_instance_mutex()
     if mutex is False:
@@ -1232,6 +2186,7 @@ if __name__ == "__main__":
     try:
         API_TOKEN = load_api_token()
         certificate, private_key, fingerprint = ensure_tls_identity()
+        DeviceRegistry(DEVICES_PATH)  # An unreadable device list is reported here, not swallowed.
     except Exception as startup_error:
         if os.name == "nt" and ("--background" in args or "--tray" in args):
             ctypes.windll.user32.MessageBoxW(
@@ -1248,32 +2203,32 @@ if __name__ == "__main__":
         print("Took over from the boot-time Orbit Companion instance.")
 
     CERTIFICATE_FINGERPRINT = fingerprint
-    PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
-    ADVERTISEMENT = OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
-    network = get_local_network_details()
-    print(f"Orbit PC Companion {AGENT_VERSION} · port {AGENT_PORT}")
-    print(f"PC IP: {network['ipAddress'] or 'No active LAN adapter'}")
-    print("In Orbit on iPhone, choose Find my PC. A one-use code will appear here and in a Windows dialog.")
-    print(f"Advanced manual pairing token: {API_TOKEN}")
-    print(f"Encrypted connection port: {SECURE_PORT}")
-    print(f"Certificate SHA-256 (manual setup only): {fingerprint}")
-    print("Keep this token private. Use a trusted home network or VPN; do not port-forward this agent.")
+    PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload, register_device=register_paired_device)
+    # --no-discovery: no Bonjour advert (development and CI runs stay invisible to "Find my PC").
+    ADVERTISEMENT = None if "--no-discovery" in args else OrbitAdvertisement(SECURE_PORT, fingerprint, AGENT_VERSION)
+    for line in startup_banner(get_local_network_details(), API_TOKEN, fingerprint, orbit_paths.interactive_console()):
+        print(line)
 
     STOP_EVENT.clear()
     tray = None
     if BOOT_MODE:
         print("Boot-time instance: no tray icon; hands over to the signed-in companion when it starts.")
+    elif "--no-tray" in args:
+        print("Running without a tray icon (--no-tray).")
     else:
         tray = OrbitTrayIcon(
             status_provider=tray_status_snapshot,
             on_stop=STOP_EVENT.set,
-            token_provider=lambda: API_TOKEN,
+            token_provider=mint_manual_token,
             log_path=log_file,
             notify_on_start=("--tray" in args),
+            on_open=open_companion_window,
         )
         tray.start()
+        NOTIFIER.show = tray.show_notification
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
+        threading.Thread(target=update_watch_worker, name="orbit-update-watch", daemon=True).start()
     try:
         asyncio.run(serve_both(
             app,
@@ -1283,6 +2238,9 @@ if __name__ == "__main__":
             certificate,
             private_key,
             stop_event=STOP_EVENT,
+            # The companion window (127.0.0.1 only); the boot instance has no desktop to show it on.
+            local_app=None if BOOT_MODE else create_window_app(AgentWindowBackend(), WINDOW_SESSIONS, WINDOW_PORT),
+            local_port=WINDOW_PORT,
         ))
     except KeyboardInterrupt:
         pass

@@ -71,9 +71,14 @@ def ensure_tls_identity(directory=None):
     return certificate_path, key_path, ":".join(fingerprint[index:index + 2] for index in range(0, len(fingerprint), 2))
 
 
-async def serve_both(app, host, port, secure_port, certificate, key, stop_event=None):
-    """One application lifespan; legacy LAN clients and pinned HTTPS coexist."""
+async def serve_both(app, host, port, secure_port, certificate, key, stop_event=None, local_app=None, local_port=None):
+    """One application lifespan; legacy LAN clients and pinned HTTPS coexist.
+
+    `local_app` (the companion window) listens on 127.0.0.1 only. It is optional: if its
+    port is taken, the window is unavailable but the agent keeps serving devices.
+    """
     import asyncio
+    import logging
     import uvicorn
 
     if not 1 <= port <= 65535 or not 1 <= secure_port <= 65535:
@@ -91,6 +96,18 @@ async def serve_both(app, host, port, secure_port, certificate, key, stop_event=
         else:
             server.install_signal_handlers = lambda: None
             await server.serve()
+    local = None
+    if local_app is not None and local_port:
+        local = uvicorn.Server(uvicorn.Config(local_app, host="127.0.0.1", port=local_port, lifespan="off",
+                                              log_level="warning", access_log=False, proxy_headers=False))
+
+    async def run_optional(server):
+        try:
+            await run(server)
+        except (SystemExit, Exception) as error:  # uvicorn exits the process when it cannot bind
+            logging.getLogger("orbit").warning("The Orbit window is unavailable on port %s: %s", local_port, error)
+
+    local_task = asyncio.create_task(run_optional(local)) if local is not None else None
     tasks = [asyncio.create_task(run(legacy)), asyncio.create_task(run(secure))]
     if stop_event is not None:
         async def watch_stop():
@@ -105,4 +122,8 @@ async def serve_both(app, host, port, secure_port, certificate, key, stop_event=
         if stop_event is not None:
             stop_event.set()
         legacy.should_exit = True; secure.should_exit = True
+        if local is not None:
+            local.should_exit = True
         await asyncio.gather(*tasks)
+        if local_task is not None:
+            await local_task
