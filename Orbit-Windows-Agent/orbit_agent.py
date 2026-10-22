@@ -23,7 +23,8 @@ from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (Body, FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, Response, WebSocket,
+                     WebSocketDisconnect)
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 import orbit_paths
@@ -31,6 +32,7 @@ from orbit_access import AccessMiddleware, current_principal, error_response, no
 from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
 from orbit_power import (ACTION_WORDS, COUNTDOWN_SECONDS, GUID as POWER_PLAN_ID, NothingToCancel, PowerScheduler,
                          PowerUnavailable, TIMER_ACTIONS, WindowsPower, shutdown_comment)
+from orbit_input import InputBlocked, InputError, send_keyboard
 from orbit_library import GAME_ID, GameLibrary
 from orbit_settings import Settings, SettingsError
 from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
@@ -105,7 +107,8 @@ for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICE
 # What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
 FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
             "activity", "notifications", "power.countdown", "power.cancel", "library",
-            "power.timer", "power.keepAwake", "power.plans", "audio.default", "audio.microphone"]
+            "power.timer", "power.keepAwake", "power.plans", "audio.default", "audio.microphone",
+            "input.unicode", "input.shortcuts"]
 POWER = WindowsPower()
 INPUT_SESSIONS = InputSessions()
 
@@ -951,6 +954,14 @@ async def websocket_input_stream(websocket: WebSocket):
                 continue
             if not isinstance(payload, dict):
                 continue
+            if "key" in payload or "text" in payload:
+                # Typing over the same low-latency socket: {"text"} or {"key", "modifiers"}.
+                try:
+                    send_keyboard(str(payload.get("text") or ""), str(payload.get("key") or ""),
+                                  payload.get("modifiers"), int(payload.get("repeat") or 1))
+                except (InputError, InputBlocked, ValueError, TypeError):
+                    pass
+                continue
             dx = int(payload.get("dx") or 0)
             dy = int(payload.get("dy") or 0)
             click = str(payload.get("click") or "")
@@ -1004,29 +1015,37 @@ def watch_summary(authorization: str = Header(None)):
     }
 
 
+class KeyboardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str | None = Field(default=None, max_length=1000)
+    key: str | None = Field(default=None, max_length=40)
+    modifiers: list[str] | None = Field(default=None, max_length=4)
+    repeat: StrictInt = Field(default=1, ge=1, le=20)
+
+
+def type_on_pc(text, key, modifiers, repeat=1):
+    """SendInput: Unicode text in any layout, named keys and shortcuts (orbit_input)."""
+    try:
+        return send_keyboard(text, key, modifiers, repeat)
+    except InputError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except InputBlocked as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
 @app.post("/api/input/keyboard")
-def keyboard_input(text: str = "", key: str = "", authorization: str = Header(None)):
+def keyboard_input(text: str = Query("", max_length=1000), key: str = Query("", max_length=40),
+                   modifiers: str = Query("", max_length=40), body: KeyboardRequest | None = Body(None),
+                   authorization: str = Header(None)):
+    """Old query form (`?text=…&key=ENTER`) or JSON: {"text"}, {"key": "c", "modifiers": ["ctrl"]},
+    {"key": "f5"}, {"key": "left", "repeat": 3}. The key or shortcut is sent before the text."""
     verify_token(authorization)
     require_windows()
-    special = {"ENTER": 0x0D, "BACKSPACE": 0x08, "SPACE": 0x20, "ESC": 0x1B, "WIN": 0x5B, "TAB": 0x09}
-    if (key and key.upper() not in special) or len(text) > 1000:
-        raise HTTPException(status_code=422, detail="Unsupported key or text too long")
-    u32 = ctypes.windll.user32
-    u32.VkKeyScanW.argtypes = [ctypes.c_wchar]
-    u32.VkKeyScanW.restype = ctypes.c_short
-    codes = [u32.VkKeyScanW(char) if ord(char) <= 0xFFFF else -1 for char in text]
-    if -1 in codes:
-        raise HTTPException(status_code=422, detail="Some characters are not available in the PC keyboard layout")
-    if key:
-        tap_key(special[key.upper()])
-    for code in codes:
-        modifiers = [vk for mask, vk in ((1, 0x10), (2, 0x11), (4, 0x12)) if (code >> 8) & mask]
-        for modifier in modifiers:
-            u32.keybd_event(modifier, 0, 0, 0)
-        tap_key(code & 0xFF)
-        for modifier in reversed(modifiers):
-            u32.keybd_event(modifier, 0, 2, 0)
-    return {"status": "sent"}
+    if body is not None:
+        sent = type_on_pc(body.text or "", body.key or "", body.modifiers, body.repeat)
+    else:
+        sent = type_on_pc(text, key, modifiers or None)
+    return {"status": "sent", "events": sent}
 
 
 @app.post("/api/input/gamepad")
