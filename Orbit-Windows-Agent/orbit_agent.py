@@ -28,6 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import orbit_paths
 from orbit_access import AccessMiddleware, current_principal, error_response, note, websocket_principal
+from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
+from orbit_power import COUNTDOWN_SECONDS, NothingToCancel, PowerUnavailable, WindowsPower, shutdown_comment
+from orbit_settings import Settings, SettingsError
 from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
                            invalid_token, scope_missing)
 from orbit_processes import collect_processes, terminate_process
@@ -88,10 +91,33 @@ SUNSHINE_CREDENTIALS_PATH = Path(os.getenv("ORBIT_SUNSHINE_LOGIN_FILE", str(_RUN
 # Paired devices (token hashes and scopes) live with the TLS identity in %LOCALAPPDATA%\Orbit.
 DEVICES_PATH = Path(os.getenv("ORBIT_DEVICES_FILE") or str(data_directory() / "devices.json"))
 DEVICE_REGISTRY = None
-for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH):
+# What paired devices did (never typed text, clipboard or file contents) and the settings.
+ACTIVITY_PATH = data_directory() / "activity.sqlite3"
+SETTINGS_PATH = data_directory() / "settings.json"
+ACTIVITY = None
+SETTINGS = None
+for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICES_PATH, SETTINGS_PATH,
+                *(Path(str(ACTIVITY_PATH) + suffix) for suffix in ("", "-wal", "-shm", "-journal"))):
     orbit_paths.protect_path(_secret)
 # What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
-FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive"]
+FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
+            "activity", "notifications", "power.countdown", "power.cancel"]
+POWER = WindowsPower()
+INPUT_SESSIONS = InputSessions()
+
+
+def _notification_settings():
+    settings = SETTINGS
+    return settings.notifications() if settings is not None else {}
+
+
+def _gaming():
+    with STATE_LOCK:
+        return bool(STATE.get("activeGame"))
+
+
+# Shows Windows notifications through the tray balloon once the tray is up (None: log only).
+NOTIFIER = Notifier(show=None, settings=_notification_settings, gaming=_gaming)
 SUNSHINE_EXECUTABLE_PATHS = [
     Path(os.getenv("PROGRAMFILES", "C:/Program Files")) / "Sunshine/sunshine.exe",
     Path(os.getenv("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Sunshine/sunshine.exe",
@@ -378,11 +404,22 @@ def open_device_registry(master_token):
     return registry
 
 
+def open_activity_log():
+    ACTIVITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return ActivityLog(ACTIVITY_PATH)
+
+
+def open_settings():
+    return Settings(SETTINGS_PATH)
+
+
 @asynccontextmanager
 async def lifespan(application):
-    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY
+    global API_TOKEN, WIDGET_TOKEN, SPECS, HISTORY_RECORDER, DEVICE_REGISTRY, ACTIVITY, SETTINGS
     API_TOKEN = load_api_token()
     WIDGET_TOKEN = load_widget_token()
+    SETTINGS = open_settings()
+    ACTIVITY = open_activity_log()
     DEVICE_REGISTRY = open_device_registry(API_TOKEN)
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
@@ -409,15 +446,51 @@ async def lifespan(application):
     registry, DEVICE_REGISTRY = DEVICE_REGISTRY, None
     if registry is not None:
         registry.close()
+    log, ACTIVITY = ACTIVITY, None
+    if log is not None:
+        log.close()
 
 
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 
 
+def record_event(principal, category, action, summary, result="ok", status=None):
+    """One activity entry for something that did not go through the HTTP middleware
+    (WebSockets, pairing, the window on the PC). `principal` None means this PC."""
+    log = ACTIVITY
+    if log is None:
+        return
+    device_id, name = (principal.device_id, principal.name) if principal is not None else PC_ACTOR
+    log.record(device_id, name, category, action, summary, result, status)
+
+
 def activity_observer(context, status):
-    """Called after every authenticated request (activity log; see orbit_activity)."""
-    return None
+    """After every authenticated request: the activity log, input sessions, notifications."""
+    principal = context.principal
+    if context.path.startswith("/api/input/") and status is not None and status < 400:
+        note_input_session(principal)
+    if not context.policy.logs(context.method):
+        return
+    category, action, summary = describe(context, status)
+    result = result_for(status)
+    log = ACTIVITY
+    if log is not None:
+        log.record(principal.device_id, principal.name, category, action, summary, result, status)
+    if result != "ok":
+        return
+    if category == "files" and action in ("files.upload", "files.download", "files.archive.download", "files.trash"):
+        NOTIFIER.notify("files", "Orbit · Files", f"{principal.name}: {summary}", key=principal.device_id)
+    elif category == "power" and action in ("action.restart", "action.shutdown", "action.sleep"):
+        NOTIFIER.notify("power", "Orbit · Power", f"{summary}. Requested from {principal.name}.")
+
+
+def note_input_session(principal):
+    key = principal.device_id or principal.name
+    if INPUT_SESSIONS.touch(key):
+        record_event(principal, "input", "input.session", "Started controlling the mouse and keyboard")
+        NOTIFIER.notify("inputSession", "Orbit · Remote input",
+                        f"{principal.name} is controlling the mouse and keyboard.", key=key)
 
 
 app.add_middleware(AccessMiddleware, authenticate=lambda authorization, address: authenticate(authorization, address),
@@ -583,8 +656,22 @@ def register_paired_device(client, peer):
 
 
 def on_device_paired(device, peer):
-    """Hook for notifications and the activity log (see orbit_activity)."""
-    return None
+    """A new device can use this PC: log it and tell the person at the PC."""
+    from orbit_devices import device_kind
+    manual = device.get("name") == MANUAL_DEVICE_NAME and not device.get("platform")
+    summary = "Created a manual pairing token" if manual else f"Paired {device['name']} ({device_kind(device.get('platform'))})"
+    actor = current_principal()
+    log = ACTIVITY
+    if log is not None:
+        if actor is not None:
+            log.record(actor.device_id, actor.name, "devices", "device.pair", summary)
+        elif manual or peer is None:
+            log.record(*PC_ACTOR, "devices", "device.pair", summary)
+        else:
+            log.record(device["id"], device["name"], "devices", "device.pair", f"{summary} from {peer}")
+    if not manual:
+        NOTIFIER.notify("newDevice", "Orbit · New device",
+                        f"{device['name']} can now use this PC. If this was not you, remove it in Orbit.")
 
 
 MANUAL_DEVICE_NAME = "Manual setup"
@@ -701,7 +788,9 @@ def end_process(pid: int, expectedCreateTime: float = Query(..., gt=0), force: b
     if not math.isfinite(expectedCreateTime):
         raise HTTPException(status_code=422, detail="A valid process creation time is required")
     try:
-        return terminate_process(pid, expectedCreateTime, force)
+        result = terminate_process(pid, expectedCreateTime, force)
+        note(summary=f"Ended {result.get('name') or f'process {pid}'}" + (" (forced)" if force else ""))
+        return result
     except ProcessLookupError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except PermissionError as error:
@@ -800,10 +889,12 @@ def cursor_input(dx: int = 0, dy: int = 0, click: str = "", scroll: int = 0, hsc
 
 @app.websocket("/ws/input")
 async def websocket_input_stream(websocket: WebSocket):
-    if websocket_principal(websocket, "/ws/input", authenticate) is None:
+    principal = websocket_principal(websocket, "/ws/input", authenticate)
+    if principal is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    note_input_session(principal)
     if os.name != "nt":
         await websocket.close(code=1011, reason="PC controls require Windows")
         return
@@ -930,8 +1021,10 @@ def execute_action(action_name: str, authorization: str = Header(None)):
             if not ctypes.windll.powrprof.SetSuspendState(0, 0, 0):
                 raise OSError("SetSuspendState failed")
         elif action_name in {"restart", "shutdown"}:
-            subprocess.run(["shutdown", "/r" if action_name == "restart" else "/s", "/t", "3"], check=True,
-                           timeout=5, capture_output=True, creationflags=0x08000000)
+            # Windows' own countdown: the person at the PC sees who asked, and
+            # POST /api/power/cancel (shutdown /a) stops it.
+            principal = current_principal()
+            POWER.countdown(action_name, COUNTDOWN_SECONDS, shutdown_comment(action_name, principal.name if principal else None))
         elif action_name in {"mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev", "fullscreen"}:
             tap_key({
                 "mute": 0xAD, "volume_up": 0xAF, "volume_down": 0xAE,
@@ -976,9 +1069,62 @@ def execute_action(action_name: str, authorization: str = Header(None)):
             u32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
             if not u32.PostMessageW(handle, 0x0010, 0, 0):
                 raise OSError("Windows rejected close request")
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
         raise HTTPException(status_code=503, detail="Windows could not execute this action") from error
+    if action_name in {"restart", "shutdown"}:
+        return {"status": "sent", "executed": action_name, "delaySeconds": COUNTDOWN_SECONDS}
     return {"status": "sent", "executed": action_name}
+
+
+@app.post("/api/power/cancel")
+def cancel_power_action(authorization: str = Header(None)):
+    """Stops a pending shutdown or restart (Windows' countdown) and any Orbit power timer."""
+    verify_token(authorization)
+    require_windows()
+    try:
+        POWER.abort()
+    except NothingToCancel as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (OSError, subprocess.SubprocessError, PowerUnavailable) as error:
+        raise HTTPException(status_code=503, detail="Windows could not cancel the shutdown") from error
+    note(summary="Cancelled the pending shutdown or restart")
+    NOTIFIER.notify("power", "Orbit · Power", "The shutdown or restart was cancelled.")
+    return {"status": "cancelled"}
+
+
+@app.get("/api/activity")
+def get_activity(request: Request, before: int | None = Query(None, ge=1), limit: int = Query(50, ge=1, le=200),
+                 category: str | None = Query(None, max_length=20), authorization: str = Header(None)):
+    """What paired devices did on this PC, newest first. Page with `nextBefore`."""
+    verify_token(authorization)
+    if category is not None and category not in ACTIVITY_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Unknown category. Use one of: {', '.join(ACTIVITY_CATEGORIES)}.")
+    if ACTIVITY is None:
+        raise HTTPException(status_code=503, detail="The activity log is not ready. Restart Orbit PC Companion.")
+    return {**ACTIVITY.entries(before=before, limit=limit, category=category), "categories": list(ACTIVITY_CATEGORIES)}
+
+
+def require_settings():
+    if SETTINGS is None:
+        raise HTTPException(status_code=503, detail="Settings are not ready. Restart Orbit PC Companion.")
+    return SETTINGS
+
+
+@app.get("/api/settings/notifications")
+def get_notification_settings(authorization: str = Header(None)):
+    verify_token(authorization)
+    return require_settings().notifications()
+
+
+@app.patch("/api/settings/notifications")
+def update_notification_settings(changes: dict, authorization: str = Header(None)):
+    verify_token(authorization)
+    try:
+        result = require_settings().update_notifications(changes)
+    except SettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    note(summary="Changed notification settings: " + ", ".join(f"{key} {'on' if value else 'off'}" for key, value in changes.items()))
+    return result
 
 
 def sunshine_entries():
@@ -1287,7 +1433,8 @@ def screen_frame_source():
 
 @app.websocket("/ws/stream")
 async def websocket_video_stream(websocket: WebSocket):
-    if websocket_principal(websocket, "/ws/stream", authenticate) is None:
+    principal = websocket_principal(websocket, "/ws/stream", authenticate)
+    if principal is None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -1297,6 +1444,9 @@ async def websocket_video_stream(websocket: WebSocket):
     if not SCREEN_STREAMS.acquire():
         await websocket.close(code=1013, reason="Two screen previews are already open")
         return
+    record_event(principal, "screen", "screen.view", "Started viewing the screen")
+    NOTIFIER.notify("screenView", "Orbit · Screen", f"{principal.name} is viewing your screen.",
+                    key=principal.device_id or principal.name)
     try:
         # Capture and JPEG encoding run on the preview's own worker thread, so input and
         # every other request keep flowing while a large desktop is being encoded.
@@ -1388,12 +1538,14 @@ def api_apply_update(request: Request, authorization: str = Header(None)):
     except Exception as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if not info.get("updateAvailable"):
+        note(summary=f"Checked for an update: {AGENT_VERSION} is the latest")
         return {"status": "up_to_date", "currentVersion": AGENT_VERSION, "latestVersion": info.get("latestVersion")}
     download_url = info.get("downloadUrl")
     if not download_url:
         raise HTTPException(status_code=409, detail="No downloadable update archive is available for this release")
     try:
         result = apply_update(download_url)
+        note(summary=f"Updated Orbit PC Companion to {info.get('latestVersion')}")
     except FrozenBuildError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
@@ -1525,6 +1677,7 @@ if __name__ == "__main__":
             notify_on_start=("--tray" in args),
         )
         tray.start()
+        NOTIFIER.show = tray.show_notification
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
     try:

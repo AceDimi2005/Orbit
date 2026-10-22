@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 import orbit_paths
+from orbit_access import note
 
 MAX_PREVIEW_BYTES = 64 * 1024 ** 2
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
@@ -71,6 +72,19 @@ class PathBody(BaseModel):
 
 def _fail(status, message):
     raise HTTPException(status, message)
+
+
+def _size(count):
+    value = float(count or 0)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "bytes" else f"{value:.1f} {unit}"
+        value /= 1024
+
+
+def _folder_name(path):
+    path = Path(path)
+    return path.name or str(path)
 
 
 def require_secure(request: Request):
@@ -390,6 +404,7 @@ def download_response(path, request):
                "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{info.st_size}"
+    note(summary=f"Downloaded {target.name} ({_size(info.st_size)})" if not partial or start == 0 else f"Resumed downloading {target.name}")
     return _ClosingStreamingResponse(stream, content(), status_code=206 if partial else 200,
                              media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream", headers=headers)
 
@@ -426,6 +441,7 @@ async def receive_upload(request, directory, name):
         # link is atomic and fails if another process created the destination.
         # Unlike replace(), it can never overwrite an existing file.
         os.link(temporary, destination)
+        note(summary=f"Uploaded {destination.name} ({_size(total)}) to {_folder_name(parent)}")
         return {"path": str(destination), "name": destination.name, "sizeBytes": total}
     except HTTPException:
         raise
@@ -922,7 +938,9 @@ def create_files_router(verify_control, archive_manager=None):
 
     @router.post("/archive", status_code=202)
     def prepare_archive(body: PathBody):
-        return archives.create(body.path)
+        job = archives.create(body.path)
+        note(summary=f"Prepared {job['name']}")
+        return job
 
     @router.get("/archive/{identifier}")
     def archive_status(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
@@ -930,7 +948,10 @@ def create_files_router(verify_control, archive_manager=None):
 
     @router.get("/archive/{identifier}/download")
     def archive_download(request: Request, identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
-        return archives.download(identifier, request)
+        name = archives.status(identifier)["name"]
+        response = archives.download(identifier, request)
+        note(summary=f"Downloaded {name}")
+        return response
 
     @router.delete("/archive/{identifier}")
     def archive_cancel(identifier: str = PathParameter(pattern=r"^[0-9a-f]{32}$")):
@@ -962,21 +983,28 @@ def create_files_router(verify_control, archive_manager=None):
             target.mkdir()
         except OSError as exc:
             _os_error(exc)
+        note(summary=f"Created folder {target.name} in {_folder_name(parent)}")
         return {"ok": True, "path": str(target)}
 
     @router.post("/rename")
     def rename(body: RenameBody):
         source = _exists(checked_path(body.path, writing=True))
-        return rename_or_move(str(source), str(source.parent / _name(body.name)))
+        result = rename_or_move(str(source), str(source.parent / _name(body.name)))
+        note(summary=f"Renamed {source.name} to {body.name}")
+        return result
 
     @router.post("/move")
     def move(body: MoveBody):
         source = _exists(checked_path(body.path, writing=True))
         folder = _exists(checked_path(body.destinationDirectory, directory=True, writing=True))
-        return rename_or_move(str(source), str(folder / source.name))
+        result = rename_or_move(str(source), str(folder / source.name))
+        note(summary=f"Moved {source.name} to {_folder_name(folder)}")
+        return result
 
     @router.post("/trash")
     def trash(body: PathBody):
-        return recycle_path(body.path)
+        result = recycle_path(body.path)
+        note(summary=f"Moved {Path(result['path']).name} to the Recycle Bin")
+        return result
 
     return router

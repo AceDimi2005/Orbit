@@ -15,6 +15,7 @@ import psutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from orbit_access import note
 from orbit_audio_policy import AudioPolicyConfig, AudioPolicyUnavailable
 from orbit_icons import ICONS, parse_icon_location, system_sounds_icon_location
 
@@ -691,6 +692,10 @@ def create_desktop_router(verify_control):
     @router.post("/audio/session", dependencies=[Depends(require_encrypted)])
     def audio_session(body: AudioSessionWrite):
         session = translate(lambda: update_audio_session(body.id, body.volume, body.isMuted))
+        name = session.get("displayName") or session.get("name") or "an app"
+        changes = ([f"volume {round(body.volume)}%"] if body.volume is not None else []) + \
+                  (["muted" if body.isMuted else "unmuted"] if body.isMuted is not None else [])
+        note(summary=f"Set {name}: {', '.join(changes)}")
         return {"status": "ok", "session": session}
 
     @router.get("/audio/outputs", dependencies=[Depends(require_encrypted)])

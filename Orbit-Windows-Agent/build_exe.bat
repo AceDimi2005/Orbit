@@ -36,6 +36,7 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "uvicorn.protocols.websockets.auto" ^
     --hidden-import "uvicorn.lifespan.on" ^
     --hidden-import "orbit_access" ^
+    --hidden-import "orbit_activity" ^
     --hidden-import "orbit_afterburner" ^
     --hidden-import "orbit_audio_policy" ^
     --hidden-import "orbit_desktop" ^
@@ -46,9 +47,11 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "orbit_icons" ^
     --hidden-import "orbit_pairing" ^
     --hidden-import "orbit_paths" ^
+    --hidden-import "orbit_power" ^
     --hidden-import "orbit_processes" ^
     --hidden-import "orbit_rtss" ^
     --hidden-import "orbit_screen" ^
+    --hidden-import "orbit_settings" ^
     --hidden-import "orbit_shared_memory" ^
     --hidden-import "orbit_tls" ^
     --hidden-import "orbit_tray" ^

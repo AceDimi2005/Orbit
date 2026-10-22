@@ -18,7 +18,9 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import compile_path
 
-from orbit_devices import AccessError, SCOPES
+from urllib.parse import parse_qsl
+
+from orbit_devices import AccessError, SCOPES, scope_missing
 
 READ, CONTROL, INPUT, FILES, ADMIN = SCOPES
 STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -120,6 +122,15 @@ POLICIES = {
     ("POST", "/api/sunshine/credentials"): P(ADMIN, secure=True, category="sunshine", action="sunshine.login.save"),
     ("DELETE", "/api/sunshine/credentials"): P(ADMIN, secure=True, category="sunshine", action="sunshine.login.remove"),
 
+    # Power: the Windows countdown can be stopped from any device that may run power actions,
+    # over HTTP too, so even the oldest Watch build can cancel what it started.
+    ("POST", "/api/power/cancel"): P(CONTROL, category="power", action="power.cancel"),
+
+    # Activity and notification settings belong to the owner.
+    ("GET", "/api/activity"): P(ADMIN, secure=True),
+    ("GET", "/api/settings/notifications"): P(ADMIN, secure=True),
+    ("PATCH", "/api/settings/notifications"): P(ADMIN, secure=True, category="settings", action="settings.notifications"),
+
     # WebSockets, enforced by their handlers.
     ("WS", "/ws/input"): P(INPUT),
     ("WS", "/ws/stream"): P(INPUT, category="screen", action="screen.view"),
@@ -217,17 +228,21 @@ class AccessMiddleware:
         address = (scope.get("client") or (None,))[0]
         try:
             principal = self.authenticate(headers.get("authorization"), address)
-            if policy.secure and scope.get("scheme") not in ("https", "wss"):
-                raise https_required()
-            if not principal.has(policy.scope):
-                from orbit_devices import scope_missing
-                raise scope_missing(policy.scope)
         except AccessError as error:
             await error_response(error)(scope, receive, send)
             return
-        from urllib.parse import parse_qsl
         query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
         context = RequestContext(principal, policy, method, template or scope.get("path", ""), dict(path_params), query, address)
+        try:
+            if policy.secure and scope.get("scheme") not in ("https", "wss"):
+                raise https_required()
+            if not principal.has(policy.scope):
+                raise scope_missing(policy.scope)
+        except AccessError as error:
+            # A paired device tried something it may not do: the owner sees it in the activity log.
+            await error_response(error)(scope, receive, send)
+            self._observe(context, error.status)
+            return
         scope.setdefault("state", {})["orbit_principal"] = principal
         status = {"code": None}
 
@@ -244,11 +259,14 @@ class AccessMiddleware:
             raise
         finally:
             CURRENT.reset(token)
-            if self.observer is not None:
-                try:
-                    self.observer(context, status["code"])
-                except Exception:
-                    pass
+            self._observe(context, status["code"])
+
+    def _observe(self, context, status):
+        if self.observer is not None:
+            try:
+                self.observer(context, status)
+            except Exception:
+                pass
 
 
 def websocket_principal(websocket, path, authenticate, policies=None):
