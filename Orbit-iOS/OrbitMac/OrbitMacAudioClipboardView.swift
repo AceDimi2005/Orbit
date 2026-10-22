@@ -62,11 +62,8 @@ struct MacAudioView: View {
 
     private var masterCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            MacSectionHeader("Volume", subtitle: vm.selectedPCName, icon: "speaker.wave.3.fill") {
-                MacStatusPill(text: isMuted ? "Muted" : "Live", tint: isMuted ? .orange : .mint, pulsing: !isMuted)
-            }
-            HStack(alignment: .center, spacing: 16) {
-                masterRing
+            MacSectionHeader("Volume")
+            HStack(alignment: .center, spacing: 18) {
                 masterReadout
                 masterMuteButton
             }
@@ -76,27 +73,12 @@ struct MacAudioView: View {
         .macGlass(cornerRadius: 20, tint: theme.accent, elevated: true)
     }
 
-    private var masterRing: some View {
-        ZStack {
-            MacRing(progress: masterProgress, lineWidth: 6, tint: masterTint)
-                .frame(width: 72, height: 72)
-            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(isMuted ? AnyShapeStyle(Color.orange) : AnyShapeStyle(theme.heroGradient))
-        }
-    }
+
 
     private var masterReadout: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(masterValueText)
-                    .font(.system(size: 34, weight: .bold))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                if volumeKnown {
-                    Text("%").font(.title3.weight(.semibold)).foregroundStyle(.secondary)
-                }
-            }
+            OrbitReading(label: isMuted ? "Muted" : "Master", value: volumeKnown ? masterValueText : nil, unit: "%",
+                         valueSize: 34, valueColor: isMuted ? OrbitPalette.warm : .primary)
             masterSlider
             Text(masterHint)
                 .font(.caption)

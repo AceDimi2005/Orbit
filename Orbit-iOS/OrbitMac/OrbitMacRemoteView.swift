@@ -56,70 +56,39 @@ struct MacRemoteView: View {
 
     // MARK: Hero
 
-    private var statusTint: Color {
-        if vm.isDemoMode { return .orange }
-        return vm.metrics.isOnline ? .mint : (vm.currentPC == nil ? .secondary : .orange)
-    }
-    private var statusText: String {
-        if vm.isDemoMode { return "Demo" }
-        if vm.isWaking { return "Waking…" }
-        if vm.currentPC == nil { return "Not paired" }
-        if isConnecting { return "Connecting…" }
-        return vm.metrics.isOnline ? "Online" : "Offline"
-    }
 
+
+
+    /// One line: what this page does, or that the pointer is captured and how to let go.
     private var heroRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 14) {
-                MacIconBadge(systemName: "computermouse.fill", tint: isCapturing ? .orange : theme.accent, size: 46, filled: isReady)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Text(vm.isConfigured ? vm.selectedPCName : "No PC paired")
-                            .font(.system(size: 22, weight: .bold))
-                            .lineLimit(1)
-                        MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
-                        if isCapturing {
-                            MacStatusPill(text: "Pointer captured · ⎋ to release", tint: .orange, icon: "cursorarrow.rays")
-                        }
-                    }
-                    heroChips
-                }
-                Spacer(minLength: 8)
-                Button {
-                    vm.selectedSection = .preview
-                } label: {
-                    Label("Screen", systemImage: "display")
-                }
-                .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
-                .help("Watch the PC screen while you control it (⌘3)")
-            }
-            if !vm.statusBanner.isEmpty {
-                Text(vm.statusBanner)
-                    .font(.caption)
+        HStack(spacing: 12) {
+            if isCapturing {
+                Label("The pointer is captured. Press Esc to release it.", systemImage: "cursorarrow.rays")
+                    .foregroundStyle(OrbitPalette.warm)
+            } else {
+                Text(isReady ? "Use this Mac's trackpad and keyboard on \(vm.selectedPCName)." : remoteUnavailableText)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
+            Spacer(minLength: 8)
+            Button {
+                vm.selectedSection = .preview
+            } label: {
+                Label("Watch the Screen", systemImage: "display")
+            }
+            .buttonStyle(MacHoverButtonStyle())
+            .help("See the PC's screen while you control it")
         }
-        .padding(16)
-        .macGlass(cornerRadius: 20, tint: isCapturing ? .orange : theme.accent, elevated: true)
+        .font(.body)
     }
 
-    private var heroChips: some View {
-        HStack(spacing: 8) {
-            if isLive {
-                MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
-            }
-            if isReady {
-                MacStatChip(label: "Volume", value: vm.metrics.volumeAvailable == false ? "—" : MacFormat.percent(vm.metrics.volume), icon: vm.metrics.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-            }
-            if let game = vm.metrics.activeGame, !game.isEmpty {
-                MacStatChip(label: "Playing", value: game, icon: "gamecontroller.fill", tint: .mint)
-            }
-            MacStatChip(label: "Speed", value: "\(MacFormat.decimal(pointerSpeed, digits: 1))×", icon: "cursorarrow.motionlines")
-        }
-        .lineLimit(1)
+    private var remoteUnavailableText: String {
+        if vm.isDemoMode { return "The demo doesn't send input anywhere." }
+        if vm.currentPC == nil { return "Pair a PC to control it from here." }
+        if isConnecting { return "Connecting…" }
+        return "\(vm.selectedPCName) is asleep or off."
     }
+
+
 
     private var demoNotice: some View {
         HStack(spacing: 10) {
