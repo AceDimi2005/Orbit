@@ -23,13 +23,14 @@ from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Path as PathParameter, Query, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field
 
 import orbit_paths
 from orbit_access import AccessMiddleware, current_principal, error_response, note, websocket_principal
 from orbit_activity import CATEGORIES as ACTIVITY_CATEGORIES, PC_ACTOR, ActivityLog, InputSessions, Notifier, describe, result_for
 from orbit_power import COUNTDOWN_SECONDS, NothingToCancel, PowerUnavailable, WindowsPower, shutdown_comment
+from orbit_library import GAME_ID, GameLibrary
 from orbit_settings import Settings, SettingsError
 from orbit_devices import (AccessError, DeviceRegistry, LEGACY_PRINCIPAL, SCOPE_DESCRIPTIONS, SCOPES,
                            invalid_token, scope_missing)
@@ -101,7 +102,7 @@ for _secret in (TOKEN_PATH, WIDGET_TOKEN_PATH, SUNSHINE_CREDENTIALS_PATH, DEVICE
     orbit_paths.protect_path(_secret)
 # What this agent can do, for `GET /api/capabilities`. Apps check these instead of versions.
 FEATURES = ["devices", "scopes", "capabilities", "update.dependencies", "stream.adaptive",
-            "activity", "notifications", "power.countdown", "power.cancel"]
+            "activity", "notifications", "power.countdown", "power.cancel", "library"]
 POWER = WindowsPower()
 INPUT_SESSIONS = InputSessions()
 
@@ -135,7 +136,7 @@ STATE = {
     "cpuTemp": None, "cpuUsage": 0.0, "liquidTemp": None, "gpuTemp": None,
     "gpuUsage": None, "gpuPowerWatts": None, "vramUsedGB": None, "vramTotalGB": None,
     "ramUsedGB": 0.0, "ramTotalGB": 0.0, "ssdUsedTB": 0.0, "ssdTotalTB": 0.0,
-    "uptimeSeconds": 0, "activeGame": None, "activeGameProcess": None,
+    "uptimeSeconds": 0, "activeGame": None, "activeGameProcess": None, "activeGameID": None, "activeGameTitle": None,
     "volume": 0.0, "isMuted": False, "volumeAvailable": False, "hdrEnabled": None, "sessionLocked": None,
     "fps": None, "fpsSource": None, "fpsUnavailableReason": "Waiting for telemetry",
     "telemetryAvailable": False, "lastUpdated": None,
@@ -301,6 +302,14 @@ def inventory_worker():
         LOGGER.exception("Hardware inventory failed; basic inventory remains available")
 
 
+def library_worker():
+    """Scan the game library once at start, so status can name the running game."""
+    try:
+        LIBRARY.scan()
+    except Exception:
+        LOGGER.exception("Game library scan failed")
+
+
 def sensor_worker():
     global LAST_SENSOR
     while not STOP_EVENT.is_set():
@@ -359,8 +368,11 @@ def telemetry_worker():
                 sensor_cache = copy.deepcopy(SENSOR_GPU_CACHE)
                 sensor_age = time.monotonic() - LAST_SENSOR
             update.update(select_gpu_metrics(gpus, sensor_cache, sensor_age))
-            game = detect_game()
-            update.update(activeGame=game["name"] if game else None,
+            game = detect_game(roots=LIBRARY.install_roots())
+            # A game from the library gets its real title and ID instead of its exe name.
+            match = LIBRARY.match_executable(game.get("exe")) if game else None
+            title = match["title"] if match else (game["name"] if game else None)
+            update.update(activeGame=title, activeGameTitle=title, activeGameID=match["id"] if match else None,
                           activeGameProcess=game["process"] if game else None)
             update.update(read_fps(game))
             update.update(audio_metrics())
@@ -424,7 +436,8 @@ async def lifespan(application):
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
     STOP_EVENT.clear()
-    threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
+    threads = [threading.Thread(target=worker, daemon=True)
+               for worker in (inventory_worker, telemetry_worker, sensor_worker, library_worker)]
     for thread in threads:
         thread.start()
     if ADVERTISEMENT is not None:
@@ -1422,6 +1435,67 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
                 raise HTTPException(status_code=503, detail="Could not start the configured application") from error
             return {"status": "launch_requested", "app": app}
     raise HTTPException(status_code=404, detail="Application was not found in Sunshine")
+
+
+def _sunshine_entries_quietly():
+    try:
+        return sunshine_entries()
+    except HTTPException:
+        return []
+
+
+LIBRARY = GameLibrary(sunshine_entries=_sunshine_entries_quietly)
+COVER_ID = PathParameter(pattern=r"^[0-9a-f]{32}$")
+LIBRARY_GAME_ID = PathParameter(pattern=GAME_ID.pattern)
+
+
+def running_executables():
+    try:
+        return [process.info.get("exe") for process in psutil.process_iter(["exe"]) if process.info.get("exe")]
+    except (psutil.Error, OSError):
+        return []
+
+
+@app.get("/api/library")
+def get_library(authorization: str = Header(None)):
+    """Installed Steam, Epic and GOG games. Covers by opaque ID; never paths."""
+    verify_token(authorization)
+    return LIBRARY.snapshot(running_executables())
+
+
+@app.post("/api/library/rescan")
+def rescan_library(authorization: str = Header(None)):
+    verify_token(authorization)
+    LIBRARY.scan(force=True)
+    return LIBRARY.snapshot(running_executables())
+
+
+@app.get("/api/library/covers/{cover_id}")
+def get_library_cover(cover_id: str = COVER_ID, authorization: str = Header(None)):
+    verify_token(authorization)
+    try:
+        data, media_type = LIBRARY.covers.read(cover_id)
+    except (KeyError, OSError) as error:
+        raise HTTPException(status_code=404, detail="This cover is not available. Refresh the library.") from error
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/library/{game_id}/launch", status_code=202)
+def launch_library_game(game_id: str = LIBRARY_GAME_ID, authorization: str = Header(None)):
+    """Starts a game through its store: steam://rungameid/…, the Epic launcher URI, or GOG's exe."""
+    verify_token(authorization)
+    require_windows()
+    try:
+        game = LIBRARY.launch(game_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="This game is not in the PC's library. Refresh the library.") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=503, detail="Windows could not start this game.") from error
+    note(summary=f"Launched {game['title']}")
+    return {"status": "launch_requested", "id": game_id, "title": game["title"]}
 
 
 SCREEN_STREAMS = StreamSlots()

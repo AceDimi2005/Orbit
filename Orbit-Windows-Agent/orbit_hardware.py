@@ -607,10 +607,13 @@ def _game_process_names():
             for n in os.getenv("ORBIT_GAME_PROCESSES", "").split(";") if n.strip()}
 
 
-def detect_game(configured=None):
-    """Recognize user-selected exe names or games in standard launcher libraries."""
+def detect_game(configured=None, roots=None):
+    """Recognize user-selected exe names, games in standard launcher libraries, and
+    games under the install folders of the PC's game library (`roots`, lowercase,
+    forward slashes, ending in "/")."""
     configured = _game_process_names() if configured is None else {
         _exe_name(name): title for name, title in configured.items()}
+    roots = tuple(root for root in (roots or ()) if root)
     foreground = foreground_pid()
     candidates = []
     for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
@@ -618,11 +621,12 @@ def detect_game(configured=None):
             info = process.info
             name = _exe_name(info.get("name"))
             path = (info.get("exe") or "").replace("\\", "/").lower()
-            library = any(part in path for part in ("/steamapps/common/", "/epic games/", "/gog games/"))
+            library = (any(part in path for part in ("/steamapps/common/", "/epic games/", "/gog games/"))
+                       or (bool(roots) and path.startswith(roots)))
             helper = any(part in name for part in ("crash", "launcher", "unins", "helper", "webhelper", "setup", "anticheat"))
             if name in configured or (library and not helper and name.endswith(".exe")):
                 candidates.append({"name": configured.get(name) or name.removesuffix(".exe"),
-                                   "process": info["name"], "pid": info["pid"],
+                                   "process": info["name"], "pid": info["pid"], "exe": info.get("exe"),
                                    "foreground": info["pid"] == foreground, "created": info.get("create_time") or 0})
         except (psutil.Error, OSError):
             continue

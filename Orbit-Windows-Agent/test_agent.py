@@ -507,7 +507,8 @@ class APITests(unittest.TestCase):
              patch.object(agent, "inventory_worker") as inventory, \
              patch.object(agent, "telemetry_worker") as telemetry, \
              patch.object(agent, "SessionRecorder"), \
-             patch.object(agent, "sensor_worker") as sensors:
+             patch.object(agent, "sensor_worker") as sensors, \
+             patch.object(agent, "library_worker"):
             with TestClient(agent.app) as client:
                 # The master token keeps working as the migrated legacy device.
                 self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)

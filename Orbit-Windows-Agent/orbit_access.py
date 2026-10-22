@@ -126,6 +126,12 @@ POLICIES = {
     # over HTTP too, so even the oldest Watch build can cancel what it started.
     ("POST", "/api/power/cancel"): P(CONTROL, category="power", action="power.cancel"),
 
+    # Game library.
+    ("GET", "/api/library"): P(READ, secure=True),
+    ("GET", "/api/library/covers/{cover_id}"): P(READ, secure=True),
+    ("POST", "/api/library/rescan"): P(CONTROL, secure=True, log=False),
+    ("POST", "/api/library/{game_id}/launch"): P(CONTROL, secure=True, category="apps", action="library.launch"),
+
     # Activity and notification settings belong to the owner.
     ("GET", "/api/activity"): P(ADMIN, secure=True),
     ("GET", "/api/settings/notifications"): P(ADMIN, secure=True),

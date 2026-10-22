@@ -45,6 +45,7 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "orbit_hardware" ^
     --hidden-import "orbit_history" ^
     --hidden-import "orbit_icons" ^
+    --hidden-import "orbit_library" ^
     --hidden-import "orbit_pairing" ^
     --hidden-import "orbit_paths" ^
     --hidden-import "orbit_power" ^

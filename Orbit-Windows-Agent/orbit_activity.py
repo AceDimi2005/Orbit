@@ -69,6 +69,7 @@ SUMMARIES = {
     "device.revoke": lambda c: "Removed a device",
     "update.apply": lambda c: "Updated Orbit PC Companion",
     "settings.notifications": lambda c: "Changed notification settings",
+    "library.launch": lambda c: f"Launched {c.path_params.get('game_id', 'a game')}",
     "power.cancel": lambda c: "Cancelled the pending shutdown or restart",
 }
 
