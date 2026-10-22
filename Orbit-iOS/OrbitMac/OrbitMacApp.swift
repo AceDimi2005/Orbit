@@ -243,11 +243,12 @@ struct MacMenuBarLabel: View {
 }
 
 #if DEBUG
-/// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file OrbitMac.app/Contents/MacOS/OrbitMac` runs the
+/// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file|agent OrbitMac.app/Contents/MacOS/OrbitMac` runs the
 /// Sunshine steps for the selected PC (or `ORBIT_PC_ID`) from inside the signed, sandboxed app
 /// with the same code the UI uses, prints every result and exits. `pair` lets the agent type the
 /// PIN (Sunshine web UI login saved on the PC); `stream` runs a headless stream of the Desktop app
-/// for `ORBIT_STREAM_SECONDS` (default 12); `file` prints `ORBIT_FILE_PATH` from the PC.
+/// for `ORBIT_STREAM_SECONDS` (default 12); `file` prints `ORBIT_FILE_PATH` from the PC; `agent` calls
+/// `ORBIT_AGENT_PATH` with `ORBIT_AGENT_METHOD` (default GET) and prints the reply.
 enum MacSunshineSelfTest {
     private final class Flag: @unchecked Sendable { var done = false }
 
@@ -292,6 +293,17 @@ enum MacSunshineSelfTest {
             api = try OrbitAPIClient(host: pc.address, port: pc.securePort, token: MacTokenStore.token(for: pc.id), fingerprint: pc.certificateFingerprint)
         } catch {
             print("Agent client: \(describe(error))")
+            return
+        }
+
+        if mode == "agent", let path = environment["ORBIT_AGENT_PATH"] {
+            // One call to the agent, for example `/api/update/check` or POST `/api/update/apply`.
+            let method = environment["ORBIT_AGENT_METHOD"] ?? "GET"
+            do {
+                print(String(decoding: try await api.data(path, method: method), as: UTF8.self))
+            } catch {
+                print("Agent \(method) \(path) failed: \(describe(error))")
+            }
             return
         }
 
