@@ -226,7 +226,8 @@ extension OrbitMacViewModel {
             guard version == generation else { return }
             processes = list.processes
             processesCapturedAt = Date(timeIntervalSince1970: list.capturedAt)
-            processGpuStatus = list.gpuMetricsStatus ?? (list.gpuMetricsAvailable == true ? nil : "Update the Orbit Agent for per-process GPU readings.")
+            // The agent explains its GPU counters even when they work; only a problem is worth a line.
+            processGpuStatus = list.gpuMetricsAvailable == true ? nil : (list.gpuMetricsStatus ?? "Update Orbit Companion on the PC for per-app graphics readings.")
             processesError = nil
         } catch {
             guard version == generation else { return }

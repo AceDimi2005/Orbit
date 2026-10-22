@@ -88,7 +88,7 @@ struct MacRemoteView: View {
                 Button {
                     vm.selectedSection = .preview
                 } label: {
-                    Label("Desktop Preview", systemImage: "display")
+                    Label("Screen", systemImage: "display")
                 }
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
                 .help("Watch the PC screen while you control it (⌘3)")

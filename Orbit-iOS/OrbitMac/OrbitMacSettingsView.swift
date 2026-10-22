@@ -180,7 +180,7 @@ private struct MacSettingsGeneralTab: View {
 
     private var controlSection: some View {
         Section {
-            Toggle("Start the desktop preview automatically", isOn: $previewAutoStart)
+            Toggle("Show the screen as soon as Screen opens", isOn: $previewAutoStart)
             LabeledContent("Pointer speed") {
                 HStack(spacing: 10) {
                     Image(systemName: "tortoise").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -735,7 +735,7 @@ private struct MacSettingsAboutTab: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                    Text("Native companion for the Orbit Windows agent: telemetry, remote control, desktop preview and files over an encrypted local link.")
+                    Text("Your Windows PC from your Mac: how it's doing, power, remote control, its screen, sound, files and games, over an encrypted connection.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

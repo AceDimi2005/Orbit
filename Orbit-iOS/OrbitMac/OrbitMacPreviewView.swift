@@ -44,7 +44,7 @@ fileprivate struct MacPreviewShortcut: Identifiable {
 
 // MARK: - Section page
 
-/// Desktop Preview section: status hero, live canvas with click-to-control, guide and options.
+/// Screen: the PC's desktop as live pictures, with click-to-control, a short guide and options.
 struct MacPreviewView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
@@ -66,7 +66,7 @@ struct MacPreviewView: View {
             VStack(alignment: .leading, spacing: 16) {
                 heroCard
                 if let error = vm.streamError {
-                    MacNotice(title: "Preview interrupted", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
+                    MacNotice(title: "The picture stopped", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
                 }
                 MacPreviewCanvas(isWindowed: false, showsInlineError: false)
                 HStack(alignment: .top, spacing: 14) {
@@ -82,38 +82,42 @@ struct MacPreviewView: View {
     private var statusText: String {
         if vm.isDemoMode { return "Demo" }
         if !vm.isConfigured { return "Not paired" }
-        if vm.isStreaming { return "Streaming" }
+        if vm.isStreaming { return "Live" }
         return vm.metrics.isOnline ? "Paused" : "Offline"
     }
     private var statusTint: Color {
         if vm.isDemoMode { return .orange }
         if !vm.isConfigured { return .secondary }
-        if vm.isStreaming { return .red }
-        return vm.metrics.isOnline ? theme.accent : .orange
+        if vm.isStreaming { return OrbitPalette.critical }
+        return vm.metrics.isOnline ? .secondary : OrbitPalette.warm
     }
     private var summary: String {
         if !vm.isConfigured { return "Pair your PC to stream its desktop here." }
         if vm.isDemoMode { return "Demo mode simulates telemetry only. Pair a PC to stream a real desktop." }
-        if !vm.metrics.isOnline { return "\(vm.selectedPCName) is offline. Wake it to start the preview." }
-        if vm.isStreaming { return "Streaming \(vm.selectedPCName)'s desktop over the encrypted link. Turn on Control to click, drag, scroll and type." }
-        return "Press play to stream \(vm.selectedPCName)'s desktop as JPEG frames over the encrypted link."
+        if !vm.metrics.isOnline { return "\(vm.selectedPCName) is asleep or off. Wake it to see its screen." }
+        if vm.isStreaming { return "Live pictures of \(vm.selectedPCName)'s desktop, a few times a second. Turn on Control to click and type." }
+        return "Press play to see \(vm.selectedPCName)'s desktop. For games, use Play."
     }
 
     private var heroCard: some View {
         HStack(alignment: .center, spacing: 16) {
-            MacIconBadge(systemName: "display", tint: theme.accent, size: 48, filled: vm.isStreaming)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    Text("Desktop Preview")
-                        .font(.system(size: 24, weight: .bold))
+                    Text(vm.isStreaming ? "Watching the Screen" : "The PC's Screen")
+                        .font(.title2.weight(.semibold))
                         .lineLimit(1)
                     MacStatusPill(text: statusText, tint: statusTint, pulsing: vm.isStreaming)
                 }
                 Text(summary)
-                    .font(.callout)
+                    .font(.body)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                heroChips
+                if vm.isStreaming, vm.previewFrame != nil {
+                    Text("\(MacPreviewText.fps(vm.previewFPS, hasFrame: true)) · \(MacPreviewText.frameSize(vm.previewFrame))")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .orbitLiveNumber()
+                }
             }
             Spacer(minLength: 8)
             Button {
@@ -128,20 +132,7 @@ struct MacPreviewView: View {
         .macGlass(cornerRadius: 22, tint: theme.accent, elevated: true)
     }
 
-    private var heroChips: some View {
-        HStack(spacing: 8) {
-            if vm.isConfigured {
-                MacStatChip(label: "PC", value: vm.selectedPCName, icon: "desktopcomputer")
-            }
-            if vm.metrics.isOnline && !vm.isDemoMode {
-                MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
-            }
-            MacStatChip(label: "Rate", value: MacPreviewText.fps(vm.previewFPS, hasFrame: vm.isStreaming && vm.previewFrame != nil), icon: "speedometer")
-            MacStatChip(label: "Frame", value: MacPreviewText.frameSize(vm.previewFrame), icon: "aspectratio")
-        }
-        .lineLimit(1)
-    }
+
 
     // MARK: Guide & options
 
@@ -405,7 +396,7 @@ fileprivate struct MacPreviewCanvas: View {
         VStack(spacing: 16) {
             MacPreviewPlayButton(tint: theme.accent) { vm.startPreview() }
             VStack(spacing: 4) {
-                Text(vm.previewFrame == nil ? "Start the desktop preview" : "Preview paused")
+                Text(vm.previewFrame == nil ? "See the screen" : "Paused")
                     .font(.headline.weight(.bold))
                 Text("Streams \(vm.selectedPCName)'s screen as JPEG frames over the encrypted link.")
                     .font(.callout)
@@ -530,7 +521,7 @@ fileprivate struct MacPreviewCanvas: View {
         }
         .buttonStyle(MacHoverButtonStyle(tint: vm.isStreaming ? .orange : theme.accent, prominent: !vm.isStreaming))
         .disabled(!vm.isStreaming && !canStream)
-        .help(vm.isStreaming ? "Stop the desktop preview (⌘⇧D)" : "Start the desktop preview (⌘⇧D)")
+        .help(vm.isStreaming ? "Stop watching the screen (⌘⇧D)" : "Watch the screen (⌘⇧D)")
 
         if isWindowed {
             Button {
@@ -694,8 +685,8 @@ fileprivate struct MacPreviewPlayButton: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .animation(OrbitMotion.quick, value: hovered)
-        .help("Start the desktop preview")
-        .accessibilityLabel("Start desktop preview")
+        .help("Watch the screen")
+        .accessibilityLabel("Watch the screen")
     }
 }
 
