@@ -1,4 +1,5 @@
 import AppKit
+import MoonlightCore
 import SwiftUI
 
 @main
@@ -12,6 +13,7 @@ struct OrbitMacApp: App {
         // `ORBIT_IDENTITY_SELFTEST=1 OrbitMac.app/Contents/MacOS/OrbitMac` prints the Keychain state of the
         // Sunshine client identity from inside the sandboxed, signed app and exits.
         let environment = ProcessInfo.processInfo.environment
+        if let mode = environment["ORBIT_SUNSHINE_SELFTEST"] { MacSunshineSelfTest.run(mode: mode) }
         switch environment["ORBIT_IDENTITY_SELFTEST"] {
         case "1":
             print(MoonlightIdentityStore.diagnostics())
@@ -239,3 +241,147 @@ struct MacMenuBarLabel: View {
         }
     }
 }
+
+#if DEBUG
+/// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file OrbitMac.app/Contents/MacOS/OrbitMac` runs the
+/// Sunshine steps for the selected PC (or `ORBIT_PC_ID`) from inside the signed, sandboxed app
+/// with the same code the UI uses, prints every result and exits. `pair` lets the agent type the
+/// PIN (Sunshine web UI login saved on the PC); `stream` runs a headless stream of the Desktop app
+/// for `ORBIT_STREAM_SECONDS` (default 12); `file` prints `ORBIT_FILE_PATH` from the PC.
+enum MacSunshineSelfTest {
+    private final class Flag: @unchecked Sendable { var done = false }
+
+    static func run(mode: String) -> Never {
+        let flag = Flag()
+        Task { @MainActor in
+            await perform(mode: mode)
+            flag.done = true
+        }
+        while !flag.done { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        exit(0)
+    }
+
+    private static func describe(_ error: Error) -> String {
+        "\((error as? LocalizedError)?.errorDescription ?? error.localizedDescription) [\(type(of: error))]"
+    }
+
+    private static func fingerprint(_ data: Data?) -> String {
+        data.map { String(MoonlightEncoding.hex(MoonlightCrypto.sha256($0)).prefix(16)) } ?? "-"
+    }
+
+    @MainActor private static func report(_ host: MoonlightHostCoordinator) {
+        let record = host.record
+        print("Coordinator: paired \(host.isPaired) · reachable \(host.reachable) · identity \(record?.clientIdentity.map { "per-host \($0.id.prefix(8)) cert \(fingerprint($0.certificateDER))" } ?? "shared") · apps \(host.apps.map(\.title)) · running \(host.runningAppTitle ?? "-") · error \(host.lastError ?? "-")")
+    }
+
+    @MainActor private static func perform(mode: String) async {
+        let environment = ProcessInfo.processInfo.environment
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: "mac.savedPCs.v1"),
+              let pcs = try? JSONDecoder().decode([MacSavedPC].self, from: data), !pcs.isEmpty else {
+            print("No saved PCs in this container.")
+            return
+        }
+        let wanted = environment["ORBIT_PC_ID"] ?? defaults.string(forKey: "mac.selectedPCID") ?? ""
+        let pc = pcs.first { $0.id == wanted } ?? pcs[0]
+        for item in pcs {
+            print("PC \(item.id == pc.id ? "*" : " ") \(item.name) · \(item.address):\(item.securePort) · id \(item.id) · token \(MacTokenStore.token(for: item.id).isEmpty ? "missing" : "present")")
+        }
+        let api: OrbitAPIClient
+        do {
+            api = try OrbitAPIClient(host: pc.address, port: pc.securePort, token: MacTokenStore.token(for: pc.id), fingerprint: pc.certificateFingerprint)
+        } catch {
+            print("Agent client: \(describe(error))")
+            return
+        }
+
+        if mode == "file", let path = environment["ORBIT_FILE_PATH"] {
+            do {
+                let data = try await api.data("/api/files/download", query: [URLQueryItem(name: "path", value: path)])
+                FileHandle.standardOutput.write(data)
+            } catch {
+                print("Download failed: \(describe(error))")
+            }
+            return
+        }
+
+        var info: MacSunshineInfo?
+        do {
+            let raw = try await api.data("/api/sunshine/info")
+            print("Agent /api/sunshine/info: \(String(decoding: raw, as: UTF8.self))")
+            info = try? JSONDecoder().decode(MacSunshineInfo.self, from: raw)
+        } catch {
+            print("Agent /api/sunshine/info failed: \(describe(error))")
+        }
+        for stored in MoonlightHostStore.records() {
+            print("Stored pairing: pcID \(stored.pcID) · address \(stored.address) · paired \(stored.isPaired) · at \(stored.pairedAt.map { "\($0)" } ?? "-") · identity \(stored.clientIdentity.map { "per-host \($0.id.prefix(8))" } ?? "shared") · server \(stored.serverUniqueID ?? "-")")
+        }
+
+        let host = MoonlightHostCoordinator()
+        host.configure(pcID: pc.id, address: pc.address, httpPort: info?.httpPort ?? 47989, httpsPort: info?.httpsPort ?? 47984)
+        await host.refresh()
+        report(host)
+
+        if mode == "pair" {
+            host.beginPairing()
+            guard let pin = host.pairingPIN else {
+                print("Pairing did not start.")
+                return
+            }
+            print("Pairing with PIN \(pin); the agent types it after 1.5 s (as the Pair automatically button does)…")
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let automation = MoonlightPairingAutomation(canSubmitPIN: true, canStartSunshine: false, sunshineRunning: true, client: { api })
+            do {
+                try await automation.submitPIN(pin)
+                print("Agent accepted the PIN.")
+            } catch {
+                print("Agent PIN entry failed: \(describe(error))")
+                host.cancelPairing()
+            }
+            let started = Date()
+            while host.isPairing, Date().timeIntervalSince(started) < 170 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            print("Pairing finished: stage \(host.pairingStage ?? "-")")
+            report(host)
+        }
+
+        if mode == "stream" {
+            guard let app = host.desktopApp else {
+                print("No Sunshine app to stream.")
+                return
+            }
+            let settings = MoonlightStreamSettingsStore.shared.settings
+            let seconds = Double(environment["ORBIT_STREAM_SECONDS"] ?? "") ?? 12
+            do {
+                let started = Date()
+                let parameters = try await host.prepareStream(app: app, settings: settings, quitRunningApp: false)
+                print("Launch/resume of \(app.title) answered after \(String(format: "%.1f", Date().timeIntervalSince(started))) s; connecting…")
+                let session = MoonlightStreamSession(settings: settings)
+                session.start(parameters: parameters, settings: settings, headless: true)
+                var streamingSince: Date?
+                while Date().timeIntervalSince(started) < seconds + 30 {
+                    if session.phase.isTerminal { break }
+                    if session.phase == .streaming, streamingSince == nil {
+                        streamingSince = Date()
+                        print("Streaming \(String(format: "%.1f", Date().timeIntervalSince(started))) s after the launch request.")
+                    }
+                    if let since = streamingSince, Date().timeIntervalSince(since) >= seconds { break }
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                }
+                let stats = session.statistics
+                print("Phase: \(session.phase)")
+                print("Statistics: received \(stats.receivedFrames) · dropped \(stats.droppedFrames) · \(stats.framesPerSecond) fps · RTT \(stats.roundTripMs.map(String.init) ?? "-") ms · \(stats.codec) \(stats.width)x\(stats.height)@\(stats.frameRate) · \(stats.bitrateKbps) kbps")
+                for line in session.logLines.suffix(60) { print("  log: \(line)") }
+                session.stop()
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            } catch let busy as MoonlightStreamBusyError {
+                print("Busy: \(busy.errorDescription ?? "another app is running") (app id \(busy.runningAppID))")
+            } catch {
+                print("Stream failed: \(describe(error))")
+                report(host)
+            }
+        }
+    }
+}
+#endif

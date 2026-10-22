@@ -88,6 +88,73 @@ struct MoonlightClientTests {
         precondition(MoonlightHostStore.record(for: "pc-1", defaults: defaults) == nil, "record removed")
         precondition((try? MoonlightEndpoints.standard(host: "bad/host")) == nil && (try? MoonlightEndpoints.standard(host: "192.168.1.50")) != nil, "host validation")
 
-        print("PASS: Moonlight client certificate, 5-step Sunshine pairing, app list, box art, cancel and host records")
+        // A refused client certificate ends the pairing: Sunshine's XML 401 over HTTPS and an HTTP 401.
+        let refused = MoonlightTransport(endpoints: MoonlightEndpoints(http: base, https: base), uniqueID: "REFUSED000000000",
+                                         deviceName: "Orbit Test", serverCertificate: nil, identity: nil)
+        do {
+            _ = try await MoonlightClient.serverInfo(refused, secure: true)
+            preconditionFailure("a refused certificate must throw")
+        } catch let error as MoonlightError {
+            precondition(error.untrusted, "XML status_code 401 marks the pairing as refused: \(error.message)")
+        }
+        do {
+            _ = try await MoonlightClient.serverInfo(refused, secure: false)
+            preconditionFailure("the mock refuses plain requests from this id too")
+        } catch let error as MoonlightError {
+            precondition(!error.untrusted, "a plain-HTTP reply says nothing about the client certificate")
+        }
+        let stranger = MoonlightTransport(endpoints: MoonlightEndpoints(http: base, https: base), uniqueID: "FEDCBA9876543210",
+                                          deviceName: "Orbit Test", serverCertificate: nil, identity: nil)
+        do {
+            _ = try await MoonlightClient.appList(stranger)
+            preconditionFailure("an unpaired client gets no app list")
+        } catch let error as MoonlightError {
+            precondition(error.untrusted, "HTTP 401 marks the pairing as refused")
+        }
+
+        // Each pairing attempt gets its own throwaway uniqueid.
+        let attemptID = MoonlightHostStore.pairingUniqueID()
+        precondition(attemptID.count == 16 && attemptID != MoonlightHostStore.pairingUniqueID() && attemptID != uniqueID, "fresh pairing ids")
+
+        // Records written by older versions (no client identity, no Sunshine uniqueid) still load.
+        let legacy = #"[{"pcID":"legacy","address":"10.0.0.9","httpPort":47989,"httpsPort":47984,"hostname":"PC","appVersion":"7.1.431.-1","apps":[]}]"#
+        defaults.set(Data(legacy.utf8), forKey: "orbit.moonlight.hosts.v1")
+        let legacyRecord = MoonlightHostStore.record(for: "legacy", defaults: defaults)
+        precondition(legacyRecord != nil && legacyRecord?.clientIdentity == nil && legacyRecord?.serverUniqueID == nil, "legacy record decodes")
+        MoonlightHostStore.remove(pcID: "legacy", defaults: defaults)
+
+        // A pairing follows its Sunshine host when the PC profile id changes (iCloud merge, PC added again).
+        var hostA = MoonlightHostRecord(pcID: "old-profile", address: "192.168.1.60")
+        hostA.serverCertificateDER = serverCertificate; hostA.pairedAt = Date(timeIntervalSince1970: 1_000); hostA.serverUniqueID = "HOST-A"
+        var hostB = MoonlightHostRecord(pcID: "other-pc", address: "192.168.1.70")
+        hostB.serverCertificateDER = serverCertificate; hostB.pairedAt = Date(timeIntervalSince1970: 2_000); hostB.serverUniqueID = "HOST-B"
+        MoonlightHostStore.save(hostA, defaults: defaults)
+        MoonlightHostStore.save(hostB, defaults: defaults)
+        precondition(MoonlightHostStore.adopt(pcID: "new-profile", address: "192.168.1.99", defaults: defaults) == nil, "no adoption from another address")
+        let byAddress = MoonlightHostStore.adopt(pcID: "new-profile", address: "192.168.1.60", defaults: defaults)
+        precondition(byAddress?.pcID == "new-profile" && byAddress?.serverUniqueID == "HOST-A"
+                     && MoonlightHostStore.record(for: "new-profile", defaults: defaults)?.isPaired == true, "adopted by address")
+        let byHost = MoonlightHostStore.adopt(pcID: "tailscale-profile", address: "100.64.0.5", serverUniqueID: "HOST-A", defaults: defaults)
+        precondition(byHost?.address == "100.64.0.5" && byHost?.pcID == "tailscale-profile", "adopted by Sunshine uniqueid with the new address")
+        precondition(MoonlightHostStore.adopt(pcID: "x", address: "192.168.1.60", serverUniqueID: "HOST-C", defaults: defaults) == nil,
+                     "another Sunshine host at the same address is never adopted")
+
+        // A refused certificate drops every copy of that host's pairing with the same identity, and only those.
+        let reference = MoonlightIdentityReference(id: "per-host-1", certificateDER: Data([1, 2, 3]))
+        var first = MoonlightHostRecord(pcID: "lan-profile", address: "10.0.0.1")
+        first.serverCertificateDER = serverCertificate; first.pairedAt = Date(); first.clientIdentity = reference; first.serverUniqueID = "HOST-D"
+        var sameHost = first; sameHost.pcID = "vpn-profile"; sameHost.address = "100.64.0.9"
+        var elsewhere = first; elsewhere.pcID = "second-pc"; elsewhere.address = "10.0.0.2"; elsewhere.serverUniqueID = "HOST-E"
+        var sharedIdentity = first; sharedIdentity.pcID = "old-copy"; sharedIdentity.clientIdentity = nil
+        for record in [first, sameHost, elsewhere, sharedIdentity] { MoonlightHostStore.save(record, defaults: defaults) }
+        precondition(MoonlightHostStore.identityInUse(reference, excluding: "lan-profile", defaults: defaults), "identity still used by other copies")
+        MoonlightHostStore.removeRefused(first, defaults: defaults)
+        precondition(MoonlightHostStore.record(for: "lan-profile", defaults: defaults) == nil
+                     && MoonlightHostStore.record(for: "vpn-profile", defaults: defaults) == nil, "refused copies removed")
+        precondition(MoonlightHostStore.record(for: "second-pc", defaults: defaults) != nil, "another host keeps its pairing")
+        precondition(MoonlightHostStore.record(for: "old-copy", defaults: defaults) != nil, "a pairing with a different identity is kept")
+        precondition(MoonlightHostStore.identityInUse(reference, excluding: "second-pc", defaults: defaults) == false, "no other user of the identity")
+
+        print("PASS: Moonlight client certificate, 5-step Sunshine pairing, app list, box art, cancel, refused certificates and host records")
     }
 }

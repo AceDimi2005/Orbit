@@ -1,5 +1,6 @@
 """Safe regression tests: Windows control, sensor and process APIs are mocked."""
 import copy
+import io
 import os
 import tempfile
 import time
@@ -222,7 +223,7 @@ class APITests(unittest.TestCase):
                 with patch.object(agent, "post_sunshine_pin") as forward:
                     response = self.client.post("/api/sunshine/pin?pin=1234&name=Orbit%20on%20iPhone", headers=AUTH)
                     self.assertEqual(response.json(), {"status": "accepted"})
-                    forward.assert_called_once_with(("admin", "s3cret"), "1234", "Orbit on iPhone")
+                    forward.assert_called_once_with(("admin", "s3cret"), "1234", "Orbit on iPhone", client_address="testclient")
                 self.assertEqual(self.client.delete("/api/sunshine/credentials", headers=AUTH).json(), {"status": "removed", "canSubmitPin": False})
                 self.assertFalse(login.exists())
                 self.assertEqual(self.client.post("/api/sunshine/pin?pin=1234", headers=AUTH).status_code, 428)
@@ -268,6 +269,96 @@ class APITests(unittest.TestCase):
             with self.assertRaises(agent.HTTPException) as denied:
                 agent.post_sunshine_pin(("admin", "x"), "1111", "Orbit")
             self.assertEqual(denied.exception.status_code, 401)
+
+    def test_pin_goes_to_the_waiting_request_of_this_device_on_sunshine_2026(self):
+        """Sunshine 2026 lists waiting pairing requests (GET /api/pin) and takes the PIN for one id."""
+        calls = []
+        polls = {"count": 0}
+        pairing_id, other_id, stale_id = "a" * 32, "b" * 32, "c" * 32
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout, context):
+            body = __import__("json").loads(request.data) if request.data else None
+            calls.append((request.get_method(), request.full_url, body))
+            if request.get_method() == "GET":
+                polls["count"] += 1
+                if polls["count"] == 1:
+                    # The request from this device has not reached Sunshine yet.
+                    return FakeResponse(b'{"pairings": [{"id": "%s", "name": "Moonlight on TV", "address": "192.168.1.50"}]}' % other_id.encode())
+                return FakeResponse(('{"pairings": ['
+                                     '{"id": "%s", "name": "Orbit on Mac", "address": "192.168.1.20"},'
+                                     '{"id": "%s", "name": "Moonlight on TV", "address": "192.168.1.50"},'
+                                     '{"id": "%s", "name": "Orbit on Mac", "address": "192.168.1.20"}]}' % (stale_id, other_id, pairing_id)).encode())
+            return FakeResponse(b'{"status": true}')
+
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", fake_urlopen), \
+             patch.object(agent.time, "sleep"):
+            agent.post_sunshine_pin(("admin", "pw"), "0420", "Orbit on Mac", client_address="::ffff:192.168.1.20")
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(posts, [("POST", "https://127.0.0.1:47990/api/pin", {"pairing_id": pairing_id, "pin": "0420", "name": "Orbit on Mac"})])
+        self.assertEqual([call for call in calls if call[0] == "DELETE"], [("DELETE", "https://127.0.0.1:47990/api/pin", {"pairing_id": stale_id})])
+        self.assertEqual(polls["count"], 2)
+
+        def nothing_waiting(request, timeout, context):
+            if request.get_method() == "GET":
+                return FakeResponse(b'{"pairings": []}')
+            raise AssertionError("no PIN may be sent without a waiting request")
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", nothing_waiting):
+            with self.assertRaises(agent.HTTPException) as missing:
+                agent.post_sunshine_pin(("admin", "pw"), "0420", "Orbit on Mac", wait=0)
+            self.assertEqual(missing.exception.status_code, 409)
+            self.assertIn("no pairing request", missing.exception.detail)
+
+        def ambiguous(request, timeout, context):
+            return FakeResponse(b'{"pairings": [{"id": "%s", "name": "A", "address": "1.1.1.1"}, {"id": "%s", "name": "B", "address": "2.2.2.2"}]}'
+                                % (other_id.encode(), stale_id.encode()))
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", ambiguous):
+            with self.assertRaises(agent.HTTPException) as several:
+                agent.post_sunshine_pin(("admin", "pw"), "0420", "Orbit on Mac", wait=0)
+            self.assertEqual(several.exception.status_code, 409)
+            self.assertIn("another device", several.exception.detail)
+
+        def bad_request(request, timeout, context):
+            if request.get_method() == "GET":
+                return FakeResponse(b'{"pairings": [{"id": "%s", "name": "Orbit on Mac", "address": "192.168.1.20"}]}' % pairing_id.encode())
+            raise agent.urllib.error.HTTPError(request.full_url, 400, "Bad Request", {},
+                                               io.BytesIO(b'{"status_code": 400, "status": false, "error": "PIN must contain exactly 4 numeric digits"}'))
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", bad_request):
+            with self.assertRaises(agent.HTTPException) as refused:
+                agent.post_sunshine_pin(("admin", "pw"), "0420", "Orbit on Mac", wait=0)
+            self.assertEqual(refused.exception.status_code, 502)
+            self.assertIn("PIN must contain exactly 4 numeric digits", refused.exception.detail)
+
+    def test_pin_falls_back_to_the_old_api_when_sunshine_has_no_pairing_list(self):
+        sent = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return self.body
+
+        def old_sunshine(request, timeout, context):
+            if request.get_method() == "GET":
+                raise agent.urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+            sent.append(__import__("json").loads(request.data))
+            return FakeResponse(b'{"status": "true"}')
+        with patch.object(agent, "sunshine_config", return_value={}), patch.object(agent.urllib.request, "urlopen", old_sunshine):
+            agent.post_sunshine_pin(("admin", "pw"), "1234", "Orbit on iPhone")
+        self.assertEqual(sent, [{"pin": "1234", "name": "Orbit on iPhone"}])
 
     def test_handover_requires_token_and_loopback(self):
         self.assertEqual(self.client.post("/api/internal/handover").status_code, 401)

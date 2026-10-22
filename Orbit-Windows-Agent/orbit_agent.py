@@ -51,7 +51,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.3.0"
+AGENT_VERSION = "4.3.1"
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -862,27 +862,114 @@ def delete_sunshine_credentials(authorization: str = Header(None)):
     return {"status": "removed", "canSubmitPin": False}
 
 
-def post_sunshine_pin(credentials, pin, name, timeout=10.0):
-    """Enters a pairing PIN through Sunshine's local web API, the same call its PIN page makes.
+def _sunshine_web_call(credentials, method, path, payload=None, timeout=10.0):
+    """One request to Sunshine's local web API, the way its own pages make it.
 
     Sunshine listens on loopback with a self-signed certificate, so verification is skipped
-    for this one localhost request. Returns normally when Sunshine accepted the PIN.
+    for this localhost request only. Returns the decoded JSON object; HTTP errors propagate
+    as `urllib.error.HTTPError`.
     """
-    url = f"https://127.0.0.1:{sunshine_base_port() + 1}/api/pin"
-    payload = json.dumps({"pin": pin, "name": name}).encode("utf-8")
+    url = f"https://127.0.0.1:{sunshine_base_port() + 1}{path}"
     token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode("utf-8")).decode("ascii")
-    request = urllib.request.Request(url, data=payload, method="POST",
-                                     headers={"Content-Type": "application/json", "Authorization": f"Basic {token}"})
+    headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+        body = json.loads(response.read() or b"{}")
+    return body if isinstance(body, dict) else {}
+
+
+def _sunshine_error_message(error):
+    """Sunshine's own explanation from an error reply (`{"error": "..."}`), when it sent one."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-            body = json.loads(response.read() or b"{}")
+        body = json.loads(error.read() or b"{}")
+    except Exception:
+        return None
+    message = body.get("error") if isinstance(body, dict) else None
+    return message.strip() if isinstance(message, str) and message.strip() else None
+
+
+def _normalized_address(value):
+    text = str(value or "").strip().lower()
+    return text[7:] if text.startswith("::ffff:") else text
+
+
+def _pending_sunshine_pairings(credentials, timeout=10.0):
+    """Pairing requests waiting for a PIN (`GET /api/pin`, Sunshine 2026 and later), oldest first.
+
+    Returns None for older Sunshine versions, which take the PIN without a pairing id.
+    """
+    try:
+        body = _sunshine_web_call(credentials, "GET", "/api/pin", timeout=timeout)
     except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
+        if error.code in (404, 405):
+            return None
+        raise
+    pairings = body.get("pairings")
+    if not isinstance(pairings, list):
+        return None
+    return [entry for entry in pairings if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
+
+
+def _choose_pairing(pairings, name, client_address):
+    """The newest pending request from this device: same name (preferring the caller's
+    address), else the caller's address. Never a request from another device, which would
+    get this PIN and fail its own pairing.
+    """
+    candidates = [entry for entry in pairings if entry.get("name") == name]
+    if client_address:
+        nearby = [entry for entry in (candidates or pairings)
+                  if _normalized_address(entry.get("address")) == _normalized_address(client_address)]
+        if nearby or not candidates:
+            candidates = nearby
+    return candidates[-1] if candidates else None
+
+
+def post_sunshine_pin(credentials, pin, name, client_address=None, timeout=10.0, wait=8.0):
+    """Enters a pairing PIN through Sunshine's local web API, the same call its PIN page makes.
+
+    Sunshine 2026 lists the pairing requests that wait for a PIN and takes the PIN for one of
+    them (`pairing_id`); older versions take the PIN for whichever request is pending. The
+    request from this device can reach Sunshine a moment after Orbit asks for the PIN, so the
+    list is polled for up to `wait` seconds. Returns normally when Sunshine accepted the PIN.
+    """
+    try:
+        pairings = _pending_sunshine_pairings(credentials, timeout)
+        if pairings is None:
+            body = _sunshine_web_call(credentials, "POST", "/api/pin", {"pin": pin, "name": name}, timeout)
+        else:
+            deadline = time.monotonic() + wait
+            pairing = _choose_pairing(pairings, name, client_address)
+            while pairing is None and time.monotonic() < deadline:
+                time.sleep(0.5)
+                pairings = _pending_sunshine_pairings(credentials, timeout) or []
+                pairing = _choose_pairing(pairings, name, client_address)
+            if pairing is None:
+                if pairings:
+                    raise HTTPException(status_code=409, detail="Sunshine is waiting for a PIN from another device, not this one. Enter the PIN in Sunshine's web UI on the PC.")
+                raise HTTPException(status_code=409, detail="Sunshine has no pairing request from this device. Start pairing in Orbit, then try again.")
+            body = _sunshine_web_call(credentials, "POST", "/api/pin", {"pairing_id": pairing["id"], "pin": pin, "name": name}, timeout)
+            # Older requests from the same device would wait until they expire; close them now.
+            for stale in pairings:
+                if stale is not pairing and stale.get("name") == name and _normalized_address(stale.get("address")) == _normalized_address(pairing.get("address")):
+                    try:
+                        _sunshine_web_call(credentials, "DELETE", "/api/pin", {"pairing_id": stale["id"]}, timeout)
+                    except (urllib.error.URLError, OSError, ValueError):
+                        pass
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
             raise HTTPException(status_code=401, detail="Sunshine rejected the saved web UI login. Save it again in Orbit.") from error
-        raise HTTPException(status_code=502, detail=f"Sunshine answered HTTP {error.code} to the PIN request.") from error
+        if error.code == 403:
+            raise HTTPException(status_code=403, detail="Sunshine's web UI refused the request from this PC. Check Origin Web UI Allowed in Sunshine's network settings.") from error
+        message = _sunshine_error_message(error)
+        detail = f"Sunshine answered HTTP {error.code} to the PIN request" + (f": {message}" if message else ".")
+        raise HTTPException(status_code=502, detail=detail) from error
     except (urllib.error.URLError, OSError, ValueError) as error:
         raise HTTPException(status_code=502, detail="Could not reach Sunshine's web UI on this PC. Is Sunshine running?") from error
     status = body.get("status") if isinstance(body, dict) else None
@@ -891,16 +978,20 @@ def post_sunshine_pin(credentials, pin, name, timeout=10.0):
 
 
 @app.post("/api/sunshine/pin")
-def submit_sunshine_pin(pin: str = Query(..., min_length=4, max_length=4, pattern=r"^[0-9]{4}$"),
+def submit_sunshine_pin(request: Request, pin: str = Query(..., min_length=4, max_length=4, pattern=r"^[0-9]{4}$"),
                         name: str = Query("Orbit", min_length=1, max_length=40), authorization: str = Header(None)):
-    """Types the pairing PIN into Sunshine for the user (needs the saved web UI login)."""
+    """Types the pairing PIN into Sunshine for the user (needs the saved web UI login).
+
+    `name` is the device name the client sent with its pairing request; with the caller's
+    address it picks that request when Sunshine lists several.
+    """
     verify_token(authorization)
     credentials = sunshine_credentials()
     if credentials is None:
         raise HTTPException(status_code=428, detail="Save the Sunshine web UI login on the PC first.")
     if not sunshine_running():
         raise HTTPException(status_code=503, detail="Sunshine is not running on the PC.")
-    post_sunshine_pin(credentials, pin, name)
+    post_sunshine_pin(credentials, pin, name, client_address=request.client.host if request.client else None)
     return {"status": "accepted"}
 
 

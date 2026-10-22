@@ -879,10 +879,9 @@ struct TVControlsAndGamesTab: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard sunshine.isPairing, sunshine.pairingPIN == pin else { return }
             do {
-                _ = try await vm.client().data("/api/sunshine/pin", method: "POST",
-                                               query: [URLQueryItem(name: "pin", value: pin), URLQueryItem(name: "name", value: MoonlightHostCoordinator.deviceName)])
+                try await MoonlightPairingAutomation(canSubmitPIN: true, canStartSunshine: false, sunshineRunning: true, client: { try vm.client() }).submitPIN(pin)
             } catch {
-                vm.statusBanner = "Automatic PIN entry failed: \(error.localizedDescription)"
+                vm.statusBanner = "Automatic PIN entry failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
             }
         }
     }

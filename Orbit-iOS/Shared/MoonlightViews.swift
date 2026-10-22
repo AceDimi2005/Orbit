@@ -36,8 +36,17 @@ struct MoonlightPairingAutomation {
     var client: () throws -> OrbitAPIClient
 
     func submitPIN(_ pin: String) async throws {
-        _ = try await client().data("/api/sunshine/pin", method: "POST",
-                                    query: [URLQueryItem(name: "pin", value: pin), URLQueryItem(name: "name", value: MoonlightHostCoordinator.deviceName)])
+        do {
+            _ = try await client().data("/api/sunshine/pin", method: "POST",
+                                        query: [URLQueryItem(name: "pin", value: pin), URLQueryItem(name: "name", value: MoonlightHostCoordinator.pairingName)])
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // Orbit PC Companion 4.3.0 and older send the PIN the way Sunshine took it before 2026.
+            if message.contains("HTTP 400 to the PIN request") {
+                throw MoonlightError(message: "\(message) Update Orbit PC Companion on the PC to 4.3.1 or later for Sunshine 2026, or enter the PIN in Sunshine's web UI.")
+            }
+            throw error
+        }
     }
 
     func saveLogin(username: String, password: String) async throws {

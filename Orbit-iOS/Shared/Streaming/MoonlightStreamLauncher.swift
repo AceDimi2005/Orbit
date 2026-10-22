@@ -60,6 +60,15 @@ extension MoonlightHostCoordinator {
     /// Launches (or resumes) `app` on the host and returns what the engine needs to connect.
     /// When another app is running, `quitRunningApp` decides whether to end it first.
     func prepareStream(app: MoonlightApp, settings: MoonlightStreamSettings, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
+        do {
+            return try await launchForStream(app: app, settings: settings, quitRunningApp: quitRunningApp)
+        } catch let error as MoonlightError where error.untrusted {
+            pairingWasRefused(error)
+            throw error
+        }
+    }
+
+    private func launchForStream(app: MoonlightApp, settings: MoonlightStreamSettings, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
         let transport = try await streamingTransport()
         let info = try await MoonlightClient.serverInfo(transport, secure: true)
         var resume = false

@@ -74,6 +74,11 @@ class Handler(BaseHTTPRequestHandler):
         with state.lock:
             state.requests.append((url.path, dict(args)))
             uid = args.get("uniqueid", "")
+            if uid.startswith("REFUSED") and url.path != "/pair":
+                # Sunshine's answer to a client certificate it does not accept (unknown, disabled
+                # or stored twice): HTTP 200 with status_code 401 in the XML.
+                return self.reply(xml({"status_code": 401, "query": url.path,
+                                       "status_message": "The client is not authorized. Certificate verification failed."}))
             if url.path == "/serverinfo":
                 paired = 1 if uid in state.paired else 0
                 body = (f"<hostname>MockSunshine</hostname><appversion>7.1.431.-1</appversion><GfeVersion>3.23.0.74</GfeVersion>"

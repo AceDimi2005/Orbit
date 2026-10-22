@@ -13,7 +13,13 @@ import Security
 
 struct MoonlightError: LocalizedError, Equatable {
     let message: String
+    /// Sunshine refused this device's certificate: the pairing is gone and has to be redone.
+    var untrusted = false
     var errorDescription: String? { message }
+
+    static let untrustedClient = MoonlightError(
+        message: "Sunshine no longer accepts this device. Its pairing was removed, disabled or paired twice on the PC. Pair again.",
+        untrusted: true)
 }
 
 // MARK: - Minimal DER (ASN.1) encoder and reader
@@ -218,27 +224,71 @@ struct MoonlightClientIdentity {
     }
 }
 
-/// Persistent identity in the Keychain. One identity per device; Sunshine shows it under the
-/// device name given while pairing.
+/// The client identity a host was paired with: its Keychain id and the certificate Sunshine
+/// stored. Records from before 2026-10-22 have none and use the shared identity.
+struct MoonlightIdentityReference: Codable, Equatable {
+    var id: String
+    var certificateDER: Data
+}
+
+/// Client identities in the Keychain.
+///
+/// Every pairing creates a new identity for that one host. Sunshine 2026 refuses a certificate
+/// that it stores twice ("Client certificate identity is not enabled"), and it stores one more
+/// copy each time a known certificate pairs again, so a host is never re-paired with a
+/// certificate it may already know. Hosts paired by earlier versions keep the shared identity
+/// (`loadOrCreate`) until they are paired again.
 ///
 /// iOS and tvOS: the data-protection keychain pairs a permanent key and its certificate into an
-/// identity that a `kSecClassIdentity` query finds by label. macOS is different in two ways found
-/// the hard way: the data-protection keychain there never reports identities at all, and the
-/// login keychain ignores the label filter on identity queries (it returned the developer's
-/// "Apple Development" signing identity, which Sunshine then rejected as "client not authorized").
-/// On macOS the key is therefore generated permanently in the login keychain and the identity is
+/// identity that a `kSecClassIdentity` query reports. macOS is different in two ways found the
+/// hard way: the data-protection keychain there never reports identities at all, and the login
+/// keychain ignores the label filter on identity queries (it returned the developer's "Apple
+/// Development" signing identity, which Sunshine then rejected as "client not authorized"). On
+/// macOS the key is therefore generated permanently in the login keychain and the identity is
 /// built from our own certificate with `SecIdentityCreateWithCertificate`.
 enum MoonlightIdentityStore {
-    private static let keyTag = Data("com.dimitrie.orbit.moonlight.clientkey".utf8)
+    private static let legacyKeyTag = Data("com.dimitrie.orbit.moonlight.clientkey".utf8)
+    /// Subject and Keychain label of the shared identity; per-host certificates add their id.
     private static let certificateLabel = "Orbit Moonlight Client"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cached: MoonlightClientIdentity?
+    nonisolated(unsafe) private static var cachedHosts: [String: MoonlightClientIdentity] = [:]
 
+    private static func label(forHost id: String) -> String { "\(certificateLabel) \(id)" }
+    private static func keyTag(forHost id: String) -> Data { Data("com.dimitrie.orbit.moonlight.clientkey.\(id)".utf8) }
+
+    /// The identity to present to a paired host: its own, or the shared one for older pairings.
+    static func identity(for reference: MoonlightIdentityReference?) throws -> MoonlightClientIdentity {
+        guard let reference else { return try loadOrCreate() }
+        lock.lock(); defer { lock.unlock() }
+        if let hit = cachedHosts[reference.id], hit.certificateDER == reference.certificateDER { return hit }
+        guard let found = loadHostIdentity(reference) else {
+            throw MoonlightError(message: "This device's Sunshine certificate is missing from the Keychain. Pair again.", untrusted: true)
+        }
+        cachedHosts[reference.id] = found
+        return found
+    }
+
+    /// A brand-new identity for one pairing attempt; `remove` it when the attempt fails.
+    static func createForPairing() throws -> (reference: MoonlightIdentityReference, identity: MoonlightClientIdentity) {
+        let id = UUID().uuidString.lowercased()
+        let identity = try create(label: label(forHost: id), keyTag: keyTag(forHost: id), commonName: label(forHost: String(id.prefix(8))))
+        lock.lock(); cachedHosts[id] = identity; lock.unlock()
+        return (MoonlightIdentityReference(id: id, certificateDER: identity.certificateDER), identity)
+    }
+
+    /// Deletes one host's identity from the Keychain (failed pairing, or replaced by a new one).
+    static func remove(_ reference: MoonlightIdentityReference) {
+        lock.lock(); cachedHosts[reference.id] = nil; lock.unlock()
+        deleteItems(label: label(forHost: reference.id), keyTag: keyTag(forHost: reference.id))
+    }
+
+    /// The shared identity used by pairings made before 2026-10-22.
     static func loadOrCreate() throws -> MoonlightClientIdentity {
         lock.lock(); defer { lock.unlock() }
         if let cached { return cached }
         if let existing = loadExisting() { cached = existing; return existing }
-        let created = try create()
+        let created = try create(label: certificateLabel, keyTag: legacyKeyTag, commonName: certificateLabel)
         cached = created
         return created
     }
@@ -246,12 +296,12 @@ enum MoonlightIdentityStore {
     static func reset() {
         lock.lock(); defer { lock.unlock() }
         cached = nil
-        deleteStored()
+        deleteItems(label: certificateLabel, keyTag: legacyKeyTag)
     }
 
-    private static func deleteStored() {
+    private static func deleteItems(label: String, keyTag: Data) {
         for protected in keychains {
-            SecItemDelete(withKeychain([kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: certificateLabel], protected: protected) as CFDictionary)
+            SecItemDelete(withKeychain([kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: label], protected: protected) as CFDictionary)
             SecItemDelete(withKeychain([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: keyTag], protected: protected) as CFDictionary)
         }
     }
@@ -273,7 +323,8 @@ enum MoonlightIdentityStore {
         return result
     }
 
-    /// Self-signed, subject "Orbit Moonlight Client", with the signature layout our DER builder emits.
+    /// The shared identity's certificate: self-signed, subject exactly "Orbit Moonlight Client"
+    /// (per-host certificates carry their id), with the layout our DER builder emits.
     private static func isOurs(_ certificate: SecCertificate) -> Bool {
         guard let summary = SecCertificateCopySubjectSummary(certificate) as String?, summary == certificateLabel else { return false }
         return (try? MoonlightDER.certificateSignature(SecCertificateCopyData(certificate) as Data)) != nil
@@ -294,75 +345,92 @@ enum MoonlightIdentityStore {
         return items.compactMap { CFGetTypeID($0) == SecCertificateGetTypeID() ? ($0 as! SecCertificate) : nil }.filter(isOurs)
     }
 
-    private static func loadExisting() -> MoonlightClientIdentity? {
-        for certificate in storedCertificates() {
-            var secIdentity: SecIdentity?
-            guard SecIdentityCreateWithCertificate(nil, certificate, &secIdentity) == errSecSuccess, let secIdentity else { continue }
-            var key: SecKey?
-            guard SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { continue }
-            return identity(privateKey: key, certificate: certificate, identity: secIdentity)
-        }
-        return nil
+    private static func identity(for certificate: SecCertificate) -> MoonlightClientIdentity? {
+        var secIdentity: SecIdentity?
+        guard SecIdentityCreateWithCertificate(nil, certificate, &secIdentity) == errSecSuccess, let secIdentity else { return nil }
+        var key: SecKey?
+        guard SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { return nil }
+        return identity(privateKey: key, certificate: certificate, identity: secIdentity)
     }
 
-    private static func create() throws -> MoonlightClientIdentity {
-        deleteStored()
+    private static func loadExisting() -> MoonlightClientIdentity? {
+        storedCertificates().lazy.compactMap(identity(for:)).first
+    }
+
+    /// The certificate comes from the host record; the Keychain finds its private key.
+    private static func loadHostIdentity(_ reference: MoonlightIdentityReference) -> MoonlightClientIdentity? {
+        SecCertificateCreateWithData(nil, reference.certificateDER as CFData).flatMap(identity(for:))
+    }
+
+    private static func create(label: String, keyTag: Data, commonName: String) throws -> MoonlightClientIdentity {
+        deleteItems(label: label, keyTag: keyTag)
         let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits as String: 2048,
-            kSecAttrLabel as String: certificateLabel,
-            kSecPrivateKeyAttrs as String: [kSecAttrIsPermanent as String: true, kSecAttrApplicationTag as String: keyTag, kSecAttrLabel as String: certificateLabel]
+            kSecAttrLabel as String: label,
+            kSecPrivateKeyAttrs as String: [kSecAttrIsPermanent as String: true, kSecAttrApplicationTag as String: keyTag, kSecAttrLabel as String: label]
         ]
         var error: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
             throw MoonlightError(message: "Could not create the Moonlight client key in the login keychain: \((error?.takeRetainedValue()).map { String(describing: $0) } ?? "unknown error")")
         }
-        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: certificateLabel)
+        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: commonName)
         guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
             throw MoonlightError(message: "The generated client certificate is invalid.")
         }
-        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: certificateLabel] as CFDictionary, nil)
+        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: label] as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
-            deleteStored()
+            deleteItems(label: label, keyTag: keyTag)
             throw MoonlightError(message: "Could not store the Moonlight client certificate in the login keychain (\(status)).")
         }
         var secIdentity: SecIdentity?
         let identityStatus = SecIdentityCreateWithCertificate(nil, certificate, &secIdentity)
         guard identityStatus == errSecSuccess, let secIdentity else {
-            deleteStored()
+            deleteItems(label: label, keyTag: keyTag)
             throw MoonlightError(message: "The Keychain could not pair the Moonlight client certificate with its key (\(identityStatus)).")
         }
         return identity(privateKey: key, certificate: certificate, identity: secIdentity)
     }
     #else
-    private static func loadExisting() -> MoonlightClientIdentity? {
-        let query: [String: Any] = [kSecClass as String: kSecClassIdentity, kSecAttrLabel as String: certificateLabel,
-                                    kSecReturnRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+    /// Every identity the Keychain reports for this app (it holds a handful at most).
+    private static func storedIdentities(label: String? = nil) -> [(SecIdentity, SecCertificate, SecKey)] {
+        var query: [String: Any] = [kSecClass as String: kSecClassIdentity, kSecReturnRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        if let label { query[kSecAttrLabel as String] = label }
         var found: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let found else { return nil }
+        guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let found else { return [] }
         let items: [AnyObject] = CFGetTypeID(found) == CFArrayGetTypeID() ? (found as! [AnyObject]) : [found]
-        for item in items where CFGetTypeID(item) == SecIdentityGetTypeID() {
+        return items.compactMap { item in
+            guard CFGetTypeID(item) == SecIdentityGetTypeID() else { return nil }
             let secIdentity = item as! SecIdentity
             var certificate: SecCertificate?
             var key: SecKey?
-            guard SecIdentityCopyCertificate(secIdentity, &certificate) == errSecSuccess, let certificate, isOurs(certificate),
-                  SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { continue }
-            return identity(privateKey: key, certificate: certificate, identity: secIdentity)
+            guard SecIdentityCopyCertificate(secIdentity, &certificate) == errSecSuccess, let certificate,
+                  SecIdentityCopyPrivateKey(secIdentity, &key) == errSecSuccess, let key else { return nil }
+            return (secIdentity, certificate, key)
         }
-        return nil
+    }
+
+    private static func loadExisting() -> MoonlightClientIdentity? {
+        storedIdentities(label: certificateLabel).first { isOurs($0.1) }.map { identity(privateKey: $0.2, certificate: $0.1, identity: $0.0) }
+    }
+
+    /// Matched by the exact certificate the host record stores, whatever the label filter does.
+    private static func loadHostIdentity(_ reference: MoonlightIdentityReference) -> MoonlightClientIdentity? {
+        storedIdentities().first { SecCertificateCopyData($0.1) as Data == reference.certificateDER }
+            .map { identity(privateKey: $0.2, certificate: $0.1, identity: $0.0) }
     }
 
     /// Permanent key straight into the data-protection keychain, then the certificate; the
     /// identity is what the Keychain reports for the pair.
-    private static func create() throws -> MoonlightClientIdentity {
-        deleteStored()
+    private static func create(label: String, keyTag: Data, commonName: String) throws -> MoonlightClientIdentity {
+        deleteItems(label: label, keyTag: keyTag)
         let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits as String: 2048,
             kSecPrivateKeyAttrs as String: [
                 kSecAttrIsPermanent as String: true,
                 kSecAttrApplicationTag as String: keyTag,
-                kSecAttrLabel as String: certificateLabel,
+                kSecAttrLabel as String: label,
                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             ]
         ]
@@ -370,25 +438,25 @@ enum MoonlightIdentityStore {
         guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
             throw MoonlightError(message: "Could not create the Moonlight client key: \((error?.takeRetainedValue()).map { String(describing: $0) } ?? "unknown error")")
         }
-        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: certificateLabel)
+        let der = try MoonlightClientIdentity.makeCertificate(privateKey: key, commonName: commonName)
         guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
             throw MoonlightError(message: "The generated client certificate is invalid.")
         }
-        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: certificateLabel,
+        let status = SecItemAdd([kSecClass as String: kSecClassCertificate, kSecValueRef as String: certificate, kSecAttrLabel as String: label,
                                  kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
-            deleteStored()
+            deleteItems(label: label, keyTag: keyTag)
             throw MoonlightError(message: "Could not store the Moonlight client certificate (\(status)).")
         }
-        guard let stored = loadExisting(), stored.certificateDER == der else {
-            deleteStored()
+        guard let stored = storedIdentities().first(where: { SecCertificateCopyData($0.1) as Data == der }) else {
+            deleteItems(label: label, keyTag: keyTag)
             throw MoonlightError(message: "The Keychain stored the Moonlight client certificate but reports no identity for it.")
         }
-        return stored
+        return identity(privateKey: stored.2, certificate: stored.1, identity: stored.0)
     }
     #endif
 
-    /// Human-readable state of the stored identity, for support and the Mac self-test.
+    /// Human-readable state of the shared identity, for support and the Mac self-test.
     static func diagnostics() -> String {
         var lines: [String] = []
         for protected in keychains {
@@ -402,10 +470,10 @@ enum MoonlightIdentityStore {
                 return status == errSecSuccess ? "\((items as? [Any])?.count ?? 0)" : "none (\(status))"
             }
             let certificates = count([kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: certificateLabel])
-            let keys = count([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: keyTag])
-            lines.append("\(name): certificates \(certificates), keys \(keys)")
+            let keys = count([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: legacyKeyTag])
+            lines.append("\(name): shared certificates \(certificates), shared keys \(keys)")
         }
-        lines.append("stored identity: \(loadExisting() != nil ? "yes" : "no")")
+        lines.append("stored shared identity: \(loadExisting() != nil ? "yes" : "no")")
         do {
             let identity = try loadOrCreate()
             let subject = SecCertificateCreateWithData(nil, identity.certificateDER as CFData).flatMap { SecCertificateCopySubjectSummary($0) as String? } ?? "?"
@@ -422,10 +490,10 @@ enum MoonlightIdentityStore {
         return lines.joined(separator: "\n")
     }
 
-    /// Client certificate of the current identity, PEM encoded (self-test helper).
+    /// Client certificate of the shared identity, PEM encoded (self-test helper).
     static func currentCertificatePEM() throws -> String { try loadOrCreate().certificatePEM }
 
-    /// Performs one HTTPS GET with the stored identity as the TLS client certificate, against a
+    /// Performs one HTTPS GET with the shared identity as the TLS client certificate, against a
     /// server whose DER certificate is given, and reports the outcome (self-test helper).
     static func probeTLS(url: URL, serverCertificateDER: Data) async -> String {
         do {
@@ -538,6 +606,10 @@ struct MoonlightHostRecord: Codable, Equatable {
     var appVersion = ""
     var pairedAt: Date?
     var apps: [MoonlightApp] = []
+    /// Client identity this host trusts; nil for pairings made with the shared identity before 2026-10-22.
+    var clientIdentity: MoonlightIdentityReference?
+    /// Sunshine's `uniqueid`, which survives address and PC profile changes.
+    var serverUniqueID: String?
 
     var isPaired: Bool { serverCertificateDER != nil && pairedAt != nil }
 }
@@ -568,6 +640,42 @@ enum MoonlightHostStore {
     static func remove(pcID: String, defaults: UserDefaults = .standard) {
         let remaining = records(defaults: defaults).filter { $0.pcID != pcID }
         if let data = try? JSONEncoder().encode(remaining) { defaults.set(data, forKey: recordsKey) }
+    }
+
+    /// A throwaway id for one pairing attempt. Sunshine 2026 keeps an abandoned pairing request
+    /// for five minutes and refuses another one with the same uniqueid until then.
+    static func pairingUniqueID() -> String { MoonlightEncoding.hex(MoonlightCrypto.random(8)) }
+
+    /// The pairing of the same Sunshine host saved under another PC profile id (profiles get new
+    /// ids when iCloud sync merges duplicates or a PC is added again). Matched by Sunshine's
+    /// uniqueid when known, else by address; copied to `pcID` and returned.
+    static func adopt(pcID: String, address: String, serverUniqueID: String? = nil, defaults: UserDefaults = .standard) -> MoonlightHostRecord? {
+        let candidates = records(defaults: defaults).filter { record in
+            guard record.isPaired, record.pcID != pcID else { return false }
+            if let serverUniqueID, !serverUniqueID.isEmpty { return record.serverUniqueID == serverUniqueID }
+            return !address.isEmpty && record.address == address
+        }
+        guard var adopted = candidates.max(by: { ($0.pairedAt ?? .distantPast) < ($1.pairedAt ?? .distantPast) }) else { return nil }
+        adopted.pcID = pcID
+        if !address.isEmpty { adopted.address = address }
+        save(adopted, defaults: defaults)
+        return adopted
+    }
+
+    /// Drops every saved pairing of the same Sunshine host that presents the same client identity
+    /// as `record`: Sunshine refused that certificate, so none of those copies can work.
+    static func removeRefused(_ record: MoonlightHostRecord, defaults: UserDefaults = .standard) {
+        let remaining = records(defaults: defaults).filter { other in
+            let sameHost = other.pcID == record.pcID || (!record.address.isEmpty && other.address == record.address)
+                || (record.serverUniqueID != nil && other.serverUniqueID == record.serverUniqueID)
+            return !(sameHost && other.clientIdentity?.id == record.clientIdentity?.id)
+        }
+        if let data = try? JSONEncoder().encode(remaining) { defaults.set(data, forKey: recordsKey) }
+    }
+
+    /// Whether any saved pairing other than `pcID`'s still presents this client identity.
+    static func identityInUse(_ reference: MoonlightIdentityReference, excluding pcID: String, defaults: UserDefaults = .standard) -> Bool {
+        records(defaults: defaults).contains { $0.pcID != pcID && $0.clientIdentity?.id == reference.id }
     }
 }
 
@@ -635,7 +743,7 @@ final class MoonlightTransport: NSObject, URLSessionDelegate, URLSessionTaskDele
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw MoonlightError(message: "Sunshine did not answer.") }
         guard http.statusCode == 200 else {
-            if http.statusCode == 401 { throw MoonlightError(message: "Sunshine no longer trusts this device. Pair again.") }
+            if http.statusCode == 401 { throw MoonlightError.untrustedClient }
             throw MoonlightError(message: "Sunshine returned HTTP \(http.statusCode).")
         }
         guard data.count <= 8 * 1024 * 1024 else { throw MoonlightError(message: "The Sunshine reply is too large.") }
@@ -645,6 +753,9 @@ final class MoonlightTransport: NSObject, URLSessionDelegate, URLSessionTaskDele
     func xml(secure: Bool, path: String, query: [(String, String)] = [], timeout: TimeInterval = 15) async throws -> MoonlightXMLNode {
         let node = try MoonlightXML.parse(try await request(secure: secure, path: path, query: query, timeout: timeout))
         guard node.statusCode == 200 else {
+            // Sunshine answers an unknown, disabled or duplicated client certificate with HTTP 200
+            // and `status_code="401"` ("The client is not authorized. Certificate verification failed.").
+            if secure && node.statusCode == 401 { throw MoonlightError.untrustedClient }
             throw MoonlightError(message: node.statusMessage.map { "Sunshine: \($0)" } ?? "Sunshine refused the request (\(node.statusCode)).")
         }
         return node
@@ -825,7 +936,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         self.httpPort = httpPort
         self.httpsPort = httpsPort
         info = nil; apps = []; artwork = [:]; lastError = nil; reachable = false; lastRefreshed = nil
-        record = pcID.isEmpty ? nil : MoonlightHostStore.record(for: pcID)
+        record = pcID.isEmpty ? nil : (MoonlightHostStore.record(for: pcID) ?? MoonlightHostStore.adopt(pcID: pcID, address: cleanAddress))
         if var stored = record, stored.address != cleanAddress, !cleanAddress.isEmpty {
             stored.address = cleanAddress
             MoonlightHostStore.save(stored)
@@ -844,18 +955,22 @@ final class MoonlightHostCoordinator: ObservableObject {
     /// Transport with the stored pairing, for launching and controlling streams.
     func streamingTransport() async throws -> MoonlightTransport {
         guard isPaired else { throw MoonlightError(message: "Pair Orbit with Sunshine on this PC first.") }
-        return try makeTransport(identity: try await Self.loadIdentity())
+        return try makeTransport(identity: try await Self.loadIdentity(for: record?.clientIdentity))
     }
 
-    private func makeTransport(identity: MoonlightClientIdentity?) throws -> MoonlightTransport {
+    private func makeTransport(identity: MoonlightClientIdentity?, uniqueID: String = MoonlightHostStore.uniqueID()) throws -> MoonlightTransport {
         let endpoints = try MoonlightEndpoints.standard(host: address, httpPort: httpPort, httpsPort: httpsPort)
-        return MoonlightTransport(endpoints: endpoints, uniqueID: MoonlightHostStore.uniqueID(), deviceName: Self.deviceName,
+        return MoonlightTransport(endpoints: endpoints, uniqueID: uniqueID, deviceName: Self.deviceName,
                                   serverCertificate: record?.serverCertificateDER, identity: identity?.secIdentity)
     }
 
-    private static func loadIdentity() async throws -> MoonlightClientIdentity {
-        try await Task.detached(priority: .userInitiated) { try MoonlightIdentityStore.loadOrCreate() }.value
+    private static func loadIdentity(for reference: MoonlightIdentityReference?) async throws -> MoonlightClientIdentity {
+        try await Task.detached(priority: .userInitiated) { try MoonlightIdentityStore.identity(for: reference) }.value
     }
+
+    /// Name Sunshine shows for this device; the same text goes with the pairing request and the
+    /// PIN the agent types, which is how the agent finds the request among several.
+    static var pairingName: String { String(deviceName.prefix(40)) }
 
     static var deviceName: String {
         #if os(macOS)
@@ -873,44 +988,67 @@ final class MoonlightHostCoordinator: ObservableObject {
         let version = generation
         isRefreshing = true
         defer { if version == generation { isRefreshing = false } }
+        // A pairing found under another profile id is used right away.
+        if await refreshOnce(version: version) { _ = await refreshOnce(version: version) }
+    }
+
+    /// One server info (+ app list) pass. Returns true when it adopted a pairing and should run again.
+    private func refreshOnce(version: Int) async -> Bool {
         do {
-            let identity = isPaired ? try await Self.loadIdentity() : nil
-            guard version == generation else { return }
+            let identity = isPaired ? try await Self.loadIdentity(for: record?.clientIdentity) : nil
+            guard version == generation else { return false }
             let transport = try makeTransport(identity: identity)
             if isPaired {
                 do {
                     let secure = try await MoonlightClient.serverInfo(transport, secure: true)
-                    guard version == generation else { return }
+                    guard version == generation else { return false }
                     info = secure
                     reachable = true
                     lastError = nil
                     let fetched = try await MoonlightClient.appList(transport)
-                    guard version == generation else { return }
+                    guard version == generation else { return false }
                     apps = fetched
-                    if var stored = record { stored.apps = fetched; stored.hostname = secure.hostname; stored.appVersion = secure.appVersion; MoonlightHostStore.save(stored); record = stored }
-                } catch let error as MoonlightError where error.message.contains("no longer trusts") {
-                    // Sunshine dropped this client (certificate removed in its web UI).
-                    forgetPairing()
-                    lastError = error.message
+                    if var stored = record {
+                        stored.apps = fetched; stored.hostname = secure.hostname; stored.appVersion = secure.appVersion
+                        if !secure.uniqueID.isEmpty { stored.serverUniqueID = secure.uniqueID }
+                        MoonlightHostStore.save(stored); record = stored
+                    }
+                } catch let error as MoonlightError where error.untrusted {
+                    // Sunshine dropped, disabled or duplicated this certificate: offer pairing again.
+                    pairingWasRefused(error)
                     reachable = true
                 }
             } else {
                 let plain = try await MoonlightClient.serverInfo(transport, secure: false)
-                guard version == generation else { return }
+                guard version == generation else { return false }
                 info = plain
                 reachable = true
                 lastError = nil
+                if !plain.uniqueID.isEmpty, let adopted = MoonlightHostStore.adopt(pcID: pcID, address: address, serverUniqueID: plain.uniqueID) {
+                    record = adopted
+                    apps = adopted.apps
+                    return true
+                }
             }
             lastRefreshed = Date()
+        } catch let error as MoonlightError where error.untrusted {
+            // The identity this host was paired with is gone from the Keychain (for example after
+            // restoring a backup on another device): pairing again is the only way back.
+            guard version == generation else { return false }
+            pairingWasRefused(error)
         } catch {
-            guard version == generation else { return }
+            guard version == generation else { return false }
             reachable = false
             info = nil
             lastError = (error as? MoonlightError)?.message ?? error.localizedDescription
         }
+        return false
     }
 
     /// Generates a PIN and waits for it to be typed into Sunshine's web UI on the PC.
+    ///
+    /// Each attempt pairs a brand-new client certificate (see `MoonlightIdentityStore`) under a
+    /// throwaway uniqueid, so neither an earlier pairing nor an abandoned request gets in the way.
     func beginPairing() {
         guard isConfigured, !isPairing else { return }
         let version = generation
@@ -921,28 +1059,37 @@ final class MoonlightHostCoordinator: ObservableObject {
         isPairing = true
         pairingTask = Task { [weak self] in
             guard let self else { return }
+            var fresh: MoonlightIdentityReference?
             do {
-                let identity = try await Self.loadIdentity()
-                guard !Task.isCancelled, version == self.generation else { return }
-                let transport = try self.makeTransport(identity: identity)
+                let created = try await Task.detached(priority: .userInitiated) { try MoonlightIdentityStore.createForPairing() }.value
+                fresh = created.reference
+                guard !Task.isCancelled, version == self.generation else { MoonlightIdentityStore.remove(created.reference); return }
+                let transport = try self.makeTransport(identity: created.identity, uniqueID: MoonlightHostStore.pairingUniqueID())
                 let probe = try await MoonlightClient.serverInfo(transport, secure: false)
-                guard !Task.isCancelled, version == self.generation else { return }
-                let certificate = try await MoonlightClient.pair(transport, identity: identity, pin: pin, serverMajorVersion: probe.majorVersion) { [weak self] stage in
+                guard !Task.isCancelled, version == self.generation else { MoonlightIdentityStore.remove(created.reference); return }
+                let certificate = try await MoonlightClient.pair(transport, identity: created.identity, pin: pin, serverMajorVersion: probe.majorVersion) { [weak self] stage in
                     Task { @MainActor in self?.pairingStage = stage }
                 }
-                guard !Task.isCancelled, version == self.generation else { return }
+                guard !Task.isCancelled, version == self.generation else { MoonlightIdentityStore.remove(created.reference); return }
+                let previous = self.record?.clientIdentity
                 var stored = MoonlightHostRecord(pcID: self.pcID, address: self.address, httpPort: self.httpPort, httpsPort: self.httpsPort)
                 stored.serverCertificateDER = certificate
                 stored.hostname = probe.hostname
                 stored.appVersion = probe.appVersion
                 stored.pairedAt = Date()
+                stored.clientIdentity = created.reference
+                stored.serverUniqueID = probe.uniqueID.isEmpty ? nil : probe.uniqueID
                 MoonlightHostStore.save(stored)
+                if let previous, previous.id != created.reference.id, !MoonlightHostStore.identityInUse(previous, excluding: self.pcID) {
+                    MoonlightIdentityStore.remove(previous)
+                }
                 self.record = stored
                 self.pairingStage = "Paired with \(probe.hostname.isEmpty ? self.address : probe.hostname)"
                 self.isPairing = false
                 self.pairingPIN = nil
                 await self.refresh()
             } catch {
+                if let fresh { MoonlightIdentityStore.remove(fresh) }
                 guard !Task.isCancelled, version == self.generation else { return }
                 self.lastError = (error as? MoonlightError)?.message ?? error.localizedDescription
                 self.pairingStage = nil
@@ -958,8 +1105,19 @@ final class MoonlightHostCoordinator: ObservableObject {
         if isPairing { pairingStage = nil; pairingPIN = nil; isPairing = false }
     }
 
+    /// Sunshine refused this device's certificate while streaming: drop the pairing so the
+    /// Stream tab offers pairing again, and say why.
+    func pairingWasRefused(_ error: MoonlightError) {
+        if let record { MoonlightHostStore.removeRefused(record) }
+        forgetPairing()
+        lastError = error.message
+    }
+
     func forgetPairing() {
         cancelPairing()
+        if let identity = record?.clientIdentity, !MoonlightHostStore.identityInUse(identity, excluding: pcID) {
+            MoonlightIdentityStore.remove(identity)
+        }
         MoonlightHostStore.remove(pcID: pcID)
         record = nil
         apps = []
@@ -972,7 +1130,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         guard isPaired else { return }
         let version = generation
         do {
-            let transport = try makeTransport(identity: try await Self.loadIdentity())
+            let transport = try makeTransport(identity: try await Self.loadIdentity(for: record?.clientIdentity))
             try await MoonlightClient.quit(transport)
             guard version == generation else { return }
             lastError = nil
@@ -991,7 +1149,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             defer { self.artworkTasks.remove(app.id) }
-            guard let identity = try? await Self.loadIdentity(), let transport = try? self.makeTransport(identity: identity),
+            guard let identity = try? await Self.loadIdentity(for: self.record?.clientIdentity), let transport = try? self.makeTransport(identity: identity),
                   let data = try? await MoonlightClient.appAsset(transport, appID: app.id), data.count > 64, version == self.generation else { return }
             self.artwork[app.id] = data
         }
