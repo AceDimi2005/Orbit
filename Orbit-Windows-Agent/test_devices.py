@@ -136,7 +136,8 @@ class RegistryTests(unittest.TestCase):
         self.registry.authenticate(token, "192.168.1.30")
         on_disk = json.loads(self.path.read_text())["devices"][0]
         self.assertIsNone(on_disk["lastSeenAt"])  # never written on the request itself
-        self.registry.flush(force=False)  # first use is urgent: the flusher writes it at once
+        self.clock.now += devices.URGENT_FLUSH_SECONDS
+        self.registry.flush(force=False)  # first use is urgent: the next flusher pass writes it
         on_disk = json.loads(self.path.read_text())["devices"][0]
         self.assertEqual(on_disk["lastAddress"], "192.168.1.30")
         self.assertIsNotNone(on_disk["lastSeenAt"])
@@ -148,6 +149,17 @@ class RegistryTests(unittest.TestCase):
         self.registry.authenticate(token, "192.168.1.30")
         self.registry.flush(force=False)
         self.assertNotEqual(json.loads(self.path.read_text())["devices"][0]["lastSeenAt"], on_disk["lastSeenAt"])
+
+    def test_a_token_shared_by_two_addresses_does_not_write_on_every_request(self):
+        device, token = self.registry.register("Legacy-like shared token")
+        writes = []
+        original = self.registry._persist
+        self.registry._persist = lambda payload: (writes.append(1), original(payload))
+        for index in range(20):
+            self.clock.now += 0.25
+            self.registry.authenticate(token, "192.168.1.23" if index % 2 else "192.168.1.31")
+            self.registry.flush(force=False)
+        self.assertLessEqual(len(writes), 1)
 
     def test_unused_devices_expire_but_legacy_and_used_ones_stay(self):
         self.registry.migrate_legacy(MASTER)

@@ -37,6 +37,9 @@ TOMBSTONE_SECONDS = 180 * 24 * 3600
 UNUSED_SECONDS = 24 * 3600
 SEEN_RESOLUTION_SECONDS = 15
 FLUSH_SECONDS = 60
+# A first connection or a new address is written soon, but never more than every few seconds:
+# two apps sharing one token from two addresses must not write the file on every request.
+URGENT_FLUSH_SECONDS = 5
 LEGACY_NAME = "Legacy device"
 
 
@@ -243,7 +246,9 @@ class DeviceRegistry:
     def flush(self, force=True):
         with self._write_lock:
             with self._lock:
-                if not (self._dirty and (force or self._urgent or self.clock() - self._last_flush >= self.flush_seconds)):
+                elapsed = self.clock() - self._last_flush
+                due = force or (self._urgent and elapsed >= URGENT_FLUSH_SECONDS) or elapsed >= self.flush_seconds
+                if not (self._dirty and due):
                     return
                 payload = self._snapshot_locked()
             self._persist(payload)
