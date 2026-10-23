@@ -1,0 +1,8 @@
+# Wrangler state and local secrets
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+node_modules/
+# Never commit the APNs signing key
+*.p8

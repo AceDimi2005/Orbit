@@ -1,0 +1,17 @@
+{
+  "name": "orbit-push-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Orbit push relay: forwards end-to-end encrypted alerts from the Windows agent to APNs (Cloudflare Worker + Durable Objects).",
+  "type": "module",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "scripts": {
+    "test": "node --test test/",
+    "check:local": "node scripts/local-check.mjs",
+    "dev": "npx wrangler dev --remote",
+    "deploy": "npx wrangler deploy"
+  },
+  "engines": {
+    "node": ">=22.15"
+  }
+}
