@@ -24,10 +24,17 @@ final class OrbitPCAutomationModel: ObservableObject {
     @Published private(set) var pushStatus: OrbitPushStatus?
     @Published private(set) var isWorking = false
     @Published var notice: String?
+    /// False until the screen handed over the view model (the first frame), so no notice flashes.
+    @Published private(set) var isConfigured = false
     private(set) var link: OrbitPCLink?
     private(set) var isDemo = false
     private var generation = 0
-    private var saveTask: Task<Void, Never>?
+    /// The 600 ms debounce before an alert change is sent.
+    private var debounceTask: Task<Void, Never>?
+    /// The change waiting for the debounce, with the PC it belongs to.
+    private var pendingSave: (link: OrbitPCLink, settings: OrbitAlertSettings, version: Int)?
+    /// The last PUT. Saves run one after another, and they don't depend on this model staying alive.
+    private var putTask: Task<Void, Never>?
 
     var pcID: String { link?.id ?? "" }
 
@@ -38,8 +45,16 @@ final class OrbitPCAutomationModel: ObservableObject {
     }
 
     func configure(_ vm: OrbitViewModel) {
+        let newLink = OrbitPCLink.current(vm)
+        // Back from Task Manager on the same PC: keep what's on screen (the loop refreshes it).
+        if isConfigured, vm.isDemoMode == isDemo, newLink?.id == link?.id, (newLink == nil) == (link == nil) {
+            link = newLink
+            return
+        }
+        // A change still waiting for its debounce belongs to the old PC: send it there now.
+        flushPendingAlerts()
         generation += 1
-        saveTask?.cancel(); saveTask = nil
+        isConfigured = true
         features = .unknown; featuresError = nil
         alerts = nil; alertsError = nil; isSavingAlerts = false
         downloads = nil; downloadsError = nil
@@ -47,7 +62,7 @@ final class OrbitPCAutomationModel: ObservableObject {
         tasks = []; tasksLoaded = false; tasksError = nil
         pushStatus = nil; notice = nil
         isDemo = vm.isDemoMode
-        link = OrbitPCLink.current(vm)
+        link = newLink
         if isDemo { loadDemo() }
     }
 
@@ -67,8 +82,12 @@ final class OrbitPCAutomationModel: ObservableObject {
         }
         if features.has("alerts") {
             do {
+                // A save still on its way would otherwise be read back as the old values.
+                await putTask?.value
                 let raw: OrbitJSON = try await link.client.get("/api/alerts")
                 guard version == generation else { return }
+                // The person changed something meanwhile: their edit wins until it's saved.
+                guard pendingSave == nil else { return }
                 alerts = OrbitAlertSettings(raw: raw)
                 alertsError = nil
             } catch {
@@ -123,24 +142,42 @@ final class OrbitPCAutomationModel: ObservableObject {
         }
     }
 
-    /// Saves alert settings on the PC half a second after the last change.
+    /// Saves alert settings on the PC 600 ms after the last change.
     func updateAlerts(_ settings: OrbitAlertSettings) {
         alerts = settings
         alertsError = nil
-        saveTask?.cancel()
         guard !isDemo, let link else { return }
-        let version = generation
-        saveTask = Task { [weak self] in
+        pendingSave = (link, settings, generation)
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            self?.flushPendingAlerts()
+        }
+    }
+
+    /// Sends the change waiting for its debounce now (the screen is going away, or the PC changed). The PUT
+    /// holds its own PC and settings, so it completes even after this screen is gone.
+    func flushPendingAlerts() {
+        debounceTask?.cancel()
+        debounceTask = nil
+        guard let pending = pendingSave else { return }
+        pendingSave = nil
+        let link = pending.link, settings = pending.settings, version = pending.version
+        let previous = putTask
+        if version == generation { isSavingAlerts = true }
+        putTask = Task { [weak self] in
+            await previous?.value
+            let result: Result<OrbitJSON, Error>
+            do { result = .success(try await link.client.send("/api/alerts", method: "PUT", body: settings.raw)) }
+            catch { result = .failure(error) }
             guard let self, version == self.generation else { return }
-            self.isSavingAlerts = true
-            defer { if version == self.generation { self.isSavingAlerts = false } }
-            do {
-                let saved: OrbitJSON = try await link.client.send("/api/alerts", method: "PUT", body: settings.raw)
-                guard version == self.generation, !Task.isCancelled else { return }
-                if case .object = saved, saved["temperature"] != nil { self.alerts = OrbitAlertSettings(raw: saved) }
-            } catch {
-                guard version == self.generation, !Task.isCancelled else { return }
+            // A newer change is waiting: it's what the screen should keep showing.
+            let newerPending = self.pendingSave != nil
+            if !newerPending { self.isSavingAlerts = false }
+            switch result {
+            case .success(let saved):
+                if !newerPending, case .object = saved, saved["temperature"] != nil { self.alerts = OrbitAlertSettings(raw: saved) }
+            case .failure(let error):
                 self.alertsError = "Not saved on the PC. \(OrbitPlainError.describe(error))"
             }
         }
@@ -198,9 +235,12 @@ final class OrbitPCAutomationModel: ObservableObject {
         if isDemo { tasks.removeAll { $0.id == task.id }; return }
         guard let link else { return }
         let version = generation
+        guard let id = OrbitPathSegment.safe(task.id) else {
+            tasksError = "Couldn't stop watching \(task.label): the PC gave it an id Orbit can't send back. Update Orbit PC Companion."
+            return
+        }
         do {
-            let path = "/api/tasks/" + (task.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? task.id)
-            _ = try await link.client.data(path, method: "DELETE")
+            _ = try await link.client.data("/api/tasks/" + id, method: "DELETE")
             guard version == generation else { return }
             tasks.removeAll { $0.id == task.id }
             tasksError = nil
@@ -230,37 +270,74 @@ extension OrbitEventFeed {
 // MARK: - Watching an app from Task Manager
 
 enum OrbitTaskWatch {
+    /// The sentence shown in Task Manager after "Notify Me When It Finishes" / "Sleep When It Finishes".
+    struct Outcome: Equatable {
+        var message: String
+        var ok: Bool
+    }
+
+    /// The automatic sleep or shutdown already set up on the PC, which "Sleep When It Finishes" replaces.
+    enum ExistingRule: Equatable {
+        case nothing
+        /// For example "shut down when downloads finish (counting down now)".
+        case rule(String)
+        /// The PC didn't answer: the confirmation mentions that a rule would be replaced.
+        case unknown
+    }
+
     /// "Notify Me When It Finishes" / "Sleep When It Finishes" on a Task Manager row.
-    /// Returns the sentence to show under the process list.
     @MainActor
-    static func watch(_ process: PCProcess, mode: String, sleepAfter: Bool, vm: OrbitViewModel) async -> (message: String, ok: Bool) {
+    static func watch(_ process: PCProcess, mode: String, sleepAfter: Bool, vm: OrbitViewModel) async -> Outcome {
         let label = displayName(process.name)
-        if vm.isDemoMode { return ("Demo mode: Orbit would watch \(label) on a real PC.", true) }
+        if vm.isDemoMode { return Outcome(message: "Demo mode: Orbit would watch \(label) on a real PC.", ok: true) }
         guard let link = OrbitPCLink.current(vm) else {
-            return ("Pair \(vm.selectedPCName) again in My PCs to watch apps (it needs Orbit's encrypted connection).", false)
+            return Outcome(message: "Pair \(vm.selectedPCName) again in My PCs to watch apps (it needs Orbit's encrypted connection).", ok: false)
         }
         if !sleepAfter, !OrbitNotificationPreferences.isEnabled, let problem = await OrbitNotificationSwitch.enable() {
-            return (problem, false)
+            return Outcome(message: problem, ok: false)
         }
+        let task: OrbitWatchedTask
         do {
             let features = try await OrbitFeatureStore.shared.features(for: link)
             guard features.has("tasks") else {
-                return ("Update Orbit PC Companion on \(link.name) to watch apps.", false)
+                return Outcome(message: "Update Orbit PC Companion on \(link.name) to watch apps.", ok: false)
             }
             if sleepAfter, !features.has("powerAfter") {
-                return ("Update Orbit PC Companion on \(link.name) to sleep when an app finishes.", false)
+                return Outcome(message: "Update Orbit PC Companion on \(link.name) to sleep when an app finishes.", ok: false)
             }
             let body = OrbitNewWatchedTask(pid: process.pid, createTime: process.createTime, mode: mode,
                                            idleMinutes: mode == "idle" ? 2 : nil, label: label)
-            let task: OrbitWatchedTask = try await link.client.send("/api/tasks", body: body)
-            if sleepAfter {
-                let rule = OrbitPowerAfterRequest(trigger: "task", action: "sleep", delaySeconds: 60, taskID: task.id)
-                let _: OrbitJSON = try await link.client.send("/api/power/after", method: "PUT", body: rule)
-                return ("\(link.name) will sleep a minute after \(label) \(mode == "idle" ? "goes idle" : "closes"). Cancel it in Tools › Notifications.", true)
-            }
-            return ("Orbit will tell you when \(label) \(mode == "idle" ? "goes idle" : "closes").", true)
+            task = try await link.client.send("/api/tasks", body: body)
         } catch {
-            return ("Couldn't watch \(label). \(OrbitPlainError.describe(error))", false)
+            return Outcome(message: "Couldn't watch \(label). \(OrbitPlainError.describe(error))", ok: false)
+        }
+        let finishing = mode == "idle" ? "goes idle" : "closes"
+        guard sleepAfter else { return Outcome(message: "Orbit will tell you when \(label) \(finishing).", ok: true) }
+        do {
+            let rule = OrbitPowerAfterRequest(trigger: "task", action: "sleep", delaySeconds: 60, taskID: task.id)
+            let _: OrbitJSON = try await link.client.send("/api/power/after", method: "PUT", body: rule)
+            return Outcome(message: "\(link.name) will sleep a minute after \(label) \(finishing). Cancel it in Tools › Notifications.", ok: true)
+        } catch {
+            return Outcome(message: "Orbit is watching \(label), but couldn't set up sleep: \(OrbitPlainError.describe(error))", ok: false)
+        }
+    }
+
+    /// Reads the PC's current automatic sleep or shutdown before "Sleep When It Finishes" replaces it.
+    @MainActor
+    static func existingRule(vm: OrbitViewModel) async -> ExistingRule {
+        if vm.isDemoMode { return .nothing }
+        guard let link = OrbitPCLink.current(vm) else { return .unknown }
+        let client = link.client
+        do {
+            let reply: OrbitPowerAfter = try await OrbitDeadline.run(seconds: 5) { try await client.get("/api/power/after") }
+            guard let rule = reply.rule else { return .nothing }
+            let verb = rule.action == "shutdown" ? "shut down" : "sleep"
+            let when = rule.trigger == "task" ? "when a watched app finishes" : "when downloads finish"
+            return .rule("\(verb) \(when)\(rule.state == "countdown" ? " (counting down now)" : "")")
+        } catch let error as OrbitError where error.statusCode == 404 {
+            return .nothing
+        } catch {
+            return .unknown
         }
     }
 
@@ -331,6 +408,8 @@ struct NotificationsSettingsView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await refreshPermission() } }
         }
+        // Leaving within the 600 ms debounce still saves the last change.
+        .onDisappear { model.flushPendingAlerts() }
         .onChange(of: registrar.phases[vm.selectedPCID]) { _, _ in
             Task { await model.refreshPushStatus() }
         }
@@ -411,7 +490,7 @@ struct NotificationsSettingsView: View {
         } header: {
             Text("This \(deviceWord)")
         } footer: {
-            Text("Get told when a download finishes, your PC runs hot, an app you're watching is done, or the PC is about to sleep. Alerts from every PC you've paired appear here once this is on.")
+            Text("Get told when a download finishes, your PC runs hot, an app you're watching is done, or the PC is about to sleep. Alerts from \(pcName) appear while Orbit checks it; PCs with instant delivery send theirs any time.")
         }
         .orbitRow()
     }
@@ -491,7 +570,7 @@ struct NotificationsSettingsView: View {
         case .registered(true):
             return ("Instant", "\(pcName) sends alerts through Orbit's push relay and Apple, even when Orbit is closed. They're end-to-end encrypted: only this \(deviceWord) can read them.", "bolt.fill", .mint)
         case .registered(false):
-            return ("Not instant", "\(pcName) has instant delivery turned off. " + fallback, "clock.fill", .yellow)
+            return ("Not instant", "Instant delivery isn't set up on \(pcName) yet. " + fallback, "clock.fill", .yellow)
         case .noPushSupport:
             return ("Not instant", "This version of Orbit PC Companion can't send instant alerts. " + fallback, "clock.fill", .yellow)
         case .needsSecureConnection:
@@ -522,6 +601,12 @@ struct NotificationsSettingsView: View {
         } else if !vm.metrics.isOnline {
             Section {
                 OrbitNotice(title: "\(pcName) is offline", message: "Connect to it to change its alerts. Alerts and automatic sleep you set up keep running on the PC.", icon: "wifi.slash", tint: .orange)
+                    .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
+            }
+        } else if !vm.hasSecureConnection || (model.isConfigured && model.link == nil) {
+            // A PC paired before the encrypted connection: OrbitPCLink can't reach it, so nothing would load.
+            Section {
+                OrbitNotice(title: "Needs the encrypted connection", message: "Pair \(pcName) again in My PCs to get its alerts and automation.", icon: "lock.trianglebadge.exclamationmark", tint: .orange)
                     .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
             }
         } else if features == .olderAgent {
@@ -582,10 +667,10 @@ struct NotificationsSettingsView: View {
             }
             Toggle(isOn: alertBinding(\.temperatureEnabled)) { Label("The PC runs hot", systemImage: "thermometer.high") }
             if settings.temperatureEnabled {
-                Stepper(value: alertBinding(\.cpuLimit), in: 50...110) {
+                Stepper(value: alertBinding(\.cpuLimit), in: Self.temperatureRange) {
                     LabeledContent("CPU above", value: "\(settings.cpuLimit) °C")
                 }
-                Stepper(value: alertBinding(\.gpuLimit), in: 50...110) {
+                Stepper(value: alertBinding(\.gpuLimit), in: Self.temperatureRange) {
                     LabeledContent("GPU above", value: "\(settings.gpuLimit) °C")
                 }
                 Picker("For at least", selection: alertBinding(\.forSeconds)) {
@@ -611,13 +696,17 @@ struct NotificationsSettingsView: View {
         .orbitRow()
     }
 
+    /// What the PC accepts (`orbit_alerts.py`: 40–120 °C, 0–600 s).
+    private static let temperatureRange = 40...120
+
     private static func durations(including current: Int) -> [Int] {
-        let base = [10, 30, 60, 120, 300]
-        return base.contains(current) || current <= 0 ? base : (base + [current]).sorted()
+        let base = [0, 10, 30, 60, 120, 300]
+        return base.contains(current) || current < 0 ? base : (base + [current]).sorted()
     }
 
     private static func durationTitle(_ seconds: Int) -> String {
-        seconds < 60 ? "\(seconds) seconds" : (seconds % 60 == 0 ? "\(seconds / 60) minute\(seconds == 60 ? "" : "s")" : "\(seconds) seconds")
+        if seconds == 0 { return "Right away" }
+        return seconds < 60 ? "\(seconds) seconds" : (seconds % 60 == 0 ? "\(seconds / 60) minute\(seconds == 60 ? "" : "s")" : "\(seconds) seconds")
     }
 
     // MARK: Downloads

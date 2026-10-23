@@ -16,6 +16,14 @@ struct OrbitPushMessage: Equatable {
     var link: String
 }
 
+/// A push this iPhone could open, and whether its event was already shown.
+struct OrbitPushOutcome: Equatable {
+    /// The profile id of the PC whose key opened it.
+    var pcID: String
+    var message: OrbitPushMessage
+    var duplicate: Bool
+}
+
 /// End-to-end encryption of PC alerts (DESIGN F1, `Orbit-Push-Relay/PROTOCOL.md` §6).
 ///
 /// Wire format: standard base64 of `nonce (12 bytes) ‖ ciphertext ‖ tag (16 bytes)`, AES-256-GCM with
@@ -74,6 +82,16 @@ enum OrbitPushCrypto {
             }
         }
         return nil
+    }
+
+    /// What the Notification Service Extension does with one push: opens it with the stored keys and
+    /// records its event as shown. `record(eventID, pcID)` returns false when the event was shown already
+    /// (the app's poller got there first): the push is then a duplicate and arrives silently.
+    static func receive(_ ciphertext: String, keys: [(id: String, key: Data)], deviceID: String,
+                        record: (_ eventID: Int, _ pcID: String) -> Bool) -> OrbitPushOutcome? {
+        guard let opened = open(ciphertext, keys: keys, deviceID: deviceID) else { return nil }
+        let duplicate = opened.message.id > 0 && !record(opened.message.id, opened.id)
+        return OrbitPushOutcome(pcID: opened.id, message: opened.message, duplicate: duplicate)
     }
 
     /// Parses the decrypted JSON after removing the space padding.

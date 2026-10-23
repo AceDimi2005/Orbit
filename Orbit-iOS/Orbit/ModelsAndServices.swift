@@ -230,7 +230,7 @@ enum OrbitBackgroundRefresh {
             let work = Task { @MainActor in
                 // Without a view model (a background launch with no scene yet) only the alerts poll runs.
                 let ok: Bool
-                if let handler { ok = await handler() } else { ok = await OrbitEventPoller.shared.pollSelected(background: true) }
+                if let handler { ok = await handler() } else { ok = await OrbitEventPoller.shared.backgroundCheck() }
                 refresh.setTaskCompleted(success: ok)
             }
             refresh.expirationHandler = { work.cancel(); refresh.setTaskCompleted(success: false) }
@@ -545,7 +545,7 @@ final class OrbitViewModel: ObservableObject {
         if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else {
             monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed()
             activity.enterBackground()
-            if activity.isActive || OrbitNotificationPreferences.isEnabled { OrbitBackgroundRefresh.schedule() }
+            if activity.isActive || OrbitNotificationPreferences.needsBackgroundRefresh { OrbitBackgroundRefresh.schedule() }
         }
     }
 
@@ -553,7 +553,7 @@ final class OrbitViewModel: ObservableObject {
     /// alerts the pushes didn't deliver, then refreshes the Live Activity and the widget snapshot cache.
     /// iOS decides when (and whether) this runs.
     func backgroundRefresh() async -> Bool {
-        let polledAlerts = await OrbitEventPoller.shared.pollSelected(background: true)
+        let polledAlerts = await OrbitEventPoller.shared.backgroundCheck()
         guard !isDemoMode, isConfigured, activity.isActive else { return polledAlerts }
         let version = generation
         do {

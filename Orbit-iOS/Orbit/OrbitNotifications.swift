@@ -310,16 +310,218 @@ enum OrbitNotificationPreferences {
     static let enabledKey = "orbit.notifications.enabled"
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
-    static var environment: String {
-        #if DEBUG
+    static var isDemoMode: Bool { UserDefaults.standard.bool(forKey: "demoMode") }
+
+    /// Background refresh is worth scheduling while alerts are on, or while a PC still has to be told to
+    /// forget this iPhone.
+    static var needsBackgroundRefresh: Bool { isEnabled || OrbitPushUnregisterQueue.hasPending }
+
+    /// Which APNs host the relay must use for this build's token. The signing profile decides, not the
+    /// build configuration: a Release build run from Xcode still gets a development (sandbox) token.
+    static let environment: String = {
+        #if targetEnvironment(simulator)
         return "sandbox"
         #else
-        return "production"
+        return apsEnvironment(fromProvisioningProfile: Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")) ?? "production"
         #endif
+    }()
+
+    /// `aps-environment` of an `embedded.mobileprovision` (development → sandbox). App Store and TestFlight
+    /// builds carry no profile: production.
+    static func apsEnvironment(fromProvisioningProfile url: URL?) -> String? {
+        guard let url, let data = try? Data(contentsOf: url),
+              let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any],
+              let value = entitlements["aps-environment"] as? String else { return nil }
+        return value == "development" ? "sandbox" : "production"
     }
 
     static func isAuthorized(_ status: UNAuthorizationStatus) -> Bool {
         status == .authorized || status == .provisional || status == .ephemeral
+    }
+}
+
+// MARK: - Ids in request paths
+
+enum OrbitPathSegment {
+    /// The id itself when it's safe as one path segment (`[A-Za-z0-9._-]`, which is all the PC hands out),
+    /// else nil. Never pre-encode: `OrbitAPIClient` builds the URL with `URLComponents.path`, which encodes
+    /// again (`%2D` would reach the PC as `%252D`).
+    static func safe(_ id: String) -> String? {
+        guard !id.isEmpty, id.count <= 128, id != ".", id != "..",
+              id.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0)) }) else { return nil }
+        return id
+    }
+}
+
+// MARK: - A request that must not hang
+
+enum OrbitDeadline {
+    /// Runs `operation`, giving up with `URLError(.timedOut)` after `seconds` (the client's own timeout is 20 s).
+    static func run<T: Sendable>(seconds: Double, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw URLError(.timedOut) }
+            return first
+        }
+    }
+}
+
+// MARK: - PCs that still have to forget this iPhone
+
+/// When alerts are turned off or a PC is removed, the PC must delete this device
+/// (`DELETE /api/push/devices/{deviceID}`), or it keeps pushing alerts nothing can open any more. A PC
+/// that's off or away at that moment stays in this queue, which is retried on launch, on every foreground
+/// poll and in background refresh until the PC answers (200, or 404 from an agent without the route).
+///
+/// The queue sits in the app's own keychain (`Orbit.PushPendingUnregister.v1`), because each entry keeps
+/// the PC's pairing token: a removed PC's profile and token are gone by the time it comes back.
+@MainActor
+enum OrbitPushUnregisterQueue {
+    struct Entry: Codable, Equatable {
+        var pcID: String
+        var pcName: String
+        var host: String
+        var port: Int
+        var fingerprint: String
+        var token: String
+        var deviceID: String
+        var addedAt: Double
+    }
+
+    nonisolated static let service = "Orbit.PushPendingUnregister.v1"
+    /// Give up on a PC that hasn't answered for this long (it was probably reset or thrown away).
+    static let maximumAge: TimeInterval = 60 * 24 * 60 * 60
+    static let maximumEntries = 32
+    /// Between automatic retries (a PC that's off makes each attempt wait for the timeout).
+    static let retryInterval: TimeInterval = 60
+    private static var retryTask: Task<Void, Never>?
+    private static var lastRetry = Date.distantPast
+
+    nonisolated private static var query: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "queue"]
+    }
+
+    nonisolated static func entries() -> [Entry] {
+        var query = query
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data,
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return entries
+    }
+
+    nonisolated static var hasPending: Bool { !entries().isEmpty }
+
+    private static func save(_ entries: [Entry]) {
+        _ = SecItemDelete(query as CFDictionary)
+        guard !entries.isEmpty, let data = try? JSONEncoder().encode(entries) else { return }
+        var item = query
+        item[kSecValueData as String] = data
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(item as CFDictionary, nil)
+    }
+
+    /// Remembers that `profile` must forget `deviceID` (replacing an older entry for the same pair).
+    static func add(_ profile: SavedPC, token: String, deviceID: String) {
+        guard !token.isEmpty, !deviceID.isEmpty, OrbitAPIClient.validFingerprint(profile.certificateFingerprint) else { return }
+        var list = entries().filter { !($0.pcID == profile.id && $0.deviceID == deviceID) }
+        list.append(Entry(pcID: profile.id, pcName: profile.name, host: profile.address, port: profile.securePort,
+                          fingerprint: profile.certificateFingerprint, token: token, deviceID: deviceID,
+                          addedAt: Date().timeIntervalSince1970))
+        save(Array(list.suffix(maximumEntries)))
+    }
+
+    /// The PC registered this device again (under this profile, or a new one after pairing it again): an old
+    /// "forget" must never undo that.
+    static func remove(pcID: String, deviceID: String) {
+        let fingerprint = OrbitPCLink.savedProfiles().first { $0.id == pcID }.map { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) }
+        let list = entries()
+        let kept = list.filter { entry in
+            guard entry.deviceID == deviceID else { return true }
+            return entry.pcID != pcID && OrbitAPIClient.normalizedFingerprint(entry.fingerprint) != fingerprint
+        }
+        if kept.count != list.count { save(kept) }
+    }
+
+    /// Lets a running retry finish (registration waits for it, so a late DELETE can't undo a new registration).
+    static func waitForRetry() async {
+        await retryTask?.value
+    }
+
+    /// Tries every queued PC once. Automatic calls run at most once a minute; `force` tries now.
+    static func retry(force: Bool = false) async {
+        if let running = retryTask { await running.value; if !force { return } }
+        guard !OrbitNotificationPreferences.isDemoMode, force || Date().timeIntervalSince(lastRetry) >= retryInterval else { return }
+        guard !entries().isEmpty else { return }
+        lastRetry = Date()
+        let task = Task { await attemptAll() }
+        retryTask = task
+        await task.value
+        // A forced retry may have started another round meanwhile; that one stays visible to waitForRetry.
+        if retryTask == task { retryTask = nil }
+    }
+
+    private enum Outcome { case done, keep }
+
+    private static func attemptAll() async {
+        let now = Date().timeIntervalSince1970
+        let profiles = OrbitPCLink.savedProfiles()
+        let currentDeviceID = OrbitPushStore.deviceID(create: false)
+        var pending: [(Entry, OrbitAPIClient)] = []
+        var finished: [Entry] = []
+        for entry in entries() {
+            let profile = profiles.first { $0.id == entry.pcID }
+            if now - entry.addedAt > maximumAge { finished.append(entry); continue }
+            // Alerts are on again and the PC is still (or again) saved: registering replaces this device's
+            // record, and a late DELETE would undo it.
+            let fingerprint = OrbitAPIClient.normalizedFingerprint(entry.fingerprint)
+            let savedAgain = profile != nil || profiles.contains { OrbitAPIClient.normalizedFingerprint($0.certificateFingerprint) == fingerprint }
+            if OrbitNotificationPreferences.isEnabled, savedAgain, entry.deviceID == currentDeviceID {
+                finished.append(entry); continue
+            }
+            // A saved PC may have a new address or token since; a removed one only has what was kept.
+            let liveToken = profile.map { PCProfileStore.token($0.id) } ?? ""
+            guard let client = try? OrbitAPIClient(host: profile?.address ?? entry.host, port: profile?.securePort ?? entry.port,
+                                                   token: liveToken.isEmpty ? entry.token : liveToken,
+                                                   fingerprint: profile?.certificateFingerprint ?? entry.fingerprint) else {
+                finished.append(entry); continue
+            }
+            guard OrbitPathSegment.safe(entry.deviceID) != nil else { finished.append(entry); continue }
+            pending.append((entry, client))
+        }
+        let results = await withTaskGroup(of: (Entry, Outcome).self) { group in
+            for (entry, client) in pending {
+                group.addTask {
+                    let path = "/api/push/devices/" + entry.deviceID
+                    do {
+                        _ = try await OrbitDeadline.run(seconds: 8) { try await client.data(path, method: "DELETE") }
+                        return (entry, .done)
+                    } catch let error as OrbitError where [401, 403, 404].contains(error.statusCode ?? 0) {
+                        // 404: an agent without push routes has nothing to forget. 401/403: the PC no longer
+                        // accepts this pairing, so it can't be asked; retrying forever wouldn't help.
+                        return (entry, .done)
+                    } catch {
+                        return (entry, .keep)
+                    }
+                }
+            }
+            var collected: [(Entry, Outcome)] = []
+            for await result in group { collected.append(result) }
+            return collected
+        }
+        finished += results.filter { $0.1 == .done }.map(\.0)
+        guard !finished.isEmpty else { return }
+        // Entries added while this ran stay queued.
+        save(entries().filter { !finished.contains($0) })
     }
 }
 
@@ -388,9 +590,10 @@ final class OrbitPushRegistrar: ObservableObject {
         tokenState = .failed((error as NSError).localizedDescription)
     }
 
-    /// Registers with every saved PC (in parallel, each on its own timeout).
+    /// Registers with every saved PC (in parallel, each on its own timeout). Demo mode never calls a PC;
+    /// the poller registers once demo mode is turned off.
     func registerAll(force: Bool = false) async {
-        guard OrbitNotificationPreferences.isEnabled, token != nil else { return }
+        guard OrbitNotificationPreferences.isEnabled, !OrbitNotificationPreferences.isDemoMode, token != nil else { return }
         let links = OrbitPCLink.all()
         for profile in OrbitPCLink.savedProfiles() where !links.contains(where: { $0.id == profile.id }) {
             phases[profile.id] = .needsSecureConnection
@@ -409,60 +612,76 @@ final class OrbitPushRegistrar: ObservableObject {
     }
 
     func register(_ link: OrbitPCLink, force: Bool = false) async {
-        guard OrbitNotificationPreferences.isEnabled, let token, !inFlight.contains(link.id) else { return }
+        guard OrbitNotificationPreferences.isEnabled, !OrbitNotificationPreferences.isDemoMode, let token, !inFlight.contains(link.id) else { return }
         if !force, registeredToken[link.id] == token { return }
-        guard let deviceID = OrbitPushStore.deviceID(create: true) else { return }
         inFlight.insert(link.id)
         defer { inFlight.remove(link.id) }
+        guard let deviceID = OrbitPushStore.deviceID(create: true) else {
+            phases[link.id] = .failed("iOS couldn't store this \(UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone")'s alert ID securely. Unlock it and try again.")
+            return
+        }
         if phases[link.id] == nil || phases[link.id] == .unknown { phases[link.id] = .registering }
+        // A "forget this iPhone" still on its way to this PC must not land after the new registration.
+        await OrbitPushUnregisterQueue.waitForRetry()
         do {
             let features = try await OrbitFeatureStore.shared.features(for: link)
             if features == .olderAgent { phases[link.id] = .olderAgent; Self.setRelayActive(nil, for: link.id); return }
             guard features.has("push") else { phases[link.id] = .noPushSupport; Self.setRelayActive(nil, for: link.id); return }
             let key = try OrbitPushStore.ensureKey(for: link.id)
+            OrbitPushStore.setPCName(link.name, for: link.id)
             let body = OrbitPushRegistration(deviceID: deviceID, apnsToken: token, environment: OrbitNotificationPreferences.environment,
                                              key: key.base64EncodedString(), deviceName: UIDevice.current.name)
             let reply: OrbitPushRegisterReply = try await link.client.send("/api/push/register", body: body)
+            // Alerts may have been turned off while the PC answered.
+            guard OrbitNotificationPreferences.isEnabled else { return }
             let relay = reply.relay == "enabled"
             phases[link.id] = .registered(relayEnabled: relay)
             registeredToken[link.id] = token
             Self.setRelayActive(relay, for: link.id)
+            OrbitPushUnregisterQueue.remove(pcID: link.id, deviceID: deviceID)
         } catch {
             phases[link.id] = .failed(OrbitPlainError.describe(error))
         }
     }
 
-    /// Alerts off on this iPhone: tells each PC to forget it and drops the keys.
+    /// Alerts off on this iPhone: every PC that may know this device is told to forget it (now, or later
+    /// through `OrbitPushUnregisterQueue` when it's unreachable), the keys are dropped, and the APNs token
+    /// is given up so that a PC that never hears it gets "unregistered" from Apple through the relay.
     func unregisterAll() async {
-        guard let deviceID = OrbitPushStore.deviceID(create: false) else { return }
-        let links = OrbitPCLink.all()
-        await withTaskGroup(of: Void.self) { group in
-            for link in links {
-                group.addTask {
-                    // Best effort: a PC that is off forgets this device when the relay reports the token dead.
-                    _ = try? await link.client.data("/api/push/devices/\(deviceID)", method: "DELETE")
-                }
+        let profiles = OrbitPCLink.savedProfiles()
+        if let deviceID = OrbitPushStore.deviceID(create: false) {
+            // Every PC with an encrypted connection, key or not: a key can be gone while the PC still holds a
+            // registration (removed and paired again), and a PC that never knew this device just says so.
+            for profile in profiles {
+                OrbitPushUnregisterQueue.add(profile, token: PCProfileStore.token(profile.id), deviceID: deviceID)
             }
         }
-        for link in links { OrbitPushStore.removeKey(for: link.id); Self.setRelayActive(nil, for: link.id) }
         for account in OrbitPushStore.keyAccounts() { OrbitPushStore.removeKey(for: account) }
+        for profile in profiles { Self.setRelayActive(nil, for: profile.id) }
         registeredToken.removeAll()
         phases.removeAll()
+        UIApplication.shared.unregisterForRemoteNotifications()
+        tokenState = .none
+        UserDefaults.standard.removeObject(forKey: Self.tokenKey)
+        await OrbitPushUnregisterQueue.retry(force: true)
     }
 
-    /// A PC is being removed from Orbit: ask it to forget this device while the token still exists.
+    /// A PC is being removed from Orbit: queue "forget this device" while its token still exists, and try it
+    /// right away (the PC is usually online when someone removes it).
     func forget(_ profile: SavedPC) {
-        let link = OrbitPCLink.make(profile)
-        let deviceID = OrbitPushStore.deviceID(create: false)
+        if let deviceID = OrbitPushStore.deviceID(create: false),
+           OrbitNotificationPreferences.isEnabled || OrbitPushStore.key(for: profile.id) != nil {
+            OrbitPushUnregisterQueue.add(profile, token: PCProfileStore.token(profile.id), deviceID: deviceID)
+        }
         OrbitPushStore.removeKey(for: profile.id)
         OrbitPushStore.forgetDelivered(for: profile.id)
+        OrbitPushStore.setPCName(nil, for: profile.id)
         OrbitEventPoller.forgetCursor(for: profile.id)
         Self.setRelayActive(nil, for: profile.id)
         registeredToken[profile.id] = nil
         phases[profile.id] = nil
         OrbitFeatureStore.shared.invalidate(profile.id)
-        guard let link, let deviceID else { return }
-        Task.detached { _ = try? await link.client.data("/api/push/devices/\(deviceID)", method: "DELETE") }
+        Task { await OrbitPushUnregisterQueue.retry(force: true) }
     }
 }
 
@@ -537,6 +756,8 @@ final class OrbitEventPoller {
     func setAppActive(_ active: Bool) {
         appActive = active
         preferencesChanged()
+        // Runs with alerts off too: that's when a PC that was away still has to forget this iPhone.
+        if active { Task { await OrbitPushUnregisterQueue.retry() } }
     }
 
     func preferencesChanged() {
@@ -545,11 +766,23 @@ final class OrbitEventPoller {
         guard appActive, OrbitNotificationPreferences.isEnabled else { return }
         loop = Task { [weak self] in
             await OrbitLocalAlerts.removeDuplicateDeliveries()
+            var wasDemo = OrbitNotificationPreferences.isDemoMode
             while !Task.isCancelled {
+                // Demo mode never registers with a PC; once it's off, every saved PC gets this iPhone's key.
+                let isDemo = OrbitNotificationPreferences.isDemoMode
+                if wasDemo, !isDemo { await OrbitPushRegistrar.shared.registerAll() }
+                wasDemo = isDemo
+                await OrbitPushUnregisterQueue.retry()
                 _ = await self?.pollSelected(background: false)
                 do { try await Task.sleep(for: .seconds(Self.interval)) } catch { break }
             }
         }
+    }
+
+    /// Background refresh: the queued "forget this iPhone" requests, then one poll of the selected PC.
+    func backgroundCheck() async -> Bool {
+        await OrbitPushUnregisterQueue.retry()
+        return await pollSelected(background: true)
     }
 
     /// One poll of the selected PC. Returns true when the PC answered.
@@ -564,7 +797,9 @@ final class OrbitEventPoller {
         do {
             guard try await OrbitFeatureStore.shared.features(for: link).has("events") else { return true }
             let previous = Self.cursor(for: link.id)
-            let delivered = OrbitPushStore.deliveredEventID(for: link.id)
+            // Before the snapshot: an id the extension records after this belongs to this poll's time.
+            let startedAt = Date()
+            let delivered = OrbitPushStore.delivered(for: link.id)
             let holdBack: TimeInterval? = OrbitPushRegistrar.relayActive(for: link.id) ? Self.pushGrace : nil
             let client = link.client
             let result = try await OrbitEventFeed.poll(cursor: previous, delivered: delivered, holdBack: holdBack) { since, limit in
@@ -572,10 +807,10 @@ final class OrbitEventPoller {
                 if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
                 return try await client.get("/api/events", query: query)
             }
-            if delivered > result.latestID {
-                // The PC's log started over (reinstall, reset): its ids from 1 are new again.
-                OrbitPushStore.resetDelivered(for: link.id, to: min(previous ?? result.cursor, result.cursor))
-            }
+            // The PC's log started over (reinstall, reset): what was recorded for its old log must not hide new alerts.
+            OrbitPushStore.reconcileDelivered(for: link.id, latestID: result.latestID, floor: min(previous ?? result.cursor, result.cursor),
+                                              pollStartedAt: startedAt, logRecreated: result.resynced && previous != nil)
+            // Recording is the atomic check: an id the extension recorded meanwhile was shown by its push.
             for event in result.toPost where OrbitPushStore.recordDelivered(event.id, for: link.id) {
                 await OrbitLocalAlerts.post(event, pcID: link.id, pcName: link.name)
             }
@@ -600,11 +835,13 @@ enum OrbitLocalAlerts {
         ]
     }
 
-    static func post(_ event: OrbitPCEvent, pcID: String, pcName: String) async {
+    static func post(_ event: OrbitPCEvent, pcID: String, pcName: String, now: Date = Date()) async {
         let content = UNMutableNotificationContent()
         content.title = event.title.isEmpty ? pcName : event.title
-        content.body = event.body
-        content.threadIdentifier = pcName
+        // Same grouping and subtitle as the pushes the extension shows for this PC.
+        content.subtitle = pcName
+        content.body = OrbitEventFeed.displayBody(event, now: now)
+        content.threadIdentifier = pcID
         content.categoryIdentifier = OrbitEventFeed.notificationCategory(for: event.kind)
         content.userInfo = ["link": OrbitPushCrypto.defaultLink, "pcID": pcID, "eventID": event.id, "kind": event.kind]
         switch event.level {
@@ -624,14 +861,19 @@ enum OrbitLocalAlerts {
         if !duplicates.isEmpty { center.removeDeliveredNotifications(withIdentifiers: duplicates) }
     }
 
-    /// "Cancel" on a "Sleeping in 60 s" alert.
+    /// "Cancel" on a "Sleeping in 60 s" alert. Only the PC that sent it is ever asked: falling back to the
+    /// selected PC could cancel that PC's own, unrelated automatic sleep.
     static func cancelPower(pcID: String?) async {
-        guard let link = pcID.flatMap(OrbitPCLink.link(for:)) ?? OrbitPCLink.selected() else {
+        let link: OrbitPCLink?
+        if let pcID, !pcID.isEmpty { link = OrbitPCLink.link(for: pcID) } else { link = OrbitPCLink.selected() }
+        guard let link else {
             await postNote(title: "Couldn't cancel", body: "Orbit can't find that PC any more. Open Orbit to check it.")
             return
         }
+        let client = link.client
         do {
-            _ = try await link.client.data("/api/power/after", method: "DELETE")
+            // Short, so the action finishes inside the background time iOS gives it.
+            _ = try await OrbitDeadline.run(seconds: 10) { try await client.data("/api/power/after", method: "DELETE") }
         } catch let error as OrbitError where error.statusCode == 404 {
             // Nothing left to cancel (the rule already ended).
         } catch {
@@ -664,6 +906,25 @@ final class OrbitNotificationRouter: ObservableObject {
 
 // MARK: - App delegate
 
+/// Extra background time for a notification action. Ends itself when iOS runs out of time, as iOS
+/// requires (an app that doesn't end its task in time is terminated).
+@MainActor
+final class OrbitBackgroundTask {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
 /// APNs token and notification taps/actions (installed with `UIApplicationDelegateAdaptor` in `OrbitApp`).
 final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -677,6 +938,8 @@ final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         if OrbitNotificationPreferences.isEnabled {
             Task { @MainActor in OrbitPushRegistrar.shared.requestToken() }
         }
+        // PCs that were away when they should have forgotten this device (also on a background launch).
+        Task { @MainActor in await OrbitPushUnregisterQueue.retry(force: true) }
         return true
     }
 
@@ -706,9 +969,9 @@ final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         Task { @MainActor in
             switch action {
             case OrbitEventFeed.cancelPowerAction:
-                let task = UIApplication.shared.beginBackgroundTask(withName: "Cancel PC power action")
+                let background = OrbitBackgroundTask(name: "Cancel PC power action")
                 await OrbitLocalAlerts.cancelPower(pcID: pcID)
-                UIApplication.shared.endBackgroundTask(task)
+                background.end()
             case UNNotificationDefaultActionIdentifier:
                 OrbitNotificationRouter.shared.open(link: link ?? OrbitPushCrypto.defaultLink)
             default:

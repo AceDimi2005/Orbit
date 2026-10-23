@@ -116,7 +116,8 @@ final class MacPCAlertPoller {
         do {
             guard try await supportsEvents(pc, client: client) else { return }
             let previous = MacPCAlertPrefs.cursor(for: pc.id)
-            let result = try await OrbitEventFeed.poll(cursor: previous, delivered: previous ?? 0) { since, limit in
+            // No pushes on the Mac: the cursor alone keeps alerts from repeating.
+            let result = try await OrbitEventFeed.poll(cursor: previous, delivered: OrbitDeliveredIDs()) { since, limit in
                 var query = [URLQueryItem(name: "limit", value: String(limit))]
                 if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
                 return try await client.get("/api/events", query: query)
@@ -155,7 +156,8 @@ final class MacPCAlertPoller {
         let content = UNMutableNotificationContent()
         content.title = event.title.isEmpty ? pc.name : event.title
         content.subtitle = pc.name
-        content.body = event.body
+        // After the Mac wakes, an alert from hours ago says so.
+        content.body = OrbitEventFeed.displayBody(event, now: Date())
         content.threadIdentifier = pc.id
         content.categoryIdentifier = OrbitEventFeed.notificationCategory(for: event.kind)
         content.userInfo = ["pcID": pc.id, "eventID": event.id, "kind": event.kind]
@@ -168,24 +170,32 @@ final class MacPCAlertPoller {
         try? await UNUserNotificationCenter.current().add(request)
     }
 
-    /// "Cancel" on a "Sleeping in 60 s" alert.
+    /// "Cancel" on a "Sleeping in 60 s" alert. Only the PC that sent it is asked: falling back to the
+    /// current PC could cancel that PC's own, unrelated automatic sleep.
     func cancelPower(pcID: String?) async {
         guard let viewModel else { return }
-        let pc = viewModel.savedPCs.first { $0.id == pcID } ?? viewModel.currentPC
-        guard let pc, let client = client(for: pc) else { return }
+        let pc = pcID == nil ? viewModel.currentPC : viewModel.savedPCs.first { $0.id == pcID }
+        guard let pc, let client = client(for: pc) else {
+            await postNote(title: "Couldn't cancel", body: "Orbit can't find that PC any more. Open Orbit to check it.")
+            return
+        }
         do {
             _ = try await client.data("/api/power/after", method: "DELETE")
             viewModel.statusBanner = "Cancelled the automatic sleep on \(pc.name)"
         } catch let error as OrbitError where error.statusCode == 404 {
             viewModel.statusBanner = "Nothing to cancel on \(pc.name)"
         } catch {
-            let content = UNMutableNotificationContent()
-            content.title = "Couldn't cancel on \(pc.name)"
-            content.body = "\(error.localizedDescription) Open Orbit and try again."
-            content.sound = .default
-            content.userInfo = ["orbitNote": true]
-            try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "orbit.note.\(UUID().uuidString)", content: content, trigger: nil))
+            await postNote(title: "Couldn't cancel on \(pc.name)", body: "\(error.localizedDescription) Open Orbit and try again.")
         }
+    }
+
+    private func postNote(title: String, body: String) async {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["orbitNote": true]
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "orbit.note.\(UUID().uuidString)", content: content, trigger: nil))
     }
 }
 

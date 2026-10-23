@@ -16,6 +16,11 @@ import UserNotifications
 /// - `status`: asks for the APNs token, registers with every PC, polls the selected PC once and
 ///   prints the keys, ids and delivered notifications.
 /// - `poll`: `status` after waiting `ORBIT_SELFTEST_WAIT` seconds.
+/// - `disable`: turns PC alerts off (as the switch does) and prints the PCs still queued to forget this device.
+/// - `retry`: retries that queue once and prints what is left.
+/// - `forget`: removes the selected PC the way My PCs does (push side, token, profile) and prints the queue.
+/// - `queue-removed`: queues "forget this device" for a PC that is no longer saved (the selected PC's address,
+///   token and certificate under an unknown profile id), retries once and prints the queue.
 /// Scrolls a list to the section named by `ORBIT_SELFTEST_SCROLL` a few seconds after it appears.
 struct OrbitSelfTestScroll: ViewModifier {
     func body(content: Content) -> some View {
@@ -82,6 +87,35 @@ enum OrbitNotifySelfTest {
             } catch {
                 print("selftest: watch failed: \(OrbitPlainError.describe(error))")
             }
+        case "disable":
+            await OrbitNotificationSwitch.disable()
+            printQueue("after turning alerts off")
+        case "forget":
+            guard let id = UserDefaults.standard.string(forKey: "selectedPCID"),
+                  let profile = OrbitPCLink.savedProfiles().first(where: { $0.id == id }) else { print("selftest: no selected PC"); return }
+            OrbitPushRegistrar.shared.forget(profile)
+            PCProfileStore.removeToken(profile.id)
+            PCProfileStore.save(OrbitPCLink.savedProfiles().filter { $0.id != profile.id })
+            // removePC also clears the current connection, or the view model saves the PC again on launch.
+            let defaults = UserDefaults.standard
+            defaults.removeObject(forKey: "selectedPCID")
+            for key in ["pcIP", "certificateFingerprint"] { defaults.set("", forKey: key) }
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "OrbitAgent", kSecAttrAccount as String: "apiToken"] as CFDictionary)
+            // Exit now: this launch's view model still holds the connection in memory and would save it again.
+            printQueue("after removing \(profile.name)")
+        case "queue-removed":
+            guard let id = UserDefaults.standard.string(forKey: "selectedPCID"),
+                  var profile = OrbitPCLink.savedProfiles().first(where: { $0.id == id }),
+                  let deviceID = OrbitPushStore.deviceID(create: false) else { print("selftest: selected PC and device ID needed"); return }
+            let token = PCProfileStore.token(profile.id)
+            profile.id = "REMOVED-" + UUID().uuidString
+            OrbitPushUnregisterQueue.add(profile, token: token, deviceID: deviceID)
+            printQueue("with a removed PC queued")
+            await OrbitPushUnregisterQueue.retry(force: true)
+            printQueue("after a retry")
+        case "retry":
+            await OrbitPushUnregisterQueue.retry(force: true)
+            printQueue("after a retry")
         case "cancel":
             // The "Cancel" notification action's code path.
             await OrbitLocalAlerts.cancelPower(pcID: OrbitPCLink.selected()?.id)
@@ -98,7 +132,7 @@ enum OrbitNotifySelfTest {
                 push.sound = .default
                 push.userInfo = ["o": ciphertext, "v": 1]
                 let shown = OrbitPushContent.process(push)
-                print("selftest: push \(index + 1) → \(shown.title) — \(shown.body) · category \(shown.categoryIdentifier) · thread \(shown.threadIdentifier) · pc \(shown.userInfo["pcID"] as? String ?? "none") · event \(shown.userInfo["eventID"] as? Int ?? -1) · duplicate \(shown.userInfo[OrbitPushContent.duplicateKey] as? Bool ?? false) · link \(shown.userInfo["link"] as? String ?? "none")")
+                print("selftest: push \(index + 1) → \(shown.title) — \(shown.body) · subtitle \(shown.subtitle) · category \(shown.categoryIdentifier) · thread \(shown.threadIdentifier) · pc \(shown.userInfo["pcID"] as? String ?? "none") · event \(shown.userInfo["eventID"] as? Int ?? -1) · duplicate \(shown.userInfo[OrbitPushContent.duplicateKey] as? Bool ?? false) · link \(shown.userInfo["link"] as? String ?? "none")")
                 try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "orbit.selftest.push.\(index)", content: shown, trigger: nil))
             }
         default:
@@ -176,12 +210,19 @@ enum OrbitNotifySelfTest {
         print("selftest: authorization \(settings.authorizationStatus.rawValue) · polled \(polled) · app group \(OrbitPushStore.sharedDefaults != nil)")
         print("selftest: deviceID \(OrbitPushStore.deviceID(create: false) ?? "none") · keys for \(OrbitPushStore.keyAccounts())")
         if let link = OrbitPCLink.selected() {
-            print("selftest: selected \(link.name) · cursor \(OrbitEventPoller.cursor(for: link.id).map(String.init) ?? "none") · delivered \(OrbitPushStore.deliveredEventID(for: link.id)) · relay \(OrbitPushRegistrar.relayActive(for: link.id)) · key \(OrbitPushStore.key(for: link.id)?.count ?? 0) bytes")
+            print("selftest: selected \(link.name) · cursor \(OrbitEventPoller.cursor(for: link.id).map(String.init) ?? "none") · delivered \(OrbitPushStore.delivered(for: link.id).ids) (floor \(OrbitPushStore.delivered(for: link.id).floor)) · relay \(OrbitPushRegistrar.relayActive(for: link.id)) · key \(OrbitPushStore.key(for: link.id)?.count ?? 0) bytes")
         }
         for note in await UNUserNotificationCenter.current().deliveredNotifications() {
             let content = note.request.content
-            print("selftest: delivered [\(note.request.identifier)] \(content.title) — \(content.body) · category \(content.categoryIdentifier) · level \(content.interruptionLevel.rawValue)")
+            print("selftest: delivered [\(note.request.identifier)] \(content.title) — \(content.body) · subtitle \(content.subtitle) · thread \(content.threadIdentifier) · category \(content.categoryIdentifier) · level \(content.interruptionLevel.rawValue)")
         }
+        printQueue("now")
+    }
+
+    @MainActor
+    private static func printQueue(_ when: String) {
+        let entries = OrbitPushUnregisterQueue.entries()
+        print("selftest: forget queue \(when): \(entries.count) · \(entries.map { "\($0.pcName) \($0.host):\($0.port) device \($0.deviceID.prefix(8))" }) · keys \(OrbitPushStore.keyAccounts().count) · token \(OrbitPushRegistrar.shared.tokenState)")
     }
 }
 #endif

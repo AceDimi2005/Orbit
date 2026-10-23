@@ -4,17 +4,23 @@ import UserNotifications
 
 /// What the iPhone app and its Notification Service Extension share for PC alerts, all in the App Group:
 ///
-/// - `deviceID` (App Group defaults `Orbit.PushDeviceID.v1`): one random uppercase UUID per install. The
-///   PC uses it as the device's name at the relay and as the AES-GCM associated data.
+/// - `deviceID`: one random uppercase UUID per install, in the App Group keychain (service
+///   `Orbit.PushDeviceID.v1`, `AfterFirstUnlockThisDeviceOnly`). The PC uses it as the device's name at the
+///   relay and as the AES-GCM associated data. It lives in the keychain rather than in defaults so that two
+///   devices restored from one backup never share it (the keys below never leave the device either).
 /// - One 32-byte key per (this device, PC) pair in the App Group keychain: service `Orbit.PushKey.v1`,
 ///   account = the PC's profile id, `AfterFirstUnlockThisDeviceOnly` so the extension can read it while
 ///   the iPhone is locked (after the first unlock since boot).
-/// - The highest event id shown for each PC (App Group defaults `Orbit.DeliveredEvents.v1`, profile id →
-///   id), written by the extension and by the app's own poller, so an alert never shows twice.
+/// - The event ids already shown for each PC (`OrbitDeliveredStore`, a file in the App Group container),
+///   written by the extension and by the app's own poller, so an alert never shows twice.
+/// - The PCs' names (App Group defaults `Orbit.PushPCNames.v1`, profile id → name) for the subtitle the
+///   extension shows; the app writes them when it registers with a PC.
 enum OrbitPushStore {
     static let keyService = "Orbit.PushKey.v1"
     static let deviceIDKey = "Orbit.PushDeviceID.v1"
-    static let deliveredKey = "Orbit.DeliveredEvents.v1"
+    static let pcNamesKey = "Orbit.PushPCNames.v1"
+    /// Builds before the delivered store kept `profile id → highest id` here.
+    static let legacyDeliveredKey = "Orbit.DeliveredEvents.v1"
 
     static var appGroup: String? {
         guard let value = Bundle.main.object(forInfoDictionaryKey: "OrbitAppGroupIdentifier") as? String,
@@ -22,22 +28,61 @@ enum OrbitPushStore {
         return value
     }
 
+    static var containerURL: URL? {
+        guard let appGroup else { return nil }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+
     /// App Group defaults, or nil when the group is missing from the signature (then nothing is shared).
     static var sharedDefaults: UserDefaults? {
-        guard let appGroup, FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) != nil else { return nil }
+        guard let appGroup, containerURL != nil else { return nil }
         return UserDefaults(suiteName: appGroup)
     }
 
     // MARK: Device ID
 
+    private static func deviceIDQuery() -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: deviceIDKey,
+            kSecAttrAccount as String: "deviceID"
+        ]
+        if let appGroup { query[kSecAttrAccessGroup as String] = appGroup }
+        return query
+    }
+
+    private static func storedDeviceID() -> String? {
+        var query = deviceIDQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data, let value = String(data: data, encoding: .utf8), isValidDeviceID(value) else { return nil }
+        return value
+    }
+
+    private static func storeDeviceID(_ value: String) -> Bool {
+        let query = deviceIDQuery()
+        _ = SecItemDelete(query as CFDictionary)
+        var item = query
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
     /// This install's device ID. The app creates it; the extension only reads it (`create: false`).
+    /// Returns nil when iOS can't store it (then nothing is registered: the extension couldn't open alerts).
     static func deviceID(create: Bool) -> String? {
-        let store = sharedDefaults ?? (create ? .standard : nil)
-        if let existing = store?.string(forKey: deviceIDKey), isValidDeviceID(existing) { return existing }
-        guard create, let store else { return nil }
-        let fresh = UUID().uuidString
-        store.set(fresh, forKey: deviceIDKey)
-        return fresh
+        if let stored = storedDeviceID() { return stored }
+        // Earlier builds kept the ID in App Group defaults, which travel with backups.
+        let legacy = sharedDefaults?.string(forKey: deviceIDKey).flatMap { isValidDeviceID($0) ? $0 : nil }
+        guard create else { return legacy }
+        // Keys are ThisDeviceOnly: if they're here, so was that ID (an update, not a restored backup), and
+        // the PCs know this device by it. Without keys it may belong to the device the backup came from.
+        let value = legacy.flatMap { keyAccounts().isEmpty ? nil : $0 } ?? UUID().uuidString
+        guard storeDeviceID(value) else { return nil }
+        sharedDefaults?.removeObject(forKey: deviceIDKey)
+        return value
     }
 
     /// The relay's rule: 1–64 characters `[A-Za-z0-9][A-Za-z0-9._-]*`.
@@ -115,38 +160,49 @@ enum OrbitPushStore {
         keyAccounts().compactMap { account in key(for: account).map { (account, $0) } }
     }
 
+    // MARK: PC names (for the extension's subtitle)
+
+    static func pcName(for pcID: String) -> String? {
+        let name = (sharedDefaults?.dictionary(forKey: pcNamesKey) as? [String: String])?[pcID]
+        return name?.isEmpty == false ? name : nil
+    }
+
+    static func setPCName(_ name: String?, for pcID: String) {
+        guard let defaults = sharedDefaults, !pcID.isEmpty else { return }
+        var map = (defaults.dictionary(forKey: pcNamesKey) as? [String: String]) ?? [:]
+        guard map[pcID] != name else { return }
+        map[pcID] = name
+        defaults.set(map, forKey: pcNamesKey)
+    }
+
     // MARK: Delivered events
 
-    static func deliveredEventID(for pcID: String) -> Int {
-        let map = (sharedDefaults ?? .standard).dictionary(forKey: deliveredKey) as? [String: Int]
-        return map?[pcID] ?? 0
+    static var deliveredStore: OrbitDeliveredStore {
+        let base = containerURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = containerURL == nil ? base.appendingPathComponent("Orbit", isDirectory: true)
+            : base.appendingPathComponent("Library/Application Support/Orbit", isDirectory: true)
+        return OrbitDeliveredStore(fileURL: directory.appendingPathComponent("DeliveredEvents.v2.json"))
     }
 
-    /// Returns false when the id was already recorded (the alert was shown before).
+    static func delivered(for pcID: String) -> OrbitDeliveredIDs {
+        deliveredStore.ids(for: pcID)
+    }
+
+    /// Returns false when the event was already shown.
     @discardableResult
     static func recordDelivered(_ eventID: Int, for pcID: String) -> Bool {
-        guard eventID > 0, !pcID.isEmpty else { return true }
-        let store = sharedDefaults ?? .standard
-        var map = (store.dictionary(forKey: deliveredKey) as? [String: Int]) ?? [:]
-        guard eventID > (map[pcID] ?? 0) else { return false }
-        map[pcID] = eventID
-        store.set(map, forKey: deliveredKey)
-        return true
+        deliveredStore.record(eventID, for: pcID)
     }
 
-    /// For a PC whose event log was recreated (ids start again from 1).
-    static func resetDelivered(for pcID: String, to eventID: Int) {
-        let store = sharedDefaults ?? .standard
-        var map = (store.dictionary(forKey: deliveredKey) as? [String: Int]) ?? [:]
-        map[pcID] = max(0, eventID)
-        store.set(map, forKey: deliveredKey)
+    /// For a PC whose event log was recreated (ids start again from 1); see `OrbitDeliveredStore.reconcile`.
+    static func reconcileDelivered(for pcID: String, latestID: Int, floor: Int, pollStartedAt: Date, logRecreated: Bool) {
+        deliveredStore.reconcile(pcID, latestID: latestID, floor: floor, pollStartedAt: pollStartedAt, logRecreated: logRecreated)
     }
 
     static func forgetDelivered(for pcID: String) {
-        let store = sharedDefaults ?? .standard
-        var map = (store.dictionary(forKey: deliveredKey) as? [String: Int]) ?? [:]
-        map.removeValue(forKey: pcID)
-        store.set(map, forKey: deliveredKey)
+        deliveredStore.forget(pcID)
+        sharedDefaults?.removeObject(forKey: legacyDeliveredKey)
     }
 }
 
@@ -174,25 +230,35 @@ enum OrbitPushContent {
     }
 
     /// The alert with its real text, or nil when no stored key opens it.
-    static func decrypted(_ original: UNNotificationContent) -> UNMutableNotificationContent? {
+    static func decrypted(_ original: UNNotificationContent, now: Date = Date()) -> UNMutableNotificationContent? {
         guard let ciphertext = original.userInfo["o"] as? String,
               let deviceID = OrbitPushStore.deviceID(create: false) else { return nil }
         let keys = OrbitPushStore.allKeys()
-        guard !keys.isEmpty, let opened = OrbitPushCrypto.open(ciphertext, keys: keys, deviceID: deviceID),
+        guard !keys.isEmpty,
+              let outcome = OrbitPushCrypto.receive(ciphertext, keys: keys, deviceID: deviceID,
+                                                    record: { OrbitPushStore.recordDelivered($0, for: $1) }),
               let content = original.mutableCopy() as? UNMutableNotificationContent else { return nil }
-        let message = opened.message
+        let message = outcome.message
+        let sentAt = message.timestamp > 0 ? Date(timeIntervalSince1970: message.timestamp) : nil
         content.title = message.title
-        content.body = message.body
-        if !message.pc.isEmpty { content.threadIdentifier = message.pc }
+        content.body = OrbitEventFeed.displayBody(message.body, date: sentAt, now: now)
+        // Same grouping and subtitle as the alerts the app's poller posts for this PC.
+        content.threadIdentifier = outcome.pcID
+        content.subtitle = OrbitPushStore.pcName(for: outcome.pcID) ?? message.pc
         content.categoryIdentifier = OrbitEventFeed.notificationCategory(for: message.kind)
+        if message.kind == "power.scheduled", let sentAt,
+           now.timeIntervalSince(sentAt) > OrbitEventFeed.maximumPowerDelay + OrbitEventFeed.powerScheduledGrace {
+            // Held by APNs past any countdown: a Cancel button could only fail.
+            content.categoryIdentifier = OrbitEventFeed.eventCategory
+        }
         content.userInfo["link"] = message.link
-        content.userInfo["pcID"] = opened.id
+        content.userInfo["pcID"] = outcome.pcID
         content.userInfo["eventID"] = message.id
         content.userInfo["kind"] = message.kind
         content.userInfo.removeValue(forKey: "o")
-        // The app's own poller may have shown this event already (it records the same ids). An
-        // extension can't hide a push, so this copy arrives silently and the app removes it later.
-        if message.id > 0, !OrbitPushStore.recordDelivered(message.id, for: opened.id) {
+        // The app's own poller showed this event already. An extension can't hide a push, so this copy
+        // arrives silently and the app removes it later.
+        if outcome.duplicate {
             content.userInfo[duplicateKey] = true
             content.sound = nil
             content.interruptionLevel = .passive

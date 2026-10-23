@@ -6,6 +6,9 @@ struct TaskManagerView: View {
     @State private var sortOrder: ProcessSortOrder = .memory
     @State private var selectedProcess: PCProcess?
     @ObservedObject private var featureStore = OrbitFeatureStore.shared
+    /// The last watch request's result. Kept here, not in `vm.processesError`, which every 3 s refresh clears.
+    @State private var watchResult: OrbitTaskWatch.Outcome?
+    @State private var sleepConfirmation: SleepConfirmation?
     @Environment(\.scenePhase) private var scenePhase
 
     private var sortedProcesses: [PCProcess] {
@@ -80,6 +83,7 @@ struct TaskManagerView: View {
                 Section { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.mint) }
                     .orbitRow(tint: .mint)
             }
+            if let watchResult { watchResultSection(watchResult) }
             Section("Running processes") {
                 if vm.isLoadingProcesses && vm.processes.isEmpty {
                     HStack { ProgressView(); Text("Reading running processes…").padding(.leading, 8) }
@@ -116,7 +120,7 @@ struct TaskManagerView: View {
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             }
         }
-        .onChange(of: vm.connectionID) { _, _ in selectedProcess = nil }
+        .onChange(of: vm.connectionID) { _, _ in selectedProcess = nil; watchResult = nil; sleepConfirmation = nil }
         .confirmationDialog("End \(selectedProcess?.name ?? "this application")?", isPresented: Binding(
             get: { selectedProcess != nil }, set: { if !$0 { selectedProcess = nil } }
         ), titleVisibility: .visible) {
@@ -130,6 +134,55 @@ struct TaskManagerView: View {
         } message: {
             Text("Stops the selected process on your PC. Unsaved work may be lost.")
         }
+        .confirmationDialog(sleepConfirmation?.title ?? "", isPresented: Binding(
+            get: { sleepConfirmation != nil }, set: { if !$0 { sleepConfirmation = nil } }
+        ), titleVisibility: .visible, presenting: sleepConfirmation) { pending in
+            Button("Sleep When It Finishes") {
+                sleepConfirmation = nil
+                runWatch(pending.process, mode: pending.mode, sleepAfter: true)
+            }
+            Button("Cancel", role: .cancel) { sleepConfirmation = nil }
+        } message: { pending in
+            Text(pending.message)
+        }
+    }
+
+    /// "Sleep When It Finishes", waiting for its confirmation.
+    private struct SleepConfirmation {
+        var process: PCProcess
+        var mode: String
+        var pcName: String
+        var existing: OrbitTaskWatch.ExistingRule
+
+        private var label: String { OrbitTaskWatch.displayName(process.name) }
+        private var finishing: String { mode == "idle" ? "goes idle" : "closes" }
+        var title: String { "Put \(pcName) to sleep when \(label) \(finishing)?" }
+        var message: String {
+            var text = "A minute after \(label) \(finishing), \(pcName) goes to sleep. Orbit tells you first, and you can cancel from the notification or from Tools › Notifications."
+            switch existing {
+            case .nothing: break
+            case .rule(let rule): text += " This replaces what's set up now: \(rule)."
+            case .unknown: text += " If another automatic sleep or shutdown is set up, this replaces it."
+            }
+            return text
+        }
+    }
+
+    private func watchResultSection(_ result: OrbitTaskWatch.Outcome) -> some View {
+        Section {
+            HStack(alignment: .top, spacing: 8) {
+                Label(result.message, systemImage: result.ok ? "bell.badge.fill" : "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(result.ok ? Color.mint : Color.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { watchResult = nil } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+            }
+        }
+        .orbitRow(tint: result.ok ? .mint : .orange)
     }
 
     /// "Notify Me When It Finishes" / "Sleep When It Finishes" (PC alerts, agents with `tasks`).
@@ -156,10 +209,21 @@ struct TaskManagerView: View {
 
     private func watch(_ process: PCProcess, mode: String, sleepAfter: Bool) {
         OrbitHaptics.press()
+        guard sleepAfter else { runWatch(process, mode: mode, sleepAfter: false); return }
+        // Sleeping the PC replaces any rule already set up (even a running countdown): confirm first.
+        Task {
+            let existing = await OrbitTaskWatch.existingRule(vm: vm)
+            sleepConfirmation = SleepConfirmation(process: process, mode: mode, pcName: vm.isDemoMode ? vm.metrics.hostname : vm.selectedPCName, existing: existing)
+        }
+    }
+
+    private func runWatch(_ process: PCProcess, mode: String, sleepAfter: Bool) {
         Task {
             let result = await OrbitTaskWatch.watch(process, mode: mode, sleepAfter: sleepAfter, vm: vm)
-            if result.ok { vm.processActionStatus = result.message; vm.processesError = nil; OrbitHaptics.success() }
-            else { vm.processesError = result.message; OrbitHaptics.error() }
+            // One result row: an older "Ended …" line would read as part of this answer.
+            vm.processActionStatus = nil
+            watchResult = result
+            if result.ok { OrbitHaptics.success() } else { OrbitHaptics.error() }
         }
     }
 
