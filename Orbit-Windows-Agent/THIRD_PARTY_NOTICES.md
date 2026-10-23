@@ -1,5 +1,23 @@
 # Third-party notices
 
+## Electricity price data (orbit_energy.py)
+
+The household electricity prices that Orbit uses to estimate what the PC's electricity costs come
+from these public sources. Orbit stores one price per country (national currency, all taxes
+included) and may download a newer copy of the Eurostat table; nothing about the user is sent.
+
+- **Eurostat**, dataset `nrg_pc_204` "Electricity prices for household consumers - bi-annual data",
+  https://ec.europa.eu/eurostat/databrowser/view/nrg_pc_204/default/table. Source: Eurostat.
+  Reused under the Commission's reuse policy (Decision 2011/833/EU) and CC BY 4.0. Changes: Orbit
+  keeps only the all-taxes price per kWh for each country (the all-consumption-bands average, else
+  the 2,500-4,999 kWh band) from the newest period, maps Eurostat geo codes to ISO codes (EL to GR)
+  and labels each value with its period.
+- **U.S. Energy Information Administration**, Electric Power Monthly, average residential price
+  2025 (public domain). Source: U.S. Energy Information Administration (October 2026).
+- **Ofgem**, energy price cap unit rates for 1 October to 31 December 2026 (Great Britain average,
+  Direct Debit). Contains public sector information licensed under the Open Government Licence v3.0.
+- **ElCom** (Swiss Federal Electricity Commission), median household tariff 2026.
+
 ## EarTrumpet audio policy interface definitions
 
 Orbit's independently written Python audio policy adapter references the factual

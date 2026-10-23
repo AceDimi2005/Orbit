@@ -6,6 +6,7 @@ detection. Missing readings stay null and gaps receive separate chart segments.
 """
 
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -303,6 +304,26 @@ class SessionRecorder:
             return {"session": summary, "samples": reduced, "downsampled": len(reduced) < count,
                     "sampleIntervalSeconds": self._sample_interval}
 
+    def power_samples(self, session_id):
+        """Every stored sample of a session, oldest first, with only what energy estimates need:
+        `{"timestamp", "segment", "telemetryAvailable", "cpuPowerWatts", "gpuPowerWatts"}`."""
+        with self._lock:
+            self._assert_open()
+            if self._db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
+                raise KeyError("Session not found.")
+            rows = self._db.execute("SELECT timestamp, segment, readings FROM samples WHERE session_id = ? ORDER BY timestamp",
+                                    (session_id,)).fetchall()
+        result = []
+        for row in rows:
+            try:
+                readings = json.loads(row["readings"])
+            except ValueError:
+                continue
+            result.append({"timestamp": row["timestamp"], "segment": row["segment"],
+                           "telemetryAvailable": readings.get("telemetryAvailable") is not False,
+                           "cpuPowerWatts": readings.get("cpuPowerWatts"), "gpuPowerWatts": readings.get("gpuPowerWatts")})
+        return result
+
     def delete(self, session_id):
         with self._lock:
             self._assert_open()
@@ -339,8 +360,12 @@ class StartSessionBody(BaseModel):
     name: str | None = Field(default=None, max_length=100)
 
 
-def create_history_router(verify_control, recorder_provider):
-    """All routes use the caller's existing control-token verification."""
+def create_history_router(verify_control, recorder_provider, detail_extras=None):
+    """All routes use the caller's existing control-token verification.
+
+    `detail_extras(recorder, session_id)` may return more top-level keys for a session's detail
+    (the electricity estimate, `"energy"`); when it fails the detail is answered without them.
+    """
     router = APIRouter(prefix="/api/history", tags=["Session history"])
 
     def recorder(authorization, request):
@@ -369,10 +394,19 @@ def create_history_router(verify_control, recorder_provider):
 
     @router.get("/sessions/{session_id}")
     def session_detail(session_id: str, request: Request, authorization: str = Header(None)):
+        active = recorder(authorization, request)
         try:
-            return recorder(authorization, request).detail(session_id)
+            result = active.detail(session_id)
         except KeyError as exc:
             raise HTTPException(404, "Session not found.") from exc
+        if detail_extras is not None:
+            try:
+                extras = detail_extras(active, session_id)
+                if isinstance(extras, dict):
+                    result.update({key: value for key, value in extras.items() if key not in result})
+            except Exception:
+                logging.getLogger("orbit.history").exception("Could not add extras to session %s", session_id)
+        return result
 
     @router.delete("/sessions/{session_id}")
     def delete_session(session_id: str, request: Request, authorization: str = Header(None)):
