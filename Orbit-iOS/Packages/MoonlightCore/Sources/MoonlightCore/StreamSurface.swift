@@ -427,8 +427,8 @@ public final class MoonlightStreamSurfaceView: NSView {
     private var videoLayer: AVSampleBufferDisplayLayer?
     private var modifierState = NSEvent.ModifierFlags()
     private var windowObservers: [NSObjectProtocol] = []
-    /// Keys pressed as part of an Orbit chord; their key-up is swallowed too.
-    private var chordKeys = Set<UInt16>()
+    /// Keys pressed as part of an Orbit chord; their key-up is swallowed too. Readable for tests.
+    private(set) var chordKeys = Set<UInt16>()
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -460,6 +460,7 @@ public final class MoonlightStreamSurfaceView: NSView {
         window.makeFirstResponder(self)
         let center = NotificationCenter.default
         windowObservers.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+            // Also forgets held chord keys: their key-ups go to whichever window is key now.
             self?.releaseCapture()
         })
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
@@ -467,7 +468,8 @@ public final class MoonlightStreamSurfaceView: NSView {
                 self?.fullScreenChanged()
             })
         }
-        handle?.isFullScreen = window.styleMask.contains(.fullScreen)
+        // SwiftUI moves the view into its window while it updates views, where publishing is not allowed.
+        DispatchQueue.main.async { [weak self] in self?.publishFullScreen() }
     }
 
     // MARK: Full screen
@@ -478,8 +480,13 @@ public final class MoonlightStreamSurfaceView: NSView {
         window.toggleFullScreen(nil)
     }
 
+    private func publishFullScreen() {
+        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        if handle?.isFullScreen != fullScreen { handle?.isFullScreen = fullScreen }
+    }
+
     private func fullScreenChanged() {
-        handle?.isFullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        publishFullScreen()
         // The window moved and resized; keep the hidden cursor over the video so clicks stay in the stream.
         if isCaptured { parkCursor() }
     }
@@ -522,6 +529,8 @@ public final class MoonlightStreamSurfaceView: NSView {
     }
 
     public func releaseCapture() {
+        // The PC no longer gets keys, so no chord key-up needs swallowing either.
+        chordKeys.removeAll()
         guard isCaptured else { return }
         isCaptured = false
         CGAssociateMouseAndMouseCursorPosition(1)
@@ -582,6 +591,12 @@ public final class MoonlightStreamSurfaceView: NSView {
 
     public override func keyDown(with event: NSEvent) {
         if handleChord(event) { return }
+        if chordKeys.contains(event.keyCode) {
+            // Still held from a chord after the modifiers went up: its repeats are not for the PC either.
+            if event.isARepeat { return }
+            // A fresh press whose chord key-up never arrived: this press gets its own key-up.
+            chordKeys.remove(event.keyCode)
+        }
         guard isCaptured else { super.keyDown(with: event); return }
         guard let virtualKey = MoonlightVirtualKey.fromMacKeyCode(event.keyCode) else { return }
         session?.sendKey(virtualKey: virtualKey, pressed: true, modifiers: Self.modifiers(event.modifierFlags))
