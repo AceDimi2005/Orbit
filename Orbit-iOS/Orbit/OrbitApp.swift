@@ -6,7 +6,9 @@ struct OrbitApp: App {
     init() {
         #if DEBUG
         if let mode = ProcessInfo.processInfo.environment["ORBIT_IDENTITY_SELFTEST"] { OrbitIdentitySelfTest.run(mode: mode) }
+        if let mode = ProcessInfo.processInfo.environment["ORBIT_INTENTS_SELFTEST"] { OrbitIntentsSelfTest.run(mode: mode) }
         #endif
+        OrbitIntentClient.startMirroringDemoMode()
         OrbitAppShortcuts.updateAppShortcutParameters()
         OrbitBackgroundRefresh.register()
         Self.migrateDefaultTheme()
@@ -68,6 +70,50 @@ struct OrbitAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Restart PC",
             systemImageName: "arrow.triangle.2.circlepath"
+        )
+        // Free actions (OrbitPCIntents.swift). Apple allows 10 App Shortcuts; 2 are left for the
+        // button deck and presentation actions. Keep App Shortcut intents out of the widget
+        // extension: iOS runs an intent that both targets compile in the widget process while
+        // Orbit is closed, where App Shortcuts fail ("Couldn't find AppShortcutsProvider").
+        AppShortcut(
+            intent: LockPCIntent(),
+            phrases: [
+                "Lock my PC with \(.applicationName)",
+                "Lock my computer in \(.applicationName)",
+                "Lock \(\.$pc) with \(.applicationName)"
+            ],
+            shortTitle: "Lock PC",
+            systemImageName: "lock.fill"
+        )
+        AppShortcut(
+            intent: GetPCStatusIntent(),
+            phrases: [
+                "How is my PC doing in \(.applicationName)",
+                "Check on my PC with \(.applicationName)",
+                "Get my PC status in \(.applicationName)",
+                "How is \(\.$pc) doing in \(.applicationName)"
+            ],
+            shortTitle: "PC Status",
+            systemImageName: "desktopcomputer"
+        )
+        AppShortcut(
+            intent: GetPCReadingIntent(),
+            phrases: [
+                "What's my PC's \(\.$reading) in \(.applicationName)",
+                "Check my PC's \(\.$reading) with \(.applicationName)",
+                "How hot is my PC in \(.applicationName)"
+            ],
+            shortTitle: "PC Reading",
+            systemImageName: "thermometer.medium"
+        )
+        AppShortcut(
+            intent: SleepWhenDownloadsFinishIntent(),
+            phrases: [
+                "Sleep my PC when downloads finish with \(.applicationName)",
+                "Put my PC to sleep after its downloads in \(.applicationName)"
+            ],
+            shortTitle: "Sleep After Downloads",
+            systemImageName: "arrow.down.circle"
         )
     }
 }

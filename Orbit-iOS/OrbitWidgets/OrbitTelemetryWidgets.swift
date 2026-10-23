@@ -5,6 +5,10 @@ import WidgetKit
 import Security
 import CryptoKit
 
+/// The PC chosen in a telemetry widget's configuration. Saved widget configurations refer to this
+/// entity type by name, so it keeps its name and its identifiers (the PC profile id) instead of being
+/// replaced by the shared `OrbitPCEntity` that Shortcuts actions use; renaming it would reset every
+/// configured widget to the default PC. The lookups are shared with `OrbitPCEntity`.
 struct OrbitWidgetPC: AppEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Paired PC")
     static var defaultQuery = OrbitWidgetPCQuery()
@@ -14,14 +18,21 @@ struct OrbitWidgetPC: AppEntity {
 }
 struct OrbitWidgetPCQuery: EntityQuery {
     func entities(for identifiers: [String]) async throws -> [OrbitWidgetPC] {
-        OrbitWidgetConnectionStore.connections().filter { identifiers.contains($0.id) }.map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+        OrbitPCEntity.all().filter { identifiers.contains($0.id) }.map(OrbitWidgetPC.init)
     }
     func suggestedEntities() async throws -> [OrbitWidgetPC] {
-        OrbitWidgetConnectionStore.connections().map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+        OrbitPCEntity.all().map(OrbitWidgetPC.init)
     }
     func defaultResult() async -> OrbitWidgetPC? {
-        OrbitWidgetConnectionStore.defaultConnection().map { OrbitWidgetPC(id: $0.id, name: $0.name) }
+        OrbitPCEntity.defaultPC().map(OrbitWidgetPC.init)
     }
+}
+extension OrbitWidgetPC {
+    init(_ pc: OrbitPCEntity) { self.init(id: pc.id, name: pc.name) }
+}
+extension OrbitPCEntity {
+    /// The same PC as a Shortcuts action parameter, for buttons in a configured widget.
+    init(_ pc: OrbitWidgetPC) { self.init(id: pc.id, name: pc.name) }
 }
 
 /// Configuration intent for multi-metric panel widgets (Overview, Gaming, Power, Thermal, Cooling, Storage, Network).

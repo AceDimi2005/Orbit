@@ -414,7 +414,12 @@ enum OrbitWidgetPowerService {
         do {
             let (_, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                let label = action == "shutdown" ? "Shutting down" : (action == "sleep" ? "Sleeping" : "Restarting")
+                let label = switch action {
+                case "shutdown": "Shutting down"
+                case "sleep": "Sleeping"
+                case "lock": "Locked"
+                default: "Restarting"
+                }
                 let message = "\(label) \(connection.name)"
                 OrbitWidgetConnectionStore.recordPowerFeedback(message)
                 return message

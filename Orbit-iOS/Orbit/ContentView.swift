@@ -2431,9 +2431,11 @@ struct WidgetHelpView: View {
 
             Section("Control Center & Siri (iOS 18+)") {
                 widgetRow("Control Center Buttons", detail: "Swipe down Control Center → tap + → Add a Control → search Orbit to add Power On, Sleep, or Shut Down buttons", icon: "switch.2", tint: .mint)
-                widgetRow("Siri & Shortcuts", detail: "Say \"Hey Siri, power on my PC with Orbit\" or \"Shut down my PC with Orbit\"", icon: "mic.fill", tint: .pink)
+                widgetRow("Siri & Shortcuts", detail: "Say \"Hey Siri, power on my PC with Orbit\", \"Lock my PC with Orbit\" or \"How is my PC doing in Orbit\"", icon: "mic.fill", tint: .pink)
             }
             .orbitRow()
+
+            OrbitShortcutsHelpSections()
 
             Section("Paired PCs for Widgets") {
                 ForEach(pairedPCs) { pc in
