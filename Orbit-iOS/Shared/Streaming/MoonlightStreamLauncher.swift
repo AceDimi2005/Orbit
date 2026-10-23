@@ -91,8 +91,9 @@ extension MoonlightHostCoordinator {
         apps.first { $0.title.caseInsensitiveCompare("Desktop") == .orderedSame } ?? apps.first
     }
 
-    /// Launches (or resumes) `app` on the host at `size` and returns what the engine needs to connect,
-    /// including that size. When another app is running, `quitRunningApp` decides whether to end it first.
+    /// Launches (or resumes) `app` on the host at `size` (kept within H.264's limit when the host no longer
+    /// offers HEVC) and returns what the engine needs to connect, including the size actually requested.
+    /// When another app is running, `quitRunningApp` decides whether to end it first.
     func prepareStream(app: MoonlightApp, settings: MoonlightStreamSettings, size: MoonlightStreamSize, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
         do {
             return try await launchForStream(app: app, settings: settings, size: size, quitRunningApp: quitRunningApp)
@@ -105,6 +106,9 @@ extension MoonlightHostCoordinator {
     private func launchForStream(app: MoonlightApp, settings: MoonlightStreamSettings, size: MoonlightStreamSize, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
         let transport = try await streamingTransport()
         let info = try await MoonlightClient.serverInfo(transport, secure: true)
+        // `size` was chosen from what the host reported earlier. One that has stopped offering HEVC since then
+        // streams H.264, which ends at 4096 pixels per side; `/launch` and the session both get the result.
+        let streamSize = MoonlightStreamSettings.size(size, forHostSupportingHEVC: info.supportsHEVC)
         var resume = false
         if info.currentGame != 0 {
             if info.currentGame == app.id {
@@ -118,12 +122,12 @@ extension MoonlightHostCoordinator {
         }
         let key = MoonlightCrypto.random(16)
         let keyID = UInt32.random(in: 1..<UInt32(Int32.max))
-        let result = try await MoonlightClient.launch(transport, appID: app.id, settings: settings, size: size, remoteInputKey: key, remoteInputKeyID: keyID, resume: resume)
+        let result = try await MoonlightClient.launch(transport, appID: app.id, settings: settings, size: streamSize, remoteInputKey: key, remoteInputKeyID: keyID, resume: resume)
         Task { await refresh() }
         return MoonlightConnectionParameters(
             address: address, appVersion: info.appVersion, gfeVersion: info.gfeVersion, rtspSessionURL: result.rtspSessionURL,
             serverCodecModeSupport: Int32(truncatingIfNeeded: info.serverCodecModeSupport),
-            remoteInputKey: key, remoteInputKeyID: keyID, appName: app.title, hostName: hostDisplayName, streamSize: size
+            remoteInputKey: key, remoteInputKeyID: keyID, appName: app.title, hostName: hostDisplayName, streamSize: streamSize
         )
     }
 }
@@ -150,7 +154,7 @@ extension MoonlightHostCoordinator {
         var fast = settings
         fast.hdr = false
         fast.framePacing = false
-        let size = MoonlightStreamTarget.make(settings: fast, hostSupportsHEVC: info?.supportsHEVC).size
+        let size = MoonlightStreamTarget.make(settings: fast, hostSupportsHEVC: hostSupportsHEVC).size
         let parameters = try await prepareStream(app: app, settings: fast, size: size, quitRunningApp: false)
         let session = MoonlightStreamSession(settings: fast)
         session.start(parameters: parameters, settings: fast, headless: true)
@@ -202,7 +206,7 @@ final class MoonlightStreamController: ObservableObject {
             self.app = app
             self.pcName = pcName
             self.settings = settings
-            self.target = target ?? MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.info?.supportsHEVC)
+            self.target = target ?? MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.hostSupportsHEVC)
             self.quitRunningApp = quitRunningApp
             self.promptUnlock = promptUnlock
         }

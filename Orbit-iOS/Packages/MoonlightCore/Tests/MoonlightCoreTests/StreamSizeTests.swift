@@ -171,6 +171,17 @@ final class StreamSizeTests: XCTestCase {
         XCTAssertEqual(settings.streamSize(native: iPhone, hostSupportsHEVC: nil), MoonlightStreamSize(width: 3840, height: 2160))
     }
 
+    func testLaunchKeepsTheSizeWithinH264WhenTheHostNoLongerOffersHEVC() {
+        // Chosen while the host still reported HEVC (4K Fill Screen on an iPhone), launched after it stopped.
+        let chosen = MoonlightStreamSize(width: 4682, height: 2160)
+        XCTAssertEqual(Settings.size(chosen, forHostSupportingHEVC: false), MoonlightStreamSize(width: 4096, height: 1888))
+        XCTAssertEqual(Settings.size(chosen, forHostSupportingHEVC: true), chosen)
+        // Sizes H.264 can carry are never touched.
+        let phone = MoonlightStreamSize(width: 2556, height: 1178)
+        XCTAssertEqual(Settings.size(phone, forHostSupportingHEVC: false), phone)
+        XCTAssertEqual(Settings.size(MoonlightStreamSize(width: 6016, height: 3384), forHostSupportingHEVC: false), MoonlightStreamSize(width: 4096, height: 2304))
+    }
+
     // MARK: Labels and bitrate
 
     func testShortTitlesReadCorrectlyForNativeSizes() {

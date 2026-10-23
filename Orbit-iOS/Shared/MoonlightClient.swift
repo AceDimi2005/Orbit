@@ -610,8 +610,13 @@ struct MoonlightHostRecord: Codable, Equatable {
     var clientIdentity: MoonlightIdentityReference?
     /// Sunshine's `uniqueid`, which survives address and PC profile changes.
     var serverUniqueID: String?
+    /// `ServerCodecModeSupport` from the last paired server info, so stream sizes can follow the host's codecs
+    /// before it is asked again (and on screens that never ask). Nil until it has been read once.
+    var serverCodecModeSupport: Int?
 
     var isPaired: Bool { serverCertificateDER != nil && pairedAt != nil }
+    /// Whether the host's encoder offered HEVC when it was last asked; nil when it never was.
+    var supportsHEVC: Bool? { serverCodecModeSupport.map { $0 & 0x100 != 0 } }
 }
 
 enum MoonlightHostStore {
@@ -916,6 +921,9 @@ final class MoonlightHostCoordinator: ObservableObject {
     /// Sunshine's web UI pairing page on the PC, where the PIN is typed.
     var pairingPageURL: URL? { URL(string: "https://\(address):\(httpPort + 1)/pin") }
     var hostDisplayName: String { info?.hostname ?? record?.hostname ?? address }
+    /// Whether the host's encoder offers HEVC: the live server info, else what the host reported last time,
+    /// else nil (unknown). Stream sizes use it to decide whether H.264's 4096-pixel limit applies.
+    var hostSupportsHEVC: Bool? { info.map(\.supportsHEVC) ?? record?.supportsHEVC }
 
     /// Short human-readable state for status pills.
     var statusText: String {
@@ -1011,6 +1019,7 @@ final class MoonlightHostCoordinator: ObservableObject {
                     if var stored = record {
                         stored.apps = fetched; stored.hostname = secure.hostname; stored.appVersion = secure.appVersion
                         if !secure.uniqueID.isEmpty { stored.serverUniqueID = secure.uniqueID }
+                        stored.serverCodecModeSupport = secure.serverCodecModeSupport
                         MoonlightHostStore.save(stored); record = stored
                     }
                 } catch let error as MoonlightError where error.untrusted {

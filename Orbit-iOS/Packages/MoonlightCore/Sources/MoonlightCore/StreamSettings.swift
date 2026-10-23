@@ -28,7 +28,9 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
             case .hd1080: return "1920 × 1080"
             case .qhd1440: return "2560 × 1440"
             case .uhd2160: return "3840 × 2160"
-            case .native: return "This screen's pixels"
+            // With Picture 16:9 Native is the largest 16:9 frame that fits the screen, with Fill Screen every pixel
+            // of it (see `pixelSize(aspect:native:)`), so the text promises neither.
+            case .native: return "Sized to this screen"
             }
         }
         /// Height of the preset in pixels; nil for Native, where the screen decides.
@@ -198,6 +200,12 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
     /// whose encoder has no HEVC (`nil`, not known yet, counts as "could").
     public func mayUseH264(hostSupportsHEVC: Bool?, deviceSupportsHEVC: Bool = MoonlightDeviceCapabilities.supportsHEVC) -> Bool {
         codec == .h264 || !deviceSupportsHEVC || hostSupportsHEVC != true
+    }
+
+    /// `size` kept within what the host can encode: a host without HEVC streams H.264, which ends at 4096
+    /// pixels per side. Applied again at launch with the host's fresh answer, since the size was chosen earlier.
+    public static func size(_ size: MoonlightStreamSize, forHostSupportingHEVC hostSupportsHEVC: Bool) -> MoonlightStreamSize {
+        hostSupportsHEVC ? size : size.limited(to: h264MaxDimension)
     }
 
     /// The frame to request on a screen of `native` pixels.

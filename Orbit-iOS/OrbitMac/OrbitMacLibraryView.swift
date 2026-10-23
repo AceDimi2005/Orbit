@@ -62,7 +62,7 @@ struct MacLibraryView: View {
                 .background(theme.background)
         }
         .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
                 .frame(width: 560, height: 680)
                 .background(theme.background)
         }
@@ -711,7 +711,7 @@ struct MacLibraryView: View {
 
     private var settingsSummary: String {
         let settings = streamSettings.settings
-        let size = settings.pixelSize(hostSupportsHEVC: sunshine.info?.supportsHEVC)
+        let size = settings.pixelSize(hostSupportsHEVC: sunshine.hostSupportsHEVC)
         var parts = [size.shortTitle, "\(settings.frameRate) fps", "\(settings.bitrateKbps(for: size) / 1000) Mbps"]
         parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
         if settings.requestsHDR { parts.append("HDR") }
@@ -721,7 +721,7 @@ struct MacLibraryView: View {
 
     private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
         // Sized for the display the Stream window will fill: the open Stream window's, else the one in front.
-        let target = MoonlightStreamTarget.make(settings: streamSettings.settings, hostSupportsHEVC: sunshine.info?.supportsHEVC,
+        let target = MoonlightStreamTarget.make(settings: streamSettings.settings, hostSupportsHEVC: sunshine.hostSupportsHEVC,
                                                 screen: MacStreamWindowController.shared.targetScreen())
         stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, target: target, promptUnlock: promptUnlock))
         openWindow(id: "stream")

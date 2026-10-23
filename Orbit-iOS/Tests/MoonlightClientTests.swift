@@ -121,7 +121,17 @@ struct MoonlightClientTests {
         defaults.set(Data(legacy.utf8), forKey: "orbit.moonlight.hosts.v1")
         let legacyRecord = MoonlightHostStore.record(for: "legacy", defaults: defaults)
         precondition(legacyRecord != nil && legacyRecord?.clientIdentity == nil && legacyRecord?.serverUniqueID == nil, "legacy record decodes")
+        precondition(legacyRecord?.serverCodecModeSupport == nil && legacyRecord?.supportsHEVC == nil, "a host never asked has unknown codecs")
         MoonlightHostStore.remove(pcID: "legacy", defaults: defaults)
+
+        // The host's codecs are remembered, so stream sizes follow them before the host is asked again.
+        var codecs = MoonlightHostRecord(pcID: "codecs", address: "10.0.0.8")
+        codecs.serverCodecModeSupport = free.serverCodecModeSupport
+        MoonlightHostStore.save(codecs, defaults: defaults)
+        precondition(MoonlightHostStore.record(for: "codecs", defaults: defaults)?.supportsHEVC == free.supportsHEVC, "codec support persisted")
+        codecs.serverCodecModeSupport = 0x1   // H.264 only
+        precondition(codecs.supportsHEVC == false, "no HEVC bit, no HEVC")
+        MoonlightHostStore.remove(pcID: "codecs", defaults: defaults)
 
         // A pairing follows its Sunshine host when the PC profile id changes (iCloud merge, PC added again).
         var hostA = MoonlightHostRecord(pcID: "old-profile", address: "192.168.1.60")
