@@ -22,11 +22,6 @@ from orbit_tls import ensure_tls_identity
 
 SWIFT = r'''
 import Foundation
-struct OrbitError: LocalizedError {
-    let message: String
-    var statusCode: Int? = nil
-    var errorDescription: String? { message }
-}
 @main struct Probe {
     static func main() async throws {
         let args = CommandLine.arguments
@@ -63,6 +58,7 @@ def main():
         sources.mkdir(parents=True)
         for name in ("OrbitAPIClient.swift", "OrbitPairing.swift"):
             shutil.copy2(ROOT / "Orbit-iOS" / "Orbit" / name, sources / name)
+        shutil.copy2(ROOT / "Orbit-iOS" / "Shared" / "OrbitError.swift", sources / "OrbitError.swift")
         (sources / "Probe.swift").write_text(SWIFT)
         (root / "Package.swift").write_text('''// swift-tools-version:5.9
 import PackageDescription
