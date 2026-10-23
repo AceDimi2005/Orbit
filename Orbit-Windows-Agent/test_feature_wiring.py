@@ -38,6 +38,34 @@ class FeatureWiringTests(unittest.TestCase):
             press.assert_not_called()
             opened.assert_not_called()
 
+    def test_deck_routes_require_main_token_and_https_before_doing_anything(self):
+        routes = (("get", "/api/deck", None), ("put", "/api/deck", {"buttons": []}),
+                  ("post", "/api/deck/run", {"action": {"type": "system", "name": "lock"}}),
+                  ("post", "/api/deck/buttons/ABC/run", None), ("get", "/api/deck/apps", None), ("get", "/api/deck/obs", None))
+        token = "test-control-token-at-least-24-chars"
+        client = TestClient(agent.app)
+        self.addCleanup(client.close)
+        with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"), \
+             patch.object(agent, "perform_action") as perform, patch.object(agent.orbit_input, "press_chord") as press, \
+             patch("orbit_settings.SettingsStore.modify") as saved:
+            for method, path, body in routes:
+                options = {"json": body} if body is not None else {}
+                with self.subTest(path=path, method=method):
+                    self.assertEqual(getattr(client, method)(path, **options).status_code, 401)
+                    self.assertEqual(getattr(client, method)(path, headers={"Authorization": "Bearer widget-only-token"}, **options).status_code, 401)
+                    self.assertEqual(getattr(client, method)(path, headers={"Authorization": f"Bearer {token}"}, **options).status_code, 426)
+            perform.assert_not_called()
+            press.assert_not_called()
+            saved.assert_not_called()
+            capabilities = client.get("/api/capabilities", headers={"Authorization": f"Bearer {token}"}).json()["features"]
+        self.assertTrue({"deck", "obs"} <= set(capabilities))
+        from pathlib import Path
+        folder = Path(agent.__file__).resolve().parent
+        script = (folder / "build_exe.bat").read_text(encoding="utf-8")
+        self.assertIn('--hidden-import "orbit_deck"', script)
+        self.assertIn('--hidden-import "websockets.sync.client"', script)
+        self.assertIn("websockets>=13", (folder / "requirements.txt").read_text(encoding="utf-8").splitlines())
+
     def test_capabilities_need_the_main_token_on_both_ports_and_list_these_features(self):
         token = "test-control-token-at-least-24-chars"
         with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"):
