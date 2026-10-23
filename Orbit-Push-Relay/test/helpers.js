@@ -77,6 +77,13 @@ export class MockStorage {
     this.writes = 0;
     this.reads = 0;
     this.log = [];
+    this.putFailure = null;
+  }
+
+  // Makes the next put() of a matching key throw, like a storage error (which
+  // also resets the object in the real runtime).
+  failPutOnce(matches = () => true) {
+    this.putFailure = matches;
   }
 
   async get(keyOrKeys) {
@@ -100,6 +107,10 @@ export class MockStorage {
       return;
     }
     if (value === undefined) throw new TypeError('put() needs a value');
+    if (this.putFailure && this.putFailure(keyOrEntries)) {
+      this.putFailure = null;
+      throw new Error('simulated storage failure');
+    }
     this.writes += 1;
     this.log.push(['put', keyOrEntries]);
     this.data.set(keyOrEntries, structuredClone(value));
@@ -223,6 +234,20 @@ export class MockNamespace {
     entry.storage.alarmAt = null;
     await entry.instance.alarm(alarmInfo);
   }
+
+  // What the runtime does after an alarm handler threw or the object was
+  // reset mid-handler (deploy, secret change, storage error): a fresh
+  // instance runs alarm() again, whatever was scheduled.
+  async retryAlarm(name, retryCount = 1) {
+    this.evict(name);
+    const entry = this.entry(name);
+    await entry.instance.alarm({ retryCount, isRetry: true });
+  }
+}
+
+// Lets fire-and-forget async work (other devices' sends) run to completion.
+export async function flushTasks() {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +260,7 @@ export function installFetchMock() {
   let responder = () => ({ status: 200 });
   globalThis.fetch = async (input, init = {}) => {
     const headers = Object.fromEntries(new Headers(init.headers).entries());
-    const call = { url: String(input), method: init.method, headers, body: init.body, json: JSON.parse(init.body) };
+    const call = { url: String(input), method: init.method, headers, body: init.body, json: JSON.parse(init.body), signal: init.signal };
     calls.push(call);
     const outcome = await responder(call, calls.length);
     if (outcome instanceof Error) throw outcome;

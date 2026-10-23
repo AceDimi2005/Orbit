@@ -15,10 +15,18 @@
 //   "meta"              channel record (see initChannel)
 //   "device:<deviceId>" { deviceId, token, env, offlineCt, registeredAt,
 //                         updatedAt, lastDeliveryAt, lastError, lastErrorAt }
+//   "gone:<sha256(token)>" { deviceId, at }: APNs answered 410 for this token.
+//                         A PUT of the same token is refused (410
+//                         token_unregistered) unless the phone registered
+//                         again, so an agent restart cannot bring a dead token
+//                         back. Kept 30 days, at most 40 per channel.
 //
 // Alarm kinds (meta.alarm):
 //   "offline"     dead-man switch: the PC missed its heartbeats
-//   "alert-retry" re-send offline alerts that failed with a retryable error
+//   "alert-retry" offline alert in progress: (re)send to meta.alert.pending.
+//                 Saved before the first push, so an alarm the runtime retries
+//                 after a reset (deploy, secret change, storage error) resumes
+//                 the alert instead of losing it.
 //   "purge"       retention: delete the whole channel
 //
 // Network calls (APNs) let other requests interleave, so every write after a
@@ -27,10 +35,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { apnsConfig, providerToken, sendAlert, ApnsConfigError } from './apns.js';
 import { LIMITS } from './validate.js';
-import { isoTime, randomHex, timingSafeEqualHex } from './util.js';
+import { isoTime, randomHex, sha256Hex, timingSafeEqualHex } from './util.js';
 
 const META_KEY = 'meta';
 const DEVICE_PREFIX = 'device:';
+const GONE_PREFIX = 'gone:';
 
 const DAY_MS = 24 * 3600 * 1000;
 const DEFAULT_RETENTION_DAYS = 90;
@@ -39,15 +48,26 @@ const OFFLINE_ALERT_TTL_SECONDS = 12 * 3600;
 const OFFLINE_COLLAPSE_SUFFIX = 'offline';
 // Initial attempt + one retry per delay.
 const ALERT_RETRY_DELAYS_SECONDS = Object.freeze([30, 120, 600]);
+// A notify answers within this budget even when APNs is slow, so the agent
+// (30 s timeout, PROTOCOL.md section 1) never gives up on a request the relay
+// is still delivering.
+const NOTIFY_DEADLINE_MS = 20_000;
+// Tokens APNs reported as unregistered (410) are remembered this long.
+const UNREGISTERED_MEMORY_DAYS = 30;
+const MAX_UNREGISTERED = 40;
 
 export const CHANNEL_CONSTANTS = Object.freeze({
   DEFAULT_RETENTION_DAYS,
   NEW_CHANNEL_PURGE_DAYS,
   OFFLINE_ALERT_TTL_SECONDS,
   ALERT_RETRY_DELAYS_SECONDS,
+  NOTIFY_DEADLINE_MS,
+  UNREGISTERED_MEMORY_DAYS,
+  MAX_UNREGISTERED,
 });
 
 const deviceKey = (deviceId) => `${DEVICE_PREFIX}${deviceId}`;
+const goneKey = (tokenHash) => `${GONE_PREFIX}${tokenHash}`;
 
 function reply(status, body) {
   return { status, body };
@@ -83,10 +103,18 @@ export class Channel extends DurableObject {
     this.env = env;
     this.storage = ctx.storage;
     this.metaCache = undefined; // undefined = not loaded, null = no channel
+    // Offline-alert pushes currently waiting for APNs. In memory only: a
+    // reset object has none in flight.
+    this.offlineSendsInFlight = 0;
   }
 
-  // Overridden in tests.
+  // Overridden in tests (a fake clock for timestamps, alarms and JWT iat).
   now() {
+    return Date.now();
+  }
+
+  // Real elapsed time for request deadlines. Overridden in tests.
+  deadlineClock() {
     return Date.now();
   }
 
@@ -134,6 +162,28 @@ export class Channel extends DurableObject {
     return this.storage.list({ prefix: DEVICE_PREFIX });
   }
 
+  unregisteredExpired(entry, now) {
+    return !entry || !Number.isFinite(entry.at) || now - entry.at > UNREGISTERED_MEMORY_DAYS * DAY_MS;
+  }
+
+  // Remembered 410s that have not expired, newest first.
+  async listUnregistered(now) {
+    const entries = await this.storage.list({ prefix: GONE_PREFIX });
+    return [...entries]
+      .filter(([, entry]) => !this.unregisteredExpired(entry, now))
+      .sort(([, a], [, b]) => b.at - a.at);
+  }
+
+  // Drops expired entries and keeps at most MAX_UNREGISTERED.
+  async pruneUnregistered(now) {
+    const entries = await this.storage.list({ prefix: GONE_PREFIX });
+    const sorted = [...entries].sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0));
+    const drop = sorted
+      .filter(([, entry], index) => index >= MAX_UNREGISTERED || this.unregisteredExpired(entry, now))
+      .map(([key]) => key);
+    if (drop.length) await this.storage.delete(drop);
+  }
+
   // Stores the outcome of one APNs request on the device record. The device
   // may have been deleted or re-registered with another token while the
   // request was in flight: then the result is about a stale token and is
@@ -142,10 +192,17 @@ export class Channel extends DurableObject {
     const meta = await this.loadMeta();
     if (!meta) return;
     const key = deviceKey(deviceId);
+    const tokenHash = result.unregistered ? await sha256Hex(token) : null;
     const current = await this.storage.get(key);
     if (!current || current.token !== token) return;
     if (result.unregistered) {
+      // APNs says the app is gone from that phone (or the token changed).
+      // Delete the device and remember the token (hashed) so that an agent
+      // re-registering every known device does not bring it back.
+      const now = this.now();
       await this.storage.delete(key);
+      await this.storage.put(goneKey(tokenHash), { deviceId, at: now });
+      await this.pruneUnregistered(now);
       return;
     }
     const now = this.now();
@@ -204,6 +261,10 @@ export class Channel extends DurableObject {
     }));
     const alarmAt = await this.storage.getAlarm();
     const last = meta.lastOfflineAlert;
+    const unregisteredDevices = (await this.listUnregistered(this.now())).map(([, entry]) => ({
+      deviceId: entry.deviceId,
+      unregisteredAt: isoTime(entry.at),
+    }));
     return reply(200, {
       channelId: meta.channelId,
       state: meta.state,
@@ -213,13 +274,25 @@ export class Channel extends DurableObject {
       alarm: alarmAt !== null && alarmAt !== undefined ? { kind: meta.alarm, at: isoTime(alarmAt) } : null,
       lastOfflineAlert: last ? { at: isoTime(last.at), sent: last.sent, failed: last.failed } : null,
       devices,
+      unregisteredDevices,
       maxDevices: LIMITS.maxDevicesPerChannel,
     });
   }
 
-  async putDevice(secretHash, deviceId, { token, env, offlineCt }) {
+  async putDevice(secretHash, deviceId, { token, env, offlineCt, reregistered = false }) {
     const { error } = await this.authorize(secretHash);
     if (error) return error;
+    const tokenHash = await sha256Hex(token);
+    const gone = await this.storage.get(goneKey(tokenHash));
+    if (gone && !this.unregisteredExpired(gone, this.now()) && !reregistered) {
+      return failure(
+        410,
+        'token_unregistered',
+        'APNs reported this device token as no longer valid (Orbit was removed from the phone or the token changed). ' +
+          'The device has to register again from the phone.',
+        { unregisteredAt: isoTime(gone.at) },
+      );
+    }
     const devices = await this.listDevices();
     const key = deviceKey(deviceId);
     const existing = devices.get(key) ?? null;
@@ -248,6 +321,7 @@ export class Channel extends DurableObject {
     };
     await this.storage.put(key, record);
     if (replaced.length) await this.storage.delete(replaced.map(deviceKey));
+    if (gone) await this.storage.delete(goneKey(tokenHash));
     return reply(200, {
       status: 'registered',
       created: !existing,
@@ -289,6 +363,8 @@ export class Channel extends DurableObject {
 
     const expiration = ttl === 0 ? 0 : Math.floor(this.now() / 1000) + ttl;
     const apnsCollapseId = collapseId ? collapseIdFor(meta.channelId, collapseId) : undefined;
+    const clock = () => this.deadlineClock();
+    const deadline = clock() + NOTIFY_DEADLINE_MS;
     const results = {};
     await Promise.all(
       deviceIds.map(async (deviceId) => {
@@ -311,7 +387,7 @@ export class Channel extends DurableObject {
               expiration,
               collapseId: apnsCollapseId,
             },
-            { now },
+            { now, deadline, clock },
           );
         } catch (err) {
           result = { ok: false, status: 0, reason: err?.message ?? 'Error', retryable: true, unregistered: false };
@@ -324,9 +400,28 @@ export class Channel extends DurableObject {
     return reply(200, { results, sent, failed: deviceIds.length - sent });
   }
 
+  // Whether a "PC offline" push reached, or may still be reaching, at least
+  // one phone during the outage a heartbeat in this state ends.
+  async offlineAlertDelivered(meta) {
+    if (meta.state === 'offline') return (meta.lastOfflineAlert?.sent ?? 0) > 0;
+    if (meta.state !== 'alerting' || !meta.alert) return false;
+    const alert = meta.alert;
+    if ((alert.sent ?? 0) > 0) return true;
+    // Pushes of the current attempt are still on their way to APNs...
+    if (this.offlineSendsInFlight > 0) return true;
+    // ...or went out in an attempt whose progress was never saved (the
+    // object was reset mid-delivery).
+    const pending = new Set(alert.pending ?? []);
+    for (const device of (await this.listDevices()).values()) {
+      if (pending.has(device.deviceId) && (device.lastDeliveryAt ?? 0) >= alert.startedAt) return true;
+    }
+    return false;
+  }
+
   async heartbeat(secretHash, { offlineAfterSeconds }) {
     const { meta, error } = await this.authorize(secretHash);
     if (error) return error;
+    const offlineAlertSent = await this.offlineAlertDelivered(meta);
     const now = this.now();
     const previousState = meta.state;
     const offlineAt = now + offlineAfterSeconds * 1000;
@@ -346,7 +441,7 @@ export class Channel extends DurableObject {
       status: 'ok',
       state: 'online',
       previousState,
-      offlineAlertSent: previousState === 'alerting' || previousState === 'offline',
+      offlineAlertSent,
       offlineAfterSeconds,
       offlineAt: isoTime(offlineAt),
       heartbeatSeconds: LIMITS.heartbeatSeconds,
@@ -400,17 +495,36 @@ export class Channel extends DurableObject {
       await this.storage.deleteAlarm();
       return;
     }
+    // An offline alert that has not finished always resumes, whatever alarm
+    // kind is recorded: the runtime retries an alarm whose handler was cut
+    // off (deploy, secret change, storage error), and the alert must neither
+    // be lost nor leave the channel without an alarm (no retention purge).
+    if (meta.state === 'alerting' && meta.alert) {
+      if (alarmInfo?.isRetry) {
+        console.log(JSON.stringify({ event: 'offline_alert_resumed', channel: meta.channelId.slice(0, 8), retryCount: alarmInfo.retryCount ?? null }));
+      }
+      return this.deliverOfflineAlert(meta.alert);
+    }
     switch (meta.alarm) {
       case 'offline':
         return this.startOfflineAlert(meta);
-      case 'alert-retry':
-        return this.deliverOfflineAlert(meta.alert);
       case 'purge':
         console.log(JSON.stringify({ event: 'channel_purged', channel: meta.channelId.slice(0, 8), state: meta.state }));
         return this.purge();
       default:
-        return undefined;
+        // Nothing to do. Keep the retention promise anyway: a channel left
+        // without a dead-man alarm is still deleted eventually.
+        return this.ensureRetentionAlarm(meta);
     }
+  }
+
+  async ensureRetentionAlarm(meta) {
+    if (meta.state === 'online' || meta.state === 'new') return; // a heartbeat or the 7-day purge owns the alarm
+    if ((await this.storage.getAlarm()) !== null) return;
+    const purgeAt = this.retentionPurgeAt(this.now());
+    if (!purgeAt) return;
+    await this.storage.setAlarm(purgeAt);
+    await this.saveMeta({ ...meta, state: meta.state === 'alerting' ? 'offline' : meta.state, alarm: 'purge', alert: null });
   }
 
   async startOfflineAlert(meta) {
@@ -418,7 +532,8 @@ export class Channel extends DurableObject {
     const devices = await this.listDevices();
     const pending = [...devices.values()].filter((d) => typeof d.offlineCt === 'string').map((d) => d.deviceId);
     const alert = { id: randomHex(8), startedAt: now, pending, attempts: 0, sent: 0, failed: 0 };
-    await this.saveMeta({ ...meta, state: 'alerting', stateSince: now, alarm: null, alert });
+    // Saved (with the resumable marker) before any push goes out.
+    await this.saveMeta({ ...meta, state: 'alerting', stateSince: now, alarm: 'alert-retry', alert });
     console.log(JSON.stringify({ event: 'pc_offline', channel: meta.channelId.slice(0, 8), devices: pending.length }));
     return this.deliverOfflineAlert(alert);
   }
@@ -445,6 +560,7 @@ export class Channel extends DurableObject {
             const device = records.get(deviceKey(deviceId));
             if (!device || typeof device.offlineCt !== 'string') return; // removed meanwhile
             let result;
+            this.offlineSendsInFlight += 1;
             try {
               result = await sendAlert(
                 config,
@@ -462,6 +578,8 @@ export class Channel extends DurableObject {
               );
             } catch (err) {
               result = { ok: false, status: 0, reason: err?.message ?? 'Error', retryable: true, unregistered: false };
+            } finally {
+              this.offlineSendsInFlight -= 1;
             }
             await this.recordDelivery(deviceId, device.token, result);
             if (result.ok) sent += 1;

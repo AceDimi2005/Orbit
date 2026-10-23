@@ -19,12 +19,19 @@ const TEST_ORIGIN_RE = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$/;
 export const DEFAULT_TOPIC = 'com.dimitrie.orbit';
 
 // Apple: refresh the provider token no more than once every 20 minutes and no
-// less than once every 60 minutes. Rebuild after 40 minutes.
-export const JWT_MAX_AGE_SECONDS = 40 * 60;
+// less than once every 60 minutes. The token's iat is the start of the current
+// 30-minute window (UTC), so every isolate and machine running this Worker
+// signs with the same iat and switches to a new one at the same moment, even
+// if Cloudflare pools the upstream APNs connections. Tokens are 0-30 minutes
+// old when used.
+export const JWT_REFRESH_SECONDS = 30 * 60;
 
 export const MAX_PAYLOAD_BYTES = 4096;
 
-const REQUEST_TIMEOUT_MS = 10_000;
+export const REQUEST_TIMEOUT_MS = 10_000;
+// The ExpiredProviderToken retry is skipped when less time than this is left
+// before the caller's deadline.
+export const MIN_RETRY_BUDGET_MS = 2_000;
 
 // The only text Apple (and the lock screen, if decryption fails) ever sees.
 // The Notification Service Extension replaces it with the decrypted text.
@@ -142,6 +149,10 @@ function importSigningKey(keyP8) {
   return pending;
 }
 
+export function providerTokenIssuedAt(nowSeconds) {
+  return Math.floor(nowSeconds / JWT_REFRESH_SECONDS) * JWT_REFRESH_SECONDS;
+}
+
 export async function signProviderToken({ keyP8, keyId, teamId, iat }) {
   const key = await importSigningKey(keyP8);
   const header = base64UrlEncode(JSON.stringify({ alg: 'ES256', kid: keyId }));
@@ -156,8 +167,8 @@ export async function signProviderToken({ keyP8, keyId, teamId, iat }) {
   return `${signingInput}.${base64UrlEncode(signature)}`;
 }
 
-// Returns a cached provider token, building a new one when it is older than
-// 40 minutes. Pass staleToken (the token APNs just rejected with
+// Returns the provider token for the current 30-minute window, building it
+// once per window. Pass staleToken (the token APNs just rejected with
 // ExpiredProviderToken) to force a rebuild; concurrent callers share one build
 // so a burst of rejections produces a single new token.
 export async function providerToken(config, environment, { now = Date.now, staleToken } = {}) {
@@ -165,20 +176,20 @@ export async function providerToken(config, environment, { now = Date.now, stale
   // The key text is part of the cache key so a replaced secret is never
   // signed around with a token minted from the old key.
   const cacheKey = `${config.teamId}\n${key.keyId}\n${key.keyP8}`;
-  const nowSeconds = Math.floor(now() / 1000);
+  const iat = providerTokenIssuedAt(Math.floor(now() / 1000));
   const cached = tokenCache.get(cacheKey);
   if (cached) {
     if (staleToken) {
       if (cached.jwt !== staleToken) return cached.jwt; // someone already refreshed
-    } else if (nowSeconds - cached.iat < JWT_MAX_AGE_SECONDS && cached.iat - nowSeconds < 60) {
+    } else if (cached.iat === iat) {
       return cached.jwt;
     }
   }
   const inFlight = tokenBuilds.get(cacheKey);
   if (inFlight) return inFlight;
   const build = (async () => {
-    const jwt = await signProviderToken({ keyP8: key.keyP8, keyId: key.keyId, teamId: config.teamId, iat: nowSeconds });
-    tokenCache.set(cacheKey, { jwt, iat: nowSeconds });
+    const jwt = await signProviderToken({ keyP8: key.keyP8, keyId: key.keyId, teamId: config.teamId, iat });
+    tokenCache.set(cacheKey, { jwt, iat });
     return jwt;
   })();
   tokenBuilds.set(cacheKey, build);
@@ -199,9 +210,9 @@ function timeoutSignal(ms) {
     : undefined;
 }
 
-async function postToApns({ fetchImpl, url, headers, body }) {
+async function postToApns({ fetchImpl, url, headers, body, timeoutMs }) {
   try {
-    const response = await fetchImpl(url, { method: 'POST', headers, body, signal: timeoutSignal(REQUEST_TIMEOUT_MS) });
+    const response = await fetchImpl(url, { method: 'POST', headers, body, signal: timeoutSignal(timeoutMs) });
     let reason = null;
     const text = await response.text().catch(() => '');
     if (text) {
@@ -236,7 +247,16 @@ function classify(response) {
 // message: { token, environment: 'sandbox'|'production', ciphertext,
 //            level: 'passive'|'active'|'time-sensitive', threadId,
 //            priority: 5|10, expiration: epoch seconds or 0, collapseId? }
-export async function sendAlert(config, message, { fetch: fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+// options: now      clock for the JWT iat (ms)
+//          deadline optional time (ms, on `clock`) by which sendAlert must
+//                   return: it bounds each request's timeout and skips the
+//                   ExpiredProviderToken retry when too little time is left
+//          clock    real elapsed time for the deadline (ms)
+export async function sendAlert(
+  config,
+  message,
+  { fetch: fetchImpl = globalThis.fetch, now = Date.now, deadline = null, clock = Date.now } = {},
+) {
   const environment = message.environment === 'sandbox' ? 'sandbox' : 'production';
   const body = JSON.stringify(
     buildAlertPayload({ ciphertext: message.ciphertext, level: message.level, threadId: message.threadId }),
@@ -259,16 +279,32 @@ export async function sendAlert(config, message, { fetch: fetchImpl = globalThis
     return headers;
   };
 
+  const timeLeft = () => (deadline === null ? REQUEST_TIMEOUT_MS : Math.min(REQUEST_TIMEOUT_MS, deadline - clock()));
+
   let jwt = await providerToken(config, environment, { now });
-  let response = await postToApns({ fetchImpl, url, headers: headersFor(jwt), body });
+  let response = await postToApns({ fetchImpl, url, headers: headersFor(jwt), body, timeoutMs: Math.max(1, timeLeft()) });
+  let retrySkipped = false;
   if (response.status === 403 && response.reason === 'ExpiredProviderToken') {
     jwt = await providerToken(config, environment, { now, staleToken: jwt });
-    response = await postToApns({ fetchImpl, url, headers: headersFor(jwt), body });
+    if (timeLeft() >= MIN_RETRY_BUDGET_MS) {
+      response = await postToApns({ fetchImpl, url, headers: headersFor(jwt), body, timeoutMs: timeLeft() });
+    } else {
+      // No time to retry before the caller's deadline. The token is already
+      // rebuilt, so the caller's own retry will carry the new one.
+      retrySkipped = true;
+    }
   }
   const result = classify(response);
+  if (retrySkipped) result.retryable = true;
   if (!result.ok) {
     // Never log device tokens or ciphertexts.
     console.warn(JSON.stringify({ event: 'apns_error', environment, status: result.status, reason: result.reason }));
+    if (result.reason === 'TooManyProviderTokenUpdates') {
+      // Should never happen (see JWT_REFRESH_SECONDS). If it does, APNs sees
+      // tokens from several isolates on one pooled connection: see README,
+      // "Provider tokens".
+      console.error(JSON.stringify({ event: 'apns_too_many_token_updates', environment, status: result.status }));
+    }
   }
   return result;
 }

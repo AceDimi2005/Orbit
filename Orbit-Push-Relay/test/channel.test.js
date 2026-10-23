@@ -1,7 +1,7 @@
 // Heartbeats, the dead-man switch, planned offline and retention.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, deviceToken, fakeCiphertext, verifyJwt, channelModule, MINUTE, DAY } from './helpers.js';
+import { createHarness, deviceToken, fakeCiphertext, flushTasks, verifyJwt, channelModule, MINUTE, DAY } from './helpers.js';
 
 const { CHANNEL_CONSTANTS } = channelModule;
 const DEVICE_A = 'DEVICE-A-0001';
@@ -181,7 +181,7 @@ test('offline alerts give up after four attempts', async (t) => {
   assert.equal(meta(storage).alarm, 'purge');
 });
 
-test('a 410 during the offline alert removes that device', async (t) => {
+test('a 410 during the offline alert removes that device for good', async (t) => {
   const { h, channel, tokens, storage } = await setupOnline(t);
   h.fetchMock.respond((call) => (call.url.endsWith(tokens[DEVICE_A]) ? { status: 410, reason: 'Unregistered' } : { status: 200 }));
   h.advance(15 * MINUTE);
@@ -189,6 +189,22 @@ test('a 410 during the offline alert removes that device', async (t) => {
   assert.equal(storage.data.has(`device:${DEVICE_A}`), false);
   assert.equal(meta(storage).state, 'offline');
   assert.deepEqual(meta(storage).lastOfflineAlert, { at: meta(storage).stateSince, sent: 1, failed: 1 });
+
+  // The agent never saw that 410. When the PC comes back it PUTs every
+  // device it knows again: the dead token is refused instead of coming back
+  // and failing at every future offline alert.
+  h.advance(60 * MINUTE);
+  await h.heartbeat(channel);
+  const replay = await h.putDevice(channel, DEVICE_A, { token: tokens[DEVICE_A], env: 'production', offlineCt: fakeCiphertext() });
+  assert.equal(replay.status, 410);
+  assert.equal(replay.json.error, 'token_unregistered');
+  assert.equal(replay.json.unregisteredAt, '2026-10-23T18:15:00Z');
+  const status = (await h.status(channel)).json;
+  assert.deepEqual(status.unregisteredDevices, [{ deviceId: DEVICE_A, unregisteredAt: '2026-10-23T18:15:00Z' }]);
+  h.fetchMock.reset();
+  h.advance(15 * MINUTE);
+  await h.ns.fireAlarm(channel.channelId);
+  assert.ok(!h.fetchMock.calls.some((c) => c.url.endsWith(tokens[DEVICE_A])), 'no more pushes to the dead token');
 });
 
 test('a heartbeat that arrives while offline alerts are in flight wins', async (t) => {
@@ -206,6 +222,96 @@ test('a heartbeat that arrives while offline alerts are in flight wins', async (
   assert.equal(meta(storage).alarm, 'offline');
   assert.equal(meta(storage).alert, null);
   assert.equal(storage.alarmAt, h.clock.now + 15 * MINUTE, 'no retry was scheduled over the new dead-man alarm');
+});
+
+test('an offline alert cut off mid-delivery resumes when the runtime retries the alarm', async (t) => {
+  const { h, channel, tokens, storage } = await setupOnline(t);
+  // The first delivery record fails to save: the handler throws and the real
+  // runtime resets the object (a deploy or `wrangler secret put` does the same).
+  storage.failPutOnce((key) => key.startsWith('device:'));
+  h.advance(15 * MINUTE);
+  await assert.rejects(h.ns.fireAlarm(channel.channelId), /simulated storage failure/);
+  await flushTasks();
+  assert.equal(meta(storage).state, 'alerting');
+  assert.equal(meta(storage).alarm, 'alert-retry', 'a resumable marker was saved before the first push');
+  assert.equal(h.fetchMock.calls.length, 2);
+
+  h.fetchMock.reset();
+  h.advance(2000);
+  await h.ns.retryAlarm(channel.channelId);
+  const sentTo = h.fetchMock.calls.map((c) => c.url.split('/').pop()).sort();
+  assert.deepEqual(sentTo, [tokens[DEVICE_A], tokens[DEVICE_B]].sort(), 'the offline pushes went out on the retry');
+  assert.equal(meta(storage).state, 'offline');
+  assert.equal(meta(storage).alarm, 'purge');
+  assert.equal(storage.alarmAt, h.clock.now + 90 * DAY, 'the retention clean-up is scheduled again');
+  assert.equal(meta(storage).lastOfflineAlert.sent, 2);
+  const hb = await h.heartbeat(channel);
+  assert.equal(hb.json.offlineAlertSent, true);
+});
+
+test('an alerting channel whose alarm marker was lost still resumes its alert', async (t) => {
+  const { h, channel, storage } = await setupOnline(t);
+  h.advance(15 * MINUTE);
+  // An inconsistent record: alerting, alert pending, but no alarm kind.
+  const record = meta(storage);
+  storage.data.set('meta', {
+    ...record,
+    state: 'alerting',
+    stateSince: h.clock.now,
+    alarm: null,
+    alert: { id: 'feedfacecafebeef', startedAt: h.clock.now, pending: [DEVICE_A, DEVICE_B], attempts: 0, sent: 0, failed: 0 },
+  });
+  await h.ns.retryAlarm(channel.channelId);
+  assert.equal(h.fetchMock.calls.length, 2);
+  assert.equal(meta(storage).state, 'offline');
+  assert.equal(meta(storage).alarm, 'purge');
+  assert.equal(storage.alarmAt, h.clock.now + 90 * DAY);
+});
+
+test('offlineAlertSent is false when no offline push was delivered', async (t) => {
+  // No device has an offline ciphertext: nothing to deliver.
+  const h = createHarness(t);
+  const channel = await h.createChannel();
+  await h.putDevice(channel, DEVICE_A, { token: deviceToken(), env: 'production' });
+  await h.heartbeat(channel);
+  h.advance(15 * MINUTE);
+  await h.ns.fireAlarm(channel.channelId);
+  assert.equal(meta(h.ns.storage(channel.channelId)).state, 'offline');
+  h.advance(5 * MINUTE);
+  const back = await h.heartbeat(channel);
+  assert.equal(back.json.previousState, 'offline');
+  assert.equal(back.json.offlineAlertSent, false, 'no "PC offline" reached the phone, so no "back online" either');
+});
+
+test('offlineAlertSent is false when every offline push failed', async (t) => {
+  const { h, channel, storage } = await setupOnline(t);
+  h.fetchMock.respond(() => ({ status: 400, reason: 'BadDeviceToken' }));
+  h.advance(15 * MINUTE);
+  await h.ns.fireAlarm(channel.channelId);
+  assert.equal(meta(storage).state, 'offline');
+  assert.deepEqual(meta(storage).lastOfflineAlert, { at: meta(storage).stateSince, sent: 0, failed: 2 });
+  assert.equal((await h.heartbeat(channel)).json.offlineAlertSent, false);
+});
+
+test('offlineAlertSent during retries reflects what was delivered so far', async (t) => {
+  const { h, channel, tokens, storage } = await setupOnline(t);
+  // All retryable failures: nothing delivered yet, a retry is scheduled.
+  h.fetchMock.respond(() => ({ status: 503, reason: 'ServiceUnavailable' }));
+  h.advance(15 * MINUTE);
+  await h.ns.fireAlarm(channel.channelId);
+  assert.equal(meta(storage).alarm, 'alert-retry');
+  let hb = await h.heartbeat(channel);
+  assert.equal(hb.json.previousState, 'alerting');
+  assert.equal(hb.json.offlineAlertSent, false);
+
+  // One device delivered, the other is being retried.
+  h.advance(15 * MINUTE);
+  h.fetchMock.respond((call) => (call.url.endsWith(tokens[DEVICE_B]) ? { status: 503, reason: 'ServiceUnavailable' } : { status: 200 }));
+  await h.ns.fireAlarm(channel.channelId);
+  assert.equal(meta(storage).alarm, 'alert-retry');
+  assert.equal(meta(storage).alert.sent, 1);
+  hb = await h.heartbeat(channel);
+  assert.equal(hb.json.offlineAlertSent, true);
 });
 
 test('the alarm without APNs secrets retries, then marks the PC offline', async (t) => {
@@ -348,4 +454,21 @@ test('an alarm firing on a deleted channel does nothing', async (t) => {
   await h.ns.fireAlarm(channel.channelId);
   assert.equal(storage.data.size, 0);
   assert.equal(h.fetchMock.calls.length, 0);
+});
+
+test('an alarm with nothing to do still leaves the retention clean-up scheduled', async (t) => {
+  const { h, channel, storage } = await setupOnline(t);
+  // Inconsistent records an older relay version or a cut-off write could leave.
+  for (const broken of [
+    { state: 'expected-offline', alarm: null, alert: null },
+    { state: 'alerting', alarm: null, alert: null },
+  ]) {
+    storage.data.set('meta', { ...meta(storage), ...broken });
+    storage.alarmAt = null;
+    await h.ns.retryAlarm(channel.channelId);
+    assert.equal(h.fetchMock.calls.length, 0);
+    assert.equal(meta(storage).alarm, 'purge', broken.state);
+    assert.equal(meta(storage).state, broken.state === 'alerting' ? 'offline' : broken.state);
+    assert.equal(storage.alarmAt, h.clock.now + 90 * DAY);
+  }
 });

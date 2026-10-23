@@ -145,7 +145,7 @@ try {
   const events = { A: randomBytes(284).toString('base64'), B: randomBytes(284).toString('base64'), C: randomBytes(284).toString('base64') };
   const notified = await call('POST', `/v1/c/${channelId}/notify`, {
     secret: pcSecret,
-    body: { items: { 'DEV-A': events.A, 'DEV-B': events.B, 'DEV-C': events.C }, level: 'timeSensitive', collapseId: 'temperature.cpu', ttl: 900 },
+    body: { items: { 'DEV-A': events.A, 'DEV-B': events.B, 'DEV-C': events.C }, level: 'timeSensitive', collapseId: 'c.Xq3v9TzL0bWk2dPa', ttl: 900 },
   });
   assert.equal(notified.status, 200, notified.text);
   assert.equal(notified.json.results['DEV-A'].status, 'sent');
@@ -156,7 +156,7 @@ try {
     assert.equal(request.headers['apns-push-type'], 'alert');
     assert.equal(request.headers['apns-topic'], 'com.dimitrie.orbit');
     assert.equal(request.headers['apns-priority'], '10');
-    assert.equal(request.headers['apns-collapse-id'], `${channelId.slice(0, 12)}.temperature.cpu`);
+    assert.equal(request.headers['apns-collapse-id'], `${channelId.slice(0, 12)}.c.Xq3v9TzL0bWk2dPa`);
     assert.equal(request.json.aps['interruption-level'], 'time-sensitive');
     assert.deepEqual(request.json.aps.alert, { title: 'Orbit', body: 'New alert from your PC' });
     const { header, claims } = verifyJwt(request.headers.authorization);
@@ -169,7 +169,19 @@ try {
 
   let status = await call('GET', `/v1/c/${channelId}`, { secret: pcSecret });
   assert.deepEqual(status.json.devices.map((d) => d.deviceId).sort(), ['DEV-A', 'DEV-B']);
+  assert.deepEqual(status.json.unregisteredDevices.map((d) => d.deviceId), ['DEV-C']);
   ok('the 410 device was deleted');
+
+  const replay = await call('PUT', `/v1/c/${channelId}/devices/DEV-C`, { secret: pcSecret, body: { token: tokens.C, env: 'production' } });
+  assert.equal(replay.status, 410, replay.text);
+  assert.equal(replay.json.error, 'token_unregistered');
+  const reregistered = await call('PUT', `/v1/c/${channelId}/devices/DEV-C`, {
+    secret: pcSecret,
+    body: { token: tokens.C, env: 'production', reregistered: true },
+  });
+  assert.equal(reregistered.status, 200, reregistered.text);
+  assert.equal((await call('DELETE', `/v1/c/${channelId}/devices/DEV-C`, { secret: pcSecret })).status, 200);
+  ok('a token APNs unregistered is refused until the phone registers it again');
 
   let hb = await call('POST', `/v1/c/${channelId}/hb`, { secret: pcSecret, body: { offlineAfterSeconds: ALARM_WINDOW } });
   assert.equal(hb.status, 200, hb.text);

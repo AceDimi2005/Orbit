@@ -84,7 +84,14 @@ export function parseDevicePut(body) {
     if (problem) return fail(problem);
     offlineCt = body.offlineCt;
   }
-  return { ok: true, value: { token: token.toLowerCase(), env, offlineCt } };
+  // reregistered: true only when the phone itself just registered this token
+  // with the agent. It overrides a remembered APNs 410 for the token.
+  let reregistered = false;
+  if (body.reregistered !== undefined && body.reregistered !== null) {
+    if (typeof body.reregistered !== 'boolean') return fail('reregistered must be true or false.');
+    reregistered = body.reregistered;
+  }
+  return { ok: true, value: { token: token.toLowerCase(), env, offlineCt, reregistered } };
 }
 
 export function parseNotify(body) {

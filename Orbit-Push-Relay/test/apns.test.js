@@ -13,7 +13,17 @@ import {
   MINUTE,
 } from './helpers.js';
 
-const { apnsConfig, buildAlertPayload, providerToken, sendAlert, pemToDer, ApnsConfigError, resetApnsState } = apns;
+const {
+  apnsConfig,
+  buildAlertPayload,
+  providerToken,
+  providerTokenIssuedAt,
+  sendAlert,
+  pemToDer,
+  ApnsConfigError,
+  resetApnsState,
+  JWT_REFRESH_SECONDS,
+} = apns;
 
 function setup(t, extraEnv = {}) {
   resetApnsState();
@@ -88,16 +98,35 @@ test('the provider token is an ES256 JWT that node:crypto verifies', async (t) =
   assert.ok(!verifyJwt(jwt, createSigningKey().publicKey), 'and not with another key');
 });
 
-test('the provider token is cached for 40 minutes, then rebuilt', async (t) => {
+test('the provider token is kept for its 30-minute window, then rebuilt', async (t) => {
   const { key, config, clock, now } = setup(t);
+  assert.equal(JWT_REFRESH_SECONDS, 30 * 60);
+  // START_TIME is 18:00:00 UTC, the start of a window.
   const first = await providerToken(config, 'production', { now });
-  clock.now += 39 * MINUTE;
-  assert.equal(await providerToken(config, 'production', { now }), first);
-  clock.now += 1 * MINUTE + 1000;
+  assert.equal(decodeJwt(first).claims.iat, START_TIME / 1000);
+  clock.now += 29 * MINUTE + 59 * 1000;
+  assert.equal(await providerToken(config, 'production', { now }), first, 'reused within the window');
+  clock.now += 1000; // 18:30:00
   const second = await providerToken(config, 'production', { now });
   assert.notEqual(second, first);
-  assert.equal(decodeJwt(second).claims.iat, Math.floor(clock.now / 1000));
+  assert.equal(decodeJwt(second).claims.iat, START_TIME / 1000 + 30 * 60);
   assert.ok(verifyJwt(second, key.publicKey));
+});
+
+test('every isolate signs with the same iat: the start of the current window', async (t) => {
+  const { config, clock, now } = setup(t);
+  assert.equal(providerTokenIssuedAt(Date.UTC(2026, 9, 23, 18, 47, 13) / 1000), Date.UTC(2026, 9, 23, 18, 30, 0) / 1000);
+  assert.equal(providerTokenIssuedAt(Date.UTC(2026, 9, 23, 18, 30, 0) / 1000), Date.UTC(2026, 9, 23, 18, 30, 0) / 1000);
+  const iats = [];
+  for (const offset of [31 * MINUTE, 44 * MINUTE + 7000, 59 * MINUTE + 59 * 1000]) {
+    resetApnsState(); // a fresh isolate on another machine
+    clock.now = START_TIME + offset;
+    iats.push(decodeJwt(await providerToken(config, 'production', { now })).claims.iat);
+  }
+  assert.deepEqual(iats, [iats[0], iats[0], iats[0]]);
+  assert.equal(iats[0], START_TIME / 1000 + 30 * 60);
+  // Token age when used stays below the 60-minute APNs limit.
+  assert.ok(START_TIME / 1000 + 59 * 60 + 59 - iats[0] < 30 * 60);
 });
 
 test('a clock that jumps backwards does not keep a token from the future', async (t) => {
@@ -181,6 +210,58 @@ test('403 ExpiredProviderToken rebuilds the token and retries once', async (t) =
   assert.ok(verifyJwt(second.slice(7), key.publicKey));
   // The new token is what later requests use.
   assert.equal(await providerToken(config, 'production', { now }), second.slice(7));
+});
+
+test('near the caller deadline the ExpiredProviderToken retry is skipped and reported as retryable', async (t) => {
+  const { config, fetchMock, now } = setup(t);
+  const wall = { now: 1_000_000 };
+  fetchMock.respond(() => {
+    wall.now += 19_000; // APNs took 19 s to answer
+    return { status: 403, reason: 'ExpiredProviderToken' };
+  });
+  const msg = message();
+  const result = await sendAlert(config, msg, { now, deadline: 1_000_000 + 20_000, clock: () => wall.now });
+  assert.equal(fetchMock.calls.length, 1, 'no second request after the deadline budget is spent');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'ExpiredProviderToken');
+  assert.equal(result.retryable, true, "the agent's retry will carry the rebuilt token");
+  const stale = fetchMock.calls[0].headers.authorization.slice(7);
+  assert.notEqual(await providerToken(config, 'production', { now }), stale, 'the token was rebuilt anyway');
+});
+
+test('the request timeout never runs past the caller deadline', async (t) => {
+  const { config, fetchMock, now } = setup(t);
+  // APNs never answers: the request ends when its signal aborts.
+  fetchMock.respond(
+    (call) =>
+      new Promise((resolve) => {
+        call.signal.addEventListener('abort', () => resolve(call.signal.reason), { once: true });
+      }),
+  );
+  const started = Date.now();
+  const result = await sendAlert(config, message(), { now, deadline: Date.now() + 150 });
+  const elapsed = Date.now() - started;
+  assert.equal(result.reason, 'Timeout');
+  assert.equal(result.retryable, true);
+  assert.ok(elapsed < 2000, `stopped after ${elapsed} ms, not the 10 s per-request timeout`);
+});
+
+test('TooManyProviderTokenUpdates is retryable and logged as its own event', async (t) => {
+  resetApnsState();
+  const logs = captureConsole(t);
+  const key = createSigningKey();
+  const config = apnsConfig({ APNS_KEY_P8: key.pem, APNS_KEY_ID: 'KEY1234567', APNS_TEAM_ID: 'TEAM123456' });
+  const fetchMock = installFetchMock();
+  t.after(() => fetchMock.restore());
+  fetchMock.respond(() => ({ status: 429, reason: 'TooManyProviderTokenUpdates' }));
+  const result = await sendAlert(config, message(), { now: () => START_TIME });
+  assert.equal(result.retryable, true);
+  assert.ok(logs.some((line) => line.includes('"event":"apns_too_many_token_updates"')), logs.join('\n'));
+  fetchMock.reset();
+  logs.length = 0;
+  fetchMock.respond(() => ({ status: 429, reason: 'TooManyRequests' }));
+  await sendAlert(config, message(), { now: () => START_TIME });
+  assert.ok(!logs.some((line) => line.includes('apns_too_many_token_updates')), 'only for that reason');
 });
 
 test('a second ExpiredProviderToken is reported, not retried forever', async (t) => {

@@ -21,8 +21,8 @@ iPhone ──pinned TLS──▶ Windows agent ──HTTPS──▶ relay (Worke
 - **`src/ratelimit.js`** has the per-IP limits.
 - **`src/channel.js`** is the Durable Object per PC. It holds the devices and the offline ciphertexts, and
   runs the heartbeat dead-man switch, the offline alerts and retention.
-- **`src/apns.js`** builds the ES256 provider token (WebCrypto, cached about 40 minutes) and makes the
-  APNs requests.
+- **`src/apns.js`** builds the ES256 provider token (WebCrypto, one per 30-minute window, see
+  [Provider tokens](#provider-tokens)) and makes the APNs requests.
 - **`src/validate.js`** validates requests and holds the limits. **`src/util.js`** has small helpers.
 - **`test/`** holds the tests, which run with `node --test Orbit-Push-Relay/test`.
 - **`scripts/local-check.mjs`** runs the same flow in the real Workers runtime against a mock APNs.
@@ -35,26 +35,33 @@ iPhone ──pinned TLS──▶ Windows agent ──HTTPS──▶ relay (Worke
 - The PC encrypts every alert for every device with AES-256-GCM, bound to the device id.
 - Only the iPhone's Notification Service Extension can decrypt it.
 
-**What the relay never sees:** notification titles or bodies, PC names, event kinds, file or game names,
-and anything else from the PC.
+**What the relay and Apple never see:** notification titles or bodies, PC names, file or game names, and
+the event kind (as long as the agent follows PROTOCOL.md §5.5 and hashes its collapse ids). The
+notification text Apple handles is always the generic "Orbit — New alert from your PC".
 
-**What Apple sees:** only the generic text "Orbit — New alert from your PC" plus an opaque blob.
+**What the relay sees** (Apple sees the same, except the IP address):
 
-**What the relay can see:**
-
-- the PC's IP address while it makes a request,
+- the PC's IP address while it makes a request (not stored),
 - the APNs device tokens and their environment,
-- the random channel id,
-- when alerts are sent and their interruption level and TTL,
+- the random channel id (Apple sees it as the notification's `thread-id`),
+- when pushes are sent, and to how many devices,
+- each push's interruption level, priority and TTL. Together these hint at the class of event: a
+  time-sensitive push with a 15-minute TTL is probably a temperature alarm,
 - the padded ciphertext size (plaintexts are padded to 128-byte blocks),
-- the agent-chosen collapse ids. These are generic, like `temperature.cpu` or `download.steam:620`.
+- the collapse id. The agent sends an HMAC of the event key (for example `c.Xq3v9TzL0bWk2dPa`), so the
+  relay can only tell that two pushes replace each other. The one readable id is `offline`, on the "back
+  online" push, and the relay already knows that the PC came back.
+
+PROTOCOL.md §9 has the full table.
 
 **What it stores, per PC:**
 
 - `SHA-256(pcSecret)`; the secret itself is never stored,
 - the channel state and timestamps,
 - per device: APNs token, environment, the encrypted "PC offline" message, and the last delivery
-  time and error.
+  time and error,
+- for devices APNs reported as uninstalled (410): a SHA-256 hash of the dead token, the device id and
+  the time, for 30 days. This stops the agent from registering the dead token again.
 
 It stores no IP addresses and no request logs. Workers Logs are disabled in `wrangler.toml`, and the code
 never logs tokens, ciphertexts or secrets (a test checks this).
@@ -65,7 +72,8 @@ never logs tokens, ciphertexts or secrets (a test checks this).
   deleted automatically (`RETENTION_DAYS`).
 - A channel that never sends a heartbeat is deleted after **7 days**.
 - The agent deletes its channel when notifications are turned off (`DELETE /v1/c/{id}`).
-- APNs answer 410 for an uninstalled app, so those devices are deleted at once.
+- APNs answer 410 for an uninstalled app, so those devices are deleted at once. Only a hash of the dead
+  token is kept, for 30 days.
 
 **Opt-in.** Nothing reaches the relay until the user enables notifications in Orbit. With no relay URL
 configured, the agent still records events, and the apps poll them over the local network.
@@ -168,8 +176,11 @@ npx wrangler dev --remote
 
 1. Use a **Debug** build of Orbit on a real iPhone. It produces a **sandbox** token.
 2. Point a test PC's agent at the relay with `ORBIT_PUSH_RELAY_URL` (next section).
-3. Enable notifications in Orbit, then trigger an event, or stop the agent for 15 minutes to see "PC
+3. Run `npx wrangler tail` in a second terminal.
+4. Enable notifications in Orbit, then trigger an event, or stop the agent for 15 minutes to see "PC
    offline".
+5. Check the tail for `apns_error` lines. **`apns_too_many_token_updates` must never appear.** If it does,
+   read [Provider tokens](#provider-tokens) before going further.
 
 You can also do it by hand: create a channel and PUT a device with the sandbox token and `"env":"sandbox"`.
 Then `notify` with any valid base64 blob of at least 29 bytes. The phone shows "Your PC sent an alert. Open
@@ -202,6 +213,7 @@ Use `https://` and no trailing slash.
 | SQLite storage | 5 GB total | about 1–5 KB per PC (at most ~70 KB with 20 devices) |
 | CPU per request | 10 ms | ES256 signing is native WebCrypto, well under 1 ms |
 | Subrequests per request | 50 | ≤ 20 devices × 2 (one token-refresh retry) |
+| Request duration | no limit while the client waits | `notify` answers within about 20 s |
 
 With a 5-minute heartbeat a PC uses 288 Worker requests, 288 Durable Object requests and 288 rows written
 per day. The Free plan carries about **300 PCs**, leaving room for notifications.
@@ -225,13 +237,32 @@ per day. The Free plan carries about **300 PCs**, leaving room for notifications
   - `BadDeviceToken`: the sandbox/production mix-up above.
   - `InvalidProviderToken`: wrong Key ID, Team ID or key.
   - `DeviceTokenNotForTopic`: the token is from another app; check `APNS_TOPIC`.
-  - `TooManyProviderTokenUpdates`: the token is being refreshed too often (should not happen).
+  - `TooManyProviderTokenUpdates`: the token is being refreshed too often. It should not happen; the
+    relay also logs it as `apns_too_many_token_updates`. See [Provider tokens](#provider-tokens).
 - **Delete everything:** `npx wrangler delete` removes the Worker and all channel data.
 - **Main dependency risk:** Cloudflare upgrades outbound requests to HTTP/2, but this is stated in a
   [workerd issue](https://github.com/cloudflare/workerd/issues/4841), not in its documentation. If it ever
   stops, move `src/apns.js` behind any HTTP/2-capable host; the rest of the relay does not change.
-- **Alarm semantics:** Durable Object alarms run at least once. A rare duplicate "PC offline" push
-  replaces the previous one on the phone, because both carry the same collapse id.
+- **Alarm semantics:** Durable Object alarms run at least once. If a deploy, a `secret put` or a storage
+  error cuts an offline alert short, the runtime retries the alarm and the alert resumes (log event
+  `offline_alert_resumed`). A rare duplicate "PC offline" push replaces the previous one on the phone,
+  because both carry the same collapse id.
+
+### Provider tokens
+
+APNs wants the provider token (JWT) refreshed no more than once every 20 minutes and no less than once
+every 60. A Worker runs in many isolates on many machines, and each one signs its own token. The relay
+handles that like this:
+
+- The token's `iat` is the start of the current **30-minute UTC window**. Every isolate uses the same
+  `iat` and switches at the same moment. A token is 0–30 minutes old when used.
+- After `403 ExpiredProviderToken` the relay rebuilds the token and retries once.
+
+One thing is not verified. ECDSA signatures are randomized, so two isolates still produce different token
+strings for the same `iat`. If Cloudflare pooled upstream APNs connections across isolates, and APNs
+counted every new token string as an update, APNs would answer `429 TooManyProviderTokenUpdates`. The
+relay treats that as retryable and logs `apns_too_many_token_updates`. If you ever see it, have a single
+Durable Object sign the token for each window and hand the same string to every channel.
 
 ## Tests
 
@@ -251,8 +282,12 @@ alarms, and map `cloudflare:workers` to a small shim.
   - size limits,
   - 410 clean-up,
   - the heartbeat/alarm offline flow with retries,
+  - offline alerts that resume after the object was reset mid-delivery,
+  - `offlineAlertSent` only when a push was delivered,
   - offline-expected,
   - retention,
+  - refusing tokens APNs unregistered until the phone registers again,
+  - the notify deadline and the 30-minute provider-token window,
   - races between alarms and heartbeats,
   - the "no secrets in logs" rule.
 
@@ -271,7 +306,8 @@ The script needs no Cloudflare account and deploys nothing.
    `--var APNS_TEST_ORIGIN:http://127.0.0.1:<port>`. That variable is honoured only for loopback
    origins.
 3. It drives the whole flow: channel, auth, devices, notify fan-out with token verification, 410
-   clean-up, heartbeat, offline-expected, optionally the alarm, deletion and the rate limit.
+   clean-up and the unregistered-token memory, heartbeat, offline-expected, optionally the alarm,
+   deletion and the rate limit.
 
 It catches problems the Node tests cannot see, such as a main-module export that workerd refuses to start
 with.

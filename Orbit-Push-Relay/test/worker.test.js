@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, deviceToken, fakeCiphertext, validate, decodeJwt, verifyJwt, relay } from './helpers.js';
+import { createHarness, deviceToken, fakeCiphertext, validate, decodeJwt, verifyJwt, relay, channelModule } from './helpers.js';
 import { DurableObject } from './cloudflare-workers-shim.js';
 import { createHash } from 'node:crypto';
 
@@ -269,6 +269,7 @@ test('device registration validates every field', async (t) => {
     [{ token, env: 'sandbox', offlineCt: 'QUJD' }, /too short/],
     [{ token, env: 'sandbox', offlineCt: 'A'.repeat(LIMITS.maxCiphertextChars + 4) }, /too long/],
     [{ token, env: 'sandbox', offlineCt: 42 }, /offlineCt/],
+    [{ token, env: 'sandbox', reregistered: 'yes' }, /reregistered/],
   ];
   for (const [body, pattern] of bad) {
     const res = await h.putDevice(channel, DEVICE_A, body);
@@ -332,7 +333,7 @@ test('notify fans out one push per device with its own ciphertext and host', asy
   const res = await h.notify(channel, {
     items: { [DEVICE_A]: ctA, [DEVICE_B]: ctB },
     level: 'timeSensitive',
-    collapseId: 'temperature.cpu',
+    collapseId: 'c.Xq3v9TzL0bWk2dPa',
     ttl: 600,
   });
   assert.equal(res.status, 200);
@@ -359,7 +360,7 @@ test('notify fans out one push per device with its own ciphertext and host', asy
     assert.equal(call.json.v, 1);
     assert.equal(call.headers['apns-priority'], '10');
     assert.equal(call.headers['apns-expiration'], String(Math.floor(h.clock.now / 1000) + 600));
-    assert.equal(call.headers['apns-collapse-id'], `${channel.channelId.slice(0, 12)}.temperature.cpu`);
+    assert.equal(call.headers['apns-collapse-id'], `${channel.channelId.slice(0, 12)}.c.Xq3v9TzL0bWk2dPa`);
     assert.equal(call.headers['apns-topic'], 'com.dimitrie.orbit');
     const jwt = call.headers.authorization.slice('bearer '.length);
     assert.ok(verifyJwt(jwt, h.key.publicKey));
@@ -476,6 +477,78 @@ test('410 from APNs deletes the device', async (t) => {
   assert.equal(h.fetchMock.calls.length, 0);
 });
 
+test('a token APNs unregistered cannot be re-registered unless the phone registered again', async (t) => {
+  const h = createHarness(t);
+  const channel = await h.createChannel();
+  const tokenA = deviceToken();
+  await h.putDevice(channel, DEVICE_A, { token: tokenA, env: 'production', offlineCt: fakeCiphertext() });
+  h.fetchMock.respond(() => ({ status: 410, reason: 'Unregistered' }));
+  await h.notify(channel, { items: { [DEVICE_A]: fakeCiphertext() } });
+  const storage = h.ns.storage(channel.channelId);
+  assert.ok(![...storage.data.values()].some((v) => JSON.stringify(v).includes(tokenA)), 'only a hash of the dead token is kept');
+
+  let status = (await h.status(channel)).json;
+  assert.deepEqual(status.devices, []);
+  assert.deepEqual(status.unregisteredDevices, [{ deviceId: DEVICE_A, unregisteredAt: '2026-10-23T18:00:00Z' }]);
+
+  // The agent restarts and PUTs every device it knows: refused, no loop.
+  h.advance(60 * 60 * 1000);
+  const again = await h.putDevice(channel, DEVICE_A, { token: tokenA.toUpperCase(), env: 'production', offlineCt: fakeCiphertext() });
+  assert.equal(again.status, 410);
+  assert.equal(again.json.error, 'token_unregistered');
+  assert.equal(again.json.unregisteredAt, '2026-10-23T18:00:00Z');
+  // Under another deviceId too (it is the token that is dead).
+  assert.equal((await h.putDevice(channel, DEVICE_B, { token: tokenA, env: 'production' })).status, 410);
+  assert.equal((await h.status(channel)).json.devices.length, 0);
+
+  // A new token for the same device is fine (the app was reinstalled).
+  assert.equal((await h.putDevice(channel, DEVICE_B, { token: deviceToken(), env: 'production' })).status, 200);
+
+  // The phone registers the old token again with the agent.
+  const back = await h.putDevice(channel, DEVICE_A, { token: tokenA, env: 'production', reregistered: true });
+  assert.equal(back.status, 200);
+  assert.equal(back.json.created, true);
+  status = (await h.status(channel)).json;
+  assert.deepEqual(status.unregisteredDevices, []);
+  assert.equal((await h.putDevice(channel, DEVICE_A, { token: tokenA, env: 'production' })).status, 200, 'the memory was cleared');
+});
+
+test('remembered 410s expire after 30 days and are capped per channel', async (t) => {
+  const h = createHarness(t);
+  const channel = await h.createChannel();
+  const storage = h.ns.storage(channel.channelId);
+  const goneCount = () => [...storage.data.keys()].filter((k) => k.startsWith('gone:')).length;
+  h.fetchMock.respond(() => ({ status: 410, reason: 'Unregistered' }));
+  const firstToken = deviceToken();
+  await h.putDevice(channel, 'first', { token: firstToken, env: 'production' });
+  await h.notify(channel, { items: { first: fakeCiphertext() } });
+  assert.equal(goneCount(), 1);
+
+  // Two full batches of 20 more dead devices: 41 remembered -> capped at 40,
+  // and the oldest one goes first.
+  for (let batch = 0; batch < 2; batch++) {
+    h.advance(60_000);
+    const items = {};
+    for (let i = 0; i < LIMITS.maxDevicesPerChannel; i++) {
+      const id = `b${batch}-${i}`;
+      await h.putDevice(channel, id, { token: deviceToken(), env: 'production' });
+      items[id] = fakeCiphertext();
+    }
+    await h.notify(channel, { items });
+  }
+  assert.equal(goneCount(), channelModule.CHANNEL_CONSTANTS.MAX_UNREGISTERED);
+  assert.equal((await h.putDevice(channel, 'first', { token: firstToken, env: 'production' })).status, 200, 'the oldest was dropped');
+
+  // 31 days later every entry has expired.
+  const deadToken = deviceToken();
+  await h.putDevice(channel, 'late', { token: deadToken, env: 'production' });
+  await h.notify(channel, { items: { late: fakeCiphertext() } });
+  assert.equal((await h.putDevice(channel, 'late', { token: deadToken, env: 'production' })).status, 410);
+  h.advance(31 * 24 * 60 * 60 * 1000);
+  assert.deepEqual((await h.status(channel)).json.unregisteredDevices, []);
+  assert.equal((await h.putDevice(channel, 'late', { token: deadToken, env: 'production' })).status, 200);
+});
+
 test('retryable and permanent APNs failures are reported per device and recorded', async (t) => {
   const h = createHarness(t);
   const channel = await h.createChannel();
@@ -494,6 +567,23 @@ test('retryable and permanent APNs failures are reported per device and recorded
   assert.equal(devices[DEVICE_A].lastError, 'ServiceUnavailable');
   assert.equal(devices[DEVICE_B].lastError, 'BadDeviceToken');
   assert.equal(devices[DEVICE_B].lastErrorAt, '2026-10-23T18:00:00Z');
+});
+
+test('notify answers within its deadline even when APNs is slow', async (t) => {
+  const h = createHarness(t);
+  const channel = await h.createChannel();
+  await h.putDevice(channel, DEVICE_A, { token: deviceToken(), env: 'production' });
+  const wall = { now: 5_000_000 };
+  h.ns.entry(channel.channelId).instance.deadlineClock = () => wall.now;
+  h.fetchMock.respond(() => {
+    wall.now += 19_000; // a slow APNs answer
+    return { status: 403, reason: 'ExpiredProviderToken' };
+  });
+  const res = await h.notify(channel, { items: { [DEVICE_A]: fakeCiphertext() }, collapseId: 'c.Xq3v9TzL0bWk2dPa' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.results[DEVICE_A], { status: 'failed', apnsStatus: 403, reason: 'ExpiredProviderToken', retryable: true });
+  assert.equal(h.fetchMock.calls.length, 1, 'the token retry did not push the answer past the 20 s budget');
+  assert.equal(channelModule.CHANNEL_CONSTANTS.NOTIFY_DEADLINE_MS, 20_000);
 });
 
 test('notify without APNs secrets answers 503 and calls nobody', async (t) => {
