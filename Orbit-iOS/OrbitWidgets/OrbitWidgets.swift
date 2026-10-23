@@ -15,11 +15,13 @@ struct OrbitWidgets: WidgetBundle {
         OrbitStorageWidget()
         OrbitNetworkWidget()
         OrbitMetricWidget()
+        OrbitDeckWidget()
         OrbitMonitorActivity()
         if #available(iOSApplicationExtension 18.0, *) {
             OrbitWakeControlCenterWidget()
             OrbitShutdownControlCenterWidget()
             OrbitSleepControlCenterWidget()
+            OrbitDeckControl()
         }
     }
 }

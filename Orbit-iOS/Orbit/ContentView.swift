@@ -4,6 +4,7 @@ import UIKit
 
 struct ContentView: View {
     @State private var isShowingProFromURL = false
+    @State private var deckLink: OrbitDeckLink?
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @AppStorage("orbit.theme") private var rootTheme: OrbitTheme = .noir
@@ -59,6 +60,9 @@ struct ContentView: View {
         .sheet(isPresented: $vm.isShowingIPConfigSheet) {
             SettingsView(vm: vm, isPresentedAsSheet: true)
         }
+        .sheet(item: $deckLink) { link in
+            NavigationStack { DeckView(vm: vm, focusButtonID: link.buttonID, showsDoneButton: true) }
+        }
         .onAppear {
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
@@ -75,6 +79,7 @@ struct ContentView: View {
             guard url.scheme?.lowercased() == "orbit" else { return }
             switch url.host?.lowercased() {
             case "pro": isShowingProFromURL = true
+            case "deck": deckLink = OrbitDeckLink(url: url, vm: vm)
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3
@@ -1571,6 +1576,10 @@ struct QuickRemoteView: View {
                     .navigationTitle("Remote")
                     .toolbar {
                         ToolbarItemGroup(placement: .topBarTrailing) {
+                            NavigationLink { DeckView(vm: vm) } label: {
+                                Image(systemName: "square.grid.3x2.fill")
+                            }
+                            .accessibilityLabel("Buttons")
                             Button {
                                 vm.openDesktopPreview()
                             } label: {
@@ -2426,6 +2435,7 @@ struct WidgetHelpView: View {
                 widgetRow("PC Overview & Gaming", detail: "CPU, GPU, RAM, VRAM, FPS & temps with On/Off buttons (Small, Medium, Large)", icon: "desktopcomputer", tint: theme.accent)
                 widgetRow("Specialty Panels", detail: "Dedicated Power, Temperatures, Cooling, Storage & Network widgets", icon: "bolt.fill", tint: .orange)
                 widgetRow("Single PC Metric", detail: "Pick any 1 of 18 sensors for Home or Lock Screen", icon: "waveform.path.ecg", tint: .purple)
+                widgetRow("Buttons", detail: "Run 4 or 8 of your Orbit buttons from the Home Screen; on iOS 18 add the Orbit Button control to Control Center", icon: "square.grid.3x2.fill", tint: .pink)
             }
             .orbitRow()
 
