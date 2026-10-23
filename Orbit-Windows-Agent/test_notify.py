@@ -43,6 +43,45 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(len(message), notify.MESSAGE_LIMIT)
         self.assertTrue(title.endswith("…") and message.endswith("…"))
 
+    def test_limits_count_utf16_units_like_the_windows_buffers(self):
+        # On Windows WCHAR is a UTF-16 unit and an emoji takes two; more than 63 / 255 units makes
+        # ctypes raise "string too long" (or leaves no terminator), and the toast never appears.
+        # macOS' 4-byte wchar_t cannot show this, so the units are counted directly.
+        shown = MagicMock(return_value=True)
+        notify.set_notifier(shown)
+        emoji = "\U0001F600"
+        notify.notify(emoji * 255, emoji * 255)
+        title, message = shown.call_args.args
+        self.assertLessEqual(len(title.encode("utf-16-le")) // 2, notify.TITLE_LIMIT)
+        self.assertLessEqual(len(message.encode("utf-16-le")) // 2, notify.MESSAGE_LIMIT)
+        self.assertEqual(title, emoji * 31 + "…")
+        self.assertEqual(message, emoji * 127 + "…")
+        # An upload name close to the limit with a few emoji in it.
+        notify.notify("File received", "Received " + "a" * 240 + emoji * 3 + ".jpg (2 MB) in Downloads")
+        message = shown.call_args.args[1]
+        self.assertLessEqual(len(message.encode("utf-16-le")) // 2, notify.MESSAGE_LIMIT)
+        self.assertTrue(message.endswith("…"))
+
+    def test_clean_text_cuts_between_characters_and_keeps_text_that_fits(self):
+        emoji = "\U0001F600"
+        self.assertEqual(notify.utf16_length("a" + emoji), 3)
+        self.assertEqual(notify.clean_text("a" * 61 + emoji, 63), "a" * 61 + emoji)  # exactly 63 units
+        self.assertEqual(notify.clean_text("a" * 62 + emoji, 63), "a" * 62 + "…")  # never half an emoji
+        self.assertEqual(notify.clean_text("a" * 61 + emoji + "b", 63), "a" * 61 + "…")
+        self.assertEqual(notify.fit_utf16(emoji * 3, 5), emoji * 2)
+        self.assertEqual(notify.fit_utf16(emoji * 3, 1), "")
+        self.assertEqual(notify.fit_utf16("abc", 10), "abc")
+        for limit in range(1, 12):
+            with self.subTest(limit=limit):
+                cut = notify.clean_text(("x" + emoji) * 20, limit)
+                self.assertLessEqual(notify.utf16_length(cut), limit)
+                cut.encode("utf-8")  # whole characters only
+
+    def test_lone_surrogates_become_replacement_characters(self):
+        cleaned = notify.clean_text("photo\udc80.jpg", 63)
+        self.assertEqual(cleaned, "photo\ufffd.jpg")
+        cleaned.encode("utf-8")
+
     def test_empty_message_still_shows_a_balloon(self):
         shown = MagicMock(return_value=True)
         notify.set_notifier(shown)
@@ -107,6 +146,25 @@ class TrayWiringTests(unittest.TestCase):
         self.assertEqual(structure.szInfoTitle, "File received")
         self.assertEqual(structure.szInfo, "Received photo.jpg (2.4 MB) in Downloads")
         self.assertTrue(structure.uFlags & tray.NIF_INFO)
+
+    def test_tray_fits_every_text_field_in_its_wchar_buffer(self):
+        def units(text):
+            return len(text.encode("utf-16-le")) // 2
+        emoji = "\U0001F3AE"
+        user32, shell32, kernel32 = MagicMock(), MagicMock(), MagicMock()
+        shell32.Shell_NotifyIconW.return_value = 1
+        icon = tray.OrbitTrayIcon(status_provider=lambda: {"agentVersion": "4.4.0", "activeGame": emoji * 100},
+                                  on_stop=lambda: None, apis=(user32, shell32, kernel32))
+        icon._hwnd = 4242
+        # Straight to the tray, without orbit_notify's cleaning: the tray still keeps to the buffers.
+        self.assertTrue(icon.show_notification(emoji * 100, emoji * 300))
+        structure = shell32.Shell_NotifyIconW.call_args.args[1]._obj
+        self.assertLessEqual(units(structure.szInfoTitle), 63)
+        self.assertLessEqual(units(structure.szInfo), 255)
+        self.assertLessEqual(units(structure.szTip), 127)
+        self.assertEqual(structure.szInfoTitle, emoji * 31)
+        self.assertLessEqual(units(icon.format_tooltip()), 127)
+        self.assertTrue(icon.format_tooltip().startswith("Orbit PC Companion 4.4.0"))
 
     def test_main_registers_the_tray_notifier_and_removes_it_on_exit(self):
         source = (Path(__file__).resolve().parent / "orbit_agent.py").read_text(encoding="utf-8")

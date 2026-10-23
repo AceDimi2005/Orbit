@@ -65,7 +65,7 @@ class CapabilitiesRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(set(body), {"agentVersion", "features"})
-        self.assertEqual(body["agentVersion"], "4.4.0")
+        self.assertEqual(body["agentVersion"], agent.AGENT_VERSION)
         for feature in ("events", "hotkeys", "openUrl"):
             self.assertIn(feature, body["features"])
         self.assertTrue(set(body["features"]) <= set(capabilities.KNOWN_FEATURES))

@@ -9,7 +9,9 @@ import threading
 import unicodedata
 
 LOGGER = logging.getLogger("orbit.notify")
-# NOTIFYICONDATAW.szInfoTitle holds 64 characters and szInfo 256, both including the terminator.
+# NOTIFYICONDATAW.szInfoTitle is WCHAR[64] and szInfo WCHAR[256], both including the terminator.
+# WCHARs are UTF-16 code units: an emoji or another character outside the BMP takes two, and
+# ctypes refuses text that does not fit ("string too long"), so limits count UTF-16 units.
 TITLE_LIMIT = 63
 MESSAGE_LIMIT = 255
 
@@ -42,14 +44,41 @@ def toasts_enabled():
     return not (isinstance(alerts, dict) and alerts.get("pcToasts") is False)
 
 
+def utf16_length(text):
+    """Length in UTF-16 code units, which is what Windows' WCHAR buffers (and NSString) count."""
+    return len(text) + sum(1 for char in text if ord(char) > 0xFFFF)
+
+
+def fit_utf16(text, units):
+    """The longest prefix of `text`, cut between characters, that fits in `units` UTF-16 code units."""
+    units = max(0, int(units))
+    if len(text) <= units // 2 or utf16_length(text) <= units:
+        return text
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
+
+
 def clean_text(value, limit):
-    """One line of plain text: control and invisible formatting characters become spaces,
-    runs of whitespace collapse, and text longer than `limit` ends with an ellipsis."""
+    """One line of plain text: control and invisible formatting characters become spaces, lone
+    surrogates (which UTF-8 cannot encode) become U+FFFD, runs of whitespace collapse, and text
+    longer than `limit` UTF-16 code units is cut to fit, ending with an ellipsis."""
     text = value if isinstance(value, str) else ("" if value is None else str(value))
-    text = "".join(" " if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") else char for char in text)
-    text = " ".join(text.split())
-    if len(text) > limit:
-        text = text[:max(0, limit - 1)].rstrip() + "…"
+    cleaned = []
+    for char in text:
+        category = unicodedata.category(char)
+        if category in ("Cc", "Cf", "Zl", "Zp"):
+            cleaned.append(" ")
+        elif category == "Cs":
+            cleaned.append("\ufffd")
+        else:
+            cleaned.append(char)
+    text = " ".join("".join(cleaned).split())
+    if utf16_length(text) > limit:
+        text = fit_utf16(text, limit - 1).rstrip() + "…"
     return text
 
 
