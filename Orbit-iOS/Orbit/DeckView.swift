@@ -24,6 +24,24 @@ struct OrbitDeckLink: Identifiable {
     }
 }
 
+/// What an editor started from. Saving checks it is still the same PC and sends `baseUpdatedAt`, so the
+/// PC refuses (409) when another device saved in between instead of losing that device's changes.
+struct OrbitDeckEditSession: Equatable {
+    /// nil in demo mode.
+    let pcID: String?
+    let isDemo: Bool
+    let baseUpdatedAt: String?
+    let buttons: [OrbitDeckButton]
+}
+
+/// Why a save was refused; the editor offers a way out for each.
+struct OrbitDeckSaveError: LocalizedError {
+    enum Reason { case changedElsewhere, otherPC }
+    let reason: Reason
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct OrbitDeckToast: Identifiable, Equatable {
     enum Kind { case success, failure, info }
     let id = UUID()
@@ -217,7 +235,8 @@ final class OrbitDeckStore: ObservableObject {
             guard generation == vm.connectionID else { return }
             OrbitHaptics.error()
             let status = (error as? OrbitError)?.statusCode
-            if status == 404 {
+            let detail = (error as? OrbitError)?.message
+            if OrbitDeckRequestError.isMissingButton(status: status, detail: detail) {
                 show("“\(button.displayTitle)” isn't on the PC anymore. Refreshing your buttons…", kind: .failure)
                 reloadSoon()
             } else if isUnreachable(error) {
@@ -244,27 +263,60 @@ final class OrbitDeckStore: ObservableObject {
 
     // MARK: Saving
 
-    /// `PUT /api/deck` with the whole list, then reads it back so the cache is exactly what the PC has.
-    func save(_ buttons: [OrbitDeckButton]) async throws {
+    /// The deck an editor starts from (see `save(_:session:)`).
+    func beginEditing() -> OrbitDeckEditSession {
+        OrbitDeckEditSession(pcID: phase == .demo ? nil : loadedPCID, isDemo: phase == .demo,
+                             baseUpdatedAt: deck.updatedAt, buttons: deck.buttons)
+    }
+
+    /// Reloads from the PC for an editor whose save was refused; nil when the buttons can't be edited now.
+    func reloadForEditing() async -> OrbitDeckEditSession? {
+        await refresh()
+        return canEdit ? beginEditing() : nil
+    }
+
+    /// `PUT /api/deck` with the whole list and the `updatedAt` the edit started from. The reply is the
+    /// saved deck (the same shape as `GET /api/deck`), which becomes the screen's and the cache's copy.
+    func save(_ buttons: [OrbitDeckButton], session: OrbitDeckEditSession) async throws {
         guard let vm else { return }
-        if phase == .demo {
+        if session.isDemo {
+            guard phase == .demo else {
+                throw OrbitDeckSaveError(reason: .otherPC, message: "Demo mode ended while you were editing, so the sample buttons weren't kept.")
+            }
             demoDeck = OrbitDeck(buttons: buttons)
             deck = demoDeck
             return
         }
+        // The editor holds one PC's buttons: never write them onto another PC (a widget link or an
+        // iCloud profile change can switch the selected PC while the editor is open).
+        guard !vm.isDemoMode, let pcID = session.pcID, vm.selectedPCID == pcID, loadedPCID == pcID else {
+            throw OrbitDeckSaveError(reason: .otherPC, message: "Orbit switched to another PC while you were editing, so nothing was saved. Close the editor and open it again to edit this PC's buttons.")
+        }
         guard phase == .ready else { throw OrbitError(message: "Connect to the PC to save your buttons.") }
         let generation = vm.connectionID
-        let pcID = vm.selectedPCID
         let client = try vm.companionClient()
         isSaving = true
         defer { isSaving = false }
+        var reply: OrbitDeckJSON?
         do {
-            let _: SaveReply = try await client.send("/api/deck", method: "PUT", body: OrbitDeckUpdate(buttons: buttons))
+            reply = try await client.send("/api/deck", method: "PUT", body: OrbitDeckUpdate(buttons: buttons, baseUpdatedAt: session.baseUpdatedAt))
+        } catch is DecodingError {
+            reply = nil // Saved; the PC answered with something other than JSON.
+        } catch let error as OrbitError where error.statusCode == 409 {
+            throw OrbitDeckSaveError(reason: .changedElsewhere, message: "The buttons were changed on another device, so your changes weren't saved. Reload to get the latest buttons, then make your changes again.")
         } catch {
             throw OrbitError(message: isUnreachable(error) ? "\(vm.selectedPCName) isn't reachable, so your changes weren't saved. Wake it and try again."
                                                             : OrbitDeckRequestError.message(for: error, pcName: vm.selectedPCName))
         }
-        guard generation == vm.connectionID else { return }
+        guard generation == vm.connectionID, vm.selectedPCID == pcID else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let reply, let data = try? encoder.encode(reply), let saved = OrbitDeck.decode(data) {
+            deck = saved
+            isShowingCachedDeck = false
+            if OrbitDeckCache.store(data, for: pcID) { OrbitDeckSurfaces.reload() }
+            return
+        }
         do {
             try await fetchDeck(client: client, pcID: pcID, generation: generation)
         } catch {
@@ -272,8 +324,6 @@ final class OrbitDeckStore: ObservableObject {
             deck = OrbitDeck(buttons: buttons)
         }
     }
-
-    private struct SaveReply: Decodable {}
 
     // MARK: Editor data
 
@@ -650,15 +700,22 @@ struct DeckView: View {
 
     private func confirmMessage(for button: OrbitDeckButton) -> String {
         let pc = vm.isDemoMode ? "the demo PC" : (vm.selectedPCName.isEmpty ? "your PC" : vm.selectedPCName)
+        let subject = pc.prefix(1).uppercased() + pc.dropFirst()
         if case .system(let name) = button.action.kind {
             switch name {
-            case "sleep": return "\(pc.prefix(1).uppercased() + pc.dropFirst()) will go to sleep."
-            case "restart": return "\(pc.prefix(1).uppercased() + pc.dropFirst()) will restart. Unsaved work in open apps may be lost."
-            case "shutdown": return "\(pc.prefix(1).uppercased() + pc.dropFirst()) will shut down. Unsaved work in open apps may be lost."
+            case "sleep": return "\(subject) will go to sleep."
+            case "restart": return "\(subject) will restart. Unsaved work in open apps may be lost."
+            case "shutdown": return "\(subject) will shut down. Unsaved work in open apps may be lost."
             default: break
             }
         }
-        return "\(button.action.summary) on \(pc)."
+        // A sequence whose last step turns the PC off.
+        switch button.action.powerActionName {
+        case "sleep": return "\(button.action.summary) on \(pc). The last step puts it to sleep."
+        case "restart": return "\(button.action.summary) on \(pc). The last step restarts it; unsaved work in open apps may be lost."
+        case "shutdown": return "\(button.action.summary) on \(pc). The last step shuts it down; unsaved work in open apps may be lost."
+        default: return "\(button.action.summary) on \(pc)."
+        }
     }
 
     private func handleFocus() {

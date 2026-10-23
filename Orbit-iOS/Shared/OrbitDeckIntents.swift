@@ -41,6 +41,11 @@ extension OrbitDeckColor {
 
 // MARK: - Entities
 
+// INTEGRATION NOTE (DESIGN F3): Shared/OrbitPCEntity.swift (Shortcuts actions, built in parallel) adds the
+// shared `OrbitPCEntity` with the same id (the PC profile id) and name. Before release, delete
+// `OrbitDeckPCEntity` and `OrbitDeckPCQuery` and use `OrbitPCEntity` in `RunDeckButtonIntent.pc`,
+// `OrbitDeckWidgetIntent.pc` and the `@IntentParameterDependency` below, so Shortcuts shows one "PC" type
+// and saved widget configurations never have to change type later.
 struct OrbitDeckPCEntity: AppEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "PC")
     static var defaultQuery = OrbitDeckPCQuery()
@@ -61,8 +66,11 @@ struct OrbitDeckPCEntity: AppEntity {
 struct OrbitDeckPCQuery: EntityQuery {
     init() {}
 
+    /// A PC removed from Orbit comes back as a "Removed PC" placeholder instead of nothing: an empty value
+    /// would quietly run the button on another PC; the placeholder stops the run with an explanation.
     func entities(for identifiers: [String]) async throws -> [OrbitDeckPCEntity] {
-        OrbitWidgetConnectionStore.connections().filter { identifiers.contains($0.id) }.map(OrbitDeckPCEntity.init)
+        let saved = OrbitWidgetConnectionStore.connections()
+        return identifiers.map { id in saved.first { $0.id == id }.map(OrbitDeckPCEntity.init) ?? OrbitDeckPCEntity(id: id, name: "Removed PC") }
     }
 
     func suggestedEntities() async throws -> [OrbitDeckPCEntity] {
@@ -107,7 +115,9 @@ struct OrbitDeckButtonEntity: AppEntity {
         self.index = index
     }
 
-    /// A button the cache no longer has (for example a Shortcut made before the deck changed).
+    /// A button the cache doesn't have (a Shortcut made before the deck changed, or synced from another
+    /// device). Assumed to need a confirmation and Orbit Pro until the PC's copy says otherwise; running
+    /// it always checks the PC's copy first (`OrbitDeckIntentRunner`).
     init(unresolved identifier: String) {
         let parts = Self.split(identifier)
         id = identifier
@@ -117,8 +127,8 @@ struct OrbitDeckButtonEntity: AppEntity {
         symbol = OrbitDeckButton.defaultSymbol
         color = OrbitDeckButton.defaultColor
         pcName = OrbitWidgetConnectionStore.connections().first { $0.id == parts.pcID }?.name ?? "PC"
-        needsConfirmation = false
-        index = 0
+        needsConfirmation = true
+        index = OrbitDeckLimits.maxButtons
     }
 
     static func identifier(pcID: String, buttonID: String) -> String { "\(pcID)|\(buttonID)" }
@@ -171,6 +181,98 @@ struct OrbitDeckButtonQuery: EntityStringQuery {
 
 // MARK: - Run a button
 
+/// A button checked against the deck the PC has right now, ready to run.
+struct OrbitDeckPreparedRun {
+    let connection: OrbitWidgetConnection
+    let target: OrbitDeckHTTP.Target
+    let button: OrbitDeckButton
+    let index: Int
+
+    var title: String { button.displayTitle }
+    var needsConfirmation: Bool { button.needsConfirmation }
+    var entity: OrbitDeckButtonEntity {
+        OrbitDeckButtonEntity(button: button, index: index, pcID: connection.id, pcName: connection.name)
+    }
+}
+
+/// What Siri, Shortcuts, the widget and the control share. Every run first reads the deck from the PC
+/// (`GET /api/deck`, also refreshing the cache): the cached copy can be out of date (another device may
+/// have turned this button into a sleep button) or miss the button entirely (a Shortcut synced through
+/// iCloud), and both must fail closed. The confirmation and the free-plan check use the PC's copy.
+enum OrbitDeckIntentRunner {
+    static func prepare(button: OrbitDeckButtonEntity, pc: OrbitDeckPCEntity?) async throws -> OrbitDeckPreparedRun {
+        let connections = OrbitWidgetConnectionStore.connections()
+        let wantedID = pc?.id ?? (button.pcID.isEmpty ? nil : button.pcID)
+        let connection = wantedID.flatMap { id in connections.first { $0.id == id } }
+            ?? (wantedID == nil ? OrbitWidgetConnectionStore.defaultConnection() : nil)
+        guard let connection else {
+            throw failure(connections.isEmpty ? "Pair your PC in Orbit first." : "That PC isn't paired with Orbit anymore.", pcID: nil)
+        }
+        guard let token = try? OrbitWidgetConnectionStore.controlToken(for: connection.id), !token.isEmpty else {
+            throw failure("Open Orbit once to allow buttons for \(connection.name).", pcID: connection.id)
+        }
+        let target = OrbitDeckHTTP.Target(host: connection.host, port: connection.port, fingerprint: connection.certificateSHA256, token: token)
+
+        let deck: OrbitDeck
+        do {
+            let fetched = try await OrbitDeckHTTP.fetchDeck(on: target, pcID: connection.id)
+            if fetched.changed { OrbitDeckSurfaces.reload() }
+            deck = fetched.deck
+        } catch {
+            throw failure(message(for: error, connection: connection), pcID: connection.id, statusCode: (error as? OrbitDeckRequestError)?.statusCode)
+        }
+
+        guard let index = deck.buttons.firstIndex(where: { $0.id == button.buttonID }) else {
+            if pc != nil, connection.id != button.pcID {
+                throw failure("“\(button.title)” isn't one of \(connection.name)'s buttons.", pcID: connection.id)
+            }
+            throw failure("“\(button.title)” isn't on \(connection.name) anymore. Open Buttons in Orbit to see the current buttons.", pcID: connection.id)
+        }
+        #if os(iOS)
+        if !OrbitDeckLimits.isIncludedForFree(index: index), !OrbitProEntitlement.cachedIsUnlocked {
+            record("“\(deck.buttons[index].displayTitle)” needs Orbit Pro.", success: false, pcID: connection.id)
+            throw OrbitProRequiredError()
+        }
+        #endif
+        return OrbitDeckPreparedRun(connection: connection, target: target, button: deck.buttons[index], index: index)
+    }
+
+    /// `POST /api/deck/buttons/{id}/run`; returns the result line (also shown on the widget).
+    static func run(_ prepared: OrbitDeckPreparedRun) async throws -> String {
+        do {
+            let reply = try await OrbitDeckHTTP.runButton(id: prepared.button.id, on: prepared.target)
+            let detail = reply.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let message = detail.isEmpty ? "\(prepared.title) · done" : "\(prepared.title) · \(detail)"
+            record(message, success: true, pcID: prepared.connection.id)
+            return message
+        } catch {
+            throw failure(message(for: error, connection: prepared.connection), pcID: prepared.connection.id,
+                          statusCode: (error as? OrbitDeckRequestError)?.statusCode)
+        }
+    }
+
+    /// For a widget or control, which cannot ask "Are you sure?" in place.
+    static func confirmInOrbitMessage(_ prepared: OrbitDeckPreparedRun) -> String {
+        "Open Orbit to confirm “\(prepared.title)”."
+    }
+
+    static func record(_ message: String, success: Bool, pcID: String?) {
+        OrbitDeckCache.recordFeedback(message, success: success, pcID: pcID)
+        OrbitDeckSurfaces.reload()
+    }
+
+    private static func failure(_ message: String, pcID: String?, statusCode: Int? = nil) -> OrbitDeckRequestError {
+        record(message, success: false, pcID: pcID)
+        return OrbitDeckRequestError(message: message, statusCode: statusCode)
+    }
+
+    private static func message(for error: Error, connection: OrbitWidgetConnection) -> String {
+        let message = OrbitDeckRequestError.message(for: error, pcName: connection.name)
+        return message == OrbitDeckRequestError.unreachable ? "\(connection.name) isn't reachable. Wake it from Orbit and try again." : message
+    }
+}
+
+/// Siri and Shortcuts: asks before running a button that needs it.
 struct RunDeckButtonIntent: AppIntent {
     static var title: LocalizedStringResource = "Run Orbit Button"
     static var description = IntentDescription("Runs one of the buttons you made in Orbit → Buttons on your PC, such as Mute Discord or Save Replay.")
@@ -197,54 +299,54 @@ struct RunDeckButtonIntent: AppIntent {
         guard let button else {
             throw $button.needsValueError("Which button should Orbit run?")
         }
-        let connections = OrbitWidgetConnectionStore.connections()
-        let wantedID = pc?.id ?? (button.pcID.isEmpty ? nil : button.pcID)
-        let connection = wantedID.flatMap { id in connections.first { $0.id == id } }
-            ?? (wantedID == nil ? OrbitWidgetConnectionStore.defaultConnection() : nil)
-        guard let connection else {
-            throw OrbitDeckRequestError(message: connections.isEmpty ? "Pair your PC in Orbit first." : "That PC isn't paired with Orbit anymore.")
+        let prepared = try await OrbitDeckIntentRunner.prepare(button: button, pc: pc)
+        if prepared.needsConfirmation {
+            // Asks about the button as the PC has it now, not as the Shortcut remembers it. Where no
+            // prompt can be shown the request throws, so nothing runs.
+            let confirmed = try await $button.requestConfirmation(for: prepared.entity, dialog: "Run “\(prepared.title)” on \(prepared.connection.name)?")
+            guard confirmed else { return .result(dialog: "Okay, nothing was sent to \(prepared.connection.name).") }
         }
+        let message = try await OrbitDeckIntentRunner.run(prepared)
+        return .result(dialog: IntentDialog(stringLiteral: message))
+    }
+}
 
-        let deck = OrbitDeckCache.deck(for: connection.id)
-        let index = deck?.buttons.firstIndex { $0.id == button.buttonID }
-        if pc != nil, connection.id != button.pcID, deck != nil, index == nil {
-            throw OrbitDeckRequestError(message: "“\(button.title)” isn't one of \(connection.name)'s buttons.")
-        }
-        let current = index.flatMap { deck?.buttons[$0] }
-        let title = current?.displayTitle ?? button.title
-        #if os(iOS)
-        if let index, !OrbitDeckLimits.isIncludedForFree(index: index), !OrbitProEntitlement.cachedIsUnlocked {
-            throw OrbitProRequiredError()
-        }
-        #endif
+/// The Buttons widget and the Orbit Button control. Neither can ask "Are you sure?", so a button that
+/// needs a confirmation (by the PC's current copy) opens Orbit, which asks (iOS 18.2 and later), or is
+/// not run at all. Hidden from Shortcuts, which use `RunDeckButtonIntent`.
+struct RunDeckButtonFromWidgetIntent: AppIntent {
+    static var title: LocalizedStringResource = "Run Orbit Button from a Widget"
+    static var description = IntentDescription("Runs an Orbit button from the Buttons widget or the Orbit Button control.")
+    static var openAppWhenRun: Bool = false
+    static var isDiscoverable: Bool { false }
 
-        if current?.needsConfirmation ?? button.needsConfirmation {
-            let confirmed = try await $button.requestConfirmation(for: button, dialog: "Run “\(title)” on \(connection.name)?")
-            guard confirmed else { return .result(dialog: "Okay, nothing was sent to \(connection.name).") }
-        }
+    @Parameter(title: "Button")
+    var button: OrbitDeckButtonEntity?
 
-        guard let token = try? OrbitWidgetConnectionStore.controlToken(for: connection.id), !token.isEmpty else {
-            let message = "Open Orbit once to allow buttons for \(connection.name)."
-            OrbitDeckCache.recordFeedback(message)
-            OrbitDeckSurfaces.reload()
+    init() {}
+
+    init(button: OrbitDeckButtonEntity?) {
+        self.button = button
+    }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let button else {
+            let message = "Choose a button for this control: touch and hold it, then edit it."
+            OrbitDeckIntentRunner.record(message, success: false, pcID: nil)
             throw OrbitDeckRequestError(message: message)
         }
-
-        do {
-            let target = OrbitDeckHTTP.Target(host: connection.host, port: connection.port, fingerprint: connection.certificateSHA256, token: token)
-            let reply = try await OrbitDeckHTTP.runButton(id: button.buttonID, on: target)
-            let detail = reply.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let message = detail.isEmpty ? "\(title) · done" : "\(title) · \(detail)"
-            OrbitDeckCache.recordFeedback(message)
-            OrbitDeckSurfaces.reload()
-            return .result(dialog: IntentDialog(stringLiteral: message))
-        } catch {
-            var message = OrbitDeckRequestError.message(for: error, pcName: connection.name)
-            if message == OrbitDeckRequestError.unreachable { message = "\(connection.name) isn't reachable. Wake it from Orbit and try again." }
-            OrbitDeckCache.recordFeedback(message)
-            OrbitDeckSurfaces.reload()
-            throw OrbitDeckRequestError(message: message, statusCode: (error as? OrbitDeckRequestError)?.statusCode)
+        let prepared = try await OrbitDeckIntentRunner.prepare(button: button, pc: nil)
+        if prepared.needsConfirmation {
+            let link = OrbitDeckSurfaces.deckURL(buttonID: prepared.button.id, pcID: prepared.connection.id)
+            if #available(iOS 18.2, *) {
+                return .result(opensIntent: OpenURLIntent(link), dialog: IntentDialog(stringLiteral: "Confirm “\(prepared.title)” in Orbit."))
+            }
+            let message = OrbitDeckIntentRunner.confirmInOrbitMessage(prepared)
+            OrbitDeckIntentRunner.record(message, success: false, pcID: prepared.connection.id)
+            throw OrbitDeckRequestError(message: message)
         }
+        let message = try await OrbitDeckIntentRunner.run(prepared)
+        return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
 

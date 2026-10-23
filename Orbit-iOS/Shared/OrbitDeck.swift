@@ -167,10 +167,20 @@ struct OrbitDeckAction: Codable, Hashable {
 
     var isSequence: Bool { type == "sequence" }
 
-    /// Sleep, shut down and restart: the button must carry `confirm: true` and the app asks first.
-    var isPowerAction: Bool {
-        if case .system(let name) = kind { return OrbitDeckCatalog.powerSystemActions.contains(name) }
-        return false
+    /// Sleep, shut down and restart, alone or as a step of a sequence (as the agent's `is_power_action`):
+    /// the button must carry `confirm: true` and every device asks first.
+    var isPowerAction: Bool { powerActionName != nil }
+
+    /// `sleep`, `restart` or `shutdown` when this action (or one of its sequence steps) turns the PC off.
+    var powerActionName: String? {
+        switch kind {
+        case .system(let name):
+            return OrbitDeckCatalog.powerSystemActions.contains(name) ? name : nil
+        case .sequence(let steps, _):
+            return steps.lazy.compactMap(\.powerActionName).first
+        default:
+            return nil
+        }
     }
 
     /// A short line for the tile and the editor, such as "Ctrl+Shift+M" or "OBS · Save replay".
@@ -198,6 +208,14 @@ struct OrbitDeckAction: Codable, Hashable {
         return text.count > 28 ? String(text.prefix(27)) + "…" : text
     }
 
+    /// The agent's rule: a step that turns the PC off would cut the steps after it short.
+    static let powerStepProblem = "Sleep, restart and shut down can only be the last step of a sequence."
+
+    /// Whether step `index` of `steps` is a power action placed before the last step.
+    static func isMisplacedPowerStep(_ steps: [OrbitDeckAction], at index: Int) -> Bool {
+        steps.indices.contains(index) && index < steps.count - 1 && steps[index].isPowerAction
+    }
+
     /// Why the agent would refuse this action, in plain words; nil when it is fine to save.
     func validationProblem(asStep: Bool = false) -> String? {
         switch kind {
@@ -219,9 +237,8 @@ struct OrbitDeckAction: Codable, Hashable {
         case .launch(let appID):
             return appID.isEmpty ? "Choose an app to open." : nil
         case .system(let name):
-            guard OrbitDeckCatalog.systemAction(name) != nil else { return "Choose a Windows action." }
-            if asStep && OrbitDeckCatalog.powerSystemActions.contains(name) { return "Sleep, restart and shut down can't be part of a sequence." }
-            return nil
+            // Sleep, restart and shut down are fine as a step; the sequence checks they come last.
+            return OrbitDeckCatalog.systemAction(name) == nil ? "Choose a Windows action." : nil
         case .media(let name):
             return OrbitDeckCatalog.mediaAction(name) == nil ? "Choose a media key." : nil
         case .obs(let request, let data):
@@ -241,6 +258,7 @@ struct OrbitDeckAction: Codable, Hashable {
             for (index, step) in steps.enumerated() {
                 if let problem = step.validationProblem(asStep: true) { return "Step \(index + 1): \(problem)" }
             }
+            if steps.dropLast().contains(where: \.isPowerAction) { return Self.powerStepProblem }
             return nil
         case .unsupported:
             return nil
@@ -287,6 +305,9 @@ struct OrbitDeckButton: Codable, Hashable, Identifiable {
         self.color = OrbitDeckColor.normalized(color) ?? Self.defaultColor
         action = (try? container.decode(OrbitDeckAction.self, forKey: .action)) ?? OrbitDeckAction(.unsupported(type: ""))
         confirm = try? container.decodeIfPresent(Bool.self, forKey: .confirm)
+        // The agent always sends "confirm": false; keep the same normal form the editor writes, so an
+        // untouched button compares equal after a round trip through the editor.
+        normalizeConfirmation()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -316,6 +337,17 @@ struct OrbitDeckButton: Codable, Hashable, Identifiable {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Give the button a name." }
         if title.count > OrbitDeckLimits.maxTitleLength { return "Button names can be at most \(OrbitDeckLimits.maxTitleLength) characters." }
         return action.validationProblem()
+    }
+
+    /// The first new or changed button the agent would refuse. Buttons exactly as the PC sent them are
+    /// skipped: the PC already accepted them, even when they use something this version of Orbit
+    /// doesn't check the same way (a button made on another device, by a script or a newer app).
+    static func firstProblem(in buttons: [OrbitDeckButton], unchangedFrom original: [OrbitDeckButton]) -> (button: OrbitDeckButton, problem: String)? {
+        let saved = Dictionary(original.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for button in buttons where saved[button.id] != button {
+            if let problem = button.validationProblem() { return (button, problem) }
+        }
+        return nil
     }
 }
 
@@ -349,9 +381,12 @@ struct OrbitDeck: Codable, Hashable {
     }
 }
 
-/// Body of `PUT /api/deck`.
+/// Body of `PUT /api/deck`. `baseUpdatedAt` is the `updatedAt` of the deck the edit started from: the
+/// agent refuses the save with 409 when another device saved in between, instead of overwriting it.
+/// Left out (nil) it replaces the deck unconditionally.
 struct OrbitDeckUpdate: Encodable {
     let buttons: [OrbitDeckButton]
+    var baseUpdatedAt: String? = nil
 }
 
 /// Body of `POST /api/deck/run`.
@@ -562,6 +597,17 @@ enum OrbitDeckCatalog {
     ]
     static let powerSystemActions: Set<String> = ["sleep", "restart", "shutdown"]
 
+    /// Other names `perform_action` accepts. The editor offers these as media keys instead, but a button
+    /// made on another device or by a script may use them, so they are shown, kept and saved as they are.
+    static let otherSystemActions: [OrbitDeckChoice] = [
+        OrbitDeckChoice(id: "mute", title: "Mute", symbol: "speaker.slash.fill"),
+        OrbitDeckChoice(id: "volume_up", title: "Volume up", symbol: "speaker.wave.3.fill"),
+        OrbitDeckChoice(id: "volume_down", title: "Volume down", symbol: "speaker.wave.1.fill"),
+        OrbitDeckChoice(id: "media_play_pause", title: "Play/Pause", symbol: "playpause.fill"),
+        OrbitDeckChoice(id: "media_next", title: "Next track", symbol: "forward.fill"),
+        OrbitDeckChoice(id: "media_prev", title: "Previous track", symbol: "backward.fill")
+    ]
+
     /// `media {name}`.
     static let mediaActions: [OrbitDeckChoice] = [
         OrbitDeckChoice(id: "playpause", title: "Play/Pause", symbol: "playpause.fill"),
@@ -594,7 +640,9 @@ enum OrbitDeckCatalog {
     /// Link schemes the agent opens (`openUrl`).
     static let urlSchemes = ["http", "https", "steam", "com.epicgames.launcher", "spotify", "discord", "ms-settings"]
 
-    static func systemAction(_ name: String) -> OrbitDeckChoice? { systemActions.first { $0.id == name } }
+    static func systemAction(_ name: String) -> OrbitDeckChoice? {
+        systemActions.first { $0.id == name } ?? otherSystemActions.first { $0.id == name }
+    }
     static func mediaAction(_ name: String) -> OrbitDeckChoice? { mediaActions.first { $0.id == name } }
     static func obsRequest(_ name: String) -> OrbitDeckChoice? { obsRequests.first { $0.id == name } }
 
@@ -672,12 +720,15 @@ enum OrbitDeckSamples {
 
 // MARK: - App Group cache (widgets, Control Center, Siri, Apple Watch)
 
-/// The last `GET /api/deck` reply per PC, exactly as the PC sent it, under `Orbit.Deck.v1.<pcID>` in the
-/// App Group defaults. The app writes it whenever it fetches or saves the deck; extensions only read it.
+/// The last `GET /api/deck` reply per PC (the PUT reply has the same shape), under `Orbit.Deck.v1.<pcID>`
+/// in the App Group defaults. The app writes it whenever it fetches or saves the deck, and so does a
+/// widget, control or Siri run, which reads the deck from the PC before running a button.
 enum OrbitDeckCache {
     static let keyPrefix = "Orbit.Deck.v1."
     private static let feedbackKey = "Orbit.DeckFeedback.v1"
     private static let feedbackTimeKey = "Orbit.DeckFeedbackTime.v1"
+    private static let feedbackSuccessKey = "Orbit.DeckFeedbackSuccess.v1"
+    private static let feedbackPCKey = "Orbit.DeckFeedbackPC.v1"
     private static let maxBytes = 512 * 1024
 
     private static var defaults: UserDefaults {
@@ -715,20 +766,26 @@ enum OrbitDeckCache {
         defaults.removeObject(forKey: key(for: pcID))
     }
 
-    /// A short result line the Buttons widget shows for half a minute after a tap.
-    static func recordFeedback(_ message: String) {
+    /// A short result line the Buttons widget shows for half a minute after a tap. `pcID` is the PC the
+    /// button ran on (nil when no PC could be chosen), so a widget set to another PC doesn't show it.
+    static func recordFeedback(_ message: String, success: Bool, pcID: String?) {
         let store = defaults
         store.set(String(message.prefix(120)), forKey: feedbackKey)
+        store.set(success, forKey: feedbackSuccessKey)
+        store.set(pcID ?? "", forKey: feedbackPCKey)
         store.set(Date().timeIntervalSince1970, forKey: feedbackTimeKey)
     }
 
-    static func recentFeedback(maxAge: TimeInterval = 30) -> (message: String, expires: Date)? {
+    /// The last result for `pcID` (or one that names no PC) if it is younger than `maxAge`.
+    static func recentFeedback(for pcID: String?, maxAge: TimeInterval = 30) -> (message: String, success: Bool, expires: Date)? {
         let store = defaults
         let time = store.double(forKey: feedbackTimeKey)
         guard time > 0, let message = store.string(forKey: feedbackKey) else { return nil }
         let age = Date().timeIntervalSince1970 - time
         guard age >= 0, age < maxAge else { return nil }
-        return (message, Date(timeIntervalSince1970: time + maxAge))
+        let recordedPC = store.string(forKey: feedbackPCKey) ?? ""
+        guard recordedPC.isEmpty || recordedPC == pcID else { return nil }
+        return (message, store.bool(forKey: feedbackSuccessKey), Date(timeIntervalSince1970: time + maxAge))
     }
 }
 
@@ -760,6 +817,24 @@ struct OrbitDeckRequestError: LocalizedError {
         }
         return error.localizedDescription
     }
+
+    static let olderAgent = "Buttons need a newer Orbit agent on the PC. Update it, then try again."
+
+    /// A 404 whose body is FastAPI's own "Not Found" (or nothing): the agent has no such route.
+    static func isMissingRoute(_ detail: String?) -> Bool {
+        let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty || text == "Not Found"
+    }
+
+    /// A 404 from running a button that means the button itself is gone from the PC. The agent also
+    /// answers 404 when an app the button opens left the Start menu (or such a sequence step failed);
+    /// those replies carry their own sentence and the button is still there.
+    static func isMissingButton(status: Int?, detail: String?) -> Bool {
+        guard status == 404 else { return false }
+        let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return isMissingRoute(text) || text.hasPrefix("PC returned error")
+            || text.hasPrefix("This button is no longer on the PC") || text.hasPrefix("This button isn't on the PC")
+    }
 }
 
 // MARK: - Running a button from an extension
@@ -781,6 +856,21 @@ enum OrbitDeckHTTP {
         }
         let data = try await request(path: "/api/deck/buttons/\(encoded)/run", method: "POST", on: target, timeout: timeout)
         return (try? JSONDecoder().decode(OrbitDeckRunReply.self, from: data)) ?? OrbitDeckRunReply(status: "done", detail: nil)
+    }
+
+    /// `GET /api/deck`, stored in the cache for `pcID`. `changed` tells whether the cached copy changed
+    /// (the widget and the control then need to redraw).
+    static func fetchDeck(on target: Target, pcID: String, timeout: TimeInterval = 6) async throws -> (deck: OrbitDeck, changed: Bool) {
+        let data: Data
+        do {
+            data = try await request(path: "/api/deck", method: "GET", on: target, timeout: timeout)
+        } catch let error as OrbitDeckRequestError where error.statusCode == 404 {
+            throw OrbitDeckRequestError(message: OrbitDeckRequestError.olderAgent, statusCode: 404)
+        }
+        guard let deck = OrbitDeck.decode(data) else {
+            throw OrbitDeckRequestError(message: "The PC sent buttons this version of Orbit can't read. Update Orbit and try again.")
+        }
+        return (deck, OrbitDeckCache.store(data, for: pcID))
     }
 
     static func request(path: String, method: String, body: Data? = nil, on target: Target, timeout: TimeInterval) async throws -> Data {
@@ -833,6 +923,7 @@ enum OrbitDeckHTTP {
 
     /// The agent's sentence when it sent one, else a plain explanation of the status code.
     static func describe(status: Int, detail: String?) -> String {
+        if status == 404 && OrbitDeckRequestError.isMissingRoute(detail) { return OrbitDeckRequestError.olderAgent }
         if let detail, !detail.isEmpty, status != 401 { return detail }
         switch status {
         case 401: return "The PC rejected Orbit's token. Open Orbit and pair the PC again."

@@ -36,6 +36,7 @@ struct OrbitDeckTests {
         try statusPayloads()
         catalogues(agentKeys: agentKeys, agentActions: agentActions)
         limitsAndCache()
+        try savingRules()
 
         let deck = sampleDeck()
         for button in deck.buttons { check(button.validationProblem() == nil, "sample button \(button.id) is invalid: \(button.validationProblem() ?? "")") }
@@ -136,6 +137,24 @@ struct OrbitDeckTests {
         check(lock.needsConfirmation, "user can ask for confirmation")
         for name in ["sleep", "restart", "shutdown"] { check(OrbitDeckAction.system(name).isPowerAction, name) }
         check(!OrbitDeckAction.system("lock").isPowerAction, "lock is not power")
+
+        // Sequences ending in a power step are power actions too (the agent's is_power_action).
+        let saveAndSleep = OrbitDeckAction(.sequence(steps: [.hotkey(["ctrl", "s"]), .system("sleep")], delayMs: 500))
+        check(saveAndSleep.isPowerAction && saveAndSleep.powerActionName == "sleep", "sequence with a sleep step is power")
+        check(!OrbitDeckAction(.sequence(steps: [.media("next")], delayMs: 0)).isPowerAction, "plain sequence is not power")
+        let sequenceButton = OrbitDeckButton(title: "Save and sleep", symbol: "moon.fill", color: "#FFD60A", action: saveAndSleep)
+        check(sequenceButton.confirm == true && sequenceButton.needsConfirmation, "power sequences carry confirm")
+
+        // The agent always sends "confirm": false; decoding normalises it, so an untouched button stays equal.
+        let fromAgent = ##"{"id":"a1","title":"Lock","symbol":"lock.fill","color":"#8E8E93","confirm":false,"action":{"type":"system","name":"lock"}}"##
+        var decoded = try JSONDecoder().decode(OrbitDeckButton.self, from: Data(fromAgent.utf8))
+        check(decoded.confirm == nil, "confirm false decodes as nil")
+        let before = decoded
+        decoded.normalizeConfirmation()
+        check(decoded == before, "normalising a decoded button changes nothing")
+        let powerWithoutConfirm = ##"{"id":"a2","title":"Sleep","symbol":"moon.zzz.fill","color":"#FFD60A","action":{"type":"system","name":"sleep"}}"##
+        let decodedPower = try JSONDecoder().decode(OrbitDeckButton.self, from: Data(powerWithoutConfirm.utf8))
+        check(decodedPower.confirm == true, "power button decodes with confirm")
     }
 
     static func validation() {
@@ -158,7 +177,16 @@ struct OrbitDeckTests {
         }
         check(problem(OrbitDeckAction(.launch(appID: ""))) != nil, "no app")
         check(problem(.system("format_c")) != nil, "unknown system action")
-        check(problem(.system("sleep"), asStep: true) != nil, "power step")
+        check(problem(.system("sleep"), asStep: true) == nil, "a power step is checked by its sequence")
+        for name in ["mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev"] {
+            check(problem(.system(name)) == nil, "agent system action \(name) made elsewhere is accepted")
+            check(OrbitDeckAction.system(name).summary != "Windows action", "agent system action \(name) has a title")
+        }
+        check(problem(OrbitDeckAction(.sequence(steps: [.hotkey(["ctrl", "s"]), .system("shutdown")], delayMs: 0))) == nil, "power as the last step")
+        check(problem(OrbitDeckAction(.sequence(steps: [.system("restart"), .media("next")], delayMs: 0))) == OrbitDeckAction.powerStepProblem, "power before the last step")
+        let misplaced: [OrbitDeckAction] = [.system("sleep"), .media("next")]
+        check(OrbitDeckAction.isMisplacedPowerStep(misplaced, at: 0) && !OrbitDeckAction.isMisplacedPowerStep(misplaced, at: 1), "misplaced power step")
+        check(!OrbitDeckAction.isMisplacedPowerStep([.media("next"), .system("sleep")], at: 1), "last power step is fine")
         check(problem(.media("rewind")) != nil, "unknown media key")
         check(problem(.obs("StartStream")) != nil, "OBS request outside the allowlist")
         check(problem(.obs("SetCurrentProgramScene", ["sceneName": .string(" ")])) != nil, "scene name needed")
@@ -169,7 +197,7 @@ struct OrbitDeckTests {
         let nested = OrbitDeckAction(.sequence(steps: [OrbitDeckAction(.sequence(steps: [.media("next")], delayMs: 0))], delayMs: 0))
         check(problem(nested) != nil, "nested sequence")
         check(problem(OrbitDeckAction(.sequence(steps: [.media("next")], delayMs: 6000))) != nil, "long pause")
-        check(problem(OrbitDeckAction(.sequence(steps: [.system("restart")], delayMs: 0)))?.hasPrefix("Step 1:") == true, "step problems are numbered")
+        check(problem(OrbitDeckAction(.sequence(steps: [.system("format_c")], delayMs: 0)))?.hasPrefix("Step 1:") == true, "step problems are numbered")
         var button = OrbitDeckButton(title: "  ", symbol: "star.fill", color: "#FFFFFF", action: .media("mute"))
         check(button.validationProblem() != nil, "blank name")
         button.title = String(repeating: "x", count: 41)
@@ -199,7 +227,9 @@ struct OrbitDeckTests {
         check(swiftKeys == agent, "key names differ from orbit_input.KEY_NAMES: app-only \(swiftKeys.subtracting(agent).sorted()), agent-only \(agent.subtracting(swiftKeys).sorted())")
         let grouped = OrbitDeckKeys.groups.flatMap(\.keys)
         check(grouped.count == Set(grouped).count, "a key is listed twice in the picker")
-        for name in OrbitDeckCatalog.systemActions.map(\.id) { check(agentActions.contains(name), "system action \(name) is not in the agent's ACTIONS") }
+        for name in (OrbitDeckCatalog.systemActions + OrbitDeckCatalog.otherSystemActions).map(\.id) {
+            check(agentActions.contains(name), "system action \(name) is not in the agent's ACTIONS")
+        }
         check(OrbitDeckCatalog.powerSystemActions == ["sleep", "restart", "shutdown"], "power set")
         check(Set(OrbitDeckCatalog.mediaActions.map(\.id)) == ["playpause", "next", "previous", "mute", "volumeup", "volumedown"], "media names")
         check(Set(OrbitDeckCatalog.obsRequests.map(\.id)) == ["SetCurrentProgramScene", "StartRecord", "StopRecord", "ToggleRecord", "ToggleStream",
@@ -220,12 +250,48 @@ struct OrbitDeckTests {
         check(OrbitDeckLimits.canAddButton(existingCount: 63, isPro: true) && !OrbitDeckLimits.canAddButton(existingCount: 64, isPro: true), "Pro: 64")
         check(OrbitDeckLimits.isIncludedForFree(index: 5) && !OrbitDeckLimits.isIncludedForFree(index: 6), "free index")
         check(OrbitDeckCache.key(for: "PC-1") == "Orbit.Deck.v1.PC-1", "cache key")
-        check(OrbitDeckHTTP.describe(status: 404, detail: nil).contains("isn't on the PC"), "404 sentence")
+        check(OrbitDeckHTTP.describe(status: 404, detail: nil) == OrbitDeckRequestError.olderAgent, "404 without a sentence: older agent")
+        check(OrbitDeckHTTP.describe(status: 404, detail: "Not Found") == OrbitDeckRequestError.olderAgent, "FastAPI's own 404: older agent")
+        let gone = "This button is no longer on the PC. Refresh your buttons."
+        check(OrbitDeckHTTP.describe(status: 404, detail: gone) == gone, "agent 404 sentence kept")
+        check(OrbitDeckRequestError.isMissingButton(status: 404, detail: gone), "button-missing 404")
+        check(OrbitDeckRequestError.isMissingButton(status: 404, detail: "PC returned error 404."), "404 without detail")
+        check(!OrbitDeckRequestError.isMissingButton(status: 404, detail: "Spotify is no longer in the PC's Start menu. Edit the button and choose the app again."), "launch 404 is not a missing button")
+        check(!OrbitDeckRequestError.isMissingButton(status: 404, detail: "Step 2 of 3 didn't work: Spotify is no longer in the PC's Start menu."), "sequence 404 is not a missing button")
+        check(!OrbitDeckRequestError.isMissingButton(status: 409, detail: gone), "only 404")
         check(OrbitDeckHTTP.describe(status: 409, detail: "OBS isn't running right now.") == "OBS isn't running right now.", "agent detail kept")
         check(OrbitDeckHTTP.describe(status: 401, detail: "Invalid Orbit token").contains("pair the PC again"), "401 sentence")
         check(OrbitDeckRequestError.message(for: URLError(.timedOut), pcName: "Gaming PC") == "Gaming PC isn't reachable. Wake it from Orbit and try again.", "timeout sentence")
         check(OrbitDeckSamples.demoDeck.buttons.count == OrbitDeckLimits.freeButtons, "demo deck fits the free plan")
         for button in OrbitDeckSamples.demoDeck.buttons { check(button.validationProblem() == nil, "demo button \(button.id)") }
+    }
+
+    static func savingRules() throws {
+        // PUT body: baseUpdatedAt only when known.
+        let plain = try JSONSerialization.jsonObject(with: JSONEncoder().encode(OrbitDeckUpdate(buttons: []))) as? [String: Any]
+        check(plain?.keys.sorted() == ["buttons"], "no baseUpdatedAt when unknown: \(plain?.keys.sorted() ?? [])")
+        let based = try JSONSerialization.jsonObject(with: JSONEncoder().encode(OrbitDeckUpdate(buttons: [], baseUpdatedAt: "2026-10-23T18:00:00Z"))) as? [String: Any]
+        check(based?["baseUpdatedAt"] as? String == "2026-10-23T18:00:00Z", "baseUpdatedAt sent")
+
+        // Only new or changed buttons are validated before a save.
+        let fromPC = OrbitDeckButton(id: "x1", title: "Odd", symbol: "star.fill", color: "#FFFFFF", action: .system("not_known_here"))
+        let fine = OrbitDeckButton(id: "x2", title: "Lock", symbol: "lock.fill", color: "#8E8E93", action: .system("lock"))
+        check(OrbitDeckButton.firstProblem(in: [fromPC, fine], unchangedFrom: [fromPC, fine]) == nil, "untouched buttons aren't checked")
+        var edited = fromPC
+        edited.title = "Odd 2"
+        check(OrbitDeckButton.firstProblem(in: [edited, fine], unchangedFrom: [fromPC, fine])?.button.id == "x1", "an edited button is checked")
+        let added = OrbitDeckButton(id: "x3", title: "", symbol: "star.fill", color: "#FFFFFF", action: .media("next"))
+        check(OrbitDeckButton.firstProblem(in: [fromPC, added], unchangedFrom: [fromPC])?.button.id == "x3", "a new button is checked")
+
+        // Widget feedback: success flag and the PC it belongs to.
+        OrbitDeckCache.recordFeedback("Mute · done", success: true, pcID: "pc-a")
+        check(OrbitDeckCache.recentFeedback(for: "pc-a")?.success == true, "feedback for its PC")
+        check(OrbitDeckCache.recentFeedback(for: "pc-b") == nil, "feedback hidden on another PC's widget")
+        OrbitDeckCache.recordFeedback("Pair your PC in Orbit first.", success: false, pcID: nil)
+        let general = OrbitDeckCache.recentFeedback(for: "pc-b")
+        check(general?.success == false && general?.message == "Pair your PC in Orbit first.", "feedback without a PC shows everywhere")
+        OrbitDeckCache.recordFeedback("", success: true, pcID: nil)
+        UserDefaults.standard.removeObject(forKey: "Orbit.DeckFeedbackTime.v1")
     }
 
     /// One button per action type, as the editor's presets create them.
@@ -243,7 +309,9 @@ struct OrbitDeckTests {
             OrbitDeckButton(id: "6f1c1f9e-0001-4c55-9d1e-00000000000a", title: "BRB", symbol: "rectangle.on.rectangle", color: "#64D2FF", action: .obs("SetCurrentProgramScene", ["sceneName": .string("BRB")])),
             OrbitDeckButton(id: "6f1c1f9e-0001-4c55-9d1e-00000000000b", title: "Mute mic in OBS", symbol: "mic.slash.fill", color: "#BF5AF2", action: .obs("ToggleInputMute", ["inputName": .string("Mic/Aux")])),
             OrbitDeckButton(id: "6f1c1f9e-0001-4c55-9d1e-00000000000c", title: "Clip + note", symbol: "list.number", color: "#BF5AF2",
-                            action: OrbitDeckAction(.sequence(steps: [.hotkey(["alt", "f10"]), .obs("SaveReplayBuffer"), .media("next")], delayMs: 250)), confirm: true)
+                            action: OrbitDeckAction(.sequence(steps: [.hotkey(["alt", "f10"]), .obs("SaveReplayBuffer"), .media("next")], delayMs: 250)), confirm: true),
+            OrbitDeckButton(id: "6f1c1f9e-0001-4c55-9d1e-00000000000d", title: "Save and sleep", symbol: "moon.fill", color: "#FFD60A",
+                            action: OrbitDeckAction(.sequence(steps: [.hotkey(["ctrl", "s"]), .system("sleep")], delayMs: 500)))
         ], updatedAt: nil)
     }
 

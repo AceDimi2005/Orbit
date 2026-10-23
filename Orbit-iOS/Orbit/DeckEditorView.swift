@@ -23,6 +23,9 @@ struct DeckEditorView: View {
     @State private var path: [DeckEditorRoute] = []
     @State private var editMode: EditMode = .inactive
     @State private var saveError: String?
+    @State private var saveErrorReason: OrbitDeckSaveError.Reason?
+    @State private var session: OrbitDeckEditSession?
+    @State private var isReloading = false
     @State private var showsPaywall = false
     @State private var confirmDiscard = false
     @State private var didLoad = false
@@ -95,6 +98,17 @@ struct DeckEditorView: View {
                         Label(saveError, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(.orange)
+                        if saveErrorReason == .changedElsewhere {
+                            Button {
+                                reloadAfterConflict()
+                            } label: {
+                                HStack {
+                                    Label("Reload Buttons", systemImage: "arrow.clockwise")
+                                    if isReloading { Spacer(); ProgressView() }
+                                }
+                            }
+                            .disabled(isReloading || store.isSaving)
+                        }
                     }
                     .orbitRow(tint: .orange)
                 }
@@ -132,8 +146,10 @@ struct DeckEditorView: View {
         .onAppear {
             guard !didLoad else { return }
             didLoad = true
-            draft = store.deck.buttons
-            original = store.deck.buttons
+            let start = store.beginEditing()
+            session = start
+            draft = start.buttons
+            original = start.buttons
             if startsWithPresets, OrbitDeckLimits.canAddButton(existingCount: draft.count, isPro: proStore.isProUnlocked) {
                 path = [.presets]
             }
@@ -181,27 +197,57 @@ struct DeckEditorView: View {
     }
 
     private func save() {
+        guard let session else { return }
         var buttons = draft
         for index in buttons.indices {
             buttons[index].title = buttons[index].title.trimmingCharacters(in: .whitespacesAndNewlines)
             buttons[index].normalizeConfirmation()
         }
-        if let broken = buttons.first(where: { $0.validationProblem() != nil }), let problem = broken.validationProblem() {
-            saveError = "Fix “\(broken.displayTitle)”: \(problem)"
+        // Only new and changed buttons are checked: the PC already accepted the others as they are.
+        if let broken = OrbitDeckButton.firstProblem(in: buttons, unchangedFrom: session.buttons) {
+            saveError = "Fix “\(broken.button.displayTitle)”: \(broken.problem)"
+            saveErrorReason = nil
             OrbitHaptics.error()
             return
         }
         saveError = nil
+        saveErrorReason = nil
         Task {
             do {
-                try await store.save(buttons)
+                try await store.save(buttons, session: session)
                 OrbitHaptics.success()
                 store.show(buttons.count == 1 ? "Saved 1 button" : "Saved \(buttons.count) buttons", kind: .success)
                 dismiss()
+            } catch let error as OrbitDeckSaveError {
+                saveError = error.message
+                saveErrorReason = error.reason
+                OrbitHaptics.error()
             } catch {
                 saveError = error.localizedDescription
+                saveErrorReason = nil
                 OrbitHaptics.error()
             }
+        }
+    }
+
+    /// After a 409: the PC's buttons replace the draft (the user's changes were not saved).
+    private func reloadAfterConflict() {
+        guard !isReloading else { return }
+        isReloading = true
+        Task {
+            defer { isReloading = false }
+            guard let fresh = await store.reloadForEditing() else {
+                saveError = "Orbit couldn't reload the buttons. Check that the PC is on, then try again."
+                return
+            }
+            session = fresh
+            draft = fresh.buttons
+            original = fresh.buttons
+            path.removeAll()
+            editMode = .inactive
+            saveError = nil
+            saveErrorReason = nil
+            OrbitHaptics.success()
         }
     }
 }
@@ -782,6 +828,10 @@ private struct DeckActionEditor: View {
                 ForEach(OrbitDeckCatalog.systemActions.filter { allowsPower || !OrbitDeckCatalog.powerSystemActions.contains($0.id) }) { choice in
                     Label(choice.title, systemImage: choice.symbol).tag(choice.id)
                 }
+                // A name made on another device that the editor offers as a media key: keep it selectable.
+                if let other = OrbitDeckCatalog.otherSystemActions.first(where: { $0.id == name }) {
+                    Label(other.title, systemImage: other.symbol).tag(other.id)
+                }
             }
             .pickerStyle(.navigationLink)
         } header: {
@@ -909,7 +959,7 @@ private struct DeckActionEditor: View {
                             .foregroundStyle(.white)
                             .lineLimit(1)
                         Spacer()
-                        if step.validationProblem(asStep: true) != nil {
+                        if step.validationProblem(asStep: true) != nil || OrbitDeckAction.isMisplacedPowerStep(steps, at: index) {
                             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                         }
                     }
@@ -947,7 +997,7 @@ private struct DeckActionEditor: View {
         } header: {
             Text("Steps")
         } footer: {
-            Text("Runs the steps in order, for example a scene switch, then a shortcut. At most \(OrbitDeckLimits.maxSequenceSteps) steps; sleep, restart and shut down can't be steps.")
+            Text("Runs the steps in order, for example a scene switch, then a shortcut. At most \(OrbitDeckLimits.maxSequenceSteps) steps; sleep, restart and shut down can only be the last step, and Orbit asks before running such a sequence.")
         }
         .orbitRow()
     }
@@ -986,7 +1036,7 @@ private struct DeckStepEditor: View {
 
     var body: some View {
         Form {
-            DeckActionEditor(vm: vm, store: store, action: $draft.action, allowsSequence: false, allowsPower: false)
+            DeckActionEditor(vm: vm, store: store, action: $draft.action, allowsSequence: false, allowsPower: true)
             if let problem = draft.action.validationProblem(asStep: true) {
                 Section {
                     Label(problem, systemImage: "exclamationmark.circle.fill")

@@ -3,9 +3,10 @@ import SwiftUI
 import WidgetKit
 
 // The Buttons widget (small: 4 buttons, medium: 8) and the Buttons control for Control Center.
-// Both read the deck Orbit cached for the PC; a tap runs `RunDeckButtonIntent` in the background.
-// Buttons that need a confirmation (sleep, restart, shut down…) open Orbit, which asks first, and
-// buttons beyond the free six open the Orbit Pro sheet for free users.
+// Both draw the deck Orbit cached for the PC; a tap runs `RunDeckButtonFromWidgetIntent` in the
+// background, which checks the PC's current copy of the button first. Buttons that need a confirmation
+// (sleep, restart, shut down, "Ask before running") open Orbit, which asks; buttons beyond the free six
+// open the Orbit Pro sheet for free users.
 
 struct OrbitDeckWidgetIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Buttons"
@@ -27,6 +28,7 @@ private struct OrbitDeckEntry: TimelineEntry {
     var buttons: [OrbitDeckButtonEntity] = []
     var isPro = false
     var feedback: String?
+    var feedbackIsSuccess = true
     var isPreview = false
 
     static func sample(date: Date = Date()) -> OrbitDeckEntry {
@@ -44,33 +46,35 @@ private struct OrbitDeckProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> Entry { .sample() }
 
     func snapshot(for configuration: Intent, in context: Context) async -> Entry {
-        let entry = load(configuration, feedback: nil)
+        let entry = load(configuration)
         if context.isPreview && entry.state != .ready { return .sample() }
         return entry
     }
 
     func timeline(for configuration: Intent, in context: Context) async -> Timeline<Entry> {
         let now = Date()
-        if let recent = OrbitDeckCache.recentFeedback() {
+        var entry = load(configuration, date: now)
+        // Only results from this widget's PC: a widget set to another PC keeps its own header.
+        if let recent = OrbitDeckCache.recentFeedback(for: entry.pcID) {
             // The result line, then the plain widget again once the line expires.
-            let withFeedback = load(configuration, feedback: recent.message, date: now)
-            var later = withFeedback
+            var later = entry
             later.date = recent.expires
-            later.feedback = nil
-            return Timeline(entries: [withFeedback, later], policy: .after(now.addingTimeInterval(60 * 60)))
+            entry.feedback = recent.message
+            entry.feedbackIsSuccess = recent.success
+            return Timeline(entries: [entry, later], policy: .after(now.addingTimeInterval(60 * 60)))
         }
-        return Timeline(entries: [load(configuration, feedback: nil, date: now)], policy: .after(now.addingTimeInterval(60 * 60)))
+        return Timeline(entries: [entry], policy: .after(now.addingTimeInterval(60 * 60)))
     }
 
-    private func load(_ configuration: Intent, feedback: String?, date: Date = Date()) -> Entry {
+    private func load(_ configuration: Intent, date: Date = Date()) -> Entry {
         let connections = OrbitWidgetConnectionStore.connections()
         let connection = configuration.pc.flatMap { pc in connections.first { $0.id == pc.id } } ?? OrbitWidgetConnectionStore.defaultConnection()
         guard let connection else {
-            return Entry(date: date, state: .noPC, pcID: nil, pcName: "Orbit", feedback: feedback)
+            return Entry(date: date, state: .noPC, pcID: nil, pcName: "Orbit")
         }
         let buttons = OrbitDeckEntities.buttons(pcID: connection.id)
         return Entry(date: date, state: buttons.isEmpty ? .noButtons : .ready, pcID: connection.id, pcName: connection.name,
-                     buttons: buttons, isPro: OrbitProEntitlement.cachedIsUnlocked, feedback: feedback)
+                     buttons: buttons, isPro: OrbitProEntitlement.cachedIsUnlocked)
     }
 }
 
@@ -123,7 +127,7 @@ private struct OrbitDeckWidgetView: View {
         // For half a minute after a tap the header shows the result instead of the PC name.
         HStack(spacing: 5) {
             if let feedback = entry.feedback {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: entry.feedbackIsSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 9, weight: .bold))
                 Text(feedback)
                     .font(.system(size: 10, weight: .semibold))
@@ -139,7 +143,7 @@ private struct OrbitDeckWidgetView: View {
             }
             Spacer(minLength: 0)
         }
-        .foregroundStyle(entry.feedback == nil ? Self.accent : Color.mint)
+        .foregroundStyle(entry.feedback == nil ? Self.accent : (entry.feedbackIsSuccess ? Color.mint : Color.orange))
     }
 
     @ViewBuilder
@@ -153,7 +157,7 @@ private struct OrbitDeckWidgetView: View {
             // Widgets cannot ask "Are you sure?", so Orbit opens and asks.
             Link(destination: OrbitDeckSurfaces.deckURL(buttonID: button.buttonID, pcID: button.pcID)) { tileLabel(button, locked: false) }
         } else {
-            Button(intent: RunDeckButtonIntent(button: button)) { tileLabel(button, locked: false) }
+            Button(intent: RunDeckButtonFromWidgetIntent(button: button)) { tileLabel(button, locked: false) }
                 .buttonStyle(.plain)
         }
     }
@@ -226,7 +230,9 @@ private struct OrbitDeckWidgetView: View {
 struct OrbitDeckControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         AppIntentControlConfiguration(kind: OrbitDeckSurfaces.controlKind, provider: OrbitDeckControlProvider()) { value in
-            ControlWidgetButton(action: RunDeckButtonIntent(button: value.button)) {
+            // Control Center can't ask "Are you sure?": a button that needs a confirmation opens Orbit
+            // to ask (iOS 18.2+; on 18.0/18.1 it isn't run and the widget shows why).
+            ControlWidgetButton(action: RunDeckButtonFromWidgetIntent(button: value.button)) {
                 Label(value.title, systemImage: value.symbol)
             }
         }

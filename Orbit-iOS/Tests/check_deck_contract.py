@@ -6,8 +6,10 @@
 2. Compares the key picker with orbit_input.KEY_NAMES and the Windows actions with orbit_agent.ACTIONS
    (read from the source, so no agent dependencies are needed for this part).
 3. When the agent has `/api/deck` (orbit_deck.py) and its Python dependencies are installed, PUTs a deck
-   with every action type through FastAPI's TestClient over https, reads it back with GET and decodes it
-   with the Swift model. Otherwise this part is skipped with a note.
+   with every action type (with baseUpdatedAt) through FastAPI's TestClient over https, decodes the PUT
+   reply and a GET with the Swift model, checks the 409 for a stale baseUpdatedAt and the button-missing
+   404 sentence. Skipped with a note only when orbit_deck.py is not in the agent folder; a present
+   orbit_deck.py without the route fails.
 
 No PC, network or device is touched.
 """
@@ -54,26 +56,48 @@ def agent_round_trip(binary, deck_path, directory):
         except Exception as error:  # agent dependencies missing (run with the test venv)
             print(f"SKIP: agent round trip ({type(error).__name__}: {error}); run with the agent's Python environment")
             return
-        if not any(getattr(route, "path", "") == "/api/deck" for route in agent.app.routes):
+        # FastAPI 0.150 keeps an included router as one `_IncludedRouter` entry without `.path` in
+        # app.routes, so look in the OpenAPI paths, which list every route.
+        has_route = "/api/deck" in agent.app.openapi().get("paths", {})
+        if not has_route:
+            if (AGENT / "orbit_deck.py").exists():
+                raise SystemExit("FAIL: orbit_deck.py exists but the agent serves no /api/deck route (is the deck router included?)")
             print("SKIP: agent round trip — this agent has no /api/deck yet (orbit_deck.py not merged)")
             return
         agent.API_TOKEN = token
         client = TestClient(agent.app, base_url="https://testserver")
         headers = {"Authorization": f"Bearer {token}"}
         body = json.loads(Path(deck_path).read_text())
-        response = client.put("/api/deck", json=body, headers=headers)
+        before = client.get("/api/deck", headers=headers)
+        if before.status_code != 200:
+            raise SystemExit(f"FAIL: GET /api/deck returned {before.status_code} {before.text}")
+        base = before.json().get("updatedAt")
+        # The app sends the updatedAt its edit started from (baseUpdatedAt).
+        response = client.put("/api/deck", json={**body, "baseUpdatedAt": base}, headers=headers)
         if response.status_code != 200:
             raise SystemExit(f"FAIL: the agent refused the app's deck: {response.status_code} {response.text}")
+        put_reply = Path(directory) / "put-reply.json"
+        put_reply.write_text(response.text)
+        # The PUT reply is what the app stores in the cache: it must decode as a deck too.
+        subprocess.run([str(binary), "--decode", str(put_reply)], check=True, timeout=60)
+        stale = client.put("/api/deck", json={**body, "baseUpdatedAt": base}, headers=headers)
+        if stale.status_code != 409:
+            raise SystemExit(f"FAIL: a save based on an older deck returned {stale.status_code}, expected 409")
         response = client.get("/api/deck", headers=headers)
         if response.status_code != 200:
             raise SystemExit(f"FAIL: GET /api/deck returned {response.status_code} {response.text}")
         returned = Path(directory) / "returned.json"
         returned.write_text(response.text)
         subprocess.run([str(binary), "--decode", str(returned)], check=True, timeout=60)
+        missing = client.post("/api/deck/buttons/00000000-0000-4000-8000-000000000000/run", headers=headers)
+        if missing.status_code != 404 or not str(missing.json().get("detail", "")).startswith("This button is no longer on the PC"):
+            raise SystemExit(f"FAIL: running a missing button returned {missing.status_code} {missing.text}; "
+                             "the app recognises the button-missing 404 by its sentence (OrbitDeckRequestError.isMissingButton)")
         plain = TestClient(agent.app, base_url="http://testserver").get("/api/deck", headers=headers)
         if plain.status_code != 426:
             raise SystemExit(f"FAIL: GET /api/deck over http returned {plain.status_code}, expected 426")
-        print("PASS: agent /api/deck accepts every action type the app makes and answers 426 over http")
+        print("PASS: agent /api/deck accepts every action type the app makes, refuses a stale baseUpdatedAt with 409, "
+              "returns a decodable deck from PUT and GET, a recognisable 404 for a missing button, and 426 over http")
 
 
 def main():
