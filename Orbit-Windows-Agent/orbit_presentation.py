@@ -9,24 +9,38 @@ Google Slides, Keynote for iCloud, a PDF viewer... The response says which path 
 All COM work runs on one worker thread, one job at a time; each job initializes COM and
 uninitializes it again (like orbit_desktop). Callers wait with a short timeout, and while a job is
 stuck (a dialog open in PowerPoint) new requests fail fast instead of queueing stale slide changes.
-Every COM pointer a job touches is released inside the job, before CoUninitialize.
+A change (next, black, Run...) only starts while its caller still waits; once the caller gave up,
+nothing more is changed. Every COM pointer a job touches is released inside the job, before
+CoUninitialize.
+
+PowerPoint registers itself for COM (the Running Object Table) only after its window lost focus
+once, so a deck opened and started without ever switching away is not visible over COM: until then
+`app` is "none" and the remote uses keys. The class of the window in front still tells PowerPoint's
+editor from its slide show, so keys are never typed into a slide.
 
 HTTP contract (main token, HTTPS only: 426 over plain HTTP; 501 when the agent is not on Windows;
 JSON keys are camelCase; errors are {"detail": "<plain sentence>"}):
 
 GET /api/presentation  -> 200
-  {"app": "powerpoint" | "none",       # desktop PowerPoint is running and reachable
+  {"app": "powerpoint" | "none",       # desktop PowerPoint is running and reachable over COM
    "running": true,                     # a PowerPoint slide show is running (also at the end screen)
+   "source": "show" | "editor" | "none",  # where slide/slides/notes/titles come from: the running
+                                        #   show, the deck open in PowerPoint's editor (no show), or nothing
    "slide": 3,                          # slide number shown in the show, or selected in the editor; 0 = none
    "slides": 12,                        # slides in that presentation; 0 = no presentation
    "state": "running" | "paused" | "black" | "white" | "done" | "none",   # "done" = end-of-show screen
    "notes": "Speaker notes",            # notes of `slide`, "\n" line breaks, "" when none (<= 20,000 chars)
    "title": "Quarterly Review",         # presentation name without extension, "" when none
    "slideTitle": "Agenda",              # title of `slide`, "" when none
-   "control": "powerpoint" | "keys",    # how next/previous are sent right now
+   "control": "powerpoint" | "keys" | "blocked",  # how next/previous are sent right now; "blocked":
+                                        #   PowerPoint's editor is in front and no show runs, so
+                                        #   next/previous get 409 (start/startCurrent still work)
    "thumbnails": true,                  # GET /api/presentation/slide.png works now
    "elapsedSeconds": 754 | null,        # time since the show started (null when not running)
    "slideElapsedSeconds": 31 | null}    # time on the current slide (null when not running or done)
+  Clients show slide x/y, notes and the thumbnail as "what the audience sees" only while `running` is
+  true. With source "editor" they describe the deck waiting in PowerPoint (for example "Ready:
+  Quarterly Review, 12 slides"), which is not necessarily what the keys reach (Google Slides, a PDF).
   503 PowerPoint is busy or not responding (has a Retry-After header).
 
 POST /api/presentation/{action}  body (optional JSON): {"slide": 5, "via": "auto" | "powerpoint" | "keys"}
@@ -35,23 +49,34 @@ POST /api/presentation/{action}  body (optional JSON): {"slide": 5, "via": "auto
     - a PowerPoint slide show runs -> COM: next/previous/first/last/goto, start (= back to the first
       slide), startCurrent (nothing to do), end, black/white (toggle: a second press shows the slide;
       next/previous/first/last/goto from a black or white screen show the slide again first);
-    - no show, but PowerPoint has a presentation open -> start/startCurrent start the show over COM
-      (startCurrent then jumps to the slide selected in the editor); every other action uses keys,
-      except while PowerPoint's own editor window is in front (409: the keys would edit the slide);
+    - no show, PowerPoint has a presentation open and PowerPoint is the window in front (or the
+      window in front can't be told) -> start/startCurrent start the show over COM (startCurrent
+      then jumps to the slide selected in the editor);
     - otherwise keys to the window in front: next Right, previous Left, first Home, last End,
       start F5, startCurrent Shift+F5, end Esc, black B, white W, goto = the slide number on the
-      numeric keypad then Enter (black/white toggle there too).
+      numeric keypad then Enter (black/white toggle there too). So with Google Slides or a PDF in
+      front, start presses F5 there even while a deck is open in PowerPoint behind it;
+    - keys are refused (409) while a PowerPoint window other than its slide show or Presenter View
+      is in front (the editor, a dialog), except F5 / Shift+F5 for start/startCurrent: the keys
+      would edit the slide. This is decided from the window in front, also when COM can't see
+      PowerPoint;
+    - PowerPoint busy or not responding (a dialog, a hang) while another app is in front and no
+      PowerPoint show was seen running -> the keys are pressed anyway; `detail` says PowerPoint was
+      busy and `presentation` is null.
     "keys" always presses keys; "powerpoint" never does (409 when no show / no PowerPoint).
   -> 200 {"status": "done", "action": "next", "via": "powerpoint" | "keys",
           "keys": ["Right"],               # what was pressed ([] on the PowerPoint path)
           "detail": "Went to the next slide.",
           "presentation": {...GET shape...} | null}   # state right after the action, null if unreadable
+     (or if PowerPoint made the change but was too slow to read back before the timeout)
   404 unknown action. 422 invalid body, goto without `slide`, or goto past the last slide.
-  409 via "powerpoint" without a show or PowerPoint; no show while PowerPoint's editor is in front;
-      start with a presentation that has no slides; keys while the PC is still at the sign-in
-      screen (boot instance).
-  503 PowerPoint busy or not responding (Retry-After; a change PowerPoint had not started by then
-      is dropped, not applied later), or Windows refused the keys (locked PC, secure desktop).
+  409 via "powerpoint" without a show or PowerPoint; no show while a PowerPoint window other than
+      the show is in front (see above); start with a presentation that has no slides; keys while
+      the PC is still at the sign-in screen (boot instance).
+  503 PowerPoint busy or not responding (Retry-After). A change PowerPoint had not started when the
+      request gave up is dropped, never applied later. If the change call itself was still running
+      at that moment, the detail says the slide may already have changed. Also 503 when Windows
+      refused the keys (locked PC, secure desktop).
 
 GET /api/presentation/slide.png?slide=N&width=800  -> 200 image/png (Cache-Control: no-store)
   `slide` (1...10000) defaults to the slide shown (or selected in the editor); `width` 64...1920
@@ -112,10 +137,18 @@ BUSY_RETRY_SECONDS = 1.5
 BUSY_RETRY_PAUSE = 0.1
 # After keys, PowerPoint needs a moment before the new slide can be read back.
 KEY_SETTLE_SECONDS = 0.25
-# A change is skipped when less than this is left before the caller gives up, so a request that
-# was already answered "didn't respond" never changes the slide later.
+# A change only starts while at least this much is left before the caller gives up, so the change
+# call has time to finish while the caller still waits.
 DEADLINE_MARGIN = 0.75
+# The state read right after a change stops this long before the caller gives up, and is skipped
+# when less than STATE_AFTER_MIN is left (the answer is then "done" with presentation null).
+STATE_AFTER_RESERVE = 0.25
+STATE_AFTER_MIN = 0.5
 RETRY_AFTER_SECONDS = "2"
+# Top-level window classes of PowerPoint's slide show and of Presenter View. Its editor is
+# PPTFrameClass; anything else from powerpnt.exe (a dialog) is treated like the editor.
+SHOW_WINDOW_CLASSES = frozenset({"screenClass", "PodiumParent"})
+EDITOR_WINDOW_CLASS = "PPTFrameClass"
 
 KEY_ACTIONS = {
     "next": ("right",), "previous": ("left",), "first": ("home",), "last": ("end",),
@@ -144,6 +177,7 @@ NO_SHOW = "No PowerPoint slide show is running. Start the slide show first."
 CLOSED = "PowerPoint closed while Orbit was talking to it."
 BUSY = "PowerPoint is busy. Close any open dialog in PowerPoint and try again."
 NOT_RESPONDING = "PowerPoint didn't respond in time. A dialog may be open in PowerPoint on the PC."
+SLOW_CHANGE = "PowerPoint is responding slowly, so the slide may already have changed. Check it before trying again."
 FAILED = "PowerPoint couldn't do that right now. Try again."
 EXPORT_FAILED = "PowerPoint couldn't make a picture of this slide."
 EXPORT_TOO_LARGE = "The picture of this slide is too large to send."
@@ -271,13 +305,14 @@ def _optional(read, default=None):
         return default
 
 
-def _retry(step):
-    """Runs a COM step, retrying while PowerPoint rejects calls because it is busy.
-
-    A rejected call was not executed, so retrying it is safe. Each step ends with at most one call
-    that changes anything, so a retry never repeats a change that already happened.
+def _retry(step, until=None):
+    """Runs a COM step that only reads, retrying while PowerPoint rejects calls because it is busy
+    (a rejected call was not executed), for BUSY_RETRY_SECONDS or until `until` (monotonic time).
+    Calls that change something go through `_change` instead.
     """
     deadline = time.monotonic() + BUSY_RETRY_SECONDS
+    if until is not None:
+        deadline = min(deadline, until)
     while True:
         try:
             return step()
@@ -292,8 +327,8 @@ def _count(collection):
 
 
 def empty_state(app="none"):
-    return {"app": app, "running": False, "slide": 0, "slides": 0, "state": "none", "notes": "", "title": "",
-            "slideTitle": "", "control": "keys", "thumbnails": False, "elapsedSeconds": None,
+    return {"app": app, "running": False, "source": "none", "slide": 0, "slides": 0, "state": "none", "notes": "",
+            "title": "", "slideTitle": "", "control": "keys", "thumbnails": False, "elapsedSeconds": None,
             "slideElapsedSeconds": None}
 
 
@@ -308,11 +343,77 @@ def _load_comtypes():
 _JOB = threading.local()
 
 
-def _ensure_time_left():
-    """Called on the COM thread right before a change: refuse when the caller is giving up."""
-    deadline = getattr(_JOB, "deadline", None)
-    if deadline is not None and time.monotonic() > deadline:
-        raise PresentationBusy(NOT_RESPONDING)
+class _JobContext:
+    """Shared by a caller and its job on the COM thread.
+
+    `deadline`: no change starts after it (DEADLINE_MARGIN before the caller gives up).
+    `give_up_at`: when the caller stops waiting. `abandoned`: the caller stopped waiting, so no
+    change may start any more. `changing`: a change call is running right now. `applied`: what the
+    caller answers if it gives up after a change went through ((detail, None) for actions).
+    """
+    __slots__ = ("deadline", "give_up_at", "lock", "abandoned", "changing", "applied")
+
+    def __init__(self, timeout):
+        now = time.monotonic()
+        self.give_up_at = now + timeout
+        self.deadline = now + max(0.0, timeout - DEADLINE_MARGIN)
+        self.lock = threading.Lock()
+        self.abandoned = False
+        self.changing = False
+        self.applied = None
+
+
+def _current_job():
+    return getattr(_JOB, "context", None)
+
+
+def _begin_change():
+    """Called on the COM thread right before a change call: refuse once the caller gave up or is
+    about to (a rejected change is never applied later)."""
+    context = _current_job()
+    if context is None:
+        return
+    with context.lock:
+        if context.abandoned or time.monotonic() > context.deadline:
+            raise PresentationBusy(NOT_RESPONDING)
+        context.changing = True
+
+
+def _end_change(detail):
+    """Called after a change call returned (detail: what happened) or failed (detail None)."""
+    context = _current_job()
+    if context is None:
+        return
+    with context.lock:
+        if detail is not None:
+            context.applied = (detail, None)
+        context.changing = False
+
+
+def _change(step, detail):
+    """Runs one COM call that changes the show (Next, State=..., Run...) and records `detail` once it
+    went through, so a caller that gives up later still answers "done".
+
+    The call starts only while the caller still waits with time to spare (`_begin_change`). While
+    PowerPoint rejects it as busy (a rejected call did not run) it is retried, under the same rule,
+    for at most BUSY_RETRY_SECONDS.
+    """
+    give_up = time.monotonic() + BUSY_RETRY_SECONDS
+    context = _current_job()
+    if context is not None:
+        give_up = min(give_up, context.deadline)
+    while True:
+        _begin_change()
+        try:
+            result = step()
+        except Exception as error:
+            _end_change(None)
+            if not _is_busy(error) or time.monotonic() >= give_up:
+                raise
+        else:
+            _end_change(detail)
+            return result
+        time.sleep(BUSY_RETRY_PAUSE)
 
 
 def _fresh(error):
@@ -380,7 +481,8 @@ class ComWorker:
 
     The gate is held from submitting a job until the job finishes. A caller that times out leaves
     the gate held, so while PowerPoint hangs new requests fail after `wait` instead of queueing
-    actions that would all run late once it recovers.
+    actions that would all run late once it recovers. A caller that times out also marks its job
+    abandoned, so the job starts no change after that.
     """
 
     def __init__(self, name="orbit-presentation"):
@@ -394,17 +496,27 @@ class ComWorker:
         if not self._gate.acquire(timeout=wait):
             raise PresentationBusy(BUSY)
         future = Future()
-        deadline = time.monotonic() + max(0.0, timeout - DEADLINE_MARGIN)
+        context = _JobContext(timeout)
         try:
             self._ensure_thread()
-            self._jobs.put((job, future, deadline))
+            self._jobs.put((job, future, context))
         except BaseException:
             self._gate.release()
             raise
         try:
-            ok, value = future.result(timeout=timeout)
+            ok, value = future.result(timeout=max(0.0, context.give_up_at - time.monotonic()))
         except FutureTimeout:
-            raise PresentationBusy(NOT_RESPONDING) from None
+            with context.lock:
+                context.abandoned = True
+                applied, changing = context.applied, context.changing
+            if future.done():  # finished just now
+                ok, value = future.result()
+            elif changing:
+                raise PresentationBusy(SLOW_CHANGE) from None
+            elif applied is not None:
+                return applied  # the change went through; only reading the state back was slow
+            else:
+                raise PresentationBusy(NOT_RESPONDING) from None
         if ok:
             return value
         raise value
@@ -417,7 +529,7 @@ class ComWorker:
 
     def _loop(self):
         while True:
-            job, future, _JOB.deadline = self._jobs.get()
+            job, future, _JOB.context = self._jobs.get()
             try:
                 outcome = _run_job(job)
             except BaseException:  # never let the worker die with the gate held
@@ -425,7 +537,7 @@ class ComWorker:
             try:
                 future.set_result(outcome)
             finally:
-                job = future = outcome = _JOB.deadline = None
+                job = future = outcome = _JOB.context = None
                 self._gate.release()
 
 
@@ -438,16 +550,31 @@ class _Show:
     presentation: Any
 
 
+# Whether the last time PowerPoint could be read a slide show was running. When PowerPoint is busy
+# later, keys only replace the COM action if no show was running (keys would miss the show).
+_LAST_SHOW = False
+
+
+def _note_show(running):
+    global _LAST_SHOW
+    _LAST_SHOW = bool(running)
+
+
 def _attach(com):
     """The running PowerPoint.Application, or None when it is not running (or COM is missing)."""
     if com is None:
+        _note_show(False)
         return None
     try:
         return com.client.GetActiveObject(PROGID, dynamic=True)
     except OSError:
-        return None  # MK_E_UNAVAILABLE (not running), CO_E_CLASSSTRING (not installed)
+        # MK_E_UNAVAILABLE: not running, or not registered yet (PowerPoint registers in the Running
+        # Object Table only after its window lost focus once); CO_E_CLASSSTRING: not installed.
+        _note_show(False)
+        return None
     except Exception as error:
         if _is_gone(error):
+            _note_show(False)
             return None
         raise
 
@@ -456,7 +583,9 @@ def _show(app):
     """The first slide show window, or None when no show runs."""
     windows = app.SlideShowWindows
     if _count(windows) < 1:
+        _note_show(False)
         return None
+    _note_show(True)
     window = windows.Item(1)
     return _Show(window=window, view=window.View, presentation=window.Presentation)
 
@@ -540,7 +669,7 @@ def _snapshot(app):
         presentation = show.presentation
         total = _count(presentation.Slides)
         index = _show_slide_index(show, code, total)
-        result.update(running=True, control="powerpoint", state=SHOW_STATES.get(code, "running"))
+        result.update(running=True, source="show", control="powerpoint", state=SHOW_STATES.get(code, "running"))
         result["elapsedSeconds"] = _as_int(_optional(lambda: show.view.PresentationElapsedTime))
         if code != STATE_DONE:
             result["slideElapsedSeconds"] = _as_int(_optional(lambda: show.view.SlideElapsedTime))
@@ -550,6 +679,7 @@ def _snapshot(app):
             return result
         total = _as_int(_optional(lambda: _count(presentation.Slides)), 0)
         index = _editor_slide_index(app, total)
+        result["source"] = "editor"
     result.update(slides=total, slide=index if total else 0, title=_presentation_title(presentation),
                   thumbnails=total > 0)
     # At the end-of-show screen no slide is shown, so there are no notes or title to read.
@@ -574,18 +704,34 @@ def _state_job(com):
 
 
 def _state_after(app):
-    """State right after an action; None when it can't be read (the action itself succeeded)."""
+    """State right after an action; None when it can't be read (the action itself succeeded) or
+    when too little time is left before the caller gives up."""
+    until = None
+    context = _current_job()
+    if context is not None:
+        if context.give_up_at - time.monotonic() < STATE_AFTER_MIN:
+            return None
+        until = context.give_up_at - STATE_AFTER_RESERVE
     try:
-        return _retry(lambda: _snapshot(app))
+        return _retry(lambda: _snapshot(app), until=until)
     except Exception as error:
         _log_failure("read after action", error)
         return None
 
 
-def _set_show_state(view, value):
+def _apply(step, detail):
+    """`_change` for a call whose result is not needed; returns the detail sentence."""
+    _change(step, detail)
+    return detail
+
+
+def _set_show_state(view, value, detail):
     def step():
         view.State = value
-    _retry(step)
+    return _apply(step, detail)
+
+
+SHOWING_AGAIN = "Showing the slide again."
 
 
 def _show_action(show, action, slide):
@@ -596,36 +742,29 @@ def _show_action(show, action, slide):
     moves = ("next", "previous", "first", "last", "goto")
     if action == "goto" and not 1 <= slide <= total:
         raise SlideOutOfRange(_out_of_range(total))
-    _ensure_time_left()
     if action in moves and code in (STATE_BLACK, STATE_WHITE):
-        _set_show_state(view, STATE_RUNNING)  # show the slide again before moving
+        # Show the slide again before moving. If the move is dropped after this (the caller gave
+        # up, PowerPoint stayed busy), the answer is this sentence: the slide is back, nothing moved.
+        _set_show_state(view, STATE_RUNNING, SHOWING_AGAIN)
     if action == "next":
-        _retry(lambda: view.Next())
-        return "Went to the next slide."
+        return _apply(lambda: view.Next(), "Went to the next slide.")
     if action == "previous":
-        _retry(lambda: view.Previous())
-        return "Went back one slide."
+        return _apply(lambda: view.Previous(), "Went back one slide.")
     if action in ("first", "start"):
-        _retry(lambda: view.First())
-        return "Went to the first slide."
+        return _apply(lambda: view.First(), "Went to the first slide.")
     if action == "last":
-        _retry(lambda: view.Last())
-        return "Went to the last slide."
+        return _apply(lambda: view.Last(), "Went to the last slide.")
     if action == "goto":
-        _retry(lambda: view.GotoSlide(slide))
-        return f"Went to slide {slide}."
+        return _apply(lambda: view.GotoSlide(slide), f"Went to slide {slide}.")
     if action == "startCurrent":
         return "The slide show is already running."
     if action == "end":
-        _retry(lambda: view.Exit())
-        return "Ended the slide show."
+        return _apply(lambda: view.Exit(), "Ended the slide show.")
     if action in ("black", "white"):
         target = STATE_BLACK if action == "black" else STATE_WHITE
         if code == target:
-            _set_show_state(view, STATE_RUNNING)
-            return "Showing the slide again."
-        _set_show_state(view, target)
-        return f"The screen is {action}. Press {action.title()} again to show the slide."
+            return _set_show_state(view, STATE_RUNNING, SHOWING_AGAIN)
+        return _set_show_state(view, target, f"The screen is {action}. Press {action.title()} again to show the slide.")
     raise PresentationError(FAILED)
 
 
@@ -639,8 +778,7 @@ def _start_show(app, presentation, action):
     if total < 1:
         raise PowerPointUnavailable(NO_SLIDES)
     index = _editor_slide_index(app, total) if action == "startCurrent" else 1
-    _ensure_time_left()
-    window = _retry(lambda: presentation.SlideShowSettings.Run())
+    window = _change(lambda: presentation.SlideShowSettings.Run(), "Started the slide show.")
     if action != "startCurrent" or index <= 1:
         return "Started the slide show."
 
@@ -648,13 +786,12 @@ def _start_show(app, presentation, action):
         target = window if window is not None else app.SlideShowWindows.Item(1)
         target.View.GotoSlide(index)
     try:
-        _retry(jump)
+        return _apply(jump, f"Started the slide show from slide {index}.")
     except Exception as error:
         if _is_gone(error):
             raise
         _log_failure("jump after start", error)
         return "Started the slide show. Orbit couldn't jump to the current slide."
-    return f"Started the slide show from slide {index}."
 
 
 def _out_of_range(total):
@@ -663,30 +800,49 @@ def _out_of_range(total):
     return f"This presentation has {total} slides. Choose a slide from 1 to {total}."
 
 
-def _action_job(action, slide, via):
+def _action_job(action, slide, via, com_start=True):
     """COM part of an action. Returns (detail, state) when PowerPoint handled it, or
-    ("keys", powerpoint_open) when the action should be sent as keys instead."""
+    ("keys", powerpoint_open) when the action should be sent as keys instead.
+
+    `com_start`: without a running show, start/startCurrent may start PowerPoint's show over COM
+    (PowerPoint is in front, or via "powerpoint"); otherwise F5 / Shift+F5 go to the window in front.
+    """
     def job(com):
-        app = _retry(lambda: _attach(com))
-        if app is None:
-            if via == "powerpoint":
-                raise PowerPointUnavailable(NOT_OPEN)
-            return "keys", False
-        show = _retry(lambda: _show(app))
-        if show is not None:
-            detail = _show_action(show, action, slide)
-            return detail, _state_after(app)
-        if action in ("start", "startCurrent"):
+        try:
+            return _action_steps(com, action, slide, via, com_start)
+        except Exception as error:
+            # A first change went through (the slide is shown again after black) and the rest was
+            # dropped because PowerPoint stayed busy or the caller is giving up: say what happened.
+            context = _current_job()
+            if context is not None and context.applied is not None and \
+                    (isinstance(error, PresentationBusy) or _is_busy(error)):
+                _drop_tracebacks(error)
+                return context.applied
+            raise
+    return job
+
+
+def _action_steps(com, action, slide, via, com_start):
+    app = _retry(lambda: _attach(com))
+    if app is None:
+        if via == "powerpoint":
+            raise PowerPointUnavailable(NOT_OPEN)
+        return "keys", False
+    show = _retry(lambda: _show(app))
+    if show is not None:
+        detail = _show_action(show, action, slide)
+        return detail, _state_after(app)
+    if action in ("start", "startCurrent"):
+        if com_start:
             presentation = _retry(lambda: _active_presentation(app))
             if presentation is not None:
                 detail = _start_show(app, presentation, action)
                 return detail, _state_after(app)
-            if via == "powerpoint":
-                raise PowerPointUnavailable(NO_PRESENTATION)
-        elif via == "powerpoint":
-            raise PowerPointUnavailable(NO_SHOW)
-        return "keys", True
-    return job
+        if via == "powerpoint":
+            raise PowerPointUnavailable(NO_PRESENTATION)
+    elif via == "powerpoint":
+        raise PowerPointUnavailable(NO_SHOW)
+    return "keys", True
 
 
 def _thumbnail_size(presentation, width):
@@ -817,28 +973,67 @@ def _key_chords(action, slide):
 
 
 _USER32 = None
+CLASS_NAME_LENGTH = 256
 
 
-def _foreground_process_name():
-    """Lowercase executable name of the window in front, "" when it can't be told."""
+def _user32():
     global _USER32
+    if _USER32 is None:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        user32.GetWindowThreadProcessId.restype = ctypes.c_uint32
+        user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        user32.GetClassNameW.restype = ctypes.c_int
+        _USER32 = user32
+    return _USER32
+
+
+def _foreground_window():
+    """(lowercase executable name, window class) of the window in front; "" for what can't be told."""
     try:
-        if _USER32 is None:
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            user32.GetForegroundWindow.argtypes = []
-            user32.GetForegroundWindow.restype = ctypes.c_void_p
-            user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-            user32.GetWindowThreadProcessId.restype = ctypes.c_uint32
-            _USER32 = user32
-        window = _USER32.GetForegroundWindow()
+        user32 = _user32()
+        window = user32.GetForegroundWindow()
         if not window:
-            return ""
+            return "", ""
+        window_class = ""
+        try:
+            buffer = ctypes.create_unicode_buffer(CLASS_NAME_LENGTH)
+            if user32.GetClassNameW(window, buffer, CLASS_NAME_LENGTH) > 0:
+                window_class = buffer.value
+        except Exception:
+            window_class = ""
         pid = ctypes.c_uint32(0)
-        if not _USER32.GetWindowThreadProcessId(window, ctypes.byref(pid)) or not pid.value:
-            return ""
-        return str(psutil.Process(pid.value).name()).lower()
+        if not user32.GetWindowThreadProcessId(window, ctypes.byref(pid)) or not pid.value:
+            return "", window_class
+        return str(psutil.Process(pid.value).name()).lower(), window_class
     except Exception:
-        return ""
+        return "", ""
+
+
+def _keys_refusal(action, foreground):
+    """Why keys must not be pressed now (no PowerPoint show reachable over COM), or None.
+
+    With a PowerPoint window other than its slide show or Presenter View in front (the editor, a
+    dialog), B, W or a slide number would be typed into the slide and arrows would move shapes.
+    F5 / Shift+F5 are fine there: they start the show. Decided from the window in front alone, so it
+    also holds while PowerPoint isn't visible over COM yet.
+    """
+    process, window_class = foreground
+    if process != POWERPOINT_EXE or window_class in SHOW_WINDOW_CLASSES:
+        return None
+    if action in ("start", "startCurrent"):
+        return None
+    return NO_SHOW
+
+
+def _may_press_instead(error, via, foreground):
+    """PowerPoint is busy or hung: press the keys anyway when they can't reach PowerPoint (another
+    app is in front) and no PowerPoint show was running the last time it could be read."""
+    if via != "auto" or str(error) == SLOW_CHANGE:
+        return False
+    return foreground[0] not in ("", POWERPOINT_EXE) and not _LAST_SHOW
 
 
 class PresentationController:
@@ -846,7 +1041,10 @@ class PresentationController:
         self.worker = worker or ComWorker()
 
     def state(self):
-        return self.worker.call(_state_job, timeout=STATE_TIMEOUT, wait=STATE_WAIT)
+        result = self.worker.call(_state_job, timeout=STATE_TIMEOUT, wait=STATE_WAIT)
+        if not result["running"] and _keys_refusal("next", _foreground_window()):
+            result["control"] = "blocked"
+        return result
 
     def thumbnail(self, slide=None, width=THUMBNAIL_DEFAULT_WIDTH):
         width = int(width)
@@ -865,22 +1063,29 @@ class PresentationController:
             raise ValueError(GOTO_NEEDS_SLIDE)
         if action != "goto":
             slide = None
-        powerpoint_open = None
-        if via != "keys":
-            outcome = self.worker.call(_action_job(action, slide, via), timeout=ACTION_TIMEOUT, wait=ACTION_WAIT)
-            if outcome[0] != "keys":
-                detail, state = outcome
-                return {"status": "done", "action": action, "via": "powerpoint", "keys": [], "detail": detail,
-                        "presentation": state}
-            powerpoint_open = outcome[1]
-            if powerpoint_open and action not in ("start", "startCurrent") \
-                    and _foreground_process_name() == POWERPOINT_EXE:
-                # PowerPoint's editor is in front and no show runs: B, W or a slide number would
-                # be typed into the slide, and arrows would only move the cursor.
-                raise PowerPointUnavailable(NO_SHOW)
-        return self._press(action, slide, boot_mode, powerpoint_open)
+        if via == "keys":
+            return self._press(action, slide, boot_mode, None)
+        foreground = _foreground_window() if via == "auto" else ("", "")
+        # Starting PowerPoint's show over COM is for PowerPoint in front (or when the window in front
+        # can't be told). With Google Slides or a PDF in front, F5 / Shift+F5 go there instead.
+        com_start = via == "powerpoint" or foreground[0] in (POWERPOINT_EXE, "")
+        try:
+            outcome = self.worker.call(_action_job(action, slide, via, com_start),
+                                       timeout=ACTION_TIMEOUT, wait=ACTION_WAIT)
+        except PresentationBusy as error:
+            if not _may_press_instead(error, via, foreground):
+                raise
+            return self._press(action, slide, boot_mode, None, powerpoint_busy=True)
+        if outcome[0] != "keys":
+            detail, state = outcome
+            return {"status": "done", "action": action, "via": "powerpoint", "keys": [], "detail": detail,
+                    "presentation": state}
+        refusal = _keys_refusal(action, foreground)
+        if refusal:
+            raise PowerPointUnavailable(refusal)
+        return self._press(action, slide, boot_mode, outcome[1])
 
-    def _press(self, action, slide, boot_mode, powerpoint_open):
+    def _press(self, action, slide, boot_mode, powerpoint_open, powerpoint_busy=False):
         if boot_mode:
             raise SignInRequired(SIGN_IN_FIRST)
         chords = _key_chords(action, slide)
@@ -892,7 +1097,9 @@ class PresentationController:
             _log_failure("keys", error)
             raise KeysRefused(KEYS_REFUSED) from None
         labels = [orbit_input.chord_label(chord) for chord in chords]
-        if powerpoint_open is False:
+        if powerpoint_busy:
+            state = None  # reading it back would wait for PowerPoint again
+        elif powerpoint_open is False:
             state = empty_state()
         else:
             # PowerPoint (or maybe PowerPoint, with via "keys") may have reacted: read it back.
@@ -905,8 +1112,12 @@ class PresentationController:
             pressed = f"{slide} and Enter"
         else:
             pressed = labels[0]
-        return {"status": "done", "action": action, "via": "keys", "keys": labels,
-                "detail": f"Pressed {pressed} on the PC. Keys go to the window in front.", "presentation": state}
+        if powerpoint_busy:
+            detail = f"PowerPoint is busy, so Orbit pressed {pressed} on the PC instead. Keys go to the window in front."
+        else:
+            detail = f"Pressed {pressed} on the PC. Keys go to the window in front."
+        return {"status": "done", "action": action, "via": "keys", "keys": labels, "detail": detail,
+                "presentation": state}
 
 
 CONTROLLER = PresentationController()

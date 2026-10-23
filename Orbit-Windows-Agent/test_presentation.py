@@ -368,8 +368,10 @@ class PresentationTestCase(unittest.TestCase):
         self.com = FakeComtypes(FakePowerPoint())
         self.ppt = self.com.ppt
         self.foreground = "chrome.exe"
+        self.foreground_class = None  # None: the usual class of that app (PowerPoint: its editor)
         replacements = {"_load_comtypes": lambda: self.com, "KEY_SETTLE_SECONDS": 0, "BUSY_RETRY_PAUSE": 0.001,
-                        "LOGGER": QUIET_LOGGER, "_LAST_LOGGED": {}, "_foreground_process_name": lambda: self.foreground}
+                        "LOGGER": QUIET_LOGGER, "_LAST_LOGGED": {}, "_foreground_window": self._foreground,
+                        "_LAST_SHOW": False}
         for name, replacement in replacements.items():
             patcher = patch.object(presentation, name, replacement)
             patcher.start()
@@ -391,6 +393,17 @@ class PresentationTestCase(unittest.TestCase):
     def _press(self, chord, **kwargs):
         self.pressed.append("+".join(orbit_input.normalize_chord(chord)))
         return chord
+
+    def _foreground(self):
+        if self.foreground_class is not None:
+            return self.foreground, self.foreground_class
+        usual = {"powerpnt.exe": "PPTFrameClass", "chrome.exe": "Chrome_WidgetWin_1"}
+        return self.foreground, usual.get(self.foreground, "")
+
+    def wait_until_idle(self):
+        deadline = time.monotonic() + 5
+        while self.controller.worker._gate.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def make_client(self):
         app = FastAPI()
@@ -458,10 +471,32 @@ class StateTests(PresentationTestCase):
         self.ppt.editor = 4
         body = self.state()
         self.assertEqual(body, {
-            "app": "powerpoint", "running": False, "slide": 4, "slides": 12, "state": "none",
+            "app": "powerpoint", "running": False, "source": "editor", "slide": 4, "slides": 12, "state": "none",
             "notes": "Notes for slide 4", "title": "Quarterly Review", "slideTitle": "Slide title 4",
             "control": "keys", "thumbnails": True, "elapsedSeconds": None, "slideElapsedSeconds": None})
         self.assertCOMBalanced()
+
+    def test_control_is_blocked_while_the_powerpoint_editor_is_in_front_without_a_show(self):
+        self.foreground = "powerpnt.exe"
+        body = self.state()
+        self.assertEqual((body["control"], body["source"], body["running"]), ("blocked", "editor", False))
+        # Also when PowerPoint isn't visible over COM yet (it registers after losing focus once).
+        self.com.ppt = None
+        body = self.state()
+        self.assertEqual((body["app"], body["control"], body["source"]), ("none", "blocked", "none"))
+        # A dialog of PowerPoint in front blocks too; its show window or Presenter View does not.
+        for window_class, control in (("#32770", "blocked"), ("screenClass", "keys"), ("PodiumParent", "keys")):
+            with self.subTest(window_class=window_class):
+                self.foreground_class = window_class
+                self.assertEqual(self.state()["control"], control)
+
+    def test_running_show_controls_powerpoint_whatever_is_in_front(self):
+        self.ppt.start(2)
+        for foreground in ("powerpnt.exe", "chrome.exe", ""):
+            with self.subTest(foreground=foreground):
+                self.foreground = foreground
+                body = self.state()
+                self.assertEqual((body["control"], body["source"]), ("powerpoint", "show"))
 
     def test_editor_slide_falls_back_to_the_first_slide(self):
         self.ppt.has_active_window = False
@@ -471,7 +506,7 @@ class StateTests(PresentationTestCase):
         self.ppt.start(3)
         body = self.state()
         self.assertEqual(body, {
-            "app": "powerpoint", "running": True, "slide": 3, "slides": 12, "state": "running",
+            "app": "powerpoint", "running": True, "source": "show", "slide": 3, "slides": 12, "state": "running",
             "notes": "Notes for slide 3", "title": "Quarterly Review", "slideTitle": "Slide title 3",
             "control": "powerpoint", "thumbnails": True, "elapsedSeconds": 754, "slideElapsedSeconds": 31})
         self.assertCOMBalanced()
@@ -682,7 +717,85 @@ class COMActionTests(PresentationTestCase):
         self.assertEqual(self.ppt.calls, [])
 
 
+class DeadlineTests(PresentationTestCase):
+    """A change only happens while the caller still waits, and an applied change is never a 503."""
+
+    def setUp(self):
+        super().setUp()
+        self.ppt.start(3)
+
+    def test_change_rejected_as_busy_is_not_retried_after_the_caller_gives_up(self):
+        self.ppt.fault("View.Next()", lambda: FakeCOMError(CALL_REJECTED, "Call was rejected"), None)
+        accepted = threading.Timer(0.6, lambda: self.ppt.faults.pop("View.Next()", None))
+        accepted.start()
+        self.addCleanup(accepted.cancel)
+        with patch.object(presentation, "ACTION_TIMEOUT", 1.0):
+            body = self.act("next", status=503)
+            time.sleep(0.6)  # PowerPoint accepts calls again by now
+            self.wait_until_idle()
+        self.assertIn(body["detail"], (presentation.BUSY, presentation.NOT_RESPONDING))
+        self.assertEqual(self.ppt.calls, [], "Next must not be applied after the caller got 503")
+        self.assertEqual(self.ppt.position, 3)
+        self.assertEqual(self.pressed, [])  # a show was running: no keys instead
+        self.assertCOMBalanced()
+
+    def test_slow_read_back_after_the_change_is_done_without_state(self):
+        original = Application.SlideShowWindows.fget
+        reads = []
+
+        def windows(application):
+            reads.append(1)
+            if len(reads) > 1:  # the read after the action is slow
+                time.sleep(1.2)
+            return original(application)
+        with patch.object(Application, "SlideShowWindows", property(windows)), \
+             patch.object(presentation, "ACTION_TIMEOUT", 1.0):
+            body = self.act("next")
+            self.wait_until_idle()
+        self.assertEqual((body["via"], body["detail"], body["presentation"]),
+                         ("powerpoint", "Went to the next slide.", None))
+        self.assertEqual((self.ppt.calls, self.ppt.position), (["Next"], 4))
+        self.assertCOMBalanced()
+
+    def test_read_back_is_skipped_when_little_time_is_left(self):
+        reads = []
+        original = Application.SlideShowWindows.fget
+        with patch.object(Application, "SlideShowWindows", property(lambda app: reads.append(1) or original(app))), \
+             patch.object(presentation, "STATE_AFTER_MIN", presentation.ACTION_TIMEOUT + 1):
+            body = self.act("next")
+        self.assertEqual((body["presentation"], self.ppt.calls, len(reads)), (None, ["Next"], 1))
+
+    def test_change_still_running_when_the_caller_gives_up_may_have_happened(self):
+        original = View.Next
+        release = threading.Event()
+
+        def slow_next(view):
+            release.wait(5)
+            original(view)
+        with patch.object(View, "Next", slow_next), patch.object(presentation, "ACTION_TIMEOUT", 0.9):
+            body = self.act("next", status=503)
+            release.set()
+            self.wait_until_idle()
+        self.assertEqual(body["detail"], presentation.SLOW_CHANGE)
+        self.assertEqual(self.ppt.calls, ["Next"])
+
+    def test_move_dropped_after_showing_the_slide_again_says_so(self):
+        self.ppt.state = 3  # black screen
+        self.ppt.fault("View.Next()", lambda: FakeCOMError(CALL_REJECTED, "Call was rejected"), None)
+        with patch.object(presentation, "ACTION_TIMEOUT", 1.0):
+            body = self.act("next")
+            self.wait_until_idle()
+        self.assertEqual((body["via"], body["detail"], body["presentation"]),
+                         ("powerpoint", presentation.SHOWING_AGAIN, None))
+        self.assertEqual((self.ppt.calls, self.ppt.state, self.ppt.position), (["State=1"], 1, 3))
+        self.assertCOMBalanced()
+
+
 class StartTests(PresentationTestCase):
+    def setUp(self):
+        super().setUp()
+        self.foreground = "powerpnt.exe"  # PowerPoint's editor is in front
+
     def test_start_runs_the_show_over_com_without_changing_its_settings(self):
         body = self.act("start")
         self.assertEqual((body["via"], body["detail"]), ("powerpoint", "Started the slide show."))
@@ -690,6 +803,24 @@ class StartTests(PresentationTestCase):
         self.assertTrue(body["presentation"]["running"])
         self.assertEqual(self.pressed, [])
         self.assertCOMBalanced()
+
+    def test_another_app_in_front_gets_f5_even_with_a_deck_open_in_powerpoint(self):
+        self.foreground = "chrome.exe"  # Google Slides in front, a deck open in PowerPoint behind it
+        for action, key in (("start", "f5"), ("startCurrent", "shift+f5")):
+            with self.subTest(action=action):
+                self.pressed.clear()
+                body = self.act(action)
+                self.assertEqual((body["via"], self.pressed), ("keys", [key]))
+        self.assertEqual(self.ppt.calls, [])
+        self.assertFalse(self.ppt.running)
+
+    def test_unknown_front_window_or_via_powerpoint_still_starts_over_com(self):
+        self.foreground = ""
+        self.assertEqual(self.act("start")["via"], "powerpoint")
+        self.ppt.running = False
+        self.foreground = "chrome.exe"
+        self.assertEqual(self.act("start", {"via": "powerpoint"})["via"], "powerpoint")
+        self.assertEqual((self.ppt.calls, self.pressed), (["Run", "Run"], []))
 
     def test_start_current_jumps_to_the_editor_slide(self):
         self.ppt.editor = 5
@@ -762,6 +893,70 @@ class KeyFallbackTests(PresentationTestCase):
         self.foreground = "powerpnt.exe"
         self.ppt.open = False
         self.assertEqual(self.act("start")["keys"], ["F5"])
+
+    def test_editor_guard_uses_the_window_class_also_when_com_cannot_see_powerpoint(self):
+        # PowerPoint registers for COM only after its window lost focus once: GetActiveObject fails.
+        self.com.ppt = None
+        self.foreground = "powerpnt.exe"
+        for window_class in ("PPTFrameClass", "#32770", ""):
+            with self.subTest(window_class=window_class):
+                self.foreground_class = window_class
+                self.assertEqual(self.act("black", status=409)["detail"], presentation.NO_SHOW)
+                self.assertEqual(self.act("goto", {"slide": 2}, status=409)["detail"], presentation.NO_SHOW)
+        self.assertEqual(self.pressed, [])
+        self.foreground_class = "PPTFrameClass"
+        self.assertEqual(self.act("startCurrent")["keys"], ["Shift+F5"])  # starts the show from the editor
+        for window_class in ("screenClass", "PodiumParent"):  # the show itself, Presenter View
+            with self.subTest(window_class=window_class):
+                self.foreground_class = window_class
+                self.assertEqual(self.act("next")["via"], "keys")
+        self.assertEqual(self.pressed, ["shift+f5", "right", "right"])
+
+
+class BusyFallbackTests(PresentationTestCase):
+    """PowerPoint busy or hung in the background must not block keys for the presenter in front."""
+
+    def make_busy(self):
+        self.ppt.fault("Application.SlideShowWindows", lambda: FakeCOMError(CALL_REJECTED, "Call was rejected"), None)
+
+    def test_busy_powerpoint_behind_another_app_falls_back_to_keys(self):
+        self.make_busy()
+        with patch.object(presentation, "BUSY_RETRY_SECONDS", 0.02):
+            body = self.act("next")
+        self.assertEqual((body["via"], body["keys"], body["presentation"]), ("keys", ["Right"], None))
+        self.assertEqual(body["detail"], "PowerPoint is busy, so Orbit pressed Right on the PC instead. "
+                                         "Keys go to the window in front.")
+        self.assertEqual(self.pressed, ["right"])
+        self.assertCOMBalanced()
+
+    def test_busy_powerpoint_keeps_the_503_when_keys_could_reach_it_or_miss_its_show(self):
+        cases = (("powerpnt.exe", False, "auto"), ("", False, "auto"), ("chrome.exe", True, "auto"),
+                 ("chrome.exe", False, "powerpoint"))
+        for foreground, show_seen, via in cases:
+            with self.subTest(foreground=foreground, show_seen=show_seen, via=via):
+                self.ppt.faults.clear()
+                self.foreground = foreground
+                self.ppt.running = show_seen
+                if show_seen:
+                    self.assertTrue(self.state()["running"])  # the last read saw a show
+                self.make_busy()
+                with patch.object(presentation, "BUSY_RETRY_SECONDS", 0.02):
+                    body = self.act("next", {"via": via}, status=503)
+                self.assertEqual(body["detail"], presentation.BUSY)
+        self.assertEqual(self.pressed, [])
+
+    def test_hung_powerpoint_behind_another_app_falls_back_to_keys(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.com.attach_hook = lambda: release.wait(5)
+        with patch.object(presentation, "STATE_TIMEOUT", 0.1), patch.object(presentation, "ACTION_WAIT", 0.05):
+            self.assertEqual(self.client.get("/api/presentation").status_code, 503)  # leaves the worker stuck
+            body = self.act("previous")
+            self.assertEqual((body["via"], self.pressed, body["presentation"]), ("keys", ["left"], None))
+            self.com.attach_hook = None
+            release.set()
+            self.wait_until_idle()
+        self.assertEqual(self.ppt.calls, [])
 
     def test_start_without_a_presentation_presses_f5(self):
         self.ppt.open = False
@@ -930,6 +1125,7 @@ class WorkerTests(PresentationTestCase):
             started.set()
             release.wait(5)
         self.com.attach_hook = hang
+        self.foreground = "powerpnt.exe"  # keys would reach PowerPoint, so no keys instead of COM
         worker = self.controller.worker
         with patch.object(presentation, "STATE_TIMEOUT", 0.1), patch.object(presentation, "STATE_WAIT", 0.05), \
              patch.object(presentation, "ACTION_WAIT", 0.05):
@@ -993,23 +1189,45 @@ class WorkerTests(PresentationTestCase):
 
 
 class ForegroundTests(unittest.TestCase):
-    def test_foreground_name_is_empty_when_windows_apis_are_missing(self):
+    def test_foreground_is_unknown_when_windows_apis_are_missing(self):
         with patch.object(presentation, "_USER32", None), \
              patch.object(presentation.ctypes, "WinDLL", side_effect=OSError("no user32"), create=True):
-            self.assertEqual(presentation._foreground_process_name(), "")
+            self.assertEqual(presentation._foreground_window(), ("", ""))
 
-    def test_foreground_name_comes_from_the_window_process(self):
+    def test_user32_signatures_are_declared(self):
+        functions = {name: SimpleNamespace() for name in
+                     ("GetForegroundWindow", "GetWindowThreadProcessId", "GetClassNameW")}
+        with patch.object(presentation, "_USER32", None), \
+             patch.object(presentation.ctypes, "WinDLL", return_value=SimpleNamespace(**functions), create=True):
+            presentation._user32()
+        ctypes = presentation.ctypes
+        self.assertEqual((functions["GetForegroundWindow"].argtypes, functions["GetForegroundWindow"].restype),
+                         ([], ctypes.c_void_p))
+        self.assertEqual(functions["GetWindowThreadProcessId"].argtypes[0], ctypes.c_void_p)
+        self.assertEqual(functions["GetWindowThreadProcessId"].restype, ctypes.c_uint32)
+        self.assertEqual(functions["GetClassNameW"].argtypes, [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int])
+        self.assertEqual(functions["GetClassNameW"].restype, ctypes.c_int)
+
+    def test_foreground_comes_from_the_window_process_and_class(self):
         def thread_process(window, pid_pointer):
             pid_pointer._obj.value = 4242
             return 77
-        user32 = SimpleNamespace(GetForegroundWindow=lambda: 0x1234, GetWindowThreadProcessId=thread_process)
+
+        def class_name(window, buffer, length):
+            self.assertEqual(length, presentation.CLASS_NAME_LENGTH)
+            buffer.value = "screenClass"
+            return len(buffer.value)
+        user32 = SimpleNamespace(GetForegroundWindow=lambda: 0x1234, GetWindowThreadProcessId=thread_process,
+                                 GetClassNameW=class_name)
         process = SimpleNamespace(name=lambda: "POWERPNT.EXE")
         with patch.object(presentation, "_USER32", user32), \
              patch.object(presentation.psutil, "Process", return_value=process) as lookup:
-            self.assertEqual(presentation._foreground_process_name(), "powerpnt.exe")
-        lookup.assert_called_once_with(4242)
+            self.assertEqual(presentation._foreground_window(), ("powerpnt.exe", "screenClass"))
+            user32.GetClassNameW = lambda window, buffer, length: 0  # failed: class unknown
+            self.assertEqual(presentation._foreground_window(), ("powerpnt.exe", ""))
+        lookup.assert_called_with(4242)
         with patch.object(presentation, "_USER32", SimpleNamespace(GetForegroundWindow=lambda: None)):
-            self.assertEqual(presentation._foreground_process_name(), "")
+            self.assertEqual(presentation._foreground_window(), ("", ""))
 
 
 class HResultTests(unittest.TestCase):
