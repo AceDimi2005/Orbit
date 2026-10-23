@@ -110,6 +110,10 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         if let gpuPower = vm.metrics.gpuPowerWatts { payload["gpuPowerWatts"] = gpuPower }
         if let fps = vm.metrics.fps { payload["fps"] = fps }
         if let game = vm.metrics.activeGame { payload["activeGame"] = game }
+        // Button deck for the Watch "Buttons" page (F4); see OrbitWatchDeckSync.
+        payload["deck"] = OrbitWatchDeckSync.payload(
+            pcID: vm.selectedPCID, isPro: OrbitProStore.shared.isProUnlocked, isDemo: vm.isDemoMode,
+            cached: vm.isDemoMode ? nil : OrbitWatchDeckSync.cachedDeck(pcID: vm.selectedPCID))
         return payload
     }
 
@@ -221,12 +225,13 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
     }
 
-    private static func sendCursorRequest(client: OrbitAPIClient, query: [URLQueryItem], timeout: Double, path: String = "/api/input/cursor") async throws -> Data {
+    private static func sendCursorRequest(client: OrbitAPIClient, query: [URLQueryItem], timeout: Double, path: String = "/api/input/cursor",
+                                          timeoutMessage: String = "The PC did not respond to cursor control. Check the companion and local network.") async throws -> Data {
         try await withThrowingTaskGroup(of: Data.self) { group in
             group.addTask { try await client.data(path, method: "POST", query: query) }
             group.addTask {
                 try await Task.sleep(for: .seconds(timeout))
-                throw OrbitError(message: "The PC did not respond to cursor control. Check the companion and local network.")
+                throw OrbitError(message: timeoutMessage)
             }
             defer { group.cancelAll() }
             guard let result = try await group.next() else { throw CancellationError() }
@@ -278,7 +283,24 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                     }
                     path = "/api/sunshine/launch"
                     query = [URLQueryItem(name: "app", value: title)]
+                case "runDeck":
+                    path = try OrbitWatchDeckSync.runPath(buttonID: message["buttonID"] as? String,
+                                                          cached: OrbitWatchDeckSync.cachedDeck(pcID: pcID),
+                                                          isPro: OrbitProStore.shared.isProUnlocked)
                 default: throw OrbitError(message: "Unsupported PC command.")
+                }
+                guard deadline > Date().timeIntervalSince1970 else { throw OrbitError(message: "The command expired. Try again.") }
+                if cmd == "runDeck" {
+                    // A deck button can be a short sequence, so it gets longer than a click to answer.
+                    // It starts only before the deadline, and a late reply is never retried.
+                    let detail = try await runDeckButton(client: client, path: path)
+                    if vm.selectedPCID == pcID,
+                       OrbitWatchDeckSync.turnsPCOff(buttonID: message["buttonID"] as? String ?? "", cached: OrbitWatchDeckSync.cachedDeck(pcID: pcID)) {
+                        vm.metrics.isOnline = false
+                    }
+                    var reply: [String: Any] = ["status": "sent", "pcID": pcID]
+                    if let detail { reply["detail"] = detail }
+                    return reply
                 }
                 let timeout = min(4, deadline - Date().timeIntervalSince1970)
                 guard timeout > 0 else { throw OrbitError(message: "The command expired. Try again.") }
@@ -293,6 +315,17 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             }
             return ["status": "sent", "pcID": pcID]
         } catch { return ["status": "failed", "message": error.localizedDescription] }
+    }
+
+    /// `POST /api/deck/buttons/{id}/run` for a Watch "runDeck" command; returns the PC's `detail` sentence.
+    private func runDeckButton(client: OrbitAPIClient, path: String) async throws -> String? {
+        do {
+            let data = try await Self.sendCursorRequest(client: client, query: [], timeout: 12, path: path,
+                timeoutMessage: "Your PC didn't answer in time. The button may still have run.")
+            return OrbitWatchDeckSync.detail(from: data)
+        } catch where OrbitWatchDeckSync.isMissingRoute(error) {
+            throw OrbitError(message: OrbitWatchDeckSync.updateAgentMessage, statusCode: 404)
+        }
     }
 
     /// The Watch asked to sign in to the locked PC: the password it sent is typed through a short
@@ -332,7 +365,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         case "requestSync":
             let payload = buildSyncPayload()
             replyHandler?(payload)
-        case "wake", "powerAction", "volume", "launchGame":
+        case "wake", "powerAction", "volume", "launchGame", "runDeck":
             Task {
                 let result = await forwardPCCommand(message)
                 replyHandler?(result)

@@ -49,6 +49,7 @@ struct OrbitWatchRootView: View {
         TabView(selection: $vm.selectedTab) {
             WatchCockpitPage(vm: vm).tag(0)
             WatchPowerDeckPage(vm: vm).tag(1)
+            WatchDeckPage(vm: vm, deck: vm.deck).tag(WatchDeckStore.tab)
             WatchMotionCursorPage(vm: vm).tag(2)
             WatchMediaAndGamesPage(vm: vm).tag(3)
         }
@@ -63,7 +64,7 @@ struct OrbitWatchRootView: View {
 
 // MARK: - Shared watch components
 
-private struct WatchPageHeading: View {
+struct WatchPageHeading: View {
     let title: String
     let symbol: String
     var tint: Color = OrbitWatchPalette.accent
@@ -82,7 +83,7 @@ private struct WatchPageHeading: View {
     }
 }
 
-private struct WatchConnectionLine: View {
+struct WatchConnectionLine: View {
     @ObservedObject var vm: OrbitWatchViewModel
     var compact = false
 
@@ -136,7 +137,7 @@ private struct WatchConnectionLine: View {
     }
 }
 
-private struct WatchFeedback: View {
+struct WatchFeedback: View {
     let message: String
 
     var body: some View {
@@ -150,7 +151,7 @@ private struct WatchFeedback: View {
     }
 }
 
-private struct WatchActionButton: View {
+struct WatchActionButton: View {
     let title: String
     let symbol: String
     var tint: Color = OrbitWatchPalette.accent
@@ -185,7 +186,7 @@ private struct WatchActionButton: View {
     }
 }
 
-private struct WatchSectionLabel: View {
+struct WatchSectionLabel: View {
     let title: String
     var body: some View {
         Text(title.uppercased())
@@ -197,7 +198,7 @@ private struct WatchSectionLabel: View {
     }
 }
 
-private struct WatchOfflineHint: View {
+struct WatchOfflineHint: View {
     @ObservedObject var vm: OrbitWatchViewModel
 
     var body: some View {

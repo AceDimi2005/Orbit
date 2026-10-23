@@ -51,6 +51,7 @@ struct MacMenuBarView: View {
                 }
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
             }
+            MacMenuBarDeckRow(deck: vm.deck)
             HStack {
                 if !vm.savedPCs.isEmpty {
                     Menu {
@@ -75,6 +76,7 @@ struct MacMenuBarView: View {
         .padding(14)
         .frame(width: 340)
         .background(MacAmbientBackground(isOnline: vm.metrics.isOnline))
+        .macDeckAutoRefresh(vm)
     }
 
     private var header: some View {

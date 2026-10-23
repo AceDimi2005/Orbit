@@ -14,6 +14,7 @@ struct OrbitMacApp: App {
         // Sunshine client identity from inside the sandboxed, signed app and exits.
         let environment = ProcessInfo.processInfo.environment
         if let mode = environment["ORBIT_SUNSHINE_SELFTEST"] { MacSunshineSelfTest.run(mode: mode) }
+        if let output = environment["ORBIT_DECK_SNAPSHOT"] { MainActor.assumeIsolated { MacDeckSnapshot.run(output: output) } }
         switch environment["ORBIT_IDENTITY_SELFTEST"] {
         case "1":
             print(MoonlightIdentityStore.diagnostics())
@@ -133,6 +134,9 @@ struct OrbitMacApp: App {
                     Button("Pair a PC…") { viewModel.selectedSection = .pcs }
                 }
             }
+            CommandMenu("Buttons") {
+                MacDeckCommands(vm: viewModel, deck: viewModel.deck)
+            }
             CommandGroup(after: .sidebar) {
                 Divider()
                 ForEach(MacSection.allCases) { section in
@@ -207,6 +211,7 @@ struct OrbitMacApp: App {
         case "sleep": Task { await viewModel.sendAction("sleep") }
         case "shutdown": Task { await viewModel.sendAction("shutdown") }
         case "restart": Task { await viewModel.sendAction("restart") }
+        case "deck", "buttons": viewModel.openDeck(from: url)
         default: viewModel.selectedSection = .overview
         }
     }

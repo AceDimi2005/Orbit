@@ -42,6 +42,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
     case certificateRejected(String)
     case http(Int, String?)
     case cursorNotAcknowledged
+    /// The PC's agent has no button deck yet (`POST /api/deck/buttons/{id}/run` is an unknown route).
+    case deckUnavailable
+    /// The PC refused to run a deck button and said why (deleted button, invalid action…).
+    case deckRejected(String)
 
     var statusCode: Int? {
         if case let .http(status, _) = self { return status }
@@ -75,6 +79,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
             return detail.map { "PC error \(status): \($0)" } ?? "The PC returned error \(status)."
         case .cursorNotAcknowledged:
             return "The PC did not confirm the cursor command. Check Orbit Agent."
+        case .deckUnavailable:
+            return "Buttons need the latest Orbit agent on your PC. Update it, then try again."
+        case let .deckRejected(message):
+            return message
         }
     }
 }
@@ -194,6 +202,33 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
               acknowledgement.status == "sent" else {
             throw OrbitWatchHTTPError.cursorNotAcknowledged
         }
+    }
+
+    /// Runs one button of the PC's deck (`POST /api/deck/buttons/{id}/run`) and returns the PC's
+    /// `detail` sentence, if any. Sent once: a timeout can arrive after the PC already pressed the
+    /// keys, so it is never replayed.
+    func runDeckButton(id: String) async throws -> String? {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        guard (1...64).contains(id.unicodeScalars.count), id.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw OrbitWatchHTTPError.invalidRequest
+        }
+        let response: Data
+        do {
+            response = try await data(path: "/api/deck/buttons/\(id)/run", method: "POST")
+        } catch let error as OrbitWatchHTTPError {
+            guard case let .http(status, detail) = error else { throw error }
+            // FastAPI answers an unknown route with the bare detail "Not Found"; the deck's own
+            // refusals are sentences meant for people.
+            if status == 404, detail == nil || detail == "Not Found" { throw OrbitWatchHTTPError.deckUnavailable }
+            if [400, 404, 409, 422, 426, 501, 503].contains(status), let detail, !detail.isEmpty {
+                throw OrbitWatchHTTPError.deckRejected(detail)
+            }
+            throw error
+        }
+        struct Reply: Decodable { let detail: String? }
+        let detail = (try? JSONDecoder().decode(Reply.self, from: response))?.detail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail?.isEmpty == false ? detail : nil
     }
 }
 

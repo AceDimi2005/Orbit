@@ -661,7 +661,7 @@ typealias MacSyncedPCItem = OrbitSyncedPCItem
 // MARK: - Navigation
 
 enum MacSection: String, CaseIterable, Identifiable, Codable {
-    case overview, remote, preview, files, processes, audio, clipboard, sessions, library, pcs
+    case overview, remote, preview, files, processes, audio, clipboard, sessions, library, pcs, deck
 
     var id: String { rawValue }
     var title: String {
@@ -676,6 +676,7 @@ enum MacSection: String, CaseIterable, Identifiable, Codable {
         case .sessions: "Sessions"
         case .library: "Stream"
         case .pcs: "My PCs"
+        case .deck: "Buttons"
         }
     }
     var symbol: String {
@@ -690,9 +691,10 @@ enum MacSection: String, CaseIterable, Identifiable, Codable {
         case .sessions: "chart.xyaxis.line"
         case .library: "play.rectangle.fill"
         case .pcs: "desktopcomputer"
+        case .deck: "square.grid.2x2.fill"
         }
     }
-    /// ⌘1 … ⌘0 shortcuts in the View menu.
+    /// ⌘1 … ⌘0 (and ⌘B for Buttons) shortcuts in the View menu.
     var shortcutKey: Character {
         switch self {
         case .overview: "1"
@@ -705,10 +707,11 @@ enum MacSection: String, CaseIterable, Identifiable, Codable {
         case .sessions: "8"
         case .library: "9"
         case .pcs: "0"
+        case .deck: "b"
         }
     }
     static let monitorGroup: [MacSection] = [.overview, .sessions, .processes]
-    static let controlGroup: [MacSection] = [.remote, .preview, .audio, .clipboard, .files, .library]
+    static let controlGroup: [MacSection] = [.remote, .deck, .preview, .audio, .clipboard, .files, .library]
     static let setupGroup: [MacSection] = [.pcs]
 }
 
