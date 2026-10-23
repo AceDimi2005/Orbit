@@ -55,6 +55,7 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "orbit_processes" ^
     --hidden-import "orbit_push" ^
     --hidden-import "orbit_tasks" ^
+    --hidden-import "orbit_stream_display" ^
     --hidden-import "orbit_tls" ^
     --hidden-import "orbit_tray" ^
     --hidden-import "orbit_updater" ^

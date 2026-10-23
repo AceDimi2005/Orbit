@@ -88,6 +88,7 @@ ID_OPEN_LOG = 1005
 ID_EXIT = 1006
 ID_CHECK_UPDATES = 1007
 ID_TOGGLE_BOOT = 1008
+ID_STREAM_DISPLAY_SETUP = 1021  # "Set up full-screen streaming…" (orbit_stream_display)
 
 BOOT_TASK_NAME = "Orbit PC Companion (boot)"
 
@@ -625,6 +626,7 @@ class OrbitTrayIcon:
             {"id": ID_CHECK_UPDATES, "label": "Check for updates...", "enabled": True, "checked": False},
             {"id": ID_SHOW_DETAILS, "label": "Connection details...", "enabled": True, "checked": False},
             {"id": ID_COPY_TOKEN, "label": "Copy manual pairing token", "enabled": bool(self.token_provider), "checked": False},
+            {"id": ID_STREAM_DISPLAY_SETUP, "label": "Set up full-screen streaming…", "enabled": True, "checked": False},
         ])
         if self.log_path and self.log_path.is_file():
             items.append({"id": ID_OPEN_LOG, "label": "Open agent log", "enabled": True, "checked": False})
@@ -693,6 +695,9 @@ class OrbitTrayIcon:
                     except Exception:
                         LOGGER.exception("Could not copy manual pairing token")
             return "token_copied"
+        if command_id == ID_STREAM_DISPLAY_SETUP:
+            self.show_stream_display_setup()
+            return "stream_display_setup_shown"
         if command_id == ID_OPEN_LOG:
             if self.log_path and self.log_path.is_file() and os.name == "nt":
                 try:
@@ -854,6 +859,19 @@ class OrbitTrayIcon:
             "In Orbit on iPhone, tap Find my PC to pair with a one-use 6-digit code."
         )
         self._async_message_box(message, "Orbit PC Companion · Connection Details", 0x00040040)
+
+    def show_stream_display_setup(self):
+        """Explains full-screen streaming (Virtual Display Driver + what changes in Sunshine) and
+        offers to copy the winget command, on a helper thread so the menu loop keeps running."""
+        def dialog():
+            try:
+                from orbit_stream_display import run_tray_setup_dialog
+                run_tray_setup_dialog(self._show_message_box_sync, self.show_notification)
+            except Exception:
+                LOGGER.exception("Could not show the full-screen streaming setup")
+        thread = threading.Thread(target=dialog, daemon=True, name="orbit-tray-stream-display")
+        thread.start()
+        return thread
 
     def _async_message_box(self, text, title, flags=0x00040040):
         if os.name != "nt" and self._apis is None:

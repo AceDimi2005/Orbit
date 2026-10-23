@@ -1285,6 +1285,20 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
     raise HTTPException(status_code=404, detail="Application was not found in Sunshine")
 
 
+# Full-screen streaming and the virtual second screen (orbit_stream_display) change Sunshine's
+# display settings through its web API with the login saved above. Lambdas look the helpers up
+# at call time, so tests (and the pretend PC) can replace them.
+from orbit_stream_display import StreamDisplayService, SunshineWebAPI, create_stream_display_router
+
+STREAM_DISPLAY = StreamDisplayService(SunshineWebAPI(lambda: sunshine_credentials(), lambda: sunshine_base_port()),
+                                      sunshine_base_port=lambda: sunshine_base_port(),
+                                      desktop_available=lambda: not BOOT_MODE)
+app.include_router(create_stream_display_router(verify_token, require_https, STREAM_DISPLAY,
+                                                require_windows=lambda: require_windows()))
+register_feature("streamDisplay")
+register_feature("secondScreen")
+
+
 @app.websocket("/ws/stream")
 async def websocket_video_stream(websocket: WebSocket):
     if not authorized(websocket.headers.get("authorization")):
