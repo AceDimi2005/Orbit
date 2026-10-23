@@ -18,10 +18,19 @@ import softcam_artifact as artifact  # noqa: E402
 COMMIT = "afb424c2415b04da627fa1a7b4706575c2ba3010"
 EXPORTS = ("DllMain",) + artifact.REQUIRED_EXPORTS
 IMPORTS = ("WINMM.dll", "KERNEL32.dll", "ole32.dll", "VCRUNTIME140.dll")
+STATIC_IMPORTS = ("WINMM.dll", "KERNEL32.dll", "ole32.dll")
 MIT = b"MIT License\n\nCopyright (c) 2020 tshino\n"
+# microsoft/Windows-classic-samples LICENSE (unchanged since 2017; pinned at 434f6002 in the file).
+BASECLASSES_UPSTREAM_BLOB = "02a131eabfe560723b3a70efc5ac2a150eac967a"
+BASECLASSES_SEPARATOR = b"-" * 70 + b"\n"
 
 
-def build_pe(machine, magic, exports=EXPORTS, imports=IMPORTS, dll=True):
+def committed_baseclasses_license():
+    # A Windows checkout (core.autocrlf) may hold CRLF; the artifact always carries LF.
+    return artifact.BASECLASSES_LICENSE_SOURCE.read_bytes().replace(b"\r\n", b"\n")
+
+
+def build_pe(machine, magic, exports=EXPORTS, imports=IMPORTS, dll=True, linker=(14, 44)):
     """A minimal but well-formed PE image: headers plus one section holding the tables."""
     section_rva, raw_offset = 0x1000, 0x400
     body = bytearray()
@@ -62,6 +71,7 @@ def build_pe(machine, magic, exports=EXPORTS, imports=IMPORTS, dll=True):
     optional_size = 240 if plus else 224
     optional = bytearray(optional_size)
     struct.pack_into("<H", optional, 0, magic)
+    struct.pack_into("<BB", optional, 2, *linker)  # MajorLinkerVersion, MinorLinkerVersion
     struct.pack_into("<II", optional, 32, 0x1000, 0x200)  # section and file alignment
     struct.pack_into("<II", optional, 56, section_rva + len(body), raw_offset)  # image, headers
     struct.pack_into("<H", optional, 68, 2)  # Windows GUI subsystem
@@ -98,6 +108,7 @@ class PortableExecutableTests(unittest.TestCase):
             self.assertTrue(image.is_dll)
             self.assertEqual(image.exports(), sorted(EXPORTS))
             self.assertEqual(image.imports(), list(IMPORTS))
+            self.assertEqual(tuple(image.linker_version), (14, 44))
 
     def test_image_without_tables_has_no_exports_or_imports(self):
         image = artifact.PortableExecutable(dll64(exports=(), imports=()))
@@ -128,7 +139,7 @@ class InspectTests(unittest.TestCase):
 
     def test_accepts_the_expected_build_and_reports_runtime_imports(self):
         description = self.inspect(dll64())
-        self.assertIn("x64 (PE32+) DLL", description)
+        self.assertIn("x64 (PE32+) DLL; linker 14.44;", description)
         self.assertIn("scSendFrame", description)
         self.assertIn("VCRUNTIME140.dll", description)
 
@@ -141,6 +152,45 @@ class InspectTests(unittest.TestCase):
             self.inspect(dll64(exports=[name for name in EXPORTS if name != "scSendFrame"]))
         with self.assertRaisesRegex(artifact.ArtifactError, "is not a DLL"):
             self.inspect(dll64(dll=False))
+
+
+class RuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def minimum(self, first, second):
+        paths = [self.root / "a.dll", self.root / "b.dll"]
+        paths[0].write_bytes(first)
+        paths[1].write_bytes(second)
+        return artifact.runtime_minimum(paths)
+
+    def test_minimum_is_the_newest_linker_among_dlls_using_the_runtime(self):
+        self.assertEqual(self.minimum(dll64(linker=(14, 44)), dll32(linker=(14, 44))), "14.44")
+        self.assertEqual(self.minimum(dll64(linker=(14, 50)), dll32(linker=(14, 44))), "14.50")
+        # A statically linked DLL does not raise the bar for the one that needs the runtime.
+        self.assertEqual(self.minimum(dll64(linker=(14, 50), imports=STATIC_IMPORTS),
+                                      dll32(linker=(14, 44))), "14.44")
+        self.assertEqual(self.minimum(dll64(imports=("KERNEL32.dll", "MSVCP140.dll")),
+                                      dll32(imports=("kernel32.dll", "vcruntime140_1.dll"))), "14.44")
+
+    def test_static_runtime_needs_no_redistributable(self):
+        self.assertIsNone(self.minimum(dll64(imports=STATIC_IMPORTS), dll32(imports=STATIC_IMPORTS)))
+        self.assertIn("linked statically", artifact.runtime_line(None))
+        self.assertTrue(artifact.runtime_line("14.44").startswith("Minimum Visual C++ runtime: 14.44 "))
+
+
+class BaseClassesLicenseTests(unittest.TestCase):
+    def test_committed_license_is_microsofts_text_unchanged(self):
+        header, separator, upstream = committed_baseclasses_license().partition(BASECLASSES_SEPARATOR)
+        self.assertTrue(separator, "the provenance header must end with the dashed line")
+        self.assertIn(BASECLASSES_UPSTREAM_BLOB.encode(), header)
+        blob = hashlib.sha1(b"blob %d\0" % len(upstream) + upstream).hexdigest()
+        self.assertEqual(blob, BASECLASSES_UPSTREAM_BLOB)
+        self.assertTrue(upstream.startswith(b"The MIT License (MIT)\n\nCopyright (c) Microsoft Corporation\n"))
 
 
 class PackageTests(unittest.TestCase):
@@ -168,16 +218,21 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((self.out / "softcam64.dll").read_bytes(), dll64())
         self.assertEqual((self.out / "softcam32.dll").read_bytes(), dll32())
         self.assertEqual((self.out / "LICENSE").read_bytes(), MIT)
+        self.assertEqual((self.out / "LICENSE-BaseClasses").read_bytes(), committed_baseclasses_license())
+        self.assertIn(b"Copyright (c) Microsoft Corporation", (self.out / "LICENSE-BaseClasses").read_bytes())
         self.assertEqual((self.out / "UPSTREAM_COMMIT").read_bytes(), (COMMIT + "\n").encode())
         self.assertEqual(digests, {"softcam64.dll": hashlib.sha256(dll64()).hexdigest(),
                                    "softcam32.dll": hashlib.sha256(dll32()).hexdigest()})
         sums = (self.out / "SHA256SUMS").read_bytes()
         self.assertNotIn(b"\r", sums)
         self.assertIn(f"{digests['softcam64.dll']}  softcam64.dll\n".encode(), sums)
+        notice = hashlib.sha256(committed_baseclasses_license()).hexdigest()
+        self.assertIn(f"{notice}  LICENSE-BaseClasses\n".encode(), sums)
         self.assertEqual(len(sums.splitlines()), len(artifact.CONTENT_FILES))
         info = (self.out / "BUILD-INFO.txt").read_text(encoding="utf-8")
         for expected in (f"Commit: {COMMIT}", "Tag: v1.8.1", "https://github.com/tshino/softcam",
-                         "Orbit commit: 0123456", "softcam32.dll: x86 (PE32) DLL"):
+                         "Orbit commit: 0123456", "softcam32.dll: x86 (PE32) DLL; linker 14.44;",
+                         "(see LICENSE-BaseClasses)", "\nMinimum Visual C++ runtime: 14.44 (x64 and x86"):
             self.assertIn(expected, info)
         self.assertEqual(artifact.verify(self.out, COMMIT), digests)
 
@@ -201,6 +256,31 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(artifact.ArtifactError, "LICENSE"):
             self.package()
 
+    def test_package_needs_microsofts_baseclasses_license(self):
+        missing = self.source / "no-such-license"
+        with self.assertRaisesRegex(artifact.ArtifactError, "BaseClasses MIT license was not found"):
+            artifact.package(self.source, self.out, "tshino/softcam", "v1.8.1", COMMIT,
+                             baseclasses_license=missing)
+        wrong = self.source / "LICENSE-other"
+        wrong.write_bytes(MIT)  # MIT, but not Microsoft's notice
+        with self.assertRaisesRegex(artifact.ArtifactError, "is not the DirectShow BaseClasses"):
+            artifact.package(self.source, self.out.with_name("other"), "tshino/softcam", "v1.8.1",
+                             COMMIT, baseclasses_license=wrong)
+
+    def test_baseclasses_license_from_a_crlf_checkout_is_published_with_lf_endings(self):
+        crlf = self.source / "LICENSE-BaseClasses"
+        crlf.write_bytes(committed_baseclasses_license().replace(b"\n", b"\r\n"))
+        artifact.package(self.source, self.out, "tshino/softcam", "v1.8.1", COMMIT, baseclasses_license=crlf)
+        self.assertEqual((self.out / "LICENSE-BaseClasses").read_bytes(), committed_baseclasses_license())
+
+    def test_static_runtime_build_info_says_no_redistributable(self):
+        for platform, data in (("x64", dll64(imports=STATIC_IMPORTS)), ("Win32", dll32(imports=STATIC_IMPORTS))):
+            (self.source / "dist" / "bin" / platform / "softcam.dll").write_bytes(data)
+        self.package()
+        info = (self.out / "BUILD-INFO.txt").read_text(encoding="utf-8")
+        self.assertIn("Visual C++ runtime: linked statically", info)
+        self.assertNotIn("Minimum Visual C++ runtime", info)
+
     def test_verify_catches_tampering_extra_files_and_the_wrong_commit(self):
         self.package()
         with self.assertRaisesRegex(artifact.ArtifactError, "UPSTREAM_COMMIT is"):
@@ -209,10 +289,44 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(artifact.ArtifactError, "unexpected files: notes.txt"):
             artifact.verify(self.out)
         (self.out / "notes.txt").unlink()
+        (self.out / ".hidden-notes").write_text("x", encoding="utf-8")
+        with self.assertRaisesRegex(artifact.ArtifactError, "unexpected files: .hidden-notes"):
+            artifact.verify(self.out)
+        (self.out / ".hidden-notes").unlink()
         data = bytearray((self.out / "softcam32.dll").read_bytes())
         data[-1] ^= 1
         (self.out / "softcam32.dll").write_bytes(bytes(data))
         with self.assertRaisesRegex(artifact.ArtifactError, "softcam32.dll does not match"):
+            artifact.verify(self.out)
+
+    def test_verify_tolerates_finder_and_explorer_metadata(self):
+        digests = self.package()
+        for name in (".DS_Store", "._softcam64.dll", "Thumbs.db", "desktop.ini", "Desktop.ini"):
+            (self.out / name).write_bytes(b"\0\0\0\1Bud1")
+        self.assertEqual(artifact.verify(self.out, COMMIT), digests)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(artifact.main(["verify", str(self.out), "--commit", COMMIT]), 0)
+        self.assertIn("softcam32.dll sha256 ", output.getvalue())
+
+    def test_verify_needs_microsofts_notice_in_the_baseclasses_license(self):
+        self.package()
+        (self.out / "LICENSE-BaseClasses").write_bytes(MIT)
+        sums = "".join(f"{artifact.sha256(self.out / name)}  {name}\n" for name in artifact.CONTENT_FILES)
+        (self.out / "SHA256SUMS").write_text(sums, encoding="utf-8")
+        with self.assertRaisesRegex(artifact.ArtifactError, "LICENSE-BaseClasses is not Microsoft's"):
+            artifact.verify(self.out)
+        (self.out / "LICENSE-BaseClasses").unlink()
+        with self.assertRaisesRegex(artifact.ArtifactError, "LICENSE-BaseClasses is missing"):
+            artifact.verify(self.out)
+
+    def test_verify_rejects_an_artifact_without_the_baseclasses_license_in_its_sums(self):
+        self.package()
+        (self.out / "LICENSE-BaseClasses").unlink()
+        sums = "".join(f"{artifact.sha256(self.out / name)}  {name}\n"
+                       for name in artifact.CONTENT_FILES if name != "LICENSE-BaseClasses")
+        (self.out / "SHA256SUMS").write_text(sums, encoding="utf-8")
+        with self.assertRaisesRegex(artifact.ArtifactError, "must list exactly"):
             artifact.verify(self.out)
 
     def test_verify_rejects_a_renamed_pair_even_with_matching_sums(self):
@@ -233,6 +347,7 @@ class PackageTests(unittest.TestCase):
                                             "--tag", "v1.8.1", "--commit", COMMIT]), 0)
             self.assertEqual(artifact.main(["verify", str(self.out), "--commit", COMMIT]), 0)
         self.assertEqual(output.getvalue().count("softcam64.dll sha256 "), 2)
+        self.assertEqual(output.getvalue().count("minimum VC++ runtime 14.44\n"), 2)
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
             self.assertEqual(artifact.main(["verify", str(self.source)]), 1)

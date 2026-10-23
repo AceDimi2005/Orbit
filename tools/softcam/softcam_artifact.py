@@ -10,8 +10,10 @@ the Windows runner and on a Mac.
     python tools/softcam/softcam_artifact.py verify <folder> [--commit <40-hex SHA>]
 
 `verify` checks SHA256SUMS against every file, that softcam64.dll is a 64-bit (x64) DLL and
-softcam32.dll a 32-bit (x86) DLL, and that both export the Softcam sender API plus the COM
-registration entry points. It prints the SHA-256 values to pin in the agent.
+softcam32.dll a 32-bit (x86) DLL, that both export the Softcam sender API plus the COM
+registration entry points, and that both licenses are there (softcam's, and Microsoft's for the
+DirectShow BaseClasses linked into the DLLs). It prints the SHA-256 values to pin in the agent and
+the oldest Visual C++ runtime the DLLs need. Finder/Explorer metadata such as .DS_Store is ignored.
 """
 
 import argparse
@@ -25,10 +27,25 @@ from pathlib import Path
 DLL64 = "softcam64.dll"
 DLL32 = "softcam32.dll"
 LICENSE = "LICENSE"
+BASECLASSES_LICENSE = "LICENSE-BaseClasses"
 COMMIT_FILE = "UPSTREAM_COMMIT"
 INFO_FILE = "BUILD-INFO.txt"
 SUMS_FILE = "SHA256SUMS"
-CONTENT_FILES = (DLL64, DLL32, LICENSE, COMMIT_FILE, INFO_FILE)
+CONTENT_FILES = (DLL64, DLL32, LICENSE, BASECLASSES_LICENSE, COMMIT_FILE, INFO_FILE)
+
+# softcam.dll statically links the DirectShow BaseClasses that softcam vendors in src/baseclasses.
+# They are Microsoft's (Windows-classic-samples, MIT), so their notice ships next to softcam's.
+# The text lives next to this script, copied unchanged from a pinned upstream commit.
+BASECLASSES_LICENSE_SOURCE = Path(__file__).resolve().parent / BASECLASSES_LICENSE
+BASECLASSES_NOTICE = b"Copyright (c) Microsoft Corporation"
+MIT_MARKER = b"MIT License"
+
+# What Finder, Explorer and macOS file copies drop into a folder someone opened; never part of
+# the artifact, so verify() looks past them instead of calling the download tampered.
+OS_METADATA = frozenset({".ds_store", "thumbs.db", "ehthumbs.db", "desktop.ini"})
+
+# A DLL importing one of these needs the Visual C++ v14 Redistributable (it was built with /MD).
+RUNTIME_IMPORT = re.compile(r"(vcruntime|msvcp)140(_\w+)?\.dll", re.IGNORECASE)
 
 # From src/softcam/softcam.def at the pinned commit. The sc* functions are the sender API the
 # agent calls through ctypes; the Dll* functions are what regsvr32 and COM need.
@@ -77,6 +94,8 @@ class PortableExecutable:
          self.characteristics) = self._unpack("<HHIIIHH", header + 4)
         optional = header + 24
         self.magic = self._unpack("<H", optional)[0]
+        # MajorLinkerVersion.MinorLinkerVersion: the MSVC version of link.exe, e.g. 14.44.
+        self.linker_version = self._unpack("<BB", optional + 2)
         if self.magic == MAGIC_PE32:
             count_offset, directories = optional + 92, optional + 96
         elif self.magic == MAGIC_PE32_PLUS:
@@ -172,8 +191,49 @@ def inspect_dll(path, machine, magic):
     missing = [symbol for symbol in REQUIRED_EXPORTS if symbol not in exports]
     if missing:
         raise ArtifactError(f"{name} does not export {', '.join(missing)}")
-    return (f"{name}: {ARCHITECTURES[machine]} DLL; exports {', '.join(exports)}; "
+    linker = "{}.{}".format(*image.linker_version)
+    return (f"{name}: {ARCHITECTURES[machine]} DLL; linker {linker}; exports {', '.join(exports)}; "
             f"imports {', '.join(image.imports()) or 'nothing'}")
+
+
+def runtime_minimum(paths):
+    """The oldest Visual C++ v14 Redistributable the DLLs support, as "14.44", or None.
+
+    Microsoft supports a Redistributable only if it is at least as new as the build tools that
+    produced the binary, and link.exe stamps its MSVC version into every image it writes. None
+    means no DLL imports VCRUNTIME140/MSVCP140 (static runtime, nothing to install).
+    """
+    versions = []
+    for path in paths:
+        image = PortableExecutable(Path(path).read_bytes())
+        if any(RUNTIME_IMPORT.fullmatch(name) for name in image.imports()):
+            versions.append(tuple(image.linker_version))
+    if not versions:
+        return None
+    return "{}.{}".format(*max(versions))
+
+
+def runtime_line(minimum):
+    if minimum is None:
+        return "Visual C++ runtime: linked statically, no Redistributable needed"
+    return (f"Minimum Visual C++ runtime: {minimum} (x64 and x86 Visual C++ v14 Redistributable "
+            f"at least this version; the MSVC linker version stamped in the DLLs)")
+
+
+def is_os_metadata(name):
+    # "._name" files are macOS AppleDouble companions written on non-Apple volumes.
+    return name.lower() in OS_METADATA or name.startswith("._")
+
+
+def read_license(path, label, *markers):
+    """A license file's bytes with LF endings (a Windows checkout may hold CRLF; upstream uses LF)."""
+    path = Path(path)
+    if not path.is_file():
+        raise ArtifactError(f"{label} was not found at {path}")
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    if not all(marker in data for marker in markers):
+        raise ArtifactError(f"{path} is not {label}")
+    return data
 
 
 def write_text(path, text):
@@ -181,7 +241,8 @@ def write_text(path, text):
     Path(path).write_bytes(text.encode("utf-8"))
 
 
-def package(source, out, repository, tag, commit, info=()):
+def package(source, out, repository, tag, commit, info=(),
+            baseclasses_license=BASECLASSES_LICENSE_SOURCE):
     source, out = Path(source), Path(out)
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ArtifactError("the upstream commit must be a full 40-character lowercase SHA")
@@ -195,20 +256,20 @@ def package(source, out, repository, tag, commit, info=()):
             raise ArtifactError(f"missing build output {built}")
         shutil.copyfile(built, out / published)
         descriptions.append(inspect_dll(out / published, machine, magic))
-    license = source / "LICENSE"
-    if not license.is_file() or b"MIT License" not in license.read_bytes():
-        raise ArtifactError("softcam's MIT LICENSE was not found in the checkout")
-    # A Windows checkout may hold CRLF; upstream's file (and Orbit's repository) use LF.
-    (out / LICENSE).write_bytes(license.read_bytes().replace(b"\r\n", b"\n"))
+    (out / LICENSE).write_bytes(read_license(source / "LICENSE", "softcam's MIT LICENSE", MIT_MARKER))
+    (out / BASECLASSES_LICENSE).write_bytes(read_license(
+        baseclasses_license, "the DirectShow BaseClasses MIT license", MIT_MARKER, BASECLASSES_NOTICE))
     write_text(out / COMMIT_FILE, commit + "\n")
     lines = [
         "Softcam (DirectShow virtual camera) built for Orbit's iPhone webcam",
         f"Upstream: https://github.com/{repository}",
         f"Tag: {tag}",
         f"Commit: {commit}",
-        "License: MIT (see LICENSE)",
+        "License: MIT, softcam (see LICENSE)",
+        "License: MIT, DirectShow BaseClasses by Microsoft, linked into the DLLs "
+        "(see LICENSE-BaseClasses)",
         "Build: msbuild softcam.sln /p:Configuration=Release for /p:Platform=x64 and /p:Platform=Win32",
-        "Runtime: Release builds link the Visual C++ runtime dynamically (see the imports below).",
+        runtime_line(runtime_minimum(out / published for published, *_ in BUILDS)),
         *info,
         "",
         *descriptions,
@@ -236,7 +297,7 @@ def verify(folder, commit=None):
     sums = read_sums(folder / SUMS_FILE)
     if set(sums) != set(CONTENT_FILES):
         raise ArtifactError(f"{SUMS_FILE} must list exactly {', '.join(CONTENT_FILES)}")
-    present = {path.name for path in folder.iterdir()}
+    present = {path.name for path in folder.iterdir() if not is_os_metadata(path.name)}
     unexpected = sorted(present - set(CONTENT_FILES) - {SUMS_FILE})
     if unexpected:
         raise ArtifactError(f"unexpected files: {', '.join(unexpected)}")
@@ -250,8 +311,11 @@ def verify(folder, commit=None):
         raise ArtifactError(f"{COMMIT_FILE} does not hold a full commit SHA")
     if commit is not None and recorded != commit:
         raise ArtifactError(f"{COMMIT_FILE} is {recorded}, expected {commit}")
-    if b"MIT License" not in (folder / LICENSE).read_bytes():
+    if MIT_MARKER not in (folder / LICENSE).read_bytes():
         raise ArtifactError("LICENSE is not softcam's MIT license")
+    notice = (folder / BASECLASSES_LICENSE).read_bytes()
+    if MIT_MARKER not in notice or BASECLASSES_NOTICE not in notice:
+        raise ArtifactError(f"{BASECLASSES_LICENSE} is not Microsoft's MIT license for the BaseClasses")
     for published, _, machine, magic in BUILDS:
         inspect_dll(folder / published, machine, magic)
     return {published: sums[published] for published, *_ in BUILDS}
@@ -267,21 +331,28 @@ def main(argv=None):
     build.add_argument("--tag", required=True)
     build.add_argument("--commit", required=True)
     build.add_argument("--info", action="append", default=[], help='extra "Key: value" line for BUILD-INFO.txt')
+    build.add_argument("--baseclasses-license", default=str(BASECLASSES_LICENSE_SOURCE),
+                       help="Microsoft's MIT license for the DirectShow BaseClasses "
+                            "(default: the copy next to this script)")
     check = commands.add_parser("verify", help="check a downloaded orbit-softcam artifact")
     check.add_argument("folder")
     check.add_argument("--commit", help="fail unless UPSTREAM_COMMIT matches")
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "package":
-            digests = package(arguments.source, arguments.out, arguments.repository,
-                              arguments.tag, arguments.commit, arguments.info)
+            folder = Path(arguments.out)
+            digests = package(arguments.source, folder, arguments.repository, arguments.tag,
+                              arguments.commit, arguments.info, arguments.baseclasses_license)
         else:
-            digests = verify(arguments.folder, arguments.commit)
+            folder = Path(arguments.folder)
+            digests = verify(folder, arguments.commit)
+        minimum = runtime_minimum(folder / published for published, *_ in BUILDS)
     except (ArtifactError, OSError, UnicodeError) as error:
         print(f"softcam artifact: {error}", file=sys.stderr)
         return 1
     for name, digest in digests.items():
         print(f"{name} sha256 {digest}")
+    print(f"minimum VC++ runtime {minimum}" if minimum else "VC++ runtime linked statically")
     return 0
 
 
