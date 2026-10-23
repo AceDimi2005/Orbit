@@ -61,6 +61,31 @@ class FeatureWiringTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertIn(f'--hidden-import "{module}"', script)
 
+    def test_stream_display_routes_need_main_token_and_https_and_are_bundled(self):
+        from pathlib import Path
+        token = "test-control-token-at-least-24-chars"
+        client = TestClient(agent.app)
+        self.addCleanup(client.close)
+        requests = (("GET", "/api/stream/display", None), ("POST", "/api/stream/display/fill", {"enabled": True}),
+                    ("POST", "/api/stream/display/modes", {"width": 2556, "height": 1179, "refreshRate": 120}),
+                    ("POST", "/api/stream/display/second-screen", {"enabled": True, "width": 2732, "height": 2048}),
+                    ("POST", "/api/stream/display/revert", None))
+        service = agent.STREAM_DISPLAY
+        with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"), \
+             patch.object(service, "set_fill") as fill, patch.object(service, "ensure_mode") as modes, \
+             patch.object(service, "set_second_screen") as second, patch.object(service, "revert") as revert, \
+             patch.object(service, "status") as status:
+            for method, path, body in requests:
+                with self.subTest(path=path):
+                    self.assertEqual(client.request(method, path, json=body).status_code, 401)
+                    self.assertEqual(client.request(method, path, json=body, headers={"Authorization": "Bearer widget-only-token"}).status_code, 401)
+                    self.assertEqual(client.request(method, path, json=body, headers={"Authorization": f"Bearer {token}"}).status_code, 426)
+            for mocked in (fill, modes, second, revert, status):
+                mocked.assert_not_called()
+        self.assertTrue({"streamDisplay", "secondScreen"} <= set(agent.capabilities_payload()["features"]))
+        script = (Path(agent.__file__).resolve().parent / "build_exe.bat").read_text(encoding="utf-8")
+        self.assertIn('--hidden-import "orbit_stream_display"', script)
+
     def test_recorded_sample_includes_sensor_cache_not_just_cpu_usage_update(self):
         state = copy.deepcopy(agent.STATE)
         state.update(cpuTemp=55, cpuPowerWatts=65, cpuClockMHz=4200, sensorSource="MSI Afterburner")
