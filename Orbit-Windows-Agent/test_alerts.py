@@ -247,6 +247,7 @@ class OnlineTests(StoreMixin, unittest.TestCase):
         kind, title, body = self.emit.call_args.args
         self.assertEqual((kind, title), ("pc.online", "Gaming-PC is online"))
         self.assertEqual(self.emit.call_args.kwargs["data"], {"reason": "started"})
+        self.assertIs(self.emit.call_args.kwargs["toast"], False)  # the phone's news, not a balloon on the PC
         self.assertEqual(self.store.get("alertsState"), {"onlineBootTime": self.BOOT, "lastAliveAt": self.BOOT + 60})
 
     def test_restart_of_orbit_in_the_same_boot_stays_quiet(self):
@@ -303,6 +304,7 @@ class OnlineTests(StoreMixin, unittest.TestCase):
         self.assertEqual(alerts.announce_back_online(store=self.store, hostname="Gaming-PC", emit=self.emit, monotonic=self.clock), {"id": 1})
         self.assertEqual(self.emit.call_args.args[1], "Gaming-PC is back online")
         self.assertEqual(self.emit.call_args.kwargs["data"], {"reason": "reconnected"})
+        self.assertIs(self.emit.call_args.kwargs["toast"], False)
         alerts.save_alerts({"online": {"enabled": False}}, self.store)
         self.clock.advance(alerts.BACK_ONLINE_QUIET_SECONDS + 1)
         self.assertIsNone(alerts.announce_back_online(store=self.store, hostname="Gaming-PC", emit=self.emit, monotonic=self.clock))

@@ -360,8 +360,9 @@ def announce_online(*, store=None, boot_time=None, hostname=None, emit=None, han
         return None
     name = hostname or socket.gethostname()
     try:
+        # For the phone only: the PC needs no balloon about itself (the tray shows its own).
         event = (emit or orbit_events.emit)("pc.online", f"{name} is online", "Orbit is running on your PC.",
-                                            level="active", data={"reason": "started"})
+                                            level="active", data={"reason": "started"}, toast=False)
     except Exception:
         LOGGER.exception("Could not record the pc.online event")
         return None
@@ -385,7 +386,7 @@ def announce_back_online(*, store=None, hostname=None, emit=None, monotonic=time
     try:
         return (emit or orbit_events.emit)("pc.online", f"{name} is back online",
                                            "Orbit can reach your PC again.", level="active",
-                                           data={"reason": "reconnected"})
+                                           data={"reason": "reconnected"}, toast=False)
     except Exception:
         LOGGER.exception("Could not record the pc.online event")
         return None

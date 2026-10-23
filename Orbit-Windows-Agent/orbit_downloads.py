@@ -27,10 +27,18 @@ launcher is installed (it looks again every 5 minutes otherwise):
 `progress` and the byte counts belong to the current phase: downloading, then staging (Steam's
 "installing" step). They are null when the launcher does not say.
 
+A download only counts as running while it can move: with Steam or the Epic Games Launcher closed
+(`steam.exe`, `EpicGamesLauncher.exe`) every unfinished item is `paused`. An Epic item whose staged
+bytes and manifest have not changed for 3 minutes (and whose launcher is not busy reading or writing)
+is `paused` too, and so is a Steam item whose manifest counters have not moved for 10 minutes. Steam
+results that mean "stopped on purpose" (Paused, Suspended, Canceled, App Running, Update Required)
+are pauses, never failures.
+
 Events: `download.finished` / `download.failed` for each item, and `downloads.allFinished` once nothing
-has been queued, downloading or staging for 60 seconds after some activity. A paused download does
-not count as activity. Listeners (power after downloads) hear about every change even when the user
-turned download notifications off.
+has been queued, downloading or staging for 60 seconds after some activity (only when something
+finished, failed or was paused in that time; downloads that were only canceled are not announced).
+A paused download does not count as activity. Listeners (power after downloads) hear about every
+change even when the user turned download notifications off.
 
 Steam's StateFlags meanings come from community documentation (Lutris, SteamKit) and have not all
 been confirmed on a real PC, so every rule here prefers the byte counters where they exist.
@@ -46,6 +54,7 @@ import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+import psutil
 
 import orbit_events
 
@@ -62,8 +71,20 @@ RETAIN_FINISHED_SECONDS = 60 * 60
 MAX_LISTED = 40
 EPIC_PROGRESS_SECONDS = 15.0
 EPIC_MAX_FILES = 20000
+# Without any change for this long a download counts as paused (see the module docstring).
+EPIC_STALL_SECONDS = 180.0
+STEAM_STALL_SECONDS = 600.0
+LAUNCHER_CHECK_SECONDS = 15.0
+LAUNCHER_BUSY_BYTES_PER_SECOND = 200_000
+LAUNCHER_PROCESSES = {"steam": ("steam.exe",), "epic": ("epicgameslauncher.exe",)}
 CONTENT_LOG_MAX_READ = 256 * 1024
 LOG_FAILURE_SECONDS = 15 * 60
+# Steam's EAppUpdateError values (manifest UpdateResult) and result names (content_log) that mean a
+# download stopped on purpose or is waiting, not that it failed: "pause" keeps it listed as paused
+# (or queued), "cancel" drops an update nobody is waiting for any more.
+UPDATE_RESULTS_NOT_FAILED = {0: "ok", 2: "pause", 3: "cancel", 4: "pause"}  # No Error, Paused, Canceled, Suspended
+LOG_REASONS_NOT_FAILED = {"no error": "ok", "paused": "pause", "suspended": "pause", "canceled": "cancel",
+                          "cancelled": "cancel", "app running": "pause", "update required": "pause"}
 ACTIVE_STATES = ("queued", "downloading", "staging")
 TERMINAL_STATES = ("finished", "failed")
 STORES = ("steam", "epic", "gog")
@@ -264,6 +285,76 @@ def _normal(path):
     return os.path.normcase(os.path.normpath(str(path)))
 
 
+def steam_reason_kind(reason):
+    """"ok", "pause", "cancel" or "error" for a reason Steam wrote (content_log)."""
+    text = " ".join(str(reason or "").split()).casefold()
+    if not text:
+        return "ok"
+    return LOG_REASONS_NOT_FAILED.get(text, "error")
+
+
+# -- Launcher processes ---------------------------------------------------------------------------
+
+class LauncherMonitor:
+    """Whether Steam and the Epic Games Launcher are running, and whether they are busy reading or
+    writing (a download, a verify, an install step). Sampled at most every 15 s from the process
+    list; `running()` is None when Windows would not say."""
+
+    def __init__(self, clock=time.monotonic, process_iter=None):
+        self._clock = clock
+        self._process_iter = process_iter
+        self._checked_at = None
+        self._running = {}
+        self._io = {}  # store -> (time, bytes so far)
+        self._busy_at = {}
+
+    def refresh(self, force=False):
+        now = self._clock()
+        if not force and self._checked_at is not None and now - self._checked_at < LAUNCHER_CHECK_SECONDS:
+            return
+        self._checked_at = now
+        found = {store: [] for store in LAUNCHER_PROCESSES}
+        try:
+            for process in (self._process_iter or psutil.process_iter)(["name"]):
+                name = str((getattr(process, "info", None) or {}).get("name") or "").casefold()
+                for store, names in LAUNCHER_PROCESSES.items():
+                    if name in names:
+                        found[store].append(process)
+        except Exception:
+            LOGGER.debug("Could not list the launcher processes", exc_info=True)
+            self._running = {}
+            return
+        for store, processes in found.items():
+            self._running[store] = bool(processes)
+            total = None
+            for process in processes:
+                try:
+                    counters = process.io_counters()
+                    total = (total or 0) + int(counters.read_bytes) + int(counters.write_bytes) \
+                        + int(getattr(counters, "other_bytes", 0) or 0)
+                except Exception:
+                    continue
+            previous = self._io.get(store)
+            if total is None:
+                self._io.pop(store, None)
+                continue
+            if previous is not None and now > previous[0] and total >= previous[1]:
+                if (total - previous[1]) / (now - previous[0]) >= LAUNCHER_BUSY_BYTES_PER_SECOND:
+                    self._busy_at[store] = now
+            self._io[store] = (now, total)
+
+    def running(self, store):
+        self.refresh()
+        return self._running.get(store)
+
+    def busy_within(self, store, seconds):
+        """True when the launcher read or wrote a lot in the last `seconds` (never on its own a
+        reason to call something a download: it only keeps a quiet-looking one from being paused)."""
+        self.refresh()
+        moment = self._busy_at.get(store)
+        return moment is not None and self._clock() - moment <= seconds
+
+
 # -- Observations ---------------------------------------------------------------------------------
 
 @dataclass
@@ -297,14 +388,17 @@ _LOG_SUFFIX = re.compile(r"\(([^()]+)\)\s*$")
 
 
 class SteamScanner:
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock=time.monotonic, launchers=None):
         self._clock = clock
+        self._launchers = launchers  # LauncherMonitor, or None to never look at processes
         self._manifests = {}  # path -> (signature, fields)
         self._libraries = []
         self._libraries_signature = None
         self._root = None
         self._log_offset = None
         self._log_failures = {}  # appid -> (reason, time)
+        self._log_pauses = {}  # appid -> ("pause" | "cancel", time)
+        self._moved = {}  # appid -> (counters, time they last changed)
 
     @staticmethod
     def locate_root():
@@ -444,6 +538,8 @@ class SteamScanner:
             self.note_log_line(line, now)
 
     def note_log_line(self, line, now=None):
+        """Remembers the latest reason Steam gave for stopping an app: a failure, or a pause/cancel
+        (Steam writes `result Suspended` when a download is paused or queued behind another one)."""
         match = _LOG_LINE.search(line)
         if not match:
             return
@@ -452,26 +548,52 @@ class SteamScanner:
         reason = None
         if what == "update canceled":
             suffix = _LOG_SUFFIX.search(rest)
-            reason = (suffix.group(1) if suffix else rest.split(":")[0]).strip() or "Steam canceled the update"
+            reason = (suffix.group(1) if suffix else rest.split(":")[0]).strip() or "Canceled"
         elif what == "scheduler finished":
             result = _LOG_RESULT.search(rest)
-            if result and result.group(1).strip().casefold() != "no error":
-                reason = result.group(1).strip()
+            reason = result.group(1).strip() if result else None
         else:
             if "fully installed" in rest.casefold():
                 self._log_failures.pop(appid, None)
+                self._log_pauses.pop(appid, None)
                 return
             suffix = _LOG_SUFFIX.search(rest)
-            if suffix and suffix.group(1).strip().casefold() not in ("", "no error"):
-                reason = suffix.group(1).strip()
-        if reason:
+            reason = suffix.group(1).strip() if suffix else None
+        kind = steam_reason_kind(reason)
+        if kind == "ok":
+            return
+        if kind == "error":
             self._log_failures[appid] = (reason, now)
+            self._log_pauses.pop(appid, None)
+        else:
+            self._log_pauses[appid] = (kind, now)
+            self._log_failures.pop(appid, None)
 
     def _log_failure(self, appid):
         entry = self._log_failures.get(appid)
         if entry and self._clock() - entry[1] <= LOG_FAILURE_SECONDS:
             return entry[0]
         return None
+
+    def _log_pause(self, appid):
+        """"pause" or "cancel" when Steam recently said it stopped this app on purpose."""
+        entry = self._log_pauses.get(appid)
+        if entry and self._clock() - entry[1] <= LOG_FAILURE_SECONDS:
+            return entry[0]
+        return None
+
+    def _note_counters(self, fields):
+        """Remembers when this app's manifest counters last changed (the first sight counts)."""
+        counters = (fields["flags"], fields["toDownload"], fields["downloaded"], fields["toStage"], fields["staged"])
+        known = self._moved.get(fields["appid"])
+        if known is None or known[0] != counters:
+            self._moved[fields["appid"]] = (counters, self._clock())
+
+    def _stalled(self, appid):
+        known = self._moved.get(appid)
+        if known is None or self._clock() - known[1] < STEAM_STALL_SECONDS:
+            return False
+        return not (self._launchers is not None and self._launchers.busy_within("steam", STEAM_STALL_SECONDS))
 
     def scan(self, tracked):
         """Observations for every manifest that is not plainly installed (plus tracked ones)."""
@@ -496,9 +618,13 @@ class SteamScanner:
                 if self._complete(fields) and ident not in tracked:
                     continue
                 fields["downloadingFolder"] = (steamapps / "downloading" / appid).is_dir()
+                self._note_counters(fields)
                 raw.append(fields)
         for stale in set(self._manifests) - seen_paths:
             self._manifests.pop(stale, None)
+        listed = {fields["appid"] for fields in raw}
+        for stale in set(self._moved) - listed:
+            self._moved.pop(stale, None)
         observations = [self._classify(fields, tracked.get(f"steam:{fields['appid']}")) for fields in raw]
         observations = [item for item in observations if item is not None]
         progressing = any(item.state in ("downloading", "staging") for item in observations)
@@ -535,14 +661,19 @@ class SteamScanner:
         held = bool(flags & UPDATE_PAUSED)
         if flags & UNINSTALLED and not started and not held:
             return None  # the install was canceled
-        failure = None
-        if fields["updateResult"]:
-            failure = self._log_failure(appid) or f"Steam reported error {fields['updateResult']}"
+        # Paused, Canceled and Suspended are UpdateResult values too: only other codes are failures,
+        # and a fresh "stopped on purpose" line in the log outranks an older code in the manifest.
+        result = fields["updateResult"]
+        result_kind = UPDATE_RESULTS_NOT_FAILED.get(result, "error")
+        stop_kind = self._log_pause(appid) or (result_kind if result_kind in ("pause", "cancel") else None)
+        failure = self._log_failure(appid)
+        if failure is None and result_kind == "error" and stop_kind is None:
+            failure = f"Steam reported error {result}"
         if held or not started:
-            log_failure = self._log_failure(appid)
-            if failure or log_failure:
+            if failure:
                 state = "failed"
-                failure = failure or log_failure
+            elif stop_kind == "cancel" and not held:
+                return None  # removed from Steam's queue: nothing is waiting for it any more
             elif held:
                 state = "held"  # queued behind another download, or paused: decided by the caller
             elif previous is not None or (fields["downloadingFolder"] and (fields["downloaded"] or fields["staged"])):
@@ -558,17 +689,29 @@ class SteamScanner:
         if state != "failed":
             failure = None
         if state in ("downloading", "staging"):
-            self._log_failures.pop(appid, None)  # a retry is running; an old failure no longer applies
+            # A retry or a resume is running; an old failure or pause no longer applies.
+            self._log_failures.pop(appid, None)
+            self._log_pauses.pop(appid, None)
+        if state in ACTIVE_STATES or state == "held":
+            if self._launchers is not None and self._launchers.running("steam") is False:
+                state = "paused"  # Steam is closed: nothing moves until it starts again
+            elif state in ("downloading", "staging") and self._stalled(appid):
+                state = "paused"  # Steam is open but this download has not moved for 10 minutes
         return Observation(ident, "steam", name, state, progress, done, total, size=size, reason=failure, update=update)
 
 
 # -- Epic -----------------------------------------------------------------------------------------
 
 class EpicScanner:
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock=time.monotonic, launchers=None):
         self._clock = clock
+        self._launchers = launchers  # LauncherMonitor, or None to never look at processes
         self._items = {}  # path -> (signature, item)
-        self._progress = {}  # id -> (time, bytes)
+        self._progress = {}  # id -> (measured at, bytes, time the bytes last changed)
+        # id -> {"first": time first seen unfinished, "baseline": seen in the first scan,
+        #        "signature": manifest files, "changed": time they last changed}
+        self._seen = {}
+        self._scanned = False
 
     @staticmethod
     def manifests_folder():
@@ -600,11 +743,12 @@ class EpicScanner:
         return item
 
     def _staged_bytes(self, ident, folder):
-        """Bytes in the staging folder, measured at most every 15 s (bounded walk)."""
+        """(bytes in the staging folder, time they last changed), measured at most every 15 s
+        (bounded walk). The first measurement is not a change."""
         now = self._clock()
         cached = self._progress.get(ident)
         if cached and now - cached[0] < EPIC_PROGRESS_SECONDS:
-            return cached[1]
+            return cached[1], cached[2]
         total, files = 0, 0
         for directory, _, names in os.walk(folder):
             for name in names:
@@ -616,22 +760,32 @@ class EpicScanner:
             if files > EPIC_MAX_FILES:
                 break  # a partial sum is still a useful estimate; never walk a huge tree every poll
         value = total if total else None
-        self._progress[ident] = (now, value)
-        return value
+        changed_at = cached[2] if cached else None
+        if cached is not None and value != cached[1]:
+            changed_at = now
+        self._progress[ident] = (now, value, changed_at)
+        return value, changed_at
+
+    def _signature(self, path):
+        cached = self._items.get(str(path))
+        return cached[0] if cached else None
 
     def scan(self, tracked):
         folder = self.manifests_folder()
         pending_folder = folder / "Pending"
-        pending = {}
+        pending, pending_signatures = {}, {}
         try:
             for path in pending_folder.glob("*.item"):
                 item = self._item(path) or {}
+                signature = (path.name, self._signature(path))
                 pending[path.stem.casefold()] = item
+                pending_signatures[path.stem.casefold()] = signature
                 if item.get("AppName"):
                     pending[f"app:{str(item['AppName']).casefold()}"] = item
+                    pending_signatures[f"app:{str(item['AppName']).casefold()}"] = signature
         except OSError:
             pass
-        observations, seen = [], set()
+        observations, seen, unfinished = [], set(), set()
         try:
             paths = list(folder.glob("*.item"))
         except OSError:
@@ -643,21 +797,30 @@ class EpicScanner:
             app = str(item["AppName"])
             seen.add(path.stem.casefold())
             seen.add(f"app:{app.casefold()}")
-            waiting = path.stem.casefold() in pending or f"app:{app.casefold()}" in pending
-            observation = self._observe(item, bool(item.get("bIsIncompleteInstall")) or waiting, tracked)
+            pending_signature = pending_signatures.get(path.stem.casefold()) or pending_signatures.get(f"app:{app.casefold()}")
+            waiting = pending_signature is not None
+            signature = (self._signature(path), pending_signature)
+            observation = self._observe(item, bool(item.get("bIsIncompleteInstall")) or waiting, tracked, signature)
             if observation is not None:
                 observations.append(observation)
+                if observation.state != "complete":
+                    unfinished.add(observation.id)
         for key, item in pending.items():
             if key in seen or not key.startswith("app:") or not item.get("AppName"):
                 continue
-            observation = self._observe(item, True, tracked)
+            observation = self._observe(item, True, tracked, (None, pending_signatures.get(key)))
             if observation is not None:
                 observations.append(observation)
+                unfinished.add(observation.id)
         for stale in [key for key in self._items if not Path(key).exists()]:
             self._items.pop(stale, None)
+        for stale in set(self._seen) - unfinished:
+            self._seen.pop(stale, None)
+            self._progress.pop(stale, None)
+        self._scanned = True
         return observations
 
-    def _observe(self, item, incomplete, tracked):
+    def _observe(self, item, incomplete, tracked, signature=None):
         app = str(item["AppName"])
         ident = f"epic:{app}"
         name = str(item.get("DisplayName") or app).strip() or app
@@ -668,13 +831,36 @@ class EpicScanner:
                 return None
             return Observation(ident, "epic", name, "complete", 1.0, size, size, size=size, update=previous.update)
         staging = item.get("StagingLocation") or (Path(str(item.get("InstallLocation") or "")) / ".egstore" / "bps")
-        done = self._staged_bytes(ident, staging) if staging else None
+        done, bytes_changed = self._staged_bytes(ident, staging) if staging else (None, None)
         progress = None
         if done is not None and size:
             done = min(done, size)
             progress = round(min(0.99, done / size), 4)
         update = bool(previous.update) if previous else not bool(item.get("bIsIncompleteInstall"))
-        return Observation(ident, "epic", name, "downloading", progress, done if size else None, size, size=size, update=update)
+        state = "downloading" if self._moving(ident, signature, bytes_changed) else "paused"
+        return Observation(ident, "epic", name, state, progress, done if size else None, size, size=size, update=update)
+
+    def _moving(self, ident, signature, bytes_changed):
+        """Epic writes no state of its own, so an unfinished item counts as downloading only while
+        something moves: its staged bytes or manifest files changed in the last 3 minutes, it
+        appeared while Orbit was watching (3 minutes of grace), or the launcher is busy. Items that
+        were already unfinished when Orbit started need a change first: a half-done install left
+        alone for months must not count as a download."""
+        now = self._clock()
+        record = self._seen.get(ident)
+        if record is None:
+            record = {"first": now, "baseline": not self._scanned, "signature": signature, "changed": None}
+            self._seen[ident] = record
+        elif record["signature"] != signature:
+            record["signature"], record["changed"] = signature, now
+        if self._launchers is not None and self._launchers.running("epic") is False:
+            return False  # the launcher is closed: nothing downloads
+        changes = [moment for moment in (record["changed"], bytes_changed) if moment is not None]
+        if changes and now - max(changes) < EPIC_STALL_SECONDS:
+            return True
+        if not record["baseline"] and now - record["first"] < EPIC_STALL_SECONDS:
+            return True
+        return self._launchers is not None and self._launchers.busy_within("epic", EPIC_STALL_SECONDS)
 
 
 # -- GOG ------------------------------------------------------------------------------------------
@@ -733,6 +919,7 @@ class Item:
     update: bool = False
     updated_at: float = 0.0  # wall clock, for the API
     ended_at: float = None  # monotonic, for retention
+    active_at: float = None  # monotonic, the last poll that saw it queued, downloading or staging
     extra: dict = field(default_factory=dict)
 
     def payload(self):
@@ -771,6 +958,7 @@ class DownloadTracker:
         self.polled = False
         self._window = {"finished": [], "failed": []}
         self._had_activity = False
+        self._window_started = None  # monotonic time of the first activity since the last summary
 
     def active(self):
         return any(item.state in ACTIVE_STATES for item in self.items.values())
@@ -804,7 +992,7 @@ class DownloadTracker:
                             observation.size, observation.reason, observation.update, now_wall)
                 self.items[item.id] = item
                 if item.state in ACTIVE_STATES:
-                    self._had_activity = True
+                    item.active_at = now
                 continue
             changed = (item.state, item.progress, item.bytes_done, item.bytes_total) != (
                 observation.state, observation.progress, observation.bytes_done, observation.bytes_total)
@@ -821,6 +1009,8 @@ class DownloadTracker:
                 item.ended_at = item.ended_at if previous_state == item.state else now
             else:
                 item.ended_at = None
+            if item.state in ACTIVE_STATES:
+                item.active_at = now
             if item.state == "failed" and previous_state != "failed":
                 events.append(("failed", item))
         for ident, item in list(self.items.items()):
@@ -832,6 +1022,8 @@ class DownloadTracker:
                 # Canceled or uninstalled while unfinished: drop it quietly.
                 del self.items[ident]
         if self.active():
+            if not self._had_activity:
+                self._window_started = now
             self._had_activity = True
             self.last_active = now
         self._prune(now)
@@ -887,15 +1079,18 @@ class DownloadTracker:
 
     def _send_all_finished(self):
         finished, failed = self._window["finished"], self._window["failed"]
-        paused = [item.name for item in self.items.values() if item.state == "paused"]
+        started = self._window_started
+        # Only downloads that ran in this window: one paused for weeks is not news.
+        paused = [item.name for item in self.items.values() if item.state == "paused" and item.active_at is not None
+                  and (started is None or item.active_at >= started)]
         self._window = {"finished": [], "failed": []}
         self._had_activity = False
+        self._window_started = None
+        if not finished and not failed and not paused:
+            return None  # the only downloads were canceled or uninstalled: nothing to announce
         if not failed and not paused:
             title = "All downloads finished"
-            if finished:
-                body = f"{_names_text(finished)} {'is' if len(finished) == 1 else 'are'} ready to play."
-            else:
-                body = "Nothing is downloading on your PC any more."
+            body = f"{_names_text(finished)} {'is' if len(finished) == 1 else 'are'} ready to play."
         else:
             title = "Downloads stopped"
             parts = []
@@ -931,14 +1126,21 @@ def _lower_thread_priority():
 
 
 class DownloadsWatcher:
-    """Runs the scanners on a background thread and answers the API and power-after rules."""
+    """Runs the scanners on a background thread and answers the API and power-after rules.
+
+    The scanners read the launchers' files without holding `_lock` (on a slow disk a pass can take
+    seconds), so the API and power-after rules never wait for a scan; `_lock` only guards the
+    tracker's state, and `_scan_lock` keeps passes from overlapping."""
 
     def __init__(self, *, clock=time.time, monotonic=time.monotonic, emit=None, notify_enabled=None,
-                 scanners=None, poll_seconds=POLL_SECONDS):
+                 scanners=None, poll_seconds=POLL_SECONDS, launchers=None):
         self._monotonic = monotonic
         self._lock = threading.RLock()
+        self._scan_lock = threading.Lock()
         self._poll_seconds = poll_seconds
-        self.scanners = scanners or {"steam": SteamScanner(monotonic), "epic": EpicScanner(monotonic), "gog": GogScanner()}
+        self.launchers = launchers if launchers is not None else LauncherMonitor(monotonic)
+        self.scanners = scanners or {"steam": SteamScanner(monotonic, self.launchers),
+                                     "epic": EpicScanner(monotonic, self.launchers), "gog": GogScanner()}
         self.tracker = DownloadTracker(clock=clock, monotonic=monotonic, emit=emit, notify_enabled=notify_enabled)
         self.stores = {store: False for store in STORES}
         self._detected_at = None
@@ -969,25 +1171,31 @@ class DownloadsWatcher:
 
     def poll(self):
         """One pass over every installed launcher."""
-        with self._lock:
-            if self._detected_at is None or (not any(self.stores.values())
-                                             and self._monotonic() - self._detected_at >= STORE_RECHECK_SECONDS):
+        with self._scan_lock:
+            with self._lock:
+                detect = self._detected_at is None or (not any(self.stores.values())
+                                                       and self._monotonic() - self._detected_at >= STORE_RECHECK_SECONDS)
+            if detect:
                 self.detect_stores()
-            if not any(self.stores.values()):
-                self.tracker.polled = True
-                return [], None
+            with self._lock:
+                stores = dict(self.stores)
+                if not any(stores.values()):
+                    self.tracker.polled = True
+                    return [], None
+                # Item objects are only changed by tracker.apply(), which runs on this pass below.
+                tracked = dict(self.tracker.items)
             observations, scanned = [], set()
-            tracked = dict(self.tracker.items)
             for store, scanner in self.scanners.items():
-                if not self.stores.get(store):
+                if not stores.get(store):
                     continue
                 try:
                     observations.extend(scanner.scan(tracked))
                     scanned.add(store)
                 except Exception:
                     LOGGER.exception("Could not read %s downloads", STORE_NAMES.get(store, store))
-            events, all_done = self.tracker.apply(observations, scanned)
-            listeners = list(self._listeners)
+            with self._lock:
+                events, all_done = self.tracker.apply(observations, scanned)
+                listeners = list(self._listeners)
         if events or all_done:
             for listener in listeners:
                 try:
@@ -1007,6 +1215,34 @@ class DownloadsWatcher:
             if not self.tracker.polled or self.tracker.active():
                 return None
             return self.tracker.last_active if self.tracker.last_active is not None else self.tracker.started
+
+    def active_ids(self):
+        """Ids of the items queued, downloading or staging right now."""
+        with self._lock:
+            return [ident for ident, item in self.tracker.items.items() if item.state in ACTIVE_STATES]
+
+    def power_status(self, since, ids=()):
+        """What a "sleep when downloads finish" rule set at monotonic `since` needs, or None before the
+        first poll. `ids` are the items that were active when the rule was set. Only items that were
+        active since then count: `paused` / `finished` / `failed` list their names."""
+        ids = frozenset(ids or ())
+        with self._lock:
+            tracker = self.tracker
+            if not tracker.polled:
+                return None
+            items = list(tracker.items.values())
+            ran = [item for item in items if item.id in ids or (item.active_at is not None and item.active_at >= since)]
+            ran_ids = {item.id for item in ran}
+            ended = [item for item in items if item.ended_at is not None and item.ended_at >= since
+                     and (item.id in ran_ids or item.store == "gog")]  # GOG only ever reports finished installs
+            last_ended = max((item.ended_at for item in ended), default=None)
+            last_active = tracker.last_active
+            return {"active": tracker.active(),
+                    "lastActive": max([moment for moment in (last_active, last_ended) if moment is not None], default=None),
+                    "activeSince": (last_active is not None and last_active >= since) or bool(ended),
+                    "paused": [item.name for item in ran if item.state == "paused"],
+                    "finished": [item.name for item in ended if item.state == "finished"],
+                    "failed": [item.name for item in ended if item.state == "failed"]}
 
     def run(self, stop_event):
         _lower_thread_priority()

@@ -9,11 +9,14 @@ There is at most one rule per PC. `GET /api/power/after` →
 replaces the rule (a running countdown is cancelled first). `DELETE /api/power/after` cancels a waiting
 rule or a running countdown. All three need the main token and HTTPS.
 
-- Trigger `downloads`: fires once nothing has been queued, downloading or staging for 60 seconds,
-  counted from the later of the last download activity and the moment the rule was set (so a rule set
-  while nothing downloads fires after a minute).
+- Trigger `downloads`: waits until a download is (or was) active after the rule was set, then fires
+  once nothing has been queued, downloading or staging for 60 seconds. A rule set while nothing
+  downloads waits for the next download (for example one started from the Steam mobile app). While a
+  download that was running since the rule was set is paused (by the user, or by Steam during a game)
+  the rule keeps waiting; downloads that were already paused before stay out of it.
 - Trigger `task`: fires when the watched program (`taskID` from `POST /api/tasks`) finishes or closes.
-  Removing that task cancels the rule.
+  Removing that task while the rule waits cancels the rule; once the countdown runs it no longer
+  depends on the task.
 
 When it fires, `power.scheduled` ("Sleeping in 60 s") is emitted and the countdown (30–600 s) starts.
 At the end, if nobody used the PC's keyboard or mouse during the countdown, `power.executing` is
@@ -30,6 +33,7 @@ import time
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 import orbit_events
+import orbit_notify
 
 LOGGER = logging.getLogger("orbit.power_after")
 TRIGGERS = ("downloads", "task")
@@ -37,12 +41,15 @@ ACTIONS = ("sleep", "shutdown")
 DELAY_LIMITS = (30, 600)
 DEFAULT_DELAY = 60
 DOWNLOADS_QUIET_SECONDS = 60.0
+# "verb" is what the PC does ("Gaming-PC will go to sleep"), "object" what Orbit does to it.
 ACTION_WORDS = {
     "sleep": {"ing": "Sleeping", "now": "Going to sleep now", "noun": "Sleep", "verb": "go to sleep",
-              "stay": "The PC will stay on."},
+              "object": "put the PC to sleep", "stay": "The PC will stay on."},
     "shutdown": {"ing": "Shutting down", "now": "Shutting down now", "noun": "Shut down", "verb": "shut down",
-                 "stay": "The PC will stay on."},
+                 "object": "shut down the PC", "stay": "The PC will stay on."},
 }
+# The PC's own toast for power.scheduled: what the person at the PC can do about it.
+PC_KEEP_ON_TEXT = "Move the mouse or press a key to keep the PC on."
 
 
 class PowerAfterError(Exception):
@@ -70,6 +77,24 @@ def seconds_since_last_input():
         return None
 
 
+def _names_text(names):
+    names = list(names)
+    if len(names) <= 2:
+        return " and ".join(names)
+    return f"{names[0]}, {names[1]} and {len(names) - 2} other{'s' if len(names) > 3 else ''}"
+
+
+def _downloads_reason(finished, failed):
+    """The first sentence of power.scheduled/executing for a downloads rule."""
+    if finished and failed:
+        return f"Downloads finished, but {_names_text(failed)} failed."
+    if failed:
+        return f"Downloads stopped: {_names_text(failed)} failed."
+    if finished:
+        return "Downloads finished."
+    return "Nothing is downloading any more."
+
+
 def _delay_text(seconds):
     if seconds % 60 == 0 and seconds >= 120:
         return f"{seconds // 60} min"
@@ -81,8 +106,9 @@ class PowerAfter:
 
     def __init__(self, *, perform, downloads=None, tasks=None, emit=None, clock=time.time,
                  monotonic=time.monotonic, idle_seconds=seconds_since_last_input, before_execute=None,
-                 hostname=None):
+                 hostname=None, notify=None):
         self._perform = perform
+        self._notify = notify  # PC toast (title, message); orbit_notify.notify by default
         self._downloads = downloads  # provider returning the DownloadsWatcher (or None)
         self._tasks = tasks  # provider returning the TaskWatcher (or None)
         self._emit = emit
@@ -104,12 +130,20 @@ class PowerAfter:
     def _task_watcher(self):
         return self._tasks() if callable(self._tasks) else None
 
-    def _send(self, kind, title, body, level, data):
+    def _send(self, kind, title, body, level, data, toast=True):
         try:
-            return (self._emit or orbit_events.emit)(kind, title, body, level=level, data=data)
+            if toast:
+                return (self._emit or orbit_events.emit)(kind, title, body, level=level, data=data)
+            return (self._emit or orbit_events.emit)(kind, title, body, level=level, data=data, toast=False)
         except Exception:
             LOGGER.exception("Could not record the %s event", kind)
             return None
+
+    def _toast(self, title, message):
+        try:
+            (self._notify or orbit_notify.notify)(title, message)
+        except Exception:
+            LOGGER.warning("Could not show the countdown on the PC", exc_info=True)
 
     def _public(self, rule):
         if rule is None:
@@ -143,11 +177,14 @@ class PowerAfter:
             raise PowerAfterError(422, f"delaySeconds must be a whole number of seconds from {low} to {high}.")
         delay = int(delay)
         label = None
+        active_ids = frozenset()
         if trigger == "downloads":
             task_id = None
             watcher = self._downloads_watcher()
             if watcher is None or (watcher.tracker.polled and not watcher.any_store()):
                 raise PowerAfterError(409, "Orbit can't find Steam, Epic Games Launcher or GOG Galaxy on this PC, so it can't tell when downloads finish.")
+            # Downloads running right now count as "seen" even if they end before the next poll.
+            active_ids = frozenset(watcher.active_ids())
         else:
             if not isinstance(task_id, str) or not task_id:
                 raise PowerAfterError(422, "taskID is required for a task rule. Start watching the program first.")
@@ -166,8 +203,8 @@ class PowerAfter:
                 replaced = self._rule
             self._rule = {"trigger": trigger, "taskID": task_id, "taskLabel": label, "action": action,
                           "delaySeconds": delay, "state": "waiting", "createdAt": self._monotonic(),
-                          "countdownStartedAt": None, "countdownEndsAt": None, "countdownEndsAtWall": None,
-                          "firedBy": None}
+                          "activeIDs": active_ids, "countdownStartedAt": None, "countdownEndsAt": None,
+                          "countdownEndsAtWall": None, "firedBy": None}
             public = self._public(self._rule)
             self._condition.notify_all()
         if replaced is not None:
@@ -192,19 +229,23 @@ class PowerAfter:
         elif rule["state"] == "countdown":
             body = "Cancelled from Orbit. " + words["stay"]
         else:
-            body = f"Orbit won't {words['verb']} the PC after {'the downloads' if rule['trigger'] == 'downloads' else rule['taskLabel'] or 'the program'}."
+            body = f"Orbit won't {words['object']} after {'the downloads' if rule['trigger'] == 'downloads' else rule['taskLabel'] or 'the program'}."
         self._send("power.cancelled", f"{words['noun']} cancelled", body, "active",
                    {"action": rule["action"], "reason": reason, "state": rule["state"]})
         return True
 
     def task_changed(self, kind, task):
-        """TaskWatcher listener: wakes the worker on a finish, cancels the rule on removal."""
+        """TaskWatcher listener: wakes the worker on a finish, cancels a waiting rule on removal (a
+        running countdown no longer depends on the task: removing the finished task from the list in
+        Orbit must not silently keep the PC on)."""
         with self._condition:
             rule = self._rule
             if rule is None or rule["trigger"] != "task" or rule["taskID"] != task.get("id"):
                 return
             if kind == "finished":
                 self._condition.notify_all()
+                return
+            if rule["state"] != "waiting":
                 return
         if kind == "removed":
             try:
@@ -220,12 +261,15 @@ class PowerAfter:
             watcher = self._downloads_watcher()
             if watcher is None:
                 return None
-            quiet_since = watcher.quiet_since()
-            if quiet_since is None:
+            status = watcher.power_status(rule["createdAt"], rule["activeIDs"])
+            if status is None or status["active"] or status["paused"]:
+                return None  # still downloading, or a download that ran since the rule was set is paused
+            if not rule["activeIDs"] and not status["activeSince"]:
+                return None  # nothing has downloaded since the rule was set: wait for a download
+            quiet_from = max(status["lastActive"] or rule["createdAt"], rule["createdAt"])
+            if self._monotonic() - quiet_from < DOWNLOADS_QUIET_SECONDS:
                 return None
-            if self._monotonic() - max(quiet_since, rule["createdAt"]) < DOWNLOADS_QUIET_SECONDS:
-                return None
-            return "Downloads finished."
+            return _downloads_reason(status["finished"], status["failed"])
         watcher = self._task_watcher()
         task = watcher.get(rule["taskID"]) if watcher is not None else None
         if task is None:
@@ -253,11 +297,14 @@ class PowerAfter:
                             countdownEndsAtWall=wall + rule["delaySeconds"], firedBy=reason)
                 self._condition.notify_all()
             words = ACTION_WORDS[rule["action"]]
-            self._send("power.scheduled", f"{words['ing']} in {_delay_text(rule['delaySeconds'])}",
-                       f"{reason} Cancel from Orbit if you're still using the PC.", "timeSensitive",
+            title = f"{words['ing']} in {_delay_text(rule['delaySeconds'])}"
+            # The phone can cancel from Orbit; the person at the PC cancels by using it.
+            self._send("power.scheduled", title, f"{reason} Cancel from Orbit if you're still using the PC.",
+                       "timeSensitive",
                        {"action": rule["action"], "trigger": rule["trigger"], "taskID": rule["taskID"],
                         "delaySeconds": rule["delaySeconds"],
-                        "countdownEndsAt": orbit_events.iso_timestamp(rule["countdownEndsAtWall"])})
+                        "countdownEndsAt": orbit_events.iso_timestamp(rule["countdownEndsAtWall"])}, toast=False)
+            self._toast(title, f"{reason} {PC_KEEP_ON_TEXT}")
             return "scheduled"
         with self._condition:
             if self._rule is not rule or rule["state"] != "countdown":
@@ -295,7 +342,7 @@ class PowerAfter:
             except Exception as error:
                 LOGGER.warning("The %s after %s failed: %s", rule["action"], rule["trigger"], error)
                 self._send("power.cancelled", f"Couldn't {words['verb']}",
-                           f"Windows didn't let Orbit {words['verb']} the PC.", "active",
+                           f"Windows didn't let Orbit {words['object']}.", "active",
                            {"action": rule["action"], "reason": "failed"})
                 return "failed"
             return "executed"

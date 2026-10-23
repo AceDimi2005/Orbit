@@ -896,6 +896,154 @@ class PlannedOfflineTests(ServiceTestCase):
         self.assertFalse(push.planned_offline("sleep"))
 
 
+class SystemPowerTests(ServiceTestCase):
+    """Sleep, shutdown and sign-out started from Windows (not by Orbit) must not end in a "PC offline"
+    push, and waking up re-arms the relay's alarm straight away."""
+
+    def setUp(self):
+        super().setUp()
+        self.svc = self.service()
+        self.register(self.svc)
+        self.svc.step()
+        self.relay.clear()
+        push.set_shared_service(self.svc)
+        self.addCleanup(push.set_shared_service, None)
+
+    def routes(self):
+        return [route.rsplit("/", 1)[-1] for _, route in self.relay.paths()]
+
+    def relay_channel(self):
+        return self.relay.channels[self.channel()["channelId"]]
+
+    def test_windows_suspend_announces_the_sleep_and_pauses_heartbeats_until_resume(self):
+        self.advance(250)
+        self.assertTrue(push.system_power_event("suspend"))
+        self.assertEqual(self.routes(), ["offline-expected"])
+        self.assertEqual(self.relay_channel()["offlineExpected"], [{}])
+        # A heartbeat falling due before the PC is really asleep must not re-arm the alarm.
+        self.advance(60)
+        self.svc.step()
+        self.assertEqual(self.routes(), ["offline-expected"])
+        # Hours later the PC wakes up: one heartbeat right away, and no "back online" without an alert.
+        self.advance(8 * 3600)
+        self.assertTrue(push.system_power_event("resume"))
+        self.svc.step()
+        self.assertEqual(self.routes(), ["offline-expected", "hb"])
+        self.back_online.assert_not_called()
+        self.assertEqual(self.relay_channel()["state"], "online")
+
+    def test_session_end_from_windows_never_promises_to_come_back(self):
+        self.boot_task = True  # even with the boot task: a Windows restart looks like a shutdown here
+        self.assertTrue(push.system_power_event("session-ending"))
+        self.assertEqual(self.relay_channel()["offlineExpected"], [{}])
+
+    def test_orbits_own_sleep_is_not_announced_twice(self):
+        self.assertTrue(push.planned_offline("sleep"))  # BEFORE_POWER_HOOKS, then Windows suspends
+        self.assertTrue(push.system_power_event("suspend"))
+        self.assertEqual(self.relay_channel()["offlineExpected"], [{}])
+        self.advance(push.PLANNED_DEDUPE_SECONDS)
+        self.assertTrue(push.system_power_event("suspend"))
+        self.assertEqual(len(self.relay_channel()["offlineExpected"]), 2)
+
+    def test_a_slow_relay_cannot_hold_windows_up(self):
+        self.assertLess(push.SYSTEM_EVENT_TIMEOUT, 2.0)
+        self.relay.offline_expected_delay = 1.0
+        with patch.object(push, "SYSTEM_EVENT_TIMEOUT", 0.2):
+            started = time.monotonic()
+            self.assertFalse(push.system_power_event("suspend"))
+            self.assertLess(time.monotonic() - started, 0.9)
+        # On resume the heartbeat waits for that late call, so it cannot be overtaken by it.
+        push.system_power_event("resume")
+        self.svc.step()
+        self.assertEqual(self.routes(), ["offline-expected", "hb"])
+        self.assertEqual(self.relay_channel()["state"], "online")
+
+    def test_heartbeat_retries_quickly_after_a_resume_while_the_network_comes_back(self):
+        self.relay.down = True
+        push.system_power_event("resume")
+        self.svc.step()
+        for delay in push.RESUME_RETRY_SECONDS:
+            self.advance(delay - 1)
+            self.svc.step()
+            before = len(self.relay.paths())
+            self.advance(1)
+            self.svc.step()
+            self.assertEqual(len(self.relay.paths()), before + 1)
+        self.relay.down = False
+        self.relay.clear()
+        self.advance(60)
+        self.svc.step()
+        self.assertEqual(self.routes(), [])  # back to the normal five-minute schedule
+        self.advance(240)
+        self.svc.step()
+        self.assertEqual(self.routes(), ["hb"])
+
+    def test_events_without_a_service_or_unknown_kinds_do_nothing(self):
+        self.assertFalse(push.system_power_event("hibernate"))
+        push.set_shared_service(None)
+        self.assertFalse(push.system_power_event("suspend"))
+        self.assertEqual(self.routes(), [])
+
+    def test_power_broadcast_values(self):
+        self.assertEqual([push.power_broadcast_kind(value) for value in (4, 7, 0x12, 10, None, "x")],
+                         ["suspend", "resume", "resume", None, None, None])
+
+    def test_boot_instance_callback_registration(self):
+        powrprof = MagicMock()
+        powrprof.PowerRegisterSuspendResumeNotification.return_value = 0
+        heard = []
+        stop = push.watch_suspend_resume(heard.append, powrprof=powrprof)
+        flags, parameters, handle = powrprof.PowerRegisterSuspendResumeNotification.call_args.args
+        self.assertEqual(flags, push.DEVICE_NOTIFY_CALLBACK)
+        for kind in (push.PBT_APMSUSPEND, 10, push.PBT_APMRESUMEAUTOMATIC):
+            self.assertEqual(stop.callback(None, kind, None), 0)
+        self.assertEqual(heard, ["suspend", "resume"])
+        stop()
+        stop()
+        powrprof.PowerUnregisterSuspendResumeNotification.assert_called_once()
+        refused = MagicMock()
+        refused.PowerRegisterSuspendResumeNotification.return_value = 5
+        with self.assertLogs("orbit.push", "WARNING"):
+            push.watch_suspend_resume(heard.append, powrprof=refused)()
+        refused.PowerUnregisterSuspendResumeNotification.assert_not_called()
+        if os.name != "nt":
+            self.assertIsNone(push.watch_suspend_resume()())  # nothing to do away from Windows
+
+
+class ControlBackoffTests(ServiceTestCase):
+    def test_a_notify_backoff_does_not_hold_up_registrations_and_removals(self):
+        svc = self.service()
+        self.register(svc, device=DEVICE_A, key=KEY_A, token=TOKEN_A)
+        svc.step()
+        self.relay.force("POST", r"/notify$", 503, {"error": "apns_not_configured", "message": "No APNs key."})
+        svc.dispatch(self.event(70))
+        svc.step()  # notify backoff: ten minutes
+        self.relay.clear()
+        self.register(svc, device=DEVICE_B, key=KEY_B, token=TOKEN_B)
+        svc.step()
+        channel_id = self.channel()["channelId"]
+        self.assertIn(("PUT", f"/v1/c/{channel_id}/devices/{DEVICE_B}"), self.relay.paths())
+        svc.unregister(DEVICE_A)
+        self.relay.clear()
+        svc.step()
+        self.assertEqual(self.relay.paths()[0], ("DELETE", f"/v1/c/{channel_id}/devices/{DEVICE_A}"))
+
+    def test_a_failing_registration_backs_off_on_its_own(self):
+        svc = self.service()
+        self.relay.force("POST", r"/v1/channels$", 503, {"error": "internal", "message": "Try again later."})
+        self.register(svc)
+        svc.step()
+        self.assertEqual(self.relay.paths(), [("POST", "/v1/channels")])
+        self.advance(29)
+        svc.step()
+        self.assertEqual(len(self.relay.paths()), 1)
+        self.advance(1)
+        svc.step()
+        self.assertEqual(self.relay.paths()[1], ("POST", "/v1/channels"))
+        self.assertIsNotNone(self.store.device(DEVICE_A)["active"])
+        self.assertIn(DEVICE_A, self.relay.channels[self.channel()["channelId"]]["devices"])
+
+
 class RouteTests(ServiceTestCase):
     def setUp(self):
         super().setUp()

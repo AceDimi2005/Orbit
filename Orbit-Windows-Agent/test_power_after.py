@@ -2,12 +2,14 @@
 route. `perform` is always a mock: nothing sleeps or shuts down."""
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
+import orbit_downloads
 import orbit_power_after as power
 
 TOKEN = "test-only-token-with-more-than-24-characters"
@@ -23,25 +25,29 @@ class Clock:
 
 
 class FakeDownloads:
+    """A real DownloadsWatcher whose only launcher reports what the test says (polled on every tick)."""
+
+    STATES = {"finished": "complete"}
+
     def __init__(self, clock):
-        self.clock = clock
-        self.active = False
-        self.last_active = None
+        self.observations = {}
         self.stores = True
-        self.tracker = type("Tracker", (), {"polled": True})()
+        launcher = types.SimpleNamespace(present=lambda: self.stores, scan=lambda tracked: list(self.observations.values()))
+        self.watcher = orbit_downloads.DownloadsWatcher(monotonic=clock, clock=clock, emit=MagicMock(),
+                                                        scanners={"steam": launcher})
+        self.watcher.poll()
 
-    def any_store(self):
-        return self.stores
+    def set(self, state, ident="steam:620", name="Portal 2"):
+        self.observations[ident] = orbit_downloads.Observation(ident, "steam", name, self.STATES.get(state, state), 0.5, 5, 10)
+        self.watcher.poll()
 
-    def quiet_since(self):
-        if self.active:
-            return None
-        return self.last_active if self.last_active is not None else 0.0
+    def remove(self, ident="steam:620"):
+        self.observations.pop(ident, None)
+        self.watcher.poll()
 
     def set_active(self, active):
-        if self.active and not active:
-            self.last_active = self.clock.now
-        self.active = active
+        """The old shorthand: one download running, then finished."""
+        self.set("downloading" if active else "finished")
 
 
 class FakeTasks:
@@ -63,12 +69,14 @@ class Machine(unittest.TestCase):
         self.perform = MagicMock(return_value={"status": "sent"})
         self.idle = 10_000.0  # nobody touched the PC
         self.before = MagicMock()
-        self.service = power.PowerAfter(perform=self.perform, downloads=lambda: self.downloads, tasks=lambda: self.tasks,
+        self.toasts = []
+        self.service = power.PowerAfter(perform=self.perform, downloads=lambda: self.downloads.watcher, tasks=lambda: self.tasks,
                                         emit=self.record, clock=self.wall, monotonic=self.mono,
-                                        idle_seconds=lambda: self.idle, before_execute=self.before, hostname="Gaming-PC")
+                                        idle_seconds=lambda: self.idle, before_execute=self.before, hostname="Gaming-PC",
+                                        notify=lambda title, message: self.toasts.append((title, message)))
 
-    def record(self, kind, title, body, level="active", data=None):
-        self.events.append({"kind": kind, "title": title, "body": body, "level": level, "data": data})
+    def record(self, kind, title, body, level="active", data=None, toast=True):
+        self.events.append({"kind": kind, "title": title, "body": body, "level": level, "data": data, "toast": toast})
         return self.events[-1]
 
     def advance(self, seconds, step=1.0):
@@ -78,6 +86,7 @@ class Machine(unittest.TestCase):
             self.mono.now += step
             self.wall.now += step
             elapsed += step
+            self.downloads.watcher.poll()
             result = self.service.tick()
             if result:
                 results.append(result)
@@ -104,6 +113,9 @@ class DownloadsRuleTests(Machine):
         self.assertEqual((scheduled["kind"], scheduled["title"], scheduled["level"]), ("power.scheduled", "Sleeping in 60 s", "timeSensitive"))
         self.assertEqual(scheduled["body"], "Downloads finished. Cancel from Orbit if you're still using the PC.")
         self.assertEqual(scheduled["data"]["delaySeconds"], 60)
+        # The person at the PC gets their own words: using the PC is what keeps it on.
+        self.assertFalse(scheduled["toast"])
+        self.assertEqual(self.toasts, [("Sleeping in 60 s", "Downloads finished. Move the mouse or press a key to keep the PC on.")])
         self.assertEqual(self.advance(59), [])
         self.perform.assert_not_called()
         self.assertEqual(self.advance(1), ["executed"])
@@ -116,26 +128,75 @@ class DownloadsRuleTests(Machine):
         self.assertEqual(self.advance(120), [])
         self.perform.assert_called_once()
 
-    def test_rule_set_while_nothing_downloads_fires_after_a_quiet_minute(self):
-        self.downloads.last_active = None
+    def test_rule_set_while_nothing_downloads_waits_for_a_download(self):
         self.service.set_rule({"trigger": "downloads", "action": "shutdown", "delaySeconds": 30})
+        self.assertEqual(self.advance(3600), [])  # never "finished" when nothing ever downloaded
+        self.perform.assert_not_called()
+        self.downloads.set_active(True)  # started later, for example from the Steam mobile app
+        self.advance(300)
+        self.downloads.set_active(False)
         self.assertEqual(self.advance(59), [])
         self.assertEqual(self.advance(1), ["scheduled"])
         self.assertEqual(self.events[-1]["title"], "Shutting down in 30 s")
         self.advance(30)
         self.perform.assert_called_once_with("shutdown")
 
-    def test_activity_during_the_wait_restarts_the_quiet_minute(self):
-        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
-        self.advance(50)
+    def test_activity_during_the_quiet_minute_restarts_it(self):
         self.downloads.set_active(True)
-        self.advance(20)
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
         self.downloads.set_active(False)
+        self.advance(50)
+        self.downloads.set("downloading", "steam:730", "Counter-Strike 2")
+        self.advance(20)
+        self.downloads.set("finished", "steam:730", "Counter-Strike 2")
         self.assertEqual(self.advance(59), [])
         self.assertEqual(self.advance(1), ["scheduled"])
 
+    def test_a_download_that_ends_before_the_next_poll_still_counts(self):
+        self.downloads.set_active(True)
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.downloads.observations.clear()  # canceled right away
+        self.assertEqual(self.advance(60), ["scheduled"])
+        self.assertEqual(self.events[-1]["body"], "Nothing is downloading any more. Cancel from Orbit if you're still using the PC.")
+
+    def test_a_paused_download_keeps_the_rule_waiting(self):
+        self.downloads.set_active(True)
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.advance(30)
+        self.downloads.set("paused")  # Steam pauses downloads while a game runs (a controller is not "input")
+        self.assertEqual(self.advance(3 * 3600), [])
+        self.downloads.set("downloading")
+        self.advance(60)
+        self.downloads.set("finished")
+        self.assertEqual(self.advance(60), ["scheduled"])
+
+    def test_a_download_paused_before_the_rule_does_not_hold_it(self):
+        self.downloads.set("paused", "steam:400", "Portal")  # paused weeks ago
+        self.downloads.set("downloading")
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.advance(10)
+        self.downloads.set("finished")
+        self.assertEqual(self.advance(60), ["scheduled"])
+
+    def test_failed_downloads_are_named(self):
+        self.downloads.set("downloading")
+        self.downloads.set("downloading", "steam:730", "Counter-Strike 2")
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.downloads.set("failed", "steam:730", "Counter-Strike 2")
+        self.downloads.set("finished")
+        self.assertEqual(self.advance(60), ["scheduled"])
+        self.assertEqual(self.events[-1]["body"], "Downloads finished, but Counter-Strike 2 failed. Cancel from Orbit if you're still using the PC.")
+        self.service.cancel()
+        self.downloads.set("downloading", "steam:440", "Team Fortress 2")
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.downloads.set("failed", "steam:440", "Team Fortress 2")
+        self.assertEqual(self.advance(60), ["scheduled"])
+        self.assertTrue(self.events[-1]["body"].startswith("Downloads stopped: Team Fortress 2 failed."))
+
     def test_cancel_during_the_countdown_never_sleeps(self):
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 120})
+        self.downloads.set_active(False)
         self.advance(60)
         self.assertEqual(self.service.snapshot()["rule"]["state"], "countdown")
         self.advance(100)
@@ -153,11 +214,16 @@ class DownloadsRuleTests(Machine):
         self.service.set_rule({"trigger": "downloads", "action": "shutdown"})
         self.assertTrue(self.service.cancel())
         self.assertEqual(self.events[-1]["body"], "Orbit won't shut down the PC after the downloads.")
+        self.service.set_rule({"trigger": "downloads", "action": "sleep"})
+        self.service.cancel()
+        self.assertEqual(self.events[-1]["body"], "Orbit won't put the PC to sleep after the downloads.")
         self.downloads.set_active(False)
         self.assertEqual(self.advance(300), [])
 
     def test_a_new_rule_replaces_the_old_one_and_cancels_its_countdown(self):
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 300})
+        self.downloads.set_active(False)
         self.advance(61)
         self.assertEqual(self.service.snapshot()["rule"]["state"], "countdown")
         self.downloads.set_active(True)
@@ -169,7 +235,9 @@ class DownloadsRuleTests(Machine):
         self.perform.assert_not_called()
 
     def test_someone_using_the_pc_cancels_at_the_end(self):
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 60})
+        self.downloads.set_active(False)
         self.advance(60)
         self.idle = 12.0  # the mouse moved 12 s ago, during the countdown
         self.assertEqual(self.advance(60), ["cancelled"])
@@ -180,16 +248,21 @@ class DownloadsRuleTests(Machine):
 
     def test_unknown_idle_time_does_not_block(self):
         self.idle = None
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 30})
+        self.downloads.set_active(False)
         self.advance(90)
         self.perform.assert_called_once_with("sleep")
 
     def test_windows_refusing_is_reported(self):
         self.perform.side_effect = HTTPException(503, "Windows could not execute this action")
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 30})
+        self.downloads.set_active(False)
         with self.assertLogs("orbit.power_after", "WARNING"):
             self.assertEqual(self.advance(90), ["scheduled", "failed"])
         self.assertEqual(self.events[-1]["title"], "Couldn't go to sleep")
+        self.assertEqual(self.events[-1]["body"], "Windows didn't let Orbit put the PC to sleep.")
         self.assertEqual(self.events[-1]["data"]["reason"], "failed")
 
     def test_cancel_while_executing_is_refused(self):
@@ -199,7 +272,9 @@ class DownloadsRuleTests(Machine):
             started.set()
             release.wait(5)
         self.perform.side_effect = slow
+        self.downloads.set_active(True)
         self.service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 30})
+        self.downloads.set_active(False)
         self.advance(60)
         self.mono.now += 30
         worker = threading.Thread(target=self.service.tick)
@@ -216,6 +291,7 @@ class DownloadsRuleTests(Machine):
 
     def test_no_launcher_is_refused(self):
         self.downloads.stores = False
+        self.downloads.watcher.detect_stores()
         with self.assertRaises(power.PowerAfterError) as refused:
             self.service.set_rule({"trigger": "downloads", "action": "sleep"})
         self.assertEqual(refused.exception.status, 409)
@@ -257,6 +333,17 @@ class TaskRuleTests(Machine):
         self.service.task_changed("removed", {"id": "other"})
         self.assertEqual(len(self.events), 1)
 
+    def test_removing_the_finished_task_during_the_countdown_keeps_it(self):
+        self.service.set_rule({"trigger": "task", "taskID": "t1", "action": "sleep", "delaySeconds": 60})
+        self.tasks.tasks["t1"]["state"] = "finished"
+        self.assertEqual(self.advance(1), ["scheduled"])
+        removed = self.tasks.tasks.pop("t1")  # cleaned up from the list in Orbit
+        self.service.task_changed("removed", removed)
+        self.assertEqual(self.service.snapshot()["rule"]["state"], "countdown")
+        self.assertEqual(self.advance(60), ["executed"])
+        self.perform.assert_called_once_with("sleep")
+        self.assertEqual(self.kinds(), ["power.scheduled", "power.executing"])
+
     def test_validation(self):
         cases = [
             ({"trigger": "task", "action": "sleep"}, 422),
@@ -286,12 +373,14 @@ class ThreadTests(unittest.TestCase):
         mono = Clock(0.0)
         downloads = FakeDownloads(mono)
         perform = MagicMock()
-        service = power.PowerAfter(perform=perform, downloads=lambda: downloads, emit=MagicMock(), monotonic=mono,
-                                   idle_seconds=lambda: None)
+        service = power.PowerAfter(perform=perform, downloads=lambda: downloads.watcher, emit=MagicMock(), monotonic=mono,
+                                   idle_seconds=lambda: None, notify=MagicMock())
         stop = threading.Event()
         thread = service.start(stop)
         self.addCleanup(stop.set)
+        downloads.set_active(True)
         service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 30})
+        downloads.set_active(False)
         mono.now = 61.0
         service.wake()
         deadline = time.monotonic() + 5
@@ -303,7 +392,9 @@ class ThreadTests(unittest.TestCase):
         service.wake()
         time.sleep(0.2)
         perform.assert_not_called()
+        downloads.set("downloading", "steam:730")
         service.set_rule({"trigger": "downloads", "action": "sleep", "delaySeconds": 30})
+        downloads.set("finished", "steam:730")
         mono.now = 1061.0
         service.wake()
         while service.snapshot()["rule"] is not None and service.snapshot()["rule"]["state"] != "countdown":

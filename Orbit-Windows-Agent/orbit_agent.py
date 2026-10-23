@@ -1467,6 +1467,7 @@ if __name__ == "__main__":
 
     STOP_EVENT.clear()
     tray = None
+    tray_window = False
     if BOOT_MODE:
         print("Boot-time instance: no tray icon; hands over to the signed-in companion when it starts.")
     else:
@@ -1476,12 +1477,16 @@ if __name__ == "__main__":
             token_provider=lambda: API_TOKEN,
             log_path=log_file,
             notify_on_start=("--tray" in args),
+            # Sleep, shutdown or sign-out started from Windows: no "PC offline" push (orbit_push).
+            power_listener=orbit_push.system_power_event,
         )
-        tray.start()
+        tray_window = tray.start()
         # PC toasts from features (events, Send to PC, received files) go through the tray icon.
         orbit_notify.set_notifier(tray.show_notification)
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
+    # Without the tray's window (the boot-time instance) Windows calls back on suspend and resume.
+    stop_power_watch = orbit_push.watch_suspend_resume() if not tray_window else (lambda: None)
     try:
         asyncio.run(serve_both(
             app,
@@ -1497,5 +1502,6 @@ if __name__ == "__main__":
     finally:
         STOP_EVENT.set()
         orbit_notify.set_notifier(None)
+        stop_power_watch()
         if tray is not None:
             tray.close()

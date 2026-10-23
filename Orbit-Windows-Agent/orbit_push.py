@@ -23,6 +23,12 @@ opaque collapse ids derived from a key it never sees.
 
 Secrets (channel id and secret, collapse key, per-phone keys and tokens) live in
 `%LOCALAPPDATA%\\Orbit\\push-secrets.json` (private, written atomically through orbit_settings).
+
+Planned downtime never raises a "PC offline" alert: `planned_offline()` tells the relay before Orbit's
+own sleep/shutdown/restart (BEFORE_POWER_HOOKS), before Windows suspends the PC (PBT_APMSUSPEND, from the
+tray window or, in the windowless boot-time instance, `watch_suspend_resume()`), and when Windows ends
+the session (WM_ENDSESSION: shutdown, restart or sign-out started from Windows). After that no heartbeat
+re-arms the relay's alarm until the PC resumes (PBT_APMRESUMEAUTOMATIC), which sends one right away.
 """
 import base64
 import binascii
@@ -60,6 +66,10 @@ STATUS_SYNC_EVERY = 12  # heartbeats (about an hour)
 NOTIFY_TIMEOUT = 30.0
 REQUEST_TIMEOUT = 10.0
 OFFLINE_EXPECTED_TIMEOUT = 3.0
+SYSTEM_EVENT_TIMEOUT = 1.8  # Windows gives apps about 2 s for PBT_APMSUSPEND and WM_ENDSESSION
+PLANNED_QUIET_SECONDS = 120.0  # no heartbeat may re-arm the alarm right before the PC goes away
+PLANNED_DEDUPE_SECONDS = 30.0  # Orbit's own sleep is followed by Windows' suspend message
+RESUME_RETRY_SECONDS = (10, 30, 60)  # the network is often not back the moment the PC wakes
 REGISTER_WAIT_SECONDS = 8.0
 BACKOFF_SECONDS = (30, 120, 600, 1800)
 ITEM_RETRY_SECONDS = (30, 120, 600)
@@ -351,7 +361,13 @@ class PushService:
         self._queue = deque()
         self._active_url = None
         self._backoff_index = 0
-        self._next_attempt = 0.0
+        self._next_attempt = 0.0  # notify backoff
+        self._control_backoff = 0
+        self._control_next = 0.0  # backoff of phone registrations, removals and the start-up sync
+        self._quiet_until = 0.0
+        self._resume_retries = 0
+        self._offline_call = None
+        self._last_planned = None
         self._next_heartbeat = 0.0
         self._heartbeats = 0
         self._last_recovery = None
@@ -438,6 +454,9 @@ class PushService:
         done = threading.Event()
         with self._lock:
             self._control.append(("register", device_id, done))
+            # A phone registering now gets a fresh try, whatever went wrong before.
+            self._control_next, self._control_backoff = 0.0, 0
+            self._next_attempt, self._backoff_index = 0.0, 0
         self._wake.set()
         if self._thread is not None and self._thread.is_alive():
             done.wait(REGISTER_WAIT_SECONDS)
@@ -582,9 +601,13 @@ class PushService:
         for device_id in list(self.active_devices()):
             self._put_device(device_id, False, channel)
 
+    def _quiet(self):
+        with self._lock:
+            return self._monotonic() < self._quiet_until
+
     def _heartbeat(self):
         channel = self.store.channel()
-        if channel is None or channel["relayURL"] != self._active_url:
+        if channel is None or channel["relayURL"] != self._active_url or self._quiet():
             return False
         _, data = self._channel_request("POST", "/hb", body={}, channel=channel)
         with self._lock:
@@ -625,7 +648,9 @@ class PushService:
         now = self._monotonic()
         with self._lock:
             if self._last_recovery is not None and now - self._last_recovery < RECOVERY_INTERVAL_SECONDS:
-                self._next_attempt = max(self._next_attempt, self._last_recovery + RECOVERY_INTERVAL_SECONDS)
+                resume_at = self._last_recovery + RECOVERY_INTERVAL_SECONDS
+                self._next_attempt = max(self._next_attempt, resume_at)
+                self._control_next = max(self._control_next, resume_at)
                 recent = True
             else:
                 self._last_recovery = now
@@ -794,30 +819,37 @@ class PushService:
                 self._sending = False
                 self._idle.notify_all()
 
-    def _handle_error(self, error):
-        """Backoff after a failed relay operation. Returns True when the operation may be retried
-        right away (after a successful channel recovery)."""
+    def _handle_error(self, error, control=False):
+        """Backoff after a failed relay operation: the notify backoff, or with `control` the separate
+        one for registrations, removals and the start-up sync. Returns True when the operation may be
+        retried right away (after a successful channel recovery)."""
         now = self._monotonic()
         if error.channel_lost:
             try:
                 return self._recover()
             except RelayError as nested:
-                return self._handle_error(nested) if not nested.channel_lost else False
+                return self._handle_error(nested, control) if not nested.channel_lost else False
         with self._lock:
+            index = self._control_backoff if control else self._backoff_index
+            backoff = BACKOFF_SECONDS[min(index, len(BACKOFF_SECONDS) - 1)]
             if error.status == 503 and error.code == "apns_not_configured":
-                self._next_attempt = now + APNS_UNCONFIGURED_RETRY
+                delay = APNS_UNCONFIGURED_RETRY
                 message = "The push relay is not set up to reach Apple yet. Orbit will try again in 10 minutes."
             elif error.status == 426:
-                self._next_attempt = now + CONFIG_ERROR_RETRY
+                delay = CONFIG_ERROR_RETRY
                 message = "The push relay URL must use https://."
             elif error.transient:
-                delay = error.retry_after if error.retry_after is not None else BACKOFF_SECONDS[min(self._backoff_index, len(BACKOFF_SECONDS) - 1)]
-                self._backoff_index += 1
-                self._next_attempt = now + delay
+                delay = error.retry_after if error.retry_after is not None else backoff
                 message = error.message
             else:
                 LOGGER.error("The push relay refused a request (%s %s): %s", error.status, error.code, error.message)
-                message = error.message
+                delay, message = backoff, error.message
+            if control:
+                self._control_backoff += 1
+                self._control_next = now + delay
+            else:
+                self._backoff_index += 1
+                self._next_attempt = now + delay
         self._set_error(message)
         return False
 
@@ -838,48 +870,94 @@ class PushService:
                     self._control.popleft()[2].set()
             return
         # Heartbeats keep their own schedule: a notify backoff must never let the relay's offline
-        # alarm run out. A failed heartbeat is not retried before the next one is due.
-        if self._monotonic() >= self._next_heartbeat and not self._needs_sync:
+        # alarm run out. A failed heartbeat is not retried before the next one is due (except right
+        # after a resume), and none is sent while a planned sleep or shutdown is under way.
+        if self._monotonic() >= self._next_heartbeat and not self._needs_sync and not self._quiet():
+            self._await_offline_call()
             with self._lock:
                 self._next_heartbeat = self._monotonic() + HEARTBEAT_SECONDS
             try:
-                self._heartbeat()
+                if self._heartbeat():
+                    with self._lock:
+                        self._resume_retries = 0
             except RelayError as error:
                 if error.channel_lost:
                     self._handle_error(error)
                 else:
                     self._set_error(error.message)
+                    self._retry_heartbeat_soon()
+        # Registrations, removals and the start-up sync have their own backoff: a notify backoff
+        # (APNs not set up on the relay, a rate limit) must not hold up a phone being set up.
+        if (self._needs_sync or self._control) and self._monotonic() >= self._control_next:
+            try:
+                if self._needs_sync:
+                    self._sync()
+                self._run_control_jobs()
+                with self._lock:
+                    self._control_backoff = 0
+            except RelayError as error:
+                if self._handle_error(error, control=True):
+                    self._wake.set()
+                return
         if self._monotonic() < self._next_attempt:
             return
         try:
-            if self._needs_sync:
-                self._sync()
-            while True:
-                with self._lock:
-                    job = self._control[0] if self._control else None
-                if job is None:
-                    break
-                try:
-                    self._control_job(job)
-                except RelayError as error:
-                    if error.channel_lost or error.transient or error.status in (426, 503):
-                        raise
-                    LOGGER.error("The push relay refused a %s request (%s %s): %s", job[0], error.status, error.code, error.message)
-                    self._set_error(error.message)
-                with self._lock:
-                    if self._control and self._control[0] is job:
-                        self._control.popleft()
             self._process_queue()
         except RelayError as error:
             if self._handle_error(error):
                 self._wake.set()
 
+    def _run_control_jobs(self):
+        while True:
+            with self._lock:
+                job = self._control[0] if self._control else None
+            if job is None:
+                return
+            try:
+                self._control_job(job)
+            except RelayError as error:
+                if error.channel_lost or error.transient or error.status in (426, 503):
+                    raise
+                LOGGER.error("The push relay refused a %s request (%s %s): %s", job[0], error.status, error.code, error.message)
+                self._set_error(error.message)
+            with self._lock:
+                if self._control and self._control[0] is job:
+                    self._control.popleft()
+
+    def _retry_heartbeat_soon(self):
+        with self._lock:
+            if self._resume_retries > 0:
+                index = len(RESUME_RETRY_SECONDS) - self._resume_retries
+                self._next_heartbeat = self._monotonic() + RESUME_RETRY_SECONDS[index]
+                self._resume_retries -= 1
+
+    def _await_offline_call(self):
+        """A heartbeat must not overtake an offline-expected call that is still on its way (it was
+        cut short by a suspend): the relay would end up with no alarm until the next heartbeat."""
+        with self._lock:
+            call = self._offline_call
+        if call is not None and call.is_alive() and call is not threading.current_thread():
+            call.join(OFFLINE_EXPECTED_TIMEOUT + 0.5)
+
+    def _rearm(self):
+        """After a resume: heartbeat now (re-arming the alarm, learning whether an alert went out)
+        and retry everything that was waiting."""
+        with self._lock:
+            self._quiet_until = 0.0
+            self._next_heartbeat = 0.0
+            self._next_attempt = 0.0
+            self._control_next = 0.0
+            self._resume_retries = len(RESUME_RETRY_SECONDS)
+        self._wake.set()
+
     def _next_wait(self):
         now = self._monotonic()
         with self._lock:
-            moments = [self._next_heartbeat, now + 15.0]
+            moments = [max(self._next_heartbeat, self._quiet_until), now + 15.0]
             if self._next_attempt > now:
                 moments.append(self._next_attempt)
+            if (self._control or self._needs_sync) and self._control_next > now:
+                moments.append(self._control_next)
             moments.extend(job["nextAt"] for job in self._queue)
         return max(0.2, min(moments) - now)
 
@@ -897,9 +975,7 @@ class PushService:
             new_wall, new_mono = self._clock(), self._monotonic()
             if (new_wall - wall) - (new_mono - mono) > RESUME_JUMP_SECONDS:
                 # The PC slept (or the clock jumped): re-arm the relay's offline alarm right away.
-                with self._lock:
-                    self._next_heartbeat = 0.0
-                    self._next_attempt = 0.0
+                self._rearm()
             wall, mono = new_wall, new_mono
 
     def start(self, stop_event):
@@ -914,9 +990,11 @@ class PushService:
 
     # Planned power actions --------------------------------------------------------------------
 
-    def planned_offline(self, action=None):
+    def planned_offline(self, action=None, timeout=None):
         """Tells the relay this PC is about to sleep, shut down or restart, so no "PC offline" alert
-        is sent. Best effort: returns within about 3 seconds whatever happens."""
+        is sent. Best effort: returns within `timeout` (3 s) whatever happens. Heartbeats pause for
+        two minutes (or until the PC resumes) so none re-arms the alarm before the PC is gone."""
+        timeout = OFFLINE_EXPECTED_TIMEOUT if timeout is None else timeout
         with self._lock:
             url = self._active_url
         if not url:
@@ -931,7 +1009,7 @@ class PushService:
 
         def call():
             try:
-                self._channel_request("POST", "/offline-expected", body=body, timeout=OFFLINE_EXPECTED_TIMEOUT, channel=channel)
+                self._channel_request("POST", "/offline-expected", body=body, timeout=timeout, channel=channel)
                 outcome.append(True)
             except RelayError as error:
                 LOGGER.info("Could not tell the push relay about the planned %s: %s", action or "power action", error.message)
@@ -939,9 +1017,42 @@ class PushService:
                 LOGGER.exception("Could not tell the push relay about the planned power action")
 
         worker = threading.Thread(target=call, name="orbit-push-offline", daemon=True)
+        with self._lock:
+            self._quiet_until = max(self._quiet_until, self._monotonic() + PLANNED_QUIET_SECONDS)
+            self._offline_call = worker
         worker.start()
-        worker.join(OFFLINE_EXPECTED_TIMEOUT + 0.2)
+        worker.join(timeout + 0.2)
+        if outcome:
+            with self._lock:
+                self._last_planned = self._monotonic()
         return bool(outcome)
+
+    def _announced_recently(self):
+        """True (and the quiet period extended) when a planned offline went out moments ago, for
+        example Orbit's own sleep, which Windows then announces again with PBT_APMSUSPEND."""
+        with self._lock:
+            now = self._monotonic()
+            if self._last_planned is None or now - self._last_planned >= PLANNED_DEDUPE_SECONDS:
+                return False
+            self._quiet_until = max(self._quiet_until, now + PLANNED_QUIET_SECONDS)
+            return True
+
+    def system_suspending(self):
+        """Windows is about to sleep or hibernate (PBT_APMSUSPEND), whoever started it."""
+        if self._announced_recently():
+            return True
+        return self.planned_offline("sleep", timeout=SYSTEM_EVENT_TIMEOUT)
+
+    def session_ending(self):
+        """Windows is shutting down, restarting or signing out (WM_ENDSESSION). Restart and shutdown
+        look the same here, so the relay is told without `backWithinSeconds`: no alert at all."""
+        if self._announced_recently():
+            return True
+        return self.planned_offline("shutdown", timeout=SYSTEM_EVENT_TIMEOUT)
+
+    def system_resumed(self):
+        """The PC woke up (PBT_APMRESUMEAUTOMATIC / PBT_APMRESUMESUSPEND)."""
+        self._rearm()
 
 
 # -- Shared service, power hook and routes --------------------------------------------------------
@@ -968,6 +1079,93 @@ def planned_offline(action=None):
 
 
 planned_offline.accepts_action = True
+
+# Windows power messages (WM_POWERBROADCAST wParam values).
+PBT_APMSUSPEND = 0x0004
+PBT_APMRESUMESUSPEND = 0x0007
+PBT_APMRESUMEAUTOMATIC = 0x0012
+DEVICE_NOTIFY_CALLBACK = 2
+_POWER_BROADCASTS = {PBT_APMSUSPEND: "suspend", PBT_APMRESUMESUSPEND: "resume", PBT_APMRESUMEAUTOMATIC: "resume"}
+
+
+def power_broadcast_kind(value):
+    """"suspend", "resume" or None for a WM_POWERBROADCAST wParam (or a suspend/resume callback type)."""
+    try:
+        return _POWER_BROADCASTS.get(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def system_power_event(kind):
+    """What Windows says about power, from the tray window or the boot-time callback: "suspend",
+    "resume" or "session-ending". Runs synchronously and returns within about 2 seconds."""
+    service = shared_service()
+    if service is None:
+        return False
+    if kind == "suspend":
+        return service.system_suspending()
+    if kind == "session-ending":
+        return service.session_ending()
+    if kind == "resume":
+        service.system_resumed()
+        return True
+    return False
+
+
+def watch_suspend_resume(listener=None, powrprof=None):
+    """Suspend and resume notifications for a process without a window (the boot-time instance), via
+    PowerRegisterSuspendResumeNotification (Windows 8+). Returns a function that stops them; a no-op
+    away from Windows or when Windows refuses."""
+    listener = listener or system_power_event
+    if powrprof is None and os.name != "nt":
+        return lambda: None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        factory = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+        routine_type = factory(ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p)
+
+        class SubscribeParameters(ctypes.Structure):
+            _fields_ = [("Callback", routine_type), ("Context", ctypes.c_void_p)]
+
+        def callback(context, kind, setting):
+            event = power_broadcast_kind(kind)
+            if event is not None:
+                try:
+                    listener(event)
+                except Exception:
+                    LOGGER.exception("Could not handle the Windows %s notification", event)
+            return 0
+
+        routine = routine_type(callback)
+        parameters = SubscribeParameters(routine, None)
+        handle = ctypes.c_void_p()
+        library = powrprof if powrprof is not None else ctypes.WinDLL("powrprof")
+        register = library.PowerRegisterSuspendResumeNotification
+        register.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        register.restype = wintypes.DWORD
+        status = register(DEVICE_NOTIFY_CALLBACK, ctypes.byref(parameters), ctypes.byref(handle))
+    except Exception:
+        LOGGER.warning("Windows sleep notifications are not available; a sleep may cause a \"PC offline\" alert", exc_info=True)
+        return lambda: None
+    if status != 0:
+        LOGGER.warning("Windows refused sleep notifications (error %s); a sleep may cause a \"PC offline\" alert", status)
+        return lambda: None
+    keep = [routine, parameters]
+
+    def stop():
+        if not keep:
+            return
+        try:
+            unregister = library.PowerUnregisterSuspendResumeNotification
+            unregister.argtypes = [ctypes.c_void_p]
+            unregister.restype = wintypes.DWORD
+            unregister(handle)
+        except Exception:
+            LOGGER.debug("Could not stop the sleep notifications", exc_info=True)
+        keep.clear()
+    stop.callback = callback  # for tests
+    return stop
 
 
 def boot_task_installed_once():

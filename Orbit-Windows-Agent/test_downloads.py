@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import types
 import unittest
 from unittest.mock import MagicMock, patch
@@ -157,11 +159,29 @@ class SteamFixture:
             stream.write(f"[2026-10-24 10:00:00] {line}\n")
 
 
-def make_watcher(test, clock=None, wall=None, enabled=lambda: True):
+class FakeLaunchers:
+    """LauncherMonitor stand-in: Steam and Epic are running unless a test closes them."""
+
+    def __init__(self, running=True):
+        self.state = {"steam": running, "epic": running}
+        self.busy = {}
+
+    def refresh(self, force=False):
+        pass
+
+    def running(self, store):
+        return self.state.get(store)
+
+    def busy_within(self, store, seconds):
+        return self.busy.get(store, False)
+
+
+def make_watcher(test, clock=None, wall=None, enabled=lambda: True, launchers=None):
     clock = clock or Clock()
     wall = wall or Clock(1_790_000_000.0)
     emit = MagicMock(side_effect=lambda kind, title, body, **kwargs: {"id": 1, "kind": kind, "title": title, "body": body, **kwargs})
-    watcher = downloads.DownloadsWatcher(clock=wall, monotonic=clock, emit=emit, notify_enabled=enabled)
+    watcher = downloads.DownloadsWatcher(clock=wall, monotonic=clock, emit=emit, notify_enabled=enabled,
+                                         launchers=launchers or FakeLaunchers())
     return watcher, emit, clock
 
 
@@ -169,11 +189,7 @@ def kinds(emit):
     return [entry.args[0] for entry in emit.call_args_list]
 
 
-class SteamTests(unittest.TestCase):
-    def setUp(self):
-        self.steam = SteamFixture(self)
-        self.watcher, self.emit, self.clock = make_watcher(self)
-
+class SteamHelpers:
     def poll(self, seconds=5):
         self.watcher.poll()
         self.clock.advance(seconds)
@@ -181,6 +197,12 @@ class SteamTests(unittest.TestCase):
 
     def item(self, payload, ident="steam:620"):
         return next((entry for entry in payload["downloads"] if entry["id"] == ident), None)
+
+
+class SteamTests(SteamHelpers, unittest.TestCase):
+    def setUp(self):
+        self.steam = SteamFixture(self)
+        self.watcher, self.emit, self.clock = make_watcher(self)
 
     def test_libraries_from_vdf_and_environment_without_duplicates(self):
         extra = self.steam.base / "Extra"
@@ -413,6 +435,116 @@ class SteamTests(unittest.TestCase):
         self.assertEqual(self.item(self.poll())["state"], "downloading")
 
 
+class SteamPauseTests(SteamHelpers, unittest.TestCase):
+    """Pauses, cancels, a closed Steam and stalled downloads are never failures or activity.
+    The content_log lines follow the formats in research-windows-integrations.md (taken from real
+    logs); the exact pause wording still needs checking on a real PC, so several variants are covered."""
+
+    def setUp(self):
+        self.steam = SteamFixture(self)
+        self.launchers = FakeLaunchers()
+        self.watcher, self.emit, self.clock = make_watcher(self, launchers=self.launchers)
+
+    def test_pause_and_resume_with_steams_log_lines(self):
+        self.steam.manifest(620, 1026, to_download=100, downloaded=10)
+        self.poll()  # notes the log size
+        self.steam.manifest(620, 1026, to_download=100, downloaded=30)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        # The user pauses it (Steam writes the same when it suspends downloads during a game).
+        self.steam.log("AppID 620 App update changed : None,")
+        self.steam.log("AppID 620 scheduler finished : removed from schedule (result Suspended, state 0x602)")
+        self.steam.log("AppID 620 state changed : Update Required,Update Queued,Update Started,")
+        self.steam.manifest(620, 1538, to_download=100, downloaded=30, update_result=4)
+        payload = self.poll()
+        self.assertEqual((self.item(payload)["state"], payload["active"]), ("paused", False))
+        self.assertEqual(kinds(self.emit), [])
+        # Resumed.
+        self.steam.log("AppID 620 App update changed : Running Update,Downloading,")
+        self.steam.manifest(620, 1026, to_download=100, downloaded=50)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.steam.manifest(620, 4)
+        self.poll()
+        self.assertEqual(kinds(self.emit), ["download.finished"])
+
+    def test_stop_on_purpose_reasons_and_codes_are_pauses(self):
+        held = {"appid": "620", "name": "Portal 2", "flags": 1538, "toDownload": 100, "downloaded": 30, "toStage": 0,
+                "staged": 0, "updateResult": 0, "buildid": "1", "targetBuild": "2", "downloadingFolder": True}
+        previous = downloads.Observation("steam:620", "steam", "Portal 2", "downloading")
+        lines = ["AppID 620 scheduler finished : removed from schedule (result Suspended, state 0x602)",
+                 "AppID 620 scheduler finished : removed from schedule (result Paused, state 0x602)",
+                 "AppID 620 state changed : Update Required,Update Queued,Update Started, (Suspended)",
+                 "AppID 620 update canceled : Suspended",
+                 "AppID 620 update canceled : Game started (App Running)",
+                 "AppID 620 state changed : Update Required,Update Queued,Update Started, (Update Required)",
+                 "AppID 620 scheduler finished : removed from schedule (result No Error, state 0x602)"]
+        for line in lines:
+            with self.subTest(line=line):
+                scanner = downloads.SteamScanner(self.clock, self.launchers)
+                scanner.note_log_line(line)
+                observation = scanner._classify(dict(held), previous)
+                self.assertEqual((observation.state, observation.reason), ("held", None))
+        for code in (2, 3, 4):
+            with self.subTest(code=code):
+                observation = downloads.SteamScanner(self.clock, self.launchers)._classify(dict(held, updateResult=code), previous)
+                self.assertEqual(observation.state, "held")
+        failed = downloads.SteamScanner(self.clock, self.launchers)._classify(dict(held, updateResult=12), previous)
+        self.assertEqual((failed.state, failed.reason), ("failed", "Steam reported error 12"))
+        # A fresh pause in the log outranks an older error code left in the manifest.
+        scanner = downloads.SteamScanner(self.clock, self.launchers)
+        scanner.note_log_line("AppID 620 update canceled : Failed updating depot 621 (Disk write failure)")
+        scanner.note_log_line("AppID 620 scheduler finished : removed from schedule (result Suspended, state 0x602)")
+        self.assertEqual(scanner._classify(dict(held, updateResult=7), previous).state, "held")
+        self.assertEqual(downloads.steam_reason_kind(" canceled "), "cancel")
+        scanner = downloads.SteamScanner(self.clock, self.launchers)
+        scanner.note_log_line("AppID 620 update canceled : ")
+        self.assertEqual((scanner._log_failure("620"), scanner._log_pause("620")), (None, "cancel"))
+        self.assertEqual(downloads.steam_reason_kind("Disk write failure"), "error")
+
+    def test_removed_from_the_queue_is_dropped_quietly(self):
+        self.steam.manifest(620, 1030, to_download=100, downloaded=40, target="300")
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.steam.log("AppID 620 scheduler finished : removed from schedule (result Canceled, state 0x6)")
+        self.steam.manifest(620, 6, to_download=100, downloaded=40, target="300", update_result=3)
+        self.assertIsNone(self.item(self.poll()))
+        for _ in range(14):
+            self.poll()
+        self.assertEqual(kinds(self.emit), [])  # no "Nothing is downloading" summary either
+
+    def test_stale_pause_codes_on_a_pending_update_are_not_listed(self):
+        for code in (2, 3, 4):
+            with self.subTest(code=code):
+                self.steam.manifest(620, 6, to_download=100, target="300", update_result=code)
+                self.assertEqual(self.poll()["downloads"], [])
+        self.assertEqual(kinds(self.emit), [])
+
+    def test_steam_closed_means_paused(self):
+        self.steam.manifest(620, 1026, to_download=100, downloaded=30)
+        self.steam.manifest(730, 1026, name="Counter-Strike 2", library=self.steam.root, to_download=100)
+        payload = self.poll()
+        self.assertEqual((self.item(payload)["state"], self.item(payload, "steam:730")["state"]), ("downloading", "queued"))
+        self.launchers.state["steam"] = False  # Steam was closed mid-download: the manifests stay as they were
+        payload = self.poll()
+        self.assertEqual((self.item(payload)["state"], self.item(payload, "steam:730")["state"], payload["active"]),
+                         ("paused", "paused", False))
+        self.launchers.state["steam"] = True
+        self.steam.manifest(620, 1026, to_download=100, downloaded=40)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.assertNotIn("download.failed", kinds(self.emit))
+
+    def test_ten_minutes_without_progress_is_paused_unless_steam_is_busy(self):
+        self.steam.manifest(620, 1026, to_download=100, downloaded=30)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.clock.advance(downloads.STEAM_STALL_SECONDS - 10)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.assertEqual(self.item(self.poll())["state"], "paused")
+        self.launchers.busy["steam"] = True  # still writing (allocating, verifying): not paused
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+        self.launchers.busy["steam"] = False
+        self.assertEqual(self.item(self.poll())["state"], "paused")
+        self.steam.manifest(620, 1026, to_download=100, downloaded=31)
+        self.assertEqual(self.item(self.poll())["state"], "downloading")
+
+
 class EpicTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -430,7 +562,8 @@ class EpicTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("ORBIT_STEAM_LIBRARIES", None)
         os.environ.pop("ORBIT_GOG_GAMES_KEY", None)
-        self.watcher, self.emit, self.clock = make_watcher(self)
+        self.launchers = FakeLaunchers()
+        self.watcher, self.emit, self.clock = make_watcher(self, launchers=self.launchers)
         self.watcher.scanners["gog"] = types.SimpleNamespace(present=lambda: False, scan=lambda tracked: [])
 
     def item_file(self, incomplete, pending=False, guid="ABC123"):
@@ -452,6 +585,7 @@ class EpicTests(unittest.TestCase):
         return self.watcher.payload()
 
     def test_incomplete_install_with_estimated_progress_then_finished(self):
+        self.assertEqual(self.poll()["downloads"], [])  # Orbit was watching before the download began
         self.item_file(True, pending=True)
         (self.staging / "chunk.bin").write_bytes(b"x" * 250)
         payload = self.poll()
@@ -468,6 +602,35 @@ class EpicTests(unittest.TestCase):
         self.assertEqual(payload["downloads"][0]["state"], "finished")
         self.assertEqual(kinds(self.emit), ["download.finished"])
         self.assertEqual(self.emit.call_args.args[1], "Rocket League finished downloading")
+
+    def test_a_half_done_install_from_before_orbit_started_is_paused(self):
+        self.item_file(True)
+        (self.staging / "chunk.bin").write_bytes(b"x" * 250)
+        for _ in range(12):
+            payload = self.poll()
+            self.assertEqual((payload["downloads"][0]["state"], payload["active"]), ("paused", False))
+        self.assertEqual(kinds(self.emit), [])  # never active, so no summary at start either
+        (self.staging / "chunk.bin").write_bytes(b"x" * 400)  # resumed in the launcher
+        self.assertEqual(self.poll()["downloads"][0]["state"], "downloading")
+
+    def test_no_progress_for_three_minutes_or_a_closed_launcher_is_paused(self):
+        self.poll()
+        self.item_file(True, pending=True)
+        (self.staging / "chunk.bin").write_bytes(b"x" * 100)
+        states = [self.poll()["downloads"][0]["state"] for _ in range(10)]  # 20 s per poll
+        self.assertEqual(states, ["downloading"] * 9 + ["paused"])
+        (self.staging / "chunk.bin").write_bytes(b"x" * 200)
+        self.assertEqual(self.poll()["downloads"][0]["state"], "downloading")
+        self.launchers.state["epic"] = False
+        self.assertEqual(self.poll()["downloads"][0]["state"], "paused")
+        self.launchers.state["epic"] = True
+        self.assertEqual(self.poll()["downloads"][0]["state"], "downloading")  # the change 40 s ago still counts
+        for _ in range(9):
+            self.poll()
+        self.assertEqual(self.poll()["downloads"][0]["state"], "paused")
+        self.launchers.busy["epic"] = True  # verifying or moving files: busy, not paused
+        self.assertEqual(self.poll()["downloads"][0]["state"], "downloading")
+        self.assertNotIn("download.failed", kinds(self.emit))
 
     def test_pending_update_of_a_complete_install(self):
         self.item_file(False)
@@ -588,6 +751,28 @@ class WatcherTests(unittest.TestCase):
             watcher.poll()
         self.assertEqual([entry["id"] for entry in watcher.payload()["downloads"]], ["epic:Sugar"])
 
+    def test_the_api_answers_while_a_slow_scan_runs(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_scan(tracked):
+            entered.set()
+            release.wait(5)  # a cold disk or a huge Epic staging folder
+            return [downloads.Observation("steam:620", "steam", "Portal 2", "downloading", 0.5, 5, 10)]
+        watcher = downloads.DownloadsWatcher(monotonic=Clock(), emit=MagicMock(),
+                                             scanners={"steam": types.SimpleNamespace(present=lambda: True, scan=slow_scan)})
+        worker = threading.Thread(target=watcher.poll)
+        worker.start()
+        self.assertTrue(entered.wait(5))
+        started = time.monotonic()
+        self.assertEqual(watcher.payload()["downloads"], [])
+        watcher.quiet_since()
+        watcher.power_status(0.0)
+        watcher.active_ids()
+        self.assertLess(time.monotonic() - started, 0.5)
+        release.set()
+        worker.join(5)
+        self.assertEqual(watcher.payload()["downloads"][0]["state"], "downloading")
+
     def test_thread_runs_and_stops(self):
         import threading
         stop = threading.Event()
@@ -600,6 +785,117 @@ class WatcherTests(unittest.TestCase):
         stop.set()
         thread.join(2)
         self.assertFalse(thread.is_alive())
+
+
+class TrackerTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(0.0)
+        self.emit = MagicMock(side_effect=lambda *args, **kwargs: {"id": 1})
+        self.tracker = downloads.DownloadTracker(clock=Clock(1_790_000_000.0), monotonic=self.clock, emit=self.emit)
+
+    def apply(self, *observations, seconds=5):
+        result = self.tracker.apply(list(observations), {"steam"})
+        self.clock.advance(seconds)
+        return result
+
+    def test_a_canceled_only_download_is_not_announced(self):
+        self.apply(downloads.Observation("steam:620", "steam", "Portal 2", "downloading", 0.3, 30, 100))
+        self.apply()  # canceled: the manifest is gone
+        for _ in range(20):
+            self.assertEqual(self.apply(), ([], None))
+        self.emit.assert_not_called()
+        # The next real download still gets its summary.
+        self.apply(downloads.Observation("steam:730", "steam", "Counter-Strike 2", "downloading", 0.5, 5, 10))
+        self.apply(downloads.Observation("steam:730", "steam", "Counter-Strike 2", "complete", 1.0, 10, 10, size=10))
+        for _ in range(13):
+            self.apply()
+        self.assertEqual([entry.args[0] for entry in self.emit.call_args_list], ["download.finished", "downloads.allFinished"])
+        self.assertEqual(self.emit.call_args.args[1:], ("All downloads finished", "Counter-Strike 2 is ready to play."))
+
+    def test_a_download_paused_before_the_activity_is_not_mentioned(self):
+        stale = downloads.Observation("steam:400", "steam", "Portal", "paused", 0.1, 1, 10)
+        self.apply(stale)
+        self.apply(stale, downloads.Observation("steam:620", "steam", "Portal 2", "downloading", 0.3, 30, 100))
+        self.apply(stale, downloads.Observation("steam:620", "steam", "Portal 2", "complete", 1.0, 100, 100, size=100))
+        for _ in range(13):
+            self.apply(stale)
+        self.assertEqual(self.emit.call_args.args[1:], ("All downloads finished", "Portal 2 is ready to play."))
+        self.assertEqual(self.emit.call_args.kwargs["data"], {"finished": 1, "failed": 0, "paused": 0})
+
+
+class PowerStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(0.0)
+        self.seen = []
+        scanner = types.SimpleNamespace(present=lambda: True, scan=lambda tracked: list(self.seen))
+        self.watcher = downloads.DownloadsWatcher(monotonic=self.clock, clock=Clock(1_790_000_000.0), emit=MagicMock(),
+                                                  scanners={"steam": scanner, "gog": types.SimpleNamespace(
+                                                      present=lambda: True, scan=lambda tracked: list(self.gog))})
+        self.gog = []
+
+    def poll(self, *observations):
+        self.seen = list(observations)
+        self.watcher.poll()
+        self.clock.advance(5)
+
+    def test_only_downloads_since_the_rule_count(self):
+        self.assertIsNone(self.watcher.power_status(0.0))
+        old = downloads.Observation("steam:400", "steam", "Portal", "paused", 0.1, 1, 10)
+        self.poll(old)
+        since = self.clock()
+        status = self.watcher.power_status(since)
+        self.assertEqual((status["active"], status["activeSince"], status["paused"], status["finished"]), (False, False, [], []))
+        running = downloads.Observation("steam:620", "steam", "Portal 2", "downloading", 0.3, 30, 100)
+        self.poll(old, running)
+        self.assertEqual(self.watcher.active_ids(), ["steam:620"])
+        status = self.watcher.power_status(since)
+        self.assertTrue(status["active"] and status["activeSince"])
+        self.poll(old, downloads.Observation("steam:620", "steam", "Portal 2", "paused", 0.3, 30, 100))
+        status = self.watcher.power_status(since)
+        self.assertEqual((status["active"], status["paused"]), (False, ["Portal 2"]))  # the old pause is not listed
+        self.poll(old, downloads.Observation("steam:620", "steam", "Portal 2", "complete", 1.0, 100, 100, size=100))
+        status = self.watcher.power_status(since)
+        self.assertEqual((status["paused"], status["finished"], status["failed"]), ([], ["Portal 2"], []))
+        # A GOG install (GOG only reports finished ones) counts as well.
+        later = self.clock()
+        self.gog = [downloads.Observation("gog:1", "gog", "The Witcher 3", "installed", 1.0)]
+        self.poll(old)
+        status = self.watcher.power_status(later)
+        self.assertEqual((status["activeSince"], status["finished"]), (True, ["The Witcher 3"]))
+        self.assertEqual(status["lastActive"], later)
+
+
+class LauncherMonitorTests(unittest.TestCase):
+    class Process:
+        def __init__(self, name, total=0):
+            self.info = {"name": name}
+            self.total = total
+
+        def io_counters(self):
+            return types.SimpleNamespace(read_bytes=self.total, write_bytes=0, other_bytes=0)
+
+    def test_running_and_busy_from_the_process_list(self):
+        clock = Clock(0.0)
+        processes = [self.Process("explorer.exe")]
+        monitor = downloads.LauncherMonitor(clock, process_iter=lambda attrs: list(processes))
+        self.assertEqual((monitor.running("steam"), monitor.running("epic")), (False, False))
+        steam = self.Process("Steam.exe", 1_000)
+        processes.append(steam)
+        self.assertFalse(monitor.running("steam"))  # sampled at most every 15 s
+        clock.advance(downloads.LAUNCHER_CHECK_SECONDS)
+        self.assertTrue(monitor.running("steam"))
+        self.assertFalse(monitor.busy_within("steam", 60))  # one sample is not a rate
+        clock.advance(15)
+        steam.total += 15 * 2_000_000  # 2 MB/s
+        self.assertTrue(monitor.busy_within("steam", 60))
+        clock.advance(15)  # idle since
+        self.assertFalse(monitor.busy_within("steam", 10))
+        self.assertTrue(monitor.busy_within("steam", 60))
+        processes.append(self.Process("EpicGamesLauncher.exe"))
+        clock.advance(15)
+        self.assertTrue(monitor.running("epic"))
+        broken = downloads.LauncherMonitor(clock, process_iter=MagicMock(side_effect=OSError("denied")))
+        self.assertIsNone(broken.running("steam"))  # unknown: never treated as "closed"
 
 
 class RouteTests(unittest.TestCase):

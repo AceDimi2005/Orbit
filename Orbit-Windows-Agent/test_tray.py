@@ -260,6 +260,25 @@ class TrayMenuAndLifecycleTests(unittest.TestCase):
         up_to_date = icon.perform_update_check()
         self.assertEqual(up_to_date["status"], "up_to_date")
 
+    def test_power_and_session_messages_reach_the_listener(self):
+        apis = self.make_fake_apis()
+        heard = []
+        icon = tray.OrbitTrayIcon(status_provider=lambda: {}, on_stop=lambda: None, apis=apis, power_listener=heard.append)
+        self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, tray.PBT_APMSUSPEND, 0), 1)
+        self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, tray.PBT_APMRESUMESUSPEND, 0), 1)
+        self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, tray.PBT_APMRESUMEAUTOMATIC, 0), 1)
+        self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, 0x000A, 0), 1)  # power status change: ignored
+        self.assertEqual(icon._wnd_proc(555, tray.WM_ENDSESSION, 0, 0), 0)  # shutdown cancelled by another app
+        self.assertEqual(icon._wnd_proc(555, tray.WM_ENDSESSION, 1, 0x80000000), 0)  # sign-out
+        self.assertEqual(heard, ["suspend", "resume", "resume", "session-ending"])
+        # A failing listener never breaks the message loop.
+        icon.power_listener = MagicMock(side_effect=RuntimeError("relay exploded"))
+        with self.assertLogs("orbit.tray", "ERROR"):
+            self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, tray.PBT_APMSUSPEND, 0), 1)
+        # Without a listener (older callers) the messages are still answered.
+        icon.power_listener = None
+        self.assertEqual(icon._wnd_proc(555, tray.WM_POWERBROADCAST, tray.PBT_APMSUSPEND, 0), 1)
+
     def test_background_stdio_redirects_missing_streams_to_log_file(self):
         with tempfile.TemporaryDirectory() as folder:
             log_file = Path(folder) / "agent.log"
