@@ -152,7 +152,9 @@ struct CompanionToolsView: View {
             .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
             .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
             .sheet(isPresented: $showsStreamSettings) {
-                MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent) { showsStreamSettings = false }
+                // Sized for the selected PC's codecs, as the library's sheet and the streams it starts are.
+                MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent,
+                                            hostSupportsHEVC: MoonlightHostStore.record(for: vm.selectedPCID)?.supportsHEVC) { showsStreamSettings = false }
                     .presentationBackground(theme.background)
             }
         }

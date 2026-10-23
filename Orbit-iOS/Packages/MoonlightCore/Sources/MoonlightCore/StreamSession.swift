@@ -4,6 +4,9 @@ import Foundation
 #if canImport(UIKit)
 import UIKit
 #endif
+#if os(macOS)
+import IOKit.pwr_mgt
+#endif
 
 /// What the HTTPS launch/resume request produced; everything LiStartConnection needs.
 public struct MoonlightConnectionParameters: Equatable, Sendable {
@@ -17,9 +20,12 @@ public struct MoonlightConnectionParameters: Equatable, Sendable {
     public var remoteInputKeyID: UInt32
     public var appName: String
     public var hostName: String
+    /// The `mode=` size the launch request asked the host for. The session's video configuration uses the
+    /// same frame, so the two can never disagree.
+    public var streamSize: MoonlightStreamSize
 
     public init(address: String, appVersion: String, gfeVersion: String = "", rtspSessionURL: String? = nil, serverCodecModeSupport: Int32,
-                remoteInputKey: Data, remoteInputKeyID: UInt32, appName: String, hostName: String) {
+                remoteInputKey: Data, remoteInputKeyID: UInt32, appName: String, hostName: String, streamSize: MoonlightStreamSize) {
         self.address = address
         self.appVersion = appVersion
         self.gfeVersion = gfeVersion
@@ -29,6 +35,7 @@ public struct MoonlightConnectionParameters: Equatable, Sendable {
         self.remoteInputKeyID = remoteInputKeyID
         self.appName = appName
         self.hostName = hostName
+        self.streamSize = streamSize
     }
 }
 
@@ -104,6 +111,10 @@ public final class MoonlightStreamSession: ObservableObject {
     private var core: MoonlightSessionCore?
     private var statisticsTimer: Timer?
     private var stopping = false
+    private var keepAwake: MoonlightKeepAwake?
+    /// The frame this session streams at, fixed by the launch request.
+    public private(set) var streamSize: MoonlightStreamSize?
+    private var bitrateKbps = 0
 
     public init(settings: MoonlightStreamSettings = MoonlightStreamSettings()) {
         self.settings = settings
@@ -134,11 +145,13 @@ public final class MoonlightStreamSession: ObservableObject {
         box.serverInfo.serverCodecModeSupport = parameters.serverCodecModeSupport
 
         LiInitializeStreamConfiguration(&box.streamConfig)
-        let size = settings.pixelSize
+        let size = parameters.streamSize
+        streamSize = size
+        bitrateKbps = settings.bitrateKbps(for: size)
         box.streamConfig.width = Int32(size.width)
         box.streamConfig.height = Int32(size.height)
         box.streamConfig.fps = Int32(settings.frameRate)
-        box.streamConfig.bitrate = Int32(settings.bitrateKbps)
+        box.streamConfig.bitrate = Int32(bitrateKbps)
         box.streamConfig.packetSize = settings.packetSize.bytes
         box.streamConfig.streamingRemotely = settings.packetSize == .remote ? STREAM_CFG_REMOTE : STREAM_CFG_AUTO
         box.streamConfig.audioConfiguration = settings.audio.configuration
@@ -199,7 +212,7 @@ public final class MoonlightStreamSession: ObservableObject {
         MoonlightSessionCore.setCurrent(core)
         if !headless {
             core.controllers.start()
-            setKeepAwake(true)
+            setKeepAwake(true, reason: "Orbit is streaming \(parameters.appName) from \(parameters.hostName)")
         }
 
         let thread = Thread {
@@ -221,9 +234,11 @@ public final class MoonlightStreamSession: ObservableObject {
         LiInterruptConnection()
         statisticsTimer?.invalidate()
         statisticsTimer = nil
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             LiStopConnection()
-            Task { @MainActor [weak self] in self?.finishTeardown(core: core, message: nil, failed: false) }
+            // Keep the session alive until teardown has run: it stops the controllers, clears the active core
+            // and lets go of the keep-awake hold even when the UI has already dropped this session.
+            Task { @MainActor [self] in self.finishTeardown(core: core, message: nil, failed: false) }
         }
     }
 
@@ -292,15 +307,14 @@ public final class MoonlightStreamSession: ObservableObject {
         stats.width = Int(size.width)
         stats.height = Int(size.height)
         stats.frameRate = settings.frameRate
-        stats.bitrateKbps = settings.bitrateKbps
+        stats.bitrateKbps = bitrateKbps
         stats.hdr = isHDR
         statistics = stats
     }
 
-    private func setKeepAwake(_ enabled: Bool) {
-        #if os(iOS) || os(tvOS)
-        UIApplication.shared.isIdleTimerDisabled = enabled
-        #endif
+    private func setKeepAwake(_ enabled: Bool, reason: String = "Orbit is streaming from your PC") {
+        keepAwake?.release()
+        keepAwake = enabled ? MoonlightKeepAwake(reason: reason) : nil
     }
 
     static func terminationMessage(_ code: Int32) -> String? {
@@ -369,6 +383,77 @@ public final class MoonlightStreamSession: ObservableObject {
 
     nonisolated public func requestKeyframe() { LiRequestIdrFrame() }
 }
+
+// MARK: - Keep awake
+
+/// Keeps the screen on while a stream plays: the idle timer on iPhone, iPad and Apple TV, a display-sleep
+/// power assertion on the Mac. Let go by `release()` or, as a safety net, when the hold itself goes away.
+final class MoonlightKeepAwake: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held = true
+    #if os(macOS)
+    private var assertionID = IOPMAssertionID(0)
+    private var hasAssertion = false
+    #endif
+
+    @MainActor
+    init(reason: String) {
+        #if os(macOS)
+        var id = IOPMAssertionID(0)
+        hasAssertion = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                                   IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id) == kIOReturnSuccess
+        assertionID = id
+        #else
+        MoonlightIdleTimer.hold()
+        #endif
+    }
+
+    /// Safe to call more than once and from any thread.
+    func release() {
+        lock.lock()
+        let wasHeld = held
+        held = false
+        lock.unlock()
+        guard wasHeld else { return }
+        #if os(macOS)
+        if hasAssertion { IOPMAssertionRelease(assertionID) }
+        #else
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { MoonlightIdleTimer.letGo() }
+        } else {
+            Task { @MainActor in MoonlightIdleTimer.letGo() }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    /// For tests: whether the power assertion was granted and is still held.
+    var holdsPowerAssertion: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return held && hasAssertion
+    }
+    #endif
+
+    deinit { release() }
+}
+
+#if os(iOS) || os(tvOS)
+/// Counts the holds so a stream that ends late cannot turn the idle timer back on under a newer stream.
+@MainActor
+enum MoonlightIdleTimer {
+    private static var holds = 0
+
+    static func hold() {
+        holds += 1
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    static func letGo() {
+        holds = max(0, holds - 1)
+        if holds == 0 { UIApplication.shared.isIdleTimerDisabled = false }
+    }
+}
+#endif
 
 // MARK: - Shared state reachable from the library's threads
 

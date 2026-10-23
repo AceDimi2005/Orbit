@@ -138,7 +138,7 @@ private struct MoonlightSessionLayer: View {
             if isStreaming, captureHintVisible {
                 VStack {
                     Spacer()
-                    Text("Mouse and keyboard captured  ·  ⌃⌥⇧Z releases them  ·  ⌃⌥⇧Q ends the stream")
+                    Text("Mouse and keyboard captured  ·  ⌃⌥⇧Z releases them  ·  ⌃⌥⇧F full screen  ·  ⌃⌥⇧Q ends the stream")
                         .font(.callout.weight(.semibold))
                         .padding(.horizontal, 16).padding(.vertical, 10)
                         .background(.ultraThinMaterial, in: Capsule())
@@ -212,6 +212,11 @@ private struct MoonlightSessionLayer: View {
                 overlayButton("keyboard", label: "Keyboard", active: handle.keyboardVisible) { handle.toggleKeyboard(); scheduleHide() }
                 #endif
                 #if os(macOS)
+                overlayButton(handle.isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                              label: handle.isFullScreen ? "Exit full screen" : "Full screen", active: false) {
+                    handle.toggleFullScreen()
+                    scheduleHide()
+                }
                 overlayButton("cursorarrow.click.2", label: "Capture mouse", active: false) { handle.captureMouse() }
                 #endif
                 overlayButton("xmark", label: "End stream", active: false, tint: .orange) { confirmEnd = true }
@@ -226,7 +231,7 @@ private struct MoonlightSessionLayer: View {
             #if os(iOS)
             Text(request.settings.touchMode == .trackpad ? "Drag to move · tap to click · two fingers scroll · hold to drag · three-finger tap for controls" : "Touch the screen directly · three-finger tap for controls")
             #elseif os(macOS)
-            Text(handle.mouseCaptured ? "⌃⌥⇧Z releases the mouse and keyboard · ⌃⌥⇧Q ends the stream" : "Click the video to capture mouse and keyboard · ⌃⌥⇧Q or the ✕ button ends the stream")
+            Text(handle.mouseCaptured ? "⌃⌥⇧Z releases the mouse and keyboard · ⌃⌥⇧F full screen · ⌃⌥⇧Q ends the stream" : "Click the video to capture mouse and keyboard · ⌃⌥⇧F full screen · ⌃⌥⇧Q or the ✕ button ends the stream")
             #else
             Text("Touch surface moves the pointer · click selects · play/pause right-clicks · Menu leaves the stream")
             #endif

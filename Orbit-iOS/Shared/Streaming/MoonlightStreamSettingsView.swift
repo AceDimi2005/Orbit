@@ -19,7 +19,9 @@ struct MoonlightStreamSettingsView: View {
     @State private var path: [Setting] = []
 
     private var settings: Binding<MoonlightStreamSettings> { $store.settings }
-    private var pixelSize: (width: Int, height: Int) { store.settings.pixelSize }
+    /// Apple TV streams 16:9 at its output mode; there is no Picture choice here.
+    private var pixelSize: MoonlightStreamSize { store.settings.pixelSize(hostSupportsHEVC: hostSupportsHEVC) }
+    private var recommendedBitrateKbps: Int { store.settings.recommendedBitrateKbps(for: pixelSize) }
 
     /// 0 stands for "recommended"; any other value is a manual bitrate in kbps.
     private var bitrateSelection: Binding<Int> {
@@ -30,7 +32,7 @@ struct MoonlightStreamSettingsView: View {
     }
 
     private var bitrateOptions: [TVStreamOption<Int>] {
-        var options = [TVStreamOption(value: 0, title: "Recommended", detail: "\(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps")]
+        var options = [TVStreamOption(value: 0, title: "Recommended", detail: "\(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps")]
         var presets = Self.bitratePresetsKbps
         if !store.settings.usesRecommendedBitrate, !presets.contains(store.settings.customBitrateKbps) { presets.append(store.settings.customBitrateKbps); presets.sort() }
         options += presets.map { TVStreamOption(value: $0, title: bitrateText($0), detail: nil) }
@@ -43,12 +45,12 @@ struct MoonlightStreamSettingsView: View {
                 Section {
                     optionRow("Resolution", value: resolutionText(store.settings.resolution), setting: .resolution)
                     optionRow("Frame rate", value: "\(store.settings.frameRate) fps", setting: .frameRate)
-                    optionRow("Bitrate", value: store.settings.usesRecommendedBitrate ? "Recommended · \(bitrateText(store.settings.recommendedBitrateKbps))" : bitrateText(store.settings.customBitrateKbps),
+                    optionRow("Bitrate", value: store.settings.usesRecommendedBitrate ? "Recommended · \(bitrateText(recommendedBitrateKbps))" : bitrateText(store.settings.customBitrateKbps),
                               setting: .bitrate)
                 } header: {
                     Text("Video")
                 } footer: {
-                    Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
+                    Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
                 }
 
                 Section {
@@ -157,8 +159,9 @@ struct MoonlightStreamSettingsView: View {
     }
 
     private func resolutionText(_ resolution: MoonlightStreamSettings.Resolution) -> String {
-        let size = resolution.pixelSize(native: MoonlightDeviceCapabilities.nativePixelSize)
-        return resolution == .native ? "Native · \(size.width) × \(size.height)" : "\(resolution.title) · \(size.width) × \(size.height)"
+        var candidate = store.settings
+        candidate.resolution = resolution
+        return "\(resolution.title) · \(candidate.pixelSize(hostSupportsHEVC: hostSupportsHEVC))"
     }
 
     private func fps(_ value: Int) -> String { "\(value) fps" }
@@ -217,7 +220,8 @@ struct MoonlightStreamSettingsView: View {
     var onDone: () -> Void
 
     private var settings: Binding<MoonlightStreamSettings> { $store.settings }
-    private var pixelSize: (width: Int, height: Int) { store.settings.pixelSize }
+    private var pixelSize: MoonlightStreamSize { store.settings.pixelSize(hostSupportsHEVC: hostSupportsHEVC) }
+    private var recommendedBitrateKbps: Int { store.settings.recommendedBitrateKbps(for: pixelSize) }
     private var bitrateMbps: Binding<Double> {
         Binding(get: { Double(store.settings.customBitrateKbps) / 1000 }, set: { store.settings.customBitrateKbps = Int(($0 * 1000).rounded()) })
     }
@@ -226,6 +230,7 @@ struct MoonlightStreamSettingsView: View {
         NavigationStack {
             Form {
                 videoSection
+                if MoonlightDeviceCapabilities.offersAspectChoice { pictureSection }
                 codecSection
                 audioSection
                 hostSection
@@ -256,7 +261,7 @@ struct MoonlightStreamSettingsView: View {
         Section {
             Picker("Resolution", selection: settings.resolution) {
                 ForEach(MoonlightStreamSettings.Resolution.allCases) { resolution in
-                    Text(resolution == .native ? "Native · \(pixelSizeText(resolution))" : "\(resolution.title) · \(resolution.detail)").tag(resolution)
+                    Text("\(resolution.title) · \(pixelSizeText(resolution))").tag(resolution)
                 }
             }
             Picker("Frame rate", selection: settings.frameRate) {
@@ -286,7 +291,43 @@ struct MoonlightStreamSettingsView: View {
         } header: {
             Text("Video")
         } footer: {
-            Text("Moonlight recommends \(bitrateText(store.settings.recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
+            Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
+        }
+    }
+
+    private var pictureSection: some View {
+        Section {
+            Picker("Picture", selection: settings.aspect) {
+                ForEach(MoonlightStreamSettings.AspectMode.allCases) { aspect in Text(aspect.title).tag(aspect) }
+            }
+            .pickerStyle(.segmented)
+            if store.settings.aspect == .native {
+                NavigationLink {
+                    MoonlightFillScreenHelpView(size: pixelSize, optimizeGameSettings: store.settings.optimizeGameSettings, accent: accent)
+                } label: {
+                    Label("Set up the PC to fill the screen", systemImage: "questionmark.circle")
+                }
+            }
+        } header: {
+            Text("Picture")
+        } footer: {
+            Text(pictureFootnote)
+        }
+    }
+
+    private var pictureFootnote: String {
+        switch store.settings.aspect {
+        case .widescreen:
+            return "16:9 is the shape of a PC monitor: you see the whole PC picture, with black bars where this screen's shape differs."
+        case .native:
+            #if os(macOS)
+            let screen = "the shape of this display in full screen (\(pixelSize), measured on the display a stream opens on)"
+            #else
+            let screen = "this screen's shape (\(pixelSize))"
+            #endif
+            var text = "Fill Screen asks the PC for \(screen). It only fills the screen edge to edge when the PC can output that shape, which usually needs a virtual display set up for Sunshine. Until then the PC adds the black bars itself."
+            if !store.settings.optimizeGameSettings { text += " Turn on Optimize game settings below: without it Sunshine cannot switch the PC's display to this shape." }
+            return text
         }
     }
 
@@ -358,7 +399,7 @@ struct MoonlightStreamSettingsView: View {
             #if os(iOS)
             Text("Trackpad moves the PC pointer relative to your finger; Touchscreen sends taps where you touch. Game controllers and hardware keyboards work in both modes.")
             #elseif os(macOS)
-            Text("Click the video to capture the mouse and keyboard; press Control-Option-Shift-Z to release. Game controllers are forwarded automatically.")
+            Text("Click the video to capture the mouse and keyboard; press Control-Option-Shift-Z to release, Control-Option-Shift-F to switch full screen on or off, Control-Option-Shift-Q to end the stream. Game controllers are forwarded automatically.")
             #else
             Text("Game controllers paired with Apple TV are forwarded; the Siri Remote acts as a trackpad.")
             #endif
@@ -377,13 +418,77 @@ struct MoonlightStreamSettingsView: View {
         }
     }
 
+    /// The frame `resolution` gives with the current Picture choice and codec limits.
     private func pixelSizeText(_ resolution: MoonlightStreamSettings.Resolution) -> String {
-        let size = resolution.pixelSize(native: MoonlightDeviceCapabilities.nativePixelSize)
-        return "\(size.width) × \(size.height)"
+        var candidate = store.settings
+        candidate.resolution = resolution
+        return candidate.pixelSize(hostSupportsHEVC: hostSupportsHEVC).description
     }
 
     private func bitrateText(_ kbps: Int) -> String {
         kbps % 1000 == 0 ? "\(kbps / 1000) Mbps" : String(format: "%.1f Mbps", Double(kbps) / 1000)
+    }
+}
+
+/// What Fill Screen needs on the PC, in plain steps. Sunshine only fills a non-16:9 screen when one of the
+/// PC's displays can switch to that exact size; otherwise it adds the bars itself.
+private struct MoonlightFillScreenHelpView: View {
+    let size: MoonlightStreamSize
+    let optimizeGameSettings: Bool
+    let accent: Color
+
+    /// Wraps at the space before the package id on a phone.
+    private static let installCommand = "winget install -e --id VirtualDrivers.Virtual-Display-Driver"
+    private static let driverURL = URL(string: "https://github.com/VirtualDrivers/Virtual-Display-Driver")!
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Orbit asks the PC for a \(size.description) picture, the shape of this screen. Sunshine can only send a full picture in that shape when one of the PC's displays can switch to exactly that size. A normal monitor cannot, so Sunshine fits the 16:9 desktop into the frame and adds black bars itself. Nothing breaks: you simply still see bars.")
+            } header: {
+                Text("Why there are black bars")
+            }
+
+            Section {
+                step(1, "Install a virtual display on the PC, for example the free Virtual Display Driver. In Terminal on the PC:")
+                Text(Self.installCommand)
+                    .font(.footnote.monospaced())
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                step(2, "Add \(size.description) to the virtual display's resolutions, at the frame rate you stream at.")
+                step(3, "In Sunshine's web UI, under Audio/Video, choose the virtual display as the display to stream and let Sunshine change its resolution to the one the client asks for.")
+                step(4, optimizeGameSettings
+                     ? "Keep Optimize game settings on in Stream Settings: it is what lets Sunshine switch the display to this size."
+                     : "Turn on Optimize game settings in Stream Settings: without it Sunshine never switches the display to this size.")
+                Link(destination: Self.driverURL) {
+                    Label("Virtual Display Driver on GitHub", systemImage: "arrow.up.right.square")
+                }
+            } header: {
+                Text("Set up the PC")
+            } footer: {
+                Text("On the PC, the Orbit companion's tray menu (Set up full-screen streaming) walks through the same steps. Change Sunshine's settings between streams: Sunshine restarts to apply them.")
+            }
+        }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .navigationTitle("Fill the Screen")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .tint(accent)
+    }
+
+    private func step(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number)")
+                .font(.callout.weight(.bold).monospacedDigit())
+                .foregroundStyle(accent)
+                .frame(width: 18, alignment: .leading)
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

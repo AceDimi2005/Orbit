@@ -62,7 +62,7 @@ struct MacLibraryView: View {
                 .background(theme.background)
         }
         .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.info.map(\.supportsHEVC)) { showsStreamSettings = false }
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
                 .frame(width: 560, height: 680)
                 .background(theme.background)
         }
@@ -711,8 +711,8 @@ struct MacLibraryView: View {
 
     private var settingsSummary: String {
         let settings = streamSettings.settings
-        let size = settings.pixelSize
-        var parts = ["\(size.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
+        let size = settings.pixelSize(hostSupportsHEVC: sunshine.hostSupportsHEVC)
+        var parts = [size.shortTitle, "\(settings.frameRate) fps", "\(settings.bitrateKbps(for: size) / 1000) Mbps"]
         parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
         if settings.requestsHDR { parts.append("HDR") }
         parts.append(settings.audio.title)
@@ -720,7 +720,10 @@ struct MacLibraryView: View {
     }
 
     private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
-        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, promptUnlock: promptUnlock))
+        // Sized for the display the Stream window will fill: the open Stream window's, else the one in front.
+        let target = MoonlightStreamTarget.make(settings: streamSettings.settings, hostSupportsHEVC: sunshine.hostSupportsHEVC,
+                                                screen: MacStreamWindowController.shared.targetScreen())
+        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, target: target, promptUnlock: promptUnlock))
         openWindow(id: "stream")
     }
 
@@ -932,19 +935,23 @@ private enum MacLibraryIcon {
 
 // MARK: - Stream window
 
-/// The `stream` window: shows the live session and closes itself once the stream ends.
+/// The `stream` window: shows the live session, goes full screen when a stream starts (setting
+/// `mac.streamFullScreen`) and leaves full screen before it closes itself once the stream ends.
 struct MacStreamWindowView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
     @Environment(\.dismissWindow) private var dismissWindow
     @ObservedObject private var stream = MoonlightStreamController.shared
+    @AppStorage(MacStreamWindowController.fullScreenKey) private var opensInFullScreen = true
+    /// The stream ended and the window is on its way out (leaving full screen first): stay black.
+    @State private var closing = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if stream.isPresented {
                 MoonlightStreamScreen(controller: stream, accent: theme.accent)
-            } else {
+            } else if !closing {
                 VStack(spacing: 10) {
                     Image(systemName: "play.rectangle").font(.system(size: 34, weight: .medium)).foregroundStyle(.secondary)
                     Text("No stream running").font(.headline)
@@ -952,8 +959,201 @@ struct MacStreamWindowView: View {
                 }
             }
         }
-        .onChange(of: stream.isPresented) { _, presented in
-            if !presented { dismissWindow(id: "stream") }
+        .background(MacStreamWindowAccessor { window in
+            MacStreamWindowController.shared.attach(window)
+            presentCurrentStream()
+        })
+        .onAppear {
+            closing = false
+            presentCurrentStream()
         }
+        .onChange(of: stream.request?.id) { _, _ in presentCurrentStream() }
+        .onChange(of: stream.isPresented) { _, presented in
+            if presented {
+                closing = false
+                presentCurrentStream()
+            } else {
+                closing = true
+                // Closing a full-screen window would leave an empty black Space behind: leave full screen first.
+                MacStreamWindowController.shared.leaveFullScreen {
+                    if !MoonlightStreamController.shared.isPresented { dismissWindow(id: "stream") }
+                }
+            }
+        }
+    }
+
+    private func presentCurrentStream() {
+        guard stream.isPresented, let request = stream.request else { return }
+        MacStreamWindowController.shared.streamStarted(request.id, displayID: request.target.displayID, fullScreen: opensInFullScreen)
+    }
+}
+
+/// Hands the hosting `NSWindow` to `MacStreamWindowController` once the view is in it.
+private struct MacStreamWindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> MacStreamWindowAccessorView {
+        let view = MacStreamWindowAccessorView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: MacStreamWindowAccessorView, context: Context) {
+        nsView.onWindow = onWindow
+    }
+}
+
+@MainActor
+private final class MacStreamWindowAccessorView: NSView {
+    var onWindow: ((NSWindow) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window { onWindow?(window) }
+    }
+}
+
+/// The Stream window's full-screen life: entering true full screen on the display the stream was sized
+/// for, and leaving it (waiting for the animation) before the window is dismissed, so no empty Space is
+/// left behind. Full-screen changes made by the user (green button, ⌃⌥⇧F) go through the same
+/// notifications, so the state stays right whoever started them.
+@MainActor
+final class MacStreamWindowController {
+    static let shared = MacStreamWindowController()
+    /// "Open streams in full screen" in Settings › General.
+    nonisolated static let fullScreenKey = "mac.streamFullScreen"
+
+    /// Full screen wanted for the current stream, on `displayID` (nil: wherever the window is).
+    private struct PendingEnter { let displayID: UInt32? }
+
+    private weak var window: NSWindow?
+    private var observers: [NSObjectProtocol] = []
+    /// A full-screen animation is running; AppKit ignores toggles until it ends.
+    private var transitioning = false
+    private var transitionWatchdog: Task<Void, Never>?
+    private var handledStreamID: UUID?
+    private var pendingEnter: PendingEnter?
+    private var exitCompletions: [() -> Void] = []
+    private var exitGeneration = 0
+
+    /// The display a new stream should be sized for: the open Stream window's, else the one in front.
+    func targetScreen() -> NSScreen? {
+        if let window, window.isVisible, let screen = window.screen { return screen }
+        return NSApp.keyWindow?.screen ?? NSApp.mainWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    func attach(_ window: NSWindow) {
+        guard window !== self.window else { return }
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        self.window = window
+        transitioning = false
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        let center = NotificationCenter.default
+        let events: [(Notification.Name, Bool)] = [
+            (NSWindow.willEnterFullScreenNotification, true), (NSWindow.willExitFullScreenNotification, true),
+            (NSWindow.didEnterFullScreenNotification, false), (NSWindow.didExitFullScreenNotification, false),
+        ]
+        for (name, starts) in events {
+            observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if starts { self?.transitionStarted() } else { self?.transitionEnded() }
+                }
+            })
+        }
+        if pendingEnter != nil { enterWhenReady() }
+    }
+
+    /// A stream was requested in the window. Each stream asks once, so leaving full screen by hand sticks
+    /// for that stream (reconnecting keeps it).
+    func streamStarted(_ id: UUID, displayID: UInt32?, fullScreen: Bool) {
+        guard id != handledStreamID else { return }
+        handledStreamID = id
+        pendingEnter = fullScreen ? PendingEnter(displayID: displayID) : nil
+        if fullScreen { enterWhenReady() }
+    }
+
+    /// Leaves full screen if needed, then calls `completion` (right away when the window is not full screen).
+    func leaveFullScreen(then completion: @escaping () -> Void) {
+        pendingEnter = nil
+        handledStreamID = nil
+        guard let window, transitioning || window.styleMask.contains(.fullScreen) else { completion(); return }
+        exitCompletions.append(completion)
+        exitGeneration += 1
+        let generation = exitGeneration
+        if !transitioning { window.toggleFullScreen(nil) }
+        // Never strand the window if AppKit does not report the end of the animation.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.exitGeneration == generation else { return }
+            self.finishExit()
+        }
+    }
+
+    private func transitionStarted() {
+        transitioning = true
+        transitionWatchdog?.cancel()
+        transitionWatchdog = Task { [weak self] in
+            // AppKit reports a failed transition only to the window's delegate, which SwiftUI owns.
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.transitionEnded()
+        }
+    }
+
+    private func transitionEnded() {
+        transitionWatchdog?.cancel()
+        transitionWatchdog = nil
+        transitioning = false
+        guard let window else { return }
+        if !exitCompletions.isEmpty {
+            if window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) } else { finishExit() }
+            return
+        }
+        if pendingEnter != nil { enterWhenReady() }
+    }
+
+    private func finishExit() {
+        let completions = exitCompletions
+        exitCompletions = []
+        completions.forEach { $0() }
+        // A new stream may have started while the old one was leaving full screen.
+        if pendingEnter != nil { enterWhenReady() }
+    }
+
+    /// Enters full screen once the window is on screen and no animation or exit is under way.
+    private func enterWhenReady(attempt: Int = 0) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: attempt == 0 ? 50_000_000 : 100_000_000)
+            self?.enterIfReady(attempt: attempt)
+        }
+    }
+
+    private func enterIfReady(attempt: Int) {
+        guard let pending = pendingEnter else { return }
+        guard let window, window.isVisible else {
+            // SwiftUI has not shown the window yet; `attach` tries again once it has.
+            if attempt < 30 { enterWhenReady(attempt: attempt + 1) }
+            return
+        }
+        guard !transitioning, exitCompletions.isEmpty else { return }   // `transitionEnded` resumes
+        pendingEnter = nil
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        move(window, toDisplay: pending.displayID)
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.toggleFullScreen(nil)
+    }
+
+    /// Full screen happens on the window's display, so it first moves to the display the stream was sized for.
+    private func move(_ window: NSWindow, toDisplay displayID: UInt32?) {
+        guard let displayID,
+              let screen = NSScreen.screens.first(where: { MoonlightDeviceCapabilities.displayID(of: $0) == displayID }),
+              window.screen.flatMap({ MoonlightDeviceCapabilities.displayID(of: $0) }) != displayID else { return }
+        let area = screen.visibleFrame
+        var frame = window.frame
+        frame.size.width = min(frame.width, area.width)
+        frame.size.height = min(frame.height, area.height)
+        frame.origin = CGPoint(x: area.midX - frame.width / 2, y: area.midY - frame.height / 2)
+        window.setFrame(frame, display: true)
     }
 }

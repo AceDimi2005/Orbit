@@ -5,19 +5,33 @@ import CoreHaptics
 #endif
 
 /// Forwards connected game controllers (and the Siri Remote on tvOS) to the host and plays rumble.
+///
+/// The value handlers live on the shared `GCController` objects, so only one bridge can own them. A stream
+/// that starts while the previous one is still being torn down takes them over (`start`), and the older
+/// bridge then leaves them alone when its late `stop` runs.
 final class MoonlightControllerBridge {
     private var observers: [NSObjectProtocol] = []
     private var slots: [ObjectIdentifier: Int] = [:]
     private var controllers: [Int: GCController] = [:]
+    /// Siri Remotes (micro gamepads): they move the pointer and take no gamepad slot.
+    private var remotes: [ObjectIdentifier: GCController] = [:]
     private var rumblers: [Int: MoonlightRumble] = [:]
     private var remoteLastPoint: CGPoint?
     private var active = false
 
+    /// The bridge whose handlers are installed on the controllers right now.
+    @MainActor private static weak var owner: MoonlightControllerBridge?
+
     private var activeMask: Int16 { controllers.keys.reduce(Int16(0)) { $0 | Int16(1 << $1) } }
+
+    /// Whether this bridge's handlers are the ones installed on the controllers.
+    @MainActor var ownsControllers: Bool { Self.owner === self }
 
     @MainActor
     func start() {
         guard !active else { return }
+        if let previous = Self.owner, previous !== self { previous.yieldControllers() }
+        Self.owner = self
         active = true
         GCController.shouldMonitorBackgroundEvents = true
         let center = NotificationCenter.default
@@ -30,19 +44,38 @@ final class MoonlightControllerBridge {
         GCController.controllers().forEach(attach)
     }
 
+    /// Stops forwarding. The controllers' handlers are cleared only while they are still this bridge's: a newer
+    /// stream may already have installed its own.
     @MainActor
     func stop() {
+        let owned = ownsControllers
+        if owned { Self.owner = nil }
+        release(clearingHandlers: owned)
+    }
+
+    /// A newer stream is taking the controllers over: stop listening and rumbling, but leave the handlers,
+    /// which it replaces right away.
+    @MainActor
+    private func yieldControllers() {
+        release(clearingHandlers: false)
+    }
+
+    @MainActor
+    private func release(clearingHandlers: Bool) {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
-        for controller in controllers.values {
-            controller.extendedGamepad?.valueChangedHandler = nil
-            controller.microGamepad?.dpad.valueChangedHandler = nil
-            controller.microGamepad?.buttonA.pressedChangedHandler = nil
-            controller.microGamepad?.buttonX.pressedChangedHandler = nil
+        if clearingHandlers {
+            for controller in Array(controllers.values) + Array(remotes.values) {
+                controller.extendedGamepad?.valueChangedHandler = nil
+                controller.microGamepad?.dpad.valueChangedHandler = nil
+                controller.microGamepad?.buttonA.pressedChangedHandler = nil
+                controller.microGamepad?.buttonX.pressedChangedHandler = nil
+            }
         }
         rumblers.values.forEach { $0.stop() }
         rumblers.removeAll()
         controllers.removeAll()
+        remotes.removeAll()
         slots.removeAll()
         remoteLastPoint = nil
         active = false
@@ -57,7 +90,8 @@ final class MoonlightControllerBridge {
         }
     }
 
-    private func attach(_ controller: GCController) {
+    /// Internal for tests; connected controllers arrive through `start` and the connect notification.
+    func attach(_ controller: GCController) {
         let key = ObjectIdentifier(controller)
         guard slots[key] == nil else { return }
         if let pad = controller.extendedGamepad {
@@ -85,6 +119,8 @@ final class MoonlightControllerBridge {
     private func detach(_ controller: GCController) {
         let key = ObjectIdentifier(controller)
         guard let slot = slots.removeValue(forKey: key) else { return }
+        // A Siri Remote has no gamepad slot to report gone.
+        guard slot >= 0 else { remotes.removeValue(forKey: key); remoteLastPoint = nil; return }
         controllers.removeValue(forKey: slot)
         rumblers.removeValue(forKey: slot)?.stop()
         // Zeroed state with the updated mask tells the host the pad is gone.
@@ -122,6 +158,7 @@ final class MoonlightControllerBridge {
     /// Siri Remote: the touch surface moves the pointer, click is a left click, play/pause a right click.
     private func attachRemote(_ controller: GCController, _ micro: GCMicroGamepad) {
         slots[ObjectIdentifier(controller)] = -1
+        remotes[ObjectIdentifier(controller)] = controller
         micro.reportsAbsoluteDpadValues = true
         micro.allowsRotation = true
         micro.dpad.valueChangedHandler = { [weak self] _, x, y in self?.remoteMoved(x: x, y: y) }
