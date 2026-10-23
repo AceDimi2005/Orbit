@@ -187,19 +187,25 @@ class FakePs:
     def __init__(self):
         self.sunshine_pid = 4100
         self.sunshine_running = True
+        self.sunshine_name = "sunshine.exe"
+        self.listening = False  # Sunshine's own TCP listeners (web UI, RTSP) in net_connections
         self.connections = []
         self.fail_connections = False
 
     def process_iter(self, attrs=None):
         yield SimpleNamespace(pid=4, info={"name": "System"})
         if self.sunshine_running:
-            yield SimpleNamespace(pid=self.sunshine_pid, info={"name": "sunshine.exe"})
+            yield SimpleNamespace(pid=self.sunshine_pid, info={"name": self.sunshine_name})
         yield SimpleNamespace(pid=7000, info={"name": "obs64.exe"})
 
     def net_connections(self, kind="inet"):
         if self.fail_connections:
             raise PermissionError("access denied")
-        return list(self.connections)
+        listeners = []
+        if self.sunshine_running and self.listening:
+            listeners = [SimpleNamespace(pid=self.sunshine_pid, type=socket.SOCK_STREAM, status="LISTEN",
+                                         laddr=SimpleNamespace(ip="0.0.0.0", port=port)) for port in (47990, 48010)]
+        return listeners + list(self.connections)
 
     def stream(self, active=True):
         self.connections = [SimpleNamespace(pid=self.sunshine_pid, type=socket.SOCK_DGRAM,
@@ -220,9 +226,20 @@ class FakeSunshine:
         self.login = True
         self.unreachable = False
         self.on_save = None
+        self.current_game = 0  # /serverinfo currentgame: an app id while an app runs in Sunshine
+        self.server_info_error = None
+        self.server_info_calls = 0
 
     def login_saved(self):
         return self.login
+
+    def server_info(self):
+        self.server_info_calls += 1
+        if self.server_info_error is not None:
+            raise self.server_info_error
+        if not self.ps.sunshine_running:
+            raise ConnectionRefusedError("nothing listens on 47989")
+        return self.current_game, "SUNSHINE_SERVER_BUSY" if self.current_game else "SUNSHINE_SERVER_FREE"
 
     def _check(self):
         if not self.login:
@@ -273,9 +290,14 @@ class FakePlatform:
                                     attached=False, primary=False, vdd=True)]
         self.pipe_commands = []
         self.pipe_error = None
+        self.pipe_breaks_driver = False
         self.offered_after_pipe = False
         self.elevated_scripts = []
-        self.elevation = "approve"  # approve | decline | fail | code:N
+        self.elevation = "approve"  # approve | decline | timeout | busy | fail | code:N
+        self.approve_delay = 0.0  # seconds between the prompt and its approval
+        self.helper_busy = 0  # what the helper's own stream check finds: 0 idle, 1 streaming, 2 cannot tell
+        self.helper_exit_codes = []
+        self.driver_restarts = 0
         self.moves = []
         self.move_result = True
 
@@ -307,6 +329,8 @@ class FakePlatform:
         self.pipe_commands.append(command)
         if self.pipe_error:
             raise self.pipe_error
+        if self.pipe_breaks_driver:
+            self.status = "problem"
         return {"handled": True, "reply": ""}
 
     # displays
@@ -324,24 +348,58 @@ class FakePlatform:
                     display.x, display.y = x, y
         return self.move_result
 
-    # elevation: runs the helper script's file part like PowerShell would
+    # elevation: runs the helper script like PowerShell would (deadline, stream check, file, restart)
     def run_elevated(self, script):
         self.elevated_scripts.append(script)
         if self.elevation == "decline":
             raise sd.ElevationDeclined(sd.UAC_DECLINED)
+        if self.elevation == "timeout":
+            raise sd.ElevationTimedOut(sd.PROMPT_TIMEOUT)
+        if self.elevation == "busy":
+            raise sd.ElevationBusy(sd.PROMPT_STILL_OPEN)
         if self.elevation == "fail":
             raise sd.ElevationFailed("The administrator helper did not finish in time.")
         if self.elevation.startswith("code:"):
             return int(self.elevation[5:])
-        values = dict(re.findall(r"^\$(source|target|expected) = '((?:[^']|'')*)'", script, re.M))
-        source, target = values.get("source", "").replace("''", "'"), values.get("target", "").replace("''", "'")
-        if source:
-            data = Path(source).read_bytes()
-            import hashlib
+        code = self._interpret(helper_values(script))
+        self.helper_exit_codes.append(code)
+        return code
+
+    def _interpret(self, values):
+        import hashlib
+        import time as clock
+        if sd.dotnet_ticks(clock.time() + self.approve_delay) > values["deadline"]:
+            return 6
+        if values["devices"] and self.helper_busy:
+            return 7 if self.helper_busy == 1 else 8
+        if values["source"]:
+            data = Path(values["source"]).read_bytes()
             if hashlib.sha256(data).hexdigest().upper() != values["expected"]:
                 return 3
-            Path(target).write_bytes(data)
+            Path(values["target"]).write_bytes(data)
+        if values["devices"]:
+            if self.status == "problem":
+                self.status = "running"
+            self.driver_restarts += 1
         return 0
+
+
+_PS_TEXT = re.compile(r"\(\[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+/=]*)'\)\)\)")
+
+
+def helper_values(script):
+    """The values build_helper_script put into the script, decoded."""
+    def text(line_name):
+        line = next(line for line in script.splitlines() if line.startswith(f"${line_name} = "))
+        return base64.b64decode(_PS_TEXT.search(line).group(1)).decode("utf-8")
+    devices_line = next(line for line in script.splitlines() if line.startswith("$devices = @("))
+    pids_line = next(line for line in script.splitlines() if line.startswith("$knownSunshine = @("))
+    return {"source": text("source"), "target": text("target"), "expected": text("expected"),
+            "backup": text("backupName"),
+            "devices": [base64.b64decode(item).decode("utf-8") for item in _PS_TEXT.findall(devices_line)],
+            "deadline": int(re.search(r"UtcNow\.Ticks -gt (\d+)\) \{ exit 6 \}", script).group(1)),
+            "basePort": int(re.search(r"^\$basePort = (\d+)\r?$", script, re.M).group(1)),
+            "pids": [int(item) for item in re.findall(r"\d+", pids_line)]}
 
 
 def make_service(folder, ps=None, sunshine=None, platform=None, clock=None):
@@ -682,7 +740,10 @@ class StreamDetectionTests(unittest.TestCase):
         ps = FakePs()
         ps.sunshine_running = False
         ps.fail_connections = True
-        self.assertFalse(sd.stream_activity(47989, ps))
+        with self.assertLogs("orbit.streamdisplay", level="WARNING"):
+            self.assertFalse(sd.stream_activity(47989, ps))
+            # Something answers on Sunshine's port, but no process is known: cannot tell.
+            self.assertIsNone(sd.stream_activity(47989, ps, lambda: (0, "SUNSHINE_SERVER_FREE")))
         ps.sunshine_running = True
         broken = MagicMock()
         broken.process_iter.side_effect = OSError("no access")
@@ -870,11 +931,16 @@ class PipeTests(unittest.TestCase):
 
 
 class ElevationTests(unittest.TestCase):
-    def fake_apis(self, code=0, succeed=True):
+    def fake_apis(self, code=0, succeed=True, system_folder="C:\\Windows\\System32"):
         shell32, kernel32 = MagicMock(), MagicMock()
         self.ole32 = MagicMock()
         self.ole32.CoInitializeEx.return_value = 0
         self.infos = []
+
+        def system_directory(buffer, size):
+            buffer.value = system_folder
+            return len(system_folder)
+        kernel32.GetSystemDirectoryW.side_effect = system_directory
 
         def execute(pointer):
             info = pointer._obj
@@ -895,7 +961,8 @@ class ElevationTests(unittest.TestCase):
         shell32, kernel32 = self.fake_apis(code=0)
         script = sd.build_helper_script("C:\\Users\\Dimi's PC\\staged.xml", "C:\\VirtualDisplayDriver\\vdd_settings.xml",
                                         "ab" * 32, ["ROOT\\DISPLAY\\0000"])
-        with patch.dict(sd.os.environ, {"SystemRoot": "C:\\Windows"}):
+        # The user's own environment must not choose which PowerShell the administrator approves.
+        with patch.dict(sd.os.environ, {"SystemRoot": "C:\\Users\\Gamer\\evil", "windir": "C:\\Users\\Gamer\\evil"}):
             self.assertEqual(sd.run_elevated_powershell(script, shell32=shell32, kernel32=kernel32, ole32=self.ole32), 0)
         self.ole32.CoInitializeEx.assert_called_once_with(None, sd.COINIT_APARTMENTTHREADED | sd.COINIT_DISABLE_OLE1DDE)
         self.ole32.CoUninitialize.assert_called_once_with()
@@ -913,6 +980,9 @@ class ElevationTests(unittest.TestCase):
         self.assertIsNotNone(shell32.ShellExecuteExW.argtypes)
         self.assertIs(shell32.ShellExecuteExW.restype, ctypes.wintypes.BOOL)
         self.assertIs(kernel32.WaitForSingleObject.restype, ctypes.wintypes.DWORD)
+        self.assertIs(kernel32.GetSystemDirectoryW.restype, ctypes.wintypes.UINT)
+        self.assertEqual(kernel32.GetSystemDirectoryW.argtypes, [ctypes.wintypes.LPWSTR, ctypes.wintypes.UINT])
+        self.assertLess(len(info["lpParameters"]), 30000)  # CreateProcess takes at most 32767 characters
 
     def test_declined_prompt_and_timeout(self):
         shell32, kernel32 = self.fake_apis(succeed=False)
@@ -930,18 +1000,107 @@ class ElevationTests(unittest.TestCase):
             sd.run_elevated_powershell("exit 0", shell32=shell32, kernel32=kernel32, ole32=self.ole32)
         kernel32.CloseHandle.assert_called_once_with(0x5678)
 
-    def test_helper_script_quotes_paths_checks_the_hash_and_always_enables_the_driver(self):
+    def test_helper_script_carries_paths_only_base64_checks_the_hash_and_always_enables_the_driver(self):
         script = sd.build_helper_script("C:\\Users\\O'Brien\\staged.xml", "D:\\VDD\\vdd_settings.xml", "ab" * 32,
-                                        ["ROOT\\DISPLAY\\0000", "ROOT\\MTTVDD\\0001"])
-        self.assertIn("$source = 'C:\\Users\\O''Brien\\staged.xml'", script)
-        self.assertIn("$target = 'D:\\VDD\\vdd_settings.xml'", script)
-        self.assertIn("$expected = '" + "AB" * 32 + "'", script)
-        self.assertIn("$devices = @('ROOT\\DISPLAY\\0000', 'ROOT\\MTTVDD\\0001')", script)
+                                        ["ROOT\\DISPLAY\\0000", "ROOT\\MTTVDD\\0001"], not_after=1_800_000_000,
+                                        base_port=50000, sunshine_pids={4100, 77})
+        values = helper_values(script)
+        self.assertEqual(values["source"], "C:\\Users\\O'Brien\\staged.xml")
+        self.assertEqual(values["target"], "D:\\VDD\\vdd_settings.xml")
+        self.assertEqual(values["expected"], "AB" * 32)
+        self.assertEqual(values["backup"], sd.VDD_BACKUP_NAME)
+        self.assertEqual(values["devices"], ["ROOT\\DISPLAY\\0000", "ROOT\\MTTVDD\\0001"])
+        self.assertEqual((values["basePort"], values["pids"]), (50000, [77, 4100]))
+        self.assertEqual(values["deadline"], 1_800_000_000 * 10_000_000 + 621355968000000000)
+        self.assertNotIn("O'Brien", script)
+        self.assertNotIn("VDD\\vdd_settings", script)
         self.assertIn("if ($hash -ne $expected) { exit 3 }", script)
         self.assertRegex(script, r"finally \{[^}]*Enable-PnpDevice -InstanceId \$id")
         self.assertIn("$null -ne $original", script)
         restart_only = sd.build_helper_script(None, None, None, ["ROOT\\DISPLAY\\0000"])
-        self.assertIn("$source = ''", restart_only)
+        self.assertEqual(helper_values(restart_only)["source"], "")
+
+    def test_helper_refuses_to_run_late_and_checks_for_a_stream_before_touching_anything(self):
+        script = sd.build_helper_script("C:\\s.xml", "C:\\t.xml", "ab" * 32, ["ROOT\\DISPLAY\\0000"])
+        lines = script.split("\r\n")
+        deadline = next(index for index, line in enumerate(lines) if "UtcNow.Ticks -gt" in line)
+        self.assertEqual(deadline, 2)  # right after $ErrorActionPreference, before anything else runs
+        values = helper_values(script)
+        import time as clock
+        self.assertAlmostEqual((values["deadline"] - sd.dotnet_ticks(clock.time())) / 10_000_000,
+                               sd.PROMPT_WAIT_SECONDS, delta=5)
+        check = next(index for index, line in enumerate(lines) if line == "  $busy = @(Test-OrbitBusy)[-1]")
+        self.assertEqual(lines[check - 1], "if ($devices.Count -gt 0) {")
+        self.assertEqual(lines[check + 1], "  if ($busy -eq 1) { exit 7 }")
+        self.assertEqual(lines[check + 2], "  if ($busy -ne 0) { exit 8 }")
+        first_write = next(index for index, line in enumerate(lines) if "ReadAllBytes($source)" in line)
+        first_restart = next(index for index, line in enumerate(lines) if "Disable-PnpDevice" in line)
+        self.assertLess(check, first_write)
+        self.assertLess(check, first_restart)
+        for needed in ("Get-NetUDPEndpoint -ErrorAction Stop", "Get-NetTCPConnection -ErrorAction Stop",
+                       "'/serverinfo'", "$request.Proxy = $null", "currentgame", "'*_SERVER_BUSY'", "'sunshine'"):
+            self.assertIn(needed, script)
+        self.assertTrue(script.isascii())
+
+    def test_powershell_quoting_doubles_every_quote_character(self):
+        self.assertEqual(sd._ps_quote("C:\\Users\\O\u2019Brien\\x"), "'C:\\Users\\O\u2019\u2019Brien\\x'")
+        self.assertEqual(sd._ps_quote("a'b\u2018c\u201ad\u201be"), "'a''b\u2018\u2018c\u201a\u201ad\u201b\u201be'")
+        path = "C:\\Users\\O\u2019Brien \u2018x\u2019\\AppData\\Local\\Orbit\\display\\vdd.xml"
+        script = sd.build_helper_script(path, "C:\\VirtualDisplayDriver\\vdd_settings.xml", "ab" * 32, [])
+        self.assertTrue(script.isascii())
+        self.assertEqual(helper_values(script)["source"], path)
+        for character in "\u2018\u2019\u201a\u201b":
+            self.assertNotIn(character, script)
+
+    def test_unanswered_prompt_stops_waiting_refuses_a_second_prompt_and_closes_a_late_approval(self):
+        import threading
+        shell32, kernel32 = self.fake_apis()
+        release = threading.Event()
+        entered = threading.Event()
+
+        def blocked(pointer):
+            entered.set()
+            release.wait(10)  # nobody at the PC: ShellExecuteExW blocks until the prompt is answered
+            pointer._obj.hProcess = 0x5678
+            return 1
+        shell32.ShellExecuteExW.side_effect = blocked
+        self.addCleanup(release.set)
+        with self.assertRaises(sd.ElevationTimedOut):
+            sd.run_elevated_powershell("exit 0", prompt_timeout=0.2, shell32=shell32, kernel32=kernel32, ole32=self.ole32)
+        self.assertTrue(entered.is_set())
+        other_shell32, other_kernel32 = self.fake_apis()
+        with self.assertRaises(sd.ElevationBusy):
+            sd.run_elevated_powershell("exit 0", prompt_timeout=0.2, shell32=other_shell32, kernel32=other_kernel32,
+                                       ole32=self.ole32)
+        other_shell32.ShellExecuteExW.assert_not_called()
+        kernel32.WaitForSingleObject.assert_not_called()
+        pending = sd._PROMPT_THREAD
+        release.set()  # approved much later: Orbit only closes the handle (the helper exits 6 by itself)
+        pending.join(5)
+        self.assertFalse(pending.is_alive())
+        self.assertIsNone(sd._PROMPT_THREAD)
+        kernel32.CloseHandle.assert_called_once_with(0x5678)
+        kernel32.WaitForSingleObject.assert_not_called()
+        shell32, kernel32 = self.fake_apis(code=0)  # the next request may ask again
+        self.assertEqual(sd.run_elevated_powershell("exit 0", shell32=shell32, kernel32=kernel32, ole32=self.ole32), 0)
+
+    def test_back_to_back_prompts_are_never_busy(self):
+        for _ in range(25):  # an answered prompt frees the slot before Orbit even reads the result
+            shell32, kernel32 = self.fake_apis(code=0)
+            self.assertEqual(sd.run_elevated_powershell("exit 0", shell32=shell32, kernel32=kernel32, ole32=self.ole32), 0)
+        self.assertIsNone(sd._PROMPT_THREAD)
+
+    def test_system_folder_comes_from_windows_not_the_environment(self):
+        _, kernel32 = self.fake_apis(system_folder="D:\\WINDOWS\\system32")
+        self.assertEqual(sd.powershell_path(kernel32), "D:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\powershell.exe")
+        for broken in ("", "System32", "\\\\server\\share"):
+            _, kernel32 = self.fake_apis(system_folder=broken)
+            with self.subTest(folder=broken), self.assertRaises(sd.ElevationFailed):
+                sd.powershell_path(kernel32)
+        kernel32 = MagicMock()
+        kernel32.GetSystemDirectoryW.return_value = 0
+        with self.assertRaises(sd.ElevationFailed):
+            sd.powershell_path(kernel32)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows structure layout")
     def test_structure_sizes_match_the_windows_sdk(self):
@@ -990,9 +1149,9 @@ class ModesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual((response.json()["reload"], response.json()["elevated"]), ("driverRestart", True))
         self.assertEqual(len(self.platform.elevated_scripts), 1)
-        script = self.platform.elevated_scripts[0]
-        self.assertIn("$source = ''", script)
-        self.assertIn("'ROOT\\DISPLAY\\0000'", script)
+        values = helper_values(self.platform.elevated_scripts[0])
+        self.assertEqual(values["source"], "")
+        self.assertEqual(values["devices"], ["ROOT\\DISPLAY\\0000"])
         self.assertTrue(sd.parse_vdd_settings(self.platform.settings_file.read_bytes()).has_mode(2556, 1179, 120))
 
     def test_file_the_user_cannot_write_is_saved_by_the_elevated_helper(self):
@@ -1014,11 +1173,99 @@ class ModesTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], sd.UAC_DECLINED)
         self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
 
-    def test_declined_driver_restart_puts_the_old_file_back(self):
+    def test_declined_driver_restart_puts_the_old_file_back_when_the_pipe_never_reached_the_driver(self):
+        self.platform.pipe_error = sd.PipeUnavailable("no pipe")
         self.platform.elevation = "decline"
         response = self.post()
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], sd.UAC_DECLINED)
         self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
+
+    def test_declined_driver_restart_after_reload_keeps_the_new_file_and_says_so(self):
+        self.platform.elevation = "decline"  # RELOAD_DRIVER was sent: the driver may already use the new list
+        response = self.post()
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertIn("declined", detail)
+        self.assertIn(sd.KEPT_NEW_SIZE, detail)
+        self.assertNotIn("unchanged", detail)
+        self.assertTrue(sd.parse_vdd_settings(self.platform.settings_file.read_bytes()).has_mode(2556, 1179, 120))
+
+    def test_reload_that_broke_the_driver_is_restarted_and_reported(self):
+        self.platform.pipe_breaks_driver = True
+        self.platform.offered_after_pipe = True  # a stale mode list must not count while the device is failed
+        response = self.post()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((response.json()["reload"], response.json()["elevated"]), ("driverRestart", True))
+        self.assertEqual(self.platform.driver_restarts, 1)
+        self.assertEqual(response.json()["display"]["virtualDisplay"]["deviceStatus"], "running")
+        self.platform.status = "running"
+        self.platform.elevation = "decline"
+        response = self.post(2388, 1668, 120)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn(sd.DRIVER_STUCK, response.json()["detail"])
+        status = self.client.get("/api/stream/display", headers=self.headers).json()
+        self.assertEqual(status["virtualDisplay"]["deviceStatus"], "problem")
+
+    def test_pipe_reload_counts_when_the_virtual_display_is_off_the_desktop(self):
+        self.platform.offered_after_pipe = True
+        self.assertFalse(self.platform.displays[1].attached)  # Sunshine's ensure_* options keep it off between streams
+        response = self.post()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((response.json()["reload"], response.json()["elevated"]), ("pipe", False))
+        self.assertEqual(self.platform.elevated_scripts, [])
+
+    def test_unanswered_prompt_is_409_and_frees_the_feature(self):
+        self.platform.writable = False
+        self.platform.elevation = "timeout"
+        response = self.post()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], sd.PROMPT_TIMEOUT)
+        self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
+        self.platform.elevation = "busy"
+        response = self.post()
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.PROMPT_STILL_OPEN))
+        self.platform.elevation = "approve"
+        self.assertEqual(self.post().status_code, 200)  # the lock was released: nothing stays BUSY
+
+    def test_prompt_approved_too_late_changes_nothing(self):
+        self.platform.writable = False
+        self.platform.approve_delay = sd.PROMPT_WAIT_SECONDS + 5
+        response = self.post()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], sd.PROMPT_TIMEOUT)
+        self.assertEqual(self.platform.helper_exit_codes, [6])
+        self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
+        self.assertEqual(self.platform.driver_restarts, 0)
+
+    def test_helper_that_sees_a_stream_changes_nothing(self):
+        self.platform.writable = False
+        self.platform.helper_busy = 1  # a stream started while the prompt was open
+        response = self.post()
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.HELPER_SAW_STREAM))
+        self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
+        self.platform.helper_busy = 2
+        response = self.post()
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_UNKNOWN))
+        self.assertEqual(self.platform.driver_restarts, 0)
+        script = self.platform.elevated_scripts[-1]
+        self.assertEqual(helper_values(script)["basePort"], 47989)
+        self.assertEqual(helper_values(script)["pids"], [self.ps.sunshine_pid])
+
+    def test_staging_failure_is_503_in_plain_words(self):
+        self.platform.writable = False
+        with patch.object(self.service, "_staging_path", side_effect=PermissionError("denied")), \
+                self.assertLogs("orbit.streamdisplay", level="ERROR"):
+            response = self.post()
+        self.assertEqual((response.status_code, response.json()["detail"]), (503, sd.STAGING_FAILED))
+        self.assertEqual(self.platform.elevated_scripts, [])
+
+    def test_app_running_in_sunshine_blocks_the_driver_restart(self):
+        self.sunshine.current_game = 881448767
+        response = self.post()
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.APP_RUNNING))
+        self.assertEqual(self.platform.settings_file.read_bytes(), self.original)
+        self.assertEqual(self.platform.pipe_commands, [])
 
     def test_helper_failure_is_503_in_plain_words(self):
         self.platform.writable = False
@@ -1175,6 +1422,7 @@ class SecondScreenTests(unittest.TestCase):
         self.assertIsNone(sd.StreamDisplayService.placement_target(displays, "left"))
 
     def test_placer_moves_the_display_when_a_stream_activates_it(self):
+        self.store.replace("display", {"secondScreen": {"active": True, "position": "right"}})
         self.platform.displays[1].attached = True
         self.platform.displays[1].x, self.platform.displays[1].width = -1920, 1920
         placer = sd._Placer(self.service, "right")
@@ -1462,6 +1710,298 @@ class TrayTests(unittest.TestCase):
             self.assertFalse(sd.run_tray_setup_dialog(box, None, broken, virtual=sd.VirtualDisplayInfo()))
         self.assertIn(sd.VDD_INSTALL_COMMAND, boxes[-1])
         self.assertIn("not found", boxes[0])
+
+
+SERVERINFO_IDLE = b"""<?xml version="1.0" encoding="utf-8"?>
+<root status_code="200"><hostname>Gaming-PC</hostname><appversion>7.1.431.-1</appversion><GfeVersion>3.23.0.74</GfeVersion><uniqueid>0123456789ABCDEF</uniqueid><HttpsPort>47984</HttpsPort><ExternalPort>47989</ExternalPort><MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:00:00:00:00:00</mac><LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>3843</ServerCodecModeSupport><PairStatus>0</PairStatus><currentgame>0</currentgame><state>SUNSHINE_SERVER_FREE</state></root>"""
+SERVERINFO_BUSY = SERVERINFO_IDLE.replace(b"<currentgame>0</currentgame><state>SUNSHINE_SERVER_FREE</state>",
+                                          b"<currentgame>881448767</currentgame><state>SUNSHINE_SERVER_BUSY</state>")
+
+
+class SunshineActivityTests(unittest.TestCase):
+    """A client that left without quitting leaves no sockets, but the app keeps running in Sunshine."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.service, self.sunshine, self.platform, self.ps, self.store = make_service(self.folder.name)
+        self.client, self.headers = make_client(self.service)
+        self.addCleanup(self.client.close)
+
+    def test_app_running_without_a_stream_refuses_with_409_and_no_restart(self):
+        self.sunshine.current_game = 881448767
+        response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], sd.APP_RUNNING)
+        self.assertEqual((self.sunshine.saved, self.sunshine.restarts), ([], 0))
+        self.assertIsNone(self.store.get("display"))
+        status = self.client.get("/api/stream/display", headers=self.headers).json()
+        self.assertEqual((status["streamActive"], status["appRunning"]), (False, True))
+
+    def test_app_running_blocks_turning_the_feature_off_and_the_second_screen(self):
+        self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.sunshine.current_game = 1
+        for path, body in (("/api/stream/display/fill", {"enabled": False}), ("/api/stream/display/revert", None),
+                           ("/api/stream/display/second-screen", {"enabled": True, "width": 2732, "height": 2048})):
+            with self.subTest(path=path):
+                response = self.client.post(path, json=body, headers=self.headers)
+                self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.APP_RUNNING))
+        self.assertEqual(self.sunshine.restarts, 1)
+        self.assertEqual(self.sunshine.conf["output_name"], VDD_ID)
+
+    def test_unreadable_serverinfo_while_sunshine_runs_is_unknown(self):
+        self.sunshine.server_info_error = ConnectionRefusedError("refused")
+        response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_UNKNOWN))
+        self.sunshine.server_info_error = ValueError("not XML")
+        response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_UNKNOWN))
+        self.assertEqual(self.sunshine.restarts, 0)
+
+    def test_renamed_sunshine_is_found_by_its_listeners(self):
+        self.ps.sunshine_name = "sunshine-nightly.exe"
+        self.ps.listening = True
+        self.ps.stream(True)
+        response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_RUNNING))
+        self.ps.stream(False)
+        response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.sunshine.restarts, 1)
+        self.assertTrue(self.client.get("/api/stream/display", headers=self.headers).json()["sunshineRunning"])
+
+    def test_sunshine_that_answers_without_a_known_process_is_unknown(self):
+        self.ps.sunshine_name = "renamed.exe"  # no listener seen either (e.g. no access to its sockets)
+        with self.assertLogs("orbit.streamdisplay", level="WARNING"):
+            response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_UNKNOWN))
+        self.assertEqual((self.sunshine.saved, self.sunshine.restarts), ([], 0))
+
+    def test_activity_values(self):
+        ps = FakePs()
+        ps.sunshine_running = False
+        refused = MagicMock(side_effect=ConnectionRefusedError())
+        self.assertEqual(sd.sunshine_activity(47989, ps, refused), sd.SunshineActivity(frozenset(), False, False))
+        ps.sunshine_running = True
+        self.assertEqual(sd.sunshine_activity(47989, ps, lambda: (0, "SUNSHINE_SERVER_FREE")).busy, False)
+        self.assertTrue(sd.sunshine_activity(47989, ps, lambda: (5, "SUNSHINE_SERVER_BUSY")).app_running)
+        self.assertIsNone(sd.sunshine_activity(47989, ps, lambda: (None, None)).busy)
+        ps.stream(True)
+        activity = sd.sunshine_activity(47989, ps, lambda: (0, "SUNSHINE_SERVER_FREE"))
+        self.assertEqual((activity.streaming, activity.app_running, activity.busy), (True, False, True))
+        self.assertTrue(sd.stream_activity(47989, ps, lambda: (0, "SUNSHINE_SERVER_FREE")))
+
+    def test_serverinfo_parsing(self):
+        self.assertEqual(sd.parse_server_info(SERVERINFO_IDLE), (0, "SUNSHINE_SERVER_FREE"))
+        self.assertEqual(sd.parse_server_info(SERVERINFO_BUSY), (881448767, "SUNSHINE_SERVER_BUSY"))
+        self.assertFalse(sd.app_running_from(*sd.parse_server_info(SERVERINFO_IDLE)))
+        self.assertTrue(sd.app_running_from(*sd.parse_server_info(SERVERINFO_BUSY)))
+        self.assertTrue(sd.app_running_from(None, "SUNSHINE_SERVER_BUSY"))
+        self.assertTrue(sd.app_running_from(3, None))
+        self.assertIsNone(sd.app_running_from(None, None))
+        for bad in (b"not xml", b"<!DOCTYPE r [<!ENTITY a 'b'>]><root><currentgame>&a;</currentgame></root>"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                sd.parse_server_info(bad)
+        self.assertEqual(sd.parse_server_info(b"<root><currentgame>x</currentgame></root>"), (None, None))
+
+    def test_serverinfo_request_goes_to_the_plain_http_port_without_login(self):
+        connection = MagicMock()
+        connection.getresponse.return_value = SimpleNamespace(status=200, read=lambda size: SERVERINFO_BUSY)
+        with patch.object(sd.http.client, "HTTPConnection", return_value=connection) as opened:
+            result = sd.SunshineWebAPI(lambda: None, lambda: 50000).server_info()
+        self.assertEqual(result, (881448767, "SUNSHINE_SERVER_BUSY"))
+        self.assertEqual(opened.call_args.args, ("127.0.0.1", 50000))
+        method, path = connection.request.call_args.args
+        self.assertEqual((method, path), ("GET", "/serverinfo"))
+        self.assertNotIn("Authorization", connection.request.call_args.kwargs.get("headers", {}))
+        connection.close.assert_called_once()
+        connection.getresponse.return_value = SimpleNamespace(status=503, read=lambda size: b"")
+        with patch.object(sd.http.client, "HTTPConnection", return_value=connection), self.assertRaises(ValueError):
+            sd.SunshineWebAPI(lambda: None, lambda: 50000).server_info()
+
+
+class LogSafetyTests(unittest.TestCase):
+    def test_marker_inside_another_message_or_mid_line_is_ignored(self):
+        injected = (LOG_NO_VDD + "[2026-03-01 10:06:00.000]: Warning: Could not open asset Currently available display "
+                    f"devices: [{{\"device_id\": \"{VDD_ID}\", \"friendly_name\": \"VDD by MTT\"}}]\n")
+        devices = sd.parse_display_devices(injected)
+        self.assertEqual([device["device_id"] for device in devices], [MONITOR_ID])
+        unprefixed = f'Currently available display devices:\n[{{"device_id": "{VDD_ID}", "friendly_name": "VDD by MTT"}}]\n'
+        self.assertIsNone(sd.parse_display_devices(unprefixed))
+
+    def test_device_ids_must_be_braced_uuids(self):
+        self.assertTrue(sd.valid_device_id(VDD_ID))
+        self.assertTrue(sd.valid_device_id(VDD_ID.upper()))
+        for bad in (VDD_ID + "\n", VDD_ID + "\nglobal_prep_cmd = [{\"do\":\"cmd\",\"elevated\":true}]", VDD_ID[1:-1],
+                    "\\\\.\\DISPLAY1", "", None, 5, "{" + "g" * 8 + VDD_ID[9:]):
+            with self.subTest(bad=bad):
+                self.assertFalse(sd.valid_device_id(bad))
+
+    def test_unexpected_device_id_is_reported_not_used(self):
+        log = LOG_2025_INACTIVE.replace(f'"device_id": "{VDD_ID}"', '"device_id": "' + VDD_ID + '\\\\nencoder = x"')
+        with tempfile.TemporaryDirectory() as folder:
+            service, sunshine, *_ = make_service(folder)
+            sunshine.log_text = log
+            with self.assertLogs("orbit.streamdisplay", level="WARNING"):
+                self.assertEqual(service.vdd_device_id(refresh=True), (None, sd.DEVICE_ID_INVALID))
+                result = service.set_fill(True)
+            self.assertEqual(result["warning"], sd.DEVICE_ID_INVALID)
+            self.assertNotIn("output_name", sunshine.conf)
+            self.assertEqual(sunshine.restarts, 1)  # only for the settings: an odd id is no reason to restart
+
+    def test_log_that_cannot_be_fetched_is_502_and_never_restarts_sunshine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service, sunshine, platform, ps, store = make_service(folder)
+            platform.offered_after_pipe = True
+            client, headers = make_client(service)
+            self.addCleanup(client.close)
+            sunshine.logs = MagicMock(side_effect=sd.DisplaySetupError(502, sd.SUNSHINE_UNREACHABLE))
+            response = client.post("/api/stream/display/second-screen",
+                                   json={"enabled": True, "width": 2732, "height": 2048}, headers=headers)
+            self.assertEqual((response.status_code, response.json()["detail"]), (502, sd.SUNSHINE_UNREACHABLE))
+            response = client.post("/api/stream/display/fill", json={"enabled": True}, headers=headers)
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual((sunshine.restarts, sunshine.saved), (0, []))
+
+    def test_log_without_a_display_list_does_not_restart_sunshine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service, sunshine, *_ = make_service(folder)
+            sunshine.log_text = LOG_OLD_SUNSHINE  # e.g. Sunshine's log level is above Info
+            result = service.set_fill(True)
+            self.assertEqual(result["warning"], sd.NO_DEVICE_LIST)
+            self.assertEqual(sunshine.restarts, 1)  # the settings change only
+
+
+class SecondScreenOffTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.service, self.sunshine, self.platform, self.ps, self.store = make_service(self.folder.name)
+        self.platform.offered_after_pipe = True
+        self.client, self.headers = make_client(self.service)
+        self.addCleanup(self.client.close)
+
+    def off(self):
+        return self.client.post("/api/stream/display/second-screen", json={"enabled": False}, headers=self.headers)
+
+    def test_off_when_already_off_never_asks_or_changes_sunshine(self):
+        self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        calls = (len(self.sunshine.saved), self.sunshine.restarts)
+        self.sunshine.config = MagicMock(side_effect=AssertionError("Sunshine must not be asked"))
+        self.sunshine.log_text = LOG_OLD_SUNSHINE
+        result = self.service.set_second_screen(False)
+        self.assertEqual((result["changed"], result["restarted"]), (False, False))
+        self.assertEqual((len(self.sunshine.saved), self.sunshine.restarts), calls)
+        self.assertEqual(self.sunshine.conf["output_name"], VDD_ID)
+        self.assertEqual(self.store.get("display")["outputName"], VDD_ID)
+
+    def test_off_with_fill_on_uses_the_saved_id_even_when_the_log_fails(self):
+        self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual(self.client.post("/api/stream/display/second-screen", json={
+            "enabled": True, "width": 2732, "height": 2048}, headers=self.headers).status_code, 200)
+        self.sunshine.log_text = LOG_OLD_SUNSHINE
+        self.sunshine.logs = MagicMock(side_effect=sd.DisplaySetupError(502, sd.SUNSHINE_UNREACHABLE))
+        result = self.service.set_second_screen(False)
+        self.assertEqual((result["changed"], result["restarted"]), (True, True))
+        self.assertIsNone(result["warning"])
+        self.assertEqual(self.sunshine.conf["output_name"], VDD_ID)
+        self.assertEqual(self.sunshine.conf["dd_configuration_option"], "ensure_primary")
+        self.assertEqual(self.store.get("display")["outputName"], VDD_ID)
+        self.sunshine.logs.assert_not_called()
+
+    def test_off_with_fill_on_keeps_the_current_display_when_no_id_is_known(self):
+        self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.client.post("/api/stream/display/second-screen", json={"enabled": True, "width": 2732, "height": 2048},
+                         headers=self.headers)
+        state = self.store.get("display")
+        state["outputName"] = None  # e.g. settings.json edited by hand
+        self.store.replace("display", state)
+        self.sunshine.log_text = LOG_OLD_SUNSHINE
+        response = self.off()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("keeps the display it uses now", response.json()["warning"])
+        self.assertEqual(self.sunshine.conf["output_name"], VDD_ID)
+        self.assertEqual(self.sunshine.conf["dd_configuration_option"], "ensure_primary")
+
+    def test_fill_off_with_the_second_screen_on_keeps_its_display(self):
+        self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.client.post("/api/stream/display/second-screen", json={"enabled": True, "width": 2732, "height": 2048},
+                         headers=self.headers)
+        self.sunshine.logs = MagicMock(side_effect=sd.DisplaySetupError(502, sd.SUNSHINE_UNREACHABLE))
+        response = self.client.post("/api/stream/display/fill", json={"enabled": False}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.sunshine.conf["output_name"], VDD_ID)
+        self.assertEqual(self.sunshine.conf["dd_configuration_option"], "ensure_active")
+
+
+class PlacerLifetimeTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.service, self.sunshine, self.platform, self.ps, self.store = make_service(self.folder.name)
+        self.service._start_placer = True
+        self.addCleanup(self.service.close)
+        self.platform.displays[1].attached = True
+        self.platform.displays[1].x, self.platform.displays[1].width = -1920, 1920
+
+    def test_placer_ends_once_the_second_screen_is_off(self):
+        self.store.replace("display", {"secondScreen": {"active": False, "position": "right"}})
+        placer = sd._Placer(self.service, "right")
+        placer._stop_event = MagicMock()
+        placer._stop_event.wait.side_effect = [False, False, True]
+        placer.run()
+        self.assertEqual(self.platform.moves, [])
+        self.assertEqual(placer._stop_event.wait.call_count, 1)
+
+    def test_placer_follows_the_saved_side(self):
+        self.store.replace("display", {"secondScreen": {"active": True, "position": "left"}})
+        self.platform.displays[1].x = 2560
+        placer = sd._Placer(self.service, "right")
+        placer._stop_event = MagicMock()
+        placer._stop_event.wait.side_effect = [False, True]
+        placer.run()
+        self.assertEqual(self.platform.moves, [("\\\\.\\DISPLAY3", -1920, 0)])
+
+    def test_stale_status_does_not_start_a_placer_after_the_second_screen_went_off(self):
+        self.service._ensure_placer("right")  # state says off: nothing starts
+        self.assertIsNone(self.service._placer)
+        self.store.replace("display", {"secondScreen": {"active": True, "position": "left"}})
+        with patch.object(sd._Placer, "start") as start:
+            self.service._ensure_placer("right")
+        start.assert_called_once()
+        self.assertEqual(self.service._placer.position, "left")
+
+
+class SettingsFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.service, self.sunshine, self.platform, self.ps, self.store = make_service(self.folder.name)
+        self.client, self.headers = make_client(self.service)
+        self.addCleanup(self.client.close)
+
+    def test_settings_that_cannot_be_saved_are_503_and_sunshine_is_untouched(self):
+        with patch.object(self.store, "replace", side_effect=PermissionError("denied")), \
+                self.assertLogs("orbit.streamdisplay", level="ERROR"):
+            response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (503, sd.SETTINGS_NOT_SAVED))
+        self.assertEqual((self.sunshine.saved, self.sunshine.restarts), ([], 0))
+
+    def test_failed_rollback_still_reports_the_real_error(self):
+        self.sunshine.on_save = lambda count: self.ps.stream(True) if count == 1 else None
+        with patch.object(self.store, "remove", side_effect=OSError("disk gone")), \
+                self.assertLogs("orbit.streamdisplay", level="ERROR"):
+            response = self.client.post("/api/stream/display/fill", json={"enabled": True}, headers=self.headers)
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, sd.STREAM_RUNNING))
+        self.assertEqual(self.sunshine.conf, ORIGINAL_CONFIG)
+
+    def test_unexpected_windows_error_is_503_not_500(self):
+        with patch.object(self.service, "ensure_mode", side_effect=OSError(5, "Access is denied")), \
+                self.assertLogs("orbit.streamdisplay", level="ERROR"):
+            response = self.client.post("/api/stream/display/modes", json={"width": 2556, "height": 1179},
+                                        headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Windows refused", response.json()["detail"])
 
 
 if __name__ == "__main__":

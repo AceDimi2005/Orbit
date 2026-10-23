@@ -89,6 +89,8 @@ STREAM_RUNNING = ("Someone is streaming from this PC right now. Sunshine has to 
                   "so Orbit changes them only between streams. End the stream and try again.")
 STREAM_UNKNOWN = ("Orbit could not check whether a stream is running, so it did not restart Sunshine. "
                   "Try again in a moment.")
+APP_RUNNING = ("An app is still running in Sunshine. Sunshine has to restart to use new display settings, which would "
+               "close it. Quit the app from Moonlight first, then try again.")
 SUNSHINE_TOO_OLD = ("This needs Sunshine 2025.118 or newer, which can switch displays for each stream. "
                     "Update Sunshine on the PC and try again.")
 VDD_MISSING = ("Install the free Virtual Display Driver on the PC first (" + VDD_INSTALL_COMMAND
@@ -101,6 +103,24 @@ VDD_DISABLED = "The Virtual Display Driver is turned off in Device Manager. Turn
 SIGN_IN_FIRST = ("Sign in to Windows on the PC first. Adding a screen size to the virtual display can need your "
                  "approval on the PC's screen.")
 UAC_DECLINED = "The administrator prompt on the PC was declined, so Orbit left the virtual display unchanged."
+PROMPT_TIMEOUT = ("Nobody approved the administrator prompt on the PC in time, so Orbit left the virtual display "
+                  "unchanged. Try again when you can answer it on the PC.")
+PROMPT_STILL_OPEN = ("An earlier administrator prompt from Orbit is still open on the PC. Close it there (it no longer "
+                     "changes anything), then try again.")
+HELPER_SAW_STREAM = ("A stream started, or an app was running in Sunshine, before the administrator prompt was "
+                     "approved, so Orbit left the virtual display unchanged. End it and try again.")
+KEPT_NEW_SIZE = ("Orbit kept the new screen size in the Virtual Display Driver settings; Windows offers it after the "
+                 "driver restarts, for example after you restart the PC.")
+DRIVER_STUCK = ("The Virtual Display Driver stopped responding after the reload, so restart the PC before streaming "
+                "to it.")
+SETTINGS_NOT_SAVED = ("Orbit could not save its own settings on this PC (settings.json), so it changed nothing. "
+                      "Check that the disk has free space, then try again.")
+STAGING_FAILED = ("Orbit could not prepare the new Virtual Display Driver settings in its data folder. Check that the "
+                  "disk has free space, then try again.")
+NO_DEVICE_LIST = ("Sunshine's log does not list the PC's displays. Restart Sunshine and try again; if this stays, set "
+                  "Sunshine's Log Level to Info (Configuration > Advanced).")
+DEVICE_ID_INVALID = ("Sunshine's log lists the virtual display with an id Orbit does not recognise, so Orbit did not "
+                     "use it. Restart Sunshine and try again.")
 BUSY = "Orbit is already changing the display settings on this PC. Wait a moment and try again."
 PLACEMENT_HINT = ("To move it yourself: open Windows Settings > System > Display, drag the screen named "
                   "'VDD by MTT' to the {side} of your main display and select Apply.")
@@ -109,12 +129,14 @@ NO_VDD_WARNING = ("Without the Virtual Display Driver, Sunshine can only switch 
 
 
 class DisplaySetupError(Exception):
-    """A request that cannot be done; `detail` is a plain sentence for the app to show."""
+    """A request that cannot be done; `detail` is a plain sentence for the app to show. `kind`
+    tells callers inside this module why (for example "declined"), when that matters."""
 
-    def __init__(self, status, detail):
+    def __init__(self, status, detail, kind=None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.kind = kind
 
 
 class NeedsElevation(Exception):
@@ -123,6 +145,14 @@ class NeedsElevation(Exception):
 
 class ElevationDeclined(Exception):
     """The user answered No to the UAC prompt (or no administrator approved it)."""
+
+
+class ElevationTimedOut(Exception):
+    """Nobody answered the UAC prompt in time. If it is approved later, the helper does nothing."""
+
+
+class ElevationBusy(Exception):
+    """An earlier UAC prompt from Orbit is still waiting for an answer."""
 
 
 class ElevationFailed(Exception):
@@ -187,6 +217,7 @@ ERROR_PIPE_BUSY = 231
 ERROR_PIPE_NOT_CONNECTED = 233
 ERROR_CANCELLED = 1223
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+MAX_PATH = 260
 
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SEE_MASK_NOASYNC = 0x00000100
@@ -353,29 +384,125 @@ def send_pipe_command(command, timeout=2.0, library=None):
 
 # -- the administrator helper (one UAC prompt) --------------------------------------------------
 
-def powershell_path():
-    root = os.environ.get("SystemRoot") or os.environ.get("windir") or "C:\\Windows"
-    return root.rstrip("\\/") + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+# How long Orbit waits for someone to answer the UAC prompt. The helper itself refuses to run when
+# it starts later than that, so a prompt approved after the phone stopped waiting changes nothing.
+PROMPT_WAIT_SECONDS = 60.0
+HELPER_RUN_SECONDS = 120.0
+NET_EPOCH_TICKS = 621355968000000000  # 0001-01-01 to 1970-01-01 in .NET's 100 ns ticks
+
+
+def system_directory(kernel32=None):
+    """Windows' System32 folder from GetSystemDirectoryW. Never from %SystemRoot%/%windir%, which a
+    user's own environment can point elsewhere: the administrator must approve the real PowerShell."""
+    kernel32 = kernel32 or _library("kernel32")
+    get = _prototype(kernel32.GetSystemDirectoryW, [wintypes.LPWSTR, wintypes.UINT], wintypes.UINT)
+    buffer = ctypes.create_unicode_buffer(MAX_PATH + 1)
+    length = int(get(buffer, len(buffer)) or 0)
+    folder = buffer.value
+    if not length or length >= len(buffer) or length != len(folder) or not re.match(r"^[A-Za-z]:\\", folder):
+        raise ElevationFailed("Orbit could not find Windows' system folder to start PowerShell.")
+    return folder
+
+
+def powershell_path(kernel32=None):
+    return system_directory(kernel32).rstrip("\\/") + "\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+
+_PS_SINGLE_QUOTES = re.compile("['‘’‚‛]")
 
 
 def _ps_quote(value):
-    return "'" + str(value).replace("'", "''") + "'"
+    """A PowerShell single-quoted string. PowerShell ends such a string at any of ' ‘ ’ ‚ ‛, so each
+    of them is doubled (like its own EscapeSingleQuotedStringContent)."""
+    return "'" + _PS_SINGLE_QUOTES.sub(lambda match: match.group(0) * 2, str(value)) + "'"
 
 
-def build_helper_script(source=None, target=None, sha256=None, instance_ids=()):
-    """The PowerShell the elevated helper runs. With `source`, it checks the staged file's
-    SHA-256, keeps one backup of the old settings, and replaces `target` through a temporary file.
-    It then restarts each driver instance (disable, then always enable again). When the restart
-    fails it puts the old file back. Exit codes: 0 done, 3 staged file changed, 4 could not save,
-    5 could not restart the driver (old settings restored)."""
+def _ps_text(value):
+    """A PowerShell expression for the text `value` that carries none of its characters: UTF-8,
+    base64-encoded. Paths and ids reach the administrator's PowerShell only this way."""
+    encoded = base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+    return f"([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}')))"
+
+
+def dotnet_ticks(unix_seconds):
+    """`unix_seconds` as [DateTime]::UtcNow.Ticks counts (both read the same system clock)."""
+    return int(round(float(unix_seconds) * 10_000_000)) + NET_EPOCH_TICKS
+
+
+# Run inside the helper right before it touches anything: is a stream or a Sunshine app running?
+# 0: nobody streams, 1: a stream or an app is running, 2: cannot tell. Sunshine's process is found by
+# name, by the pids Orbit saw, and as the owner of its TCP listeners (like sunshine_activity).
+_HELPER_BUSY_CHECK = [
+    "function Test-OrbitBusy {",
+    "  try {",
+    "    $ids = @($knownSunshine | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })",
+    "    $ids += @(Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Id })",
+    "    $tcp = @(Get-NetTCPConnection -ErrorAction Stop)",
+    "    $listen = @(($basePort - 5), $basePort, ($basePort + 1), ($basePort + 21))",
+    "    $ids += @($tcp | Where-Object { $_.State -eq 'Listen' -and $listen -contains $_.LocalPort } |"
+    " ForEach-Object { [int]$_.OwningProcess })",
+    "    if (@($tcp | Where-Object { $_.State -eq 'Established' -and $_.LocalPort -eq ($basePort + 21) -and"
+    " $ids -contains $_.OwningProcess }).Count -gt 0) { return 1 }",
+    "    $udp = @(($basePort + 9), ($basePort + 10), ($basePort + 11))",
+    "    if (@(Get-NetUDPEndpoint -ErrorAction Stop | Where-Object { $udp -contains $_.LocalPort -and"
+    " $ids -contains $_.OwningProcess }).Count -gt 0) { return 1 }",
+    "  } catch { return 2 }",
+    "  try {",
+    "    $request = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:' + $basePort + '/serverinfo')",
+    "    $request.Proxy = $null",
+    "    $request.Timeout = 5000",
+    "    $request.ReadWriteTimeout = 5000",
+    "    $response = $request.GetResponse()",
+    "    try {",
+    "      $stream = $response.GetResponseStream()",
+    "      $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList $stream",
+    "      $text = $reader.ReadToEnd()",
+    "    } finally { $response.Close() }",
+    "  } catch {",
+    "    if ($ids.Count -gt 0) { return 2 }",
+    "    return 0",
+    "  }",
+    "  if ($ids.Count -eq 0 -or $text -match '<!DOCTYPE|<!ENTITY') { return 2 }",
+    "  try { $info = [xml]$text } catch { return 2 }",
+    "  $game = ([string]$info.root.currentgame).Trim()",
+    "  $state = ([string]$info.root.state).Trim()",
+    "  if ($state -like '*_SERVER_BUSY' -or ($game -ne '' -and $game -ne '0')) { return 1 }",
+    "  if ($game -eq '0' -or $state -like '*_SERVER_FREE') { return 0 }",
+    "  return 2",
+    "}",
+]
+
+
+def build_helper_script(source=None, target=None, sha256=None, instance_ids=(), not_after=None, base_port=47989,
+                        sunshine_pids=()):
+    """The PowerShell the elevated helper runs. It first refuses to run after `not_after` (Unix
+    time; by default PROMPT_WAIT_SECONDS from now). Before restarting the driver it checks that no
+    stream and no Sunshine app is running. With `source`, it checks the staged file's SHA-256, keeps
+    one backup of the old settings, and replaces `target` through a temporary file. It then restarts
+    each driver instance (disable, then always enable again). When the restart fails it puts the old
+    file back. Every path and id is passed base64-encoded, never as PowerShell text.
+
+    Exit codes: 0 done, 3 staged file changed, 4 could not save, 5 could not restart the driver (old
+    settings restored), 6 started too late (nothing done), 7 a stream or an app is running in
+    Sunshine (nothing done), 8 could not check for a stream (nothing done)."""
+    deadline = dotnet_ticks(time.time() + PROMPT_WAIT_SECONDS if not_after is None else not_after)
     lines = [
         "# Orbit PC Companion: Virtual Display Driver helper, run once as administrator",
         "$ErrorActionPreference = 'Stop'",
-        f"$source = {_ps_quote(source or '')}",
-        f"$target = {_ps_quote(target or '')}",
-        f"$expected = {_ps_quote((sha256 or '').upper())}",
-        f"$backupName = {_ps_quote(VDD_BACKUP_NAME)}",
-        "$devices = @(" + ", ".join(_ps_quote(item) for item in instance_ids) + ")",
+        f"if ([DateTime]::UtcNow.Ticks -gt {deadline}) {{ exit 6 }}",
+        f"$source = {_ps_text(source or '')}",
+        f"$target = {_ps_text(target or '')}",
+        f"$expected = {_ps_text((sha256 or '').upper())}",
+        f"$backupName = {_ps_text(VDD_BACKUP_NAME)}",
+        "$devices = @(" + ", ".join(_ps_text(item) for item in instance_ids) + ")",
+        f"$basePort = {int(base_port)}",
+        "$knownSunshine = @(" + ", ".join(str(int(pid)) for pid in sorted(sunshine_pids)) + ")",
+        *_HELPER_BUSY_CHECK,
+        "if ($devices.Count -gt 0) {",
+        "  $busy = @(Test-OrbitBusy)[-1]",
+        "  if ($busy -eq 1) { exit 7 }",
+        "  if ($busy -ne 0) { exit 8 }",
+        "}",
         "$original = $null",
         "$wrote = $false",
         "if ($source -ne '') {",
@@ -416,7 +543,10 @@ def build_helper_script(source=None, target=None, sha256=None, instance_ids=()):
         "if ($devices.Count -gt 0) { Start-Sleep -Seconds 2 }",
         "exit 0",
     ]
-    return "\r\n".join(lines) + "\r\n"
+    script = "\r\n".join(lines) + "\r\n"
+    if not script.isascii():
+        raise ValueError("The administrator helper must be plain ASCII.")
+    return script
 
 
 def powershell_parameters(script):
@@ -441,9 +571,20 @@ def _com_initialize(ole32):
         return None
 
 
-def run_elevated_powershell(script, timeout=180.0, shell32=None, kernel32=None, ole32=None):
+_PROMPT_LOCK = threading.Lock()
+_PROMPT_THREAD = None  # the thread blocked in ShellExecuteExW until someone answers the prompt, else None
+
+
+def run_elevated_powershell(script, timeout=HELPER_RUN_SECONDS, prompt_timeout=PROMPT_WAIT_SECONDS, shell32=None,
+                            kernel32=None, ole32=None):
     """Runs `script` in an elevated PowerShell after one UAC prompt and returns its exit code.
+
+    ShellExecuteExW blocks until somebody answers the prompt, so it runs on its own thread and
+    Orbit stops waiting after `prompt_timeout` seconds (ElevationTimedOut). That thread then just
+    closes the helper's handle if the prompt is approved later; the helper refuses to run late on
+    its own (exit 6). While a prompt is still open, another one is refused (ElevationBusy).
     Raises ElevationDeclined when the prompt is declined and ElevationFailed otherwise."""
+    global _PROMPT_THREAD
     shell32 = shell32 or _library("shell32")
     kernel32 = kernel32 or _library("kernel32")
     execute = _prototype(shell32.ShellExecuteExW, [ctypes.POINTER(SHELLEXECUTEINFOW)], wintypes.BOOL)
@@ -456,17 +597,51 @@ def run_elevated_powershell(script, timeout=180.0, shell32=None, kernel32=None, 
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
     info.hwnd = None
     info.lpVerb = "runas"
-    info.lpFile = powershell_path()
+    info.lpFile = powershell_path(kernel32)
     info.lpParameters = powershell_parameters(script)
     info.lpDirectory = None
     info.nShow = SW_HIDE
-    com = _com_initialize(ole32)
-    try:
-        started = execute(ctypes.byref(info))
-        error = 0 if started else _last_error()
-    finally:
-        if com is not None:
-            com.CoUninitialize()
+    outcome = {"done": False, "abandoned": False, "started": False, "error": 0}
+    outcome_lock = threading.Lock()
+    answered = threading.Event()
+
+    def ask():
+        global _PROMPT_THREAD
+        started, error = False, 0
+        try:
+            com = _com_initialize(ole32)
+            try:
+                started = bool(execute(ctypes.byref(info)))
+                error = 0 if started else _last_error()  # last-error values are per thread: read it here
+            finally:
+                if com is not None:
+                    com.CoUninitialize()
+        except Exception:
+            LOGGER.exception("ShellExecuteExW failed")
+            started, error = False, -1
+        finally:
+            with _PROMPT_LOCK:  # answered (or failed): the next request may ask again right away
+                if _PROMPT_THREAD is threading.current_thread():
+                    _PROMPT_THREAD = None
+        with outcome_lock:
+            outcome.update(done=True, started=started, error=error)
+            abandoned = outcome["abandoned"]
+        if abandoned and started and info.hProcess:
+            close(info.hProcess)  # approved too late: the helper exits by itself without doing anything
+        answered.set()
+
+    with _PROMPT_LOCK:
+        if _PROMPT_THREAD is not None:
+            raise ElevationBusy(PROMPT_STILL_OPEN)
+        worker = threading.Thread(target=ask, name="orbit-uac-prompt", daemon=True)
+        _PROMPT_THREAD = worker
+        worker.start()
+    if not answered.wait(prompt_timeout):
+        with outcome_lock:
+            if not outcome["done"]:
+                outcome["abandoned"] = True
+                raise ElevationTimedOut(PROMPT_TIMEOUT)
+    started, error = outcome["started"], outcome["error"]
     if not started:
         if error == ERROR_CANCELLED:
             raise ElevationDeclined(UAC_DECLINED)
@@ -492,7 +667,12 @@ HELPER_FAILURES = {
     3: "The new virtual display settings changed before they could be saved. Try again.",
     4: "Windows did not let Orbit save the Virtual Display Driver settings, even as administrator.",
     5: "Windows could not restart the Virtual Display Driver, so Orbit kept its previous settings.",
+    6: PROMPT_TIMEOUT,
+    7: HELPER_SAW_STREAM,
+    8: STREAM_UNKNOWN,
 }
+# Exit codes where the helper changed nothing on purpose: 409, like the same checks in Orbit itself.
+HELPER_CONFLICTS = {6: "timeout", 7: "stream", 8: "streamUnknown"}
 
 
 # -- vdd_settings.xml -------------------------------------------------------------------------
@@ -725,13 +905,25 @@ def plan_vdd_modes(data, width, height, refresh):
 
 # -- Sunshine's log: which display is the virtual one ---------------------------------------------
 
-_DEVICE_LIST_MARKER = re.compile(r"Currently available (?:display )?devices:", re.I)
+# The marker only counts in one of Sunshine's own log records ("[2026-10-17 15:20:30.512]: Info: ...")
+# and only at the end of its line, where the JSON list starts on the next line.
+_DEVICE_LIST_MARKER = re.compile(
+    r"^[ \t]*\[\d{4}[-:]\d{2}[-:]\d{2}[^\]\r\n]*\][ \t]*:?[ \t]*[A-Za-z]+[ \t]*:[^\r\n]*?"
+    r"Currently available (?:display )?devices:[ \t]*\r?$", re.I | re.M)
 _LOG_LINE_PREFIX = re.compile(r"^\s*\[\d{4}-\d{2}-\d{2}[^\]]*\]\s*:?\s*(?:[A-Za-z]+\s*:\s*)?")
+# libdisplaydevice's device ids are braced UUIDs ({de9bb7e2-186e-505b-9e93-f48793333810}). Sunshine
+# writes output_name into sunshine.conf as a "key = value" line, so nothing else is ever sent.
+_DEVICE_ID = re.compile(r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}")
+
+
+def valid_device_id(value):
+    return isinstance(value, str) and _DEVICE_ID.fullmatch(value) is not None
 
 
 def parse_display_devices(log_text):
     """The newest display list Sunshine logged (libdisplaydevice's JSON after "Currently available
-    display devices:"), as a list of dicts, or None when the log has no readable list."""
+    display devices:" at the end of one of its log records), as a list of dicts, or None when the
+    log has no readable list."""
     if not isinstance(log_text, str) or not log_text:
         return None
     decoder = json.JSONDecoder()
@@ -885,6 +1077,57 @@ class SunshineWebAPI:
         raw = self._call("GET", "/api/logs", timeout=max(self.timeout, 20.0))
         return raw.decode("utf-8", "replace")
 
+    def server_info(self, timeout=3.0):
+        """(running app id or None, state or None) from Sunshine's public `/serverinfo` on
+        http://127.0.0.1:<port> (plain HTTP, no login and no pairing: nvhttp serverinfo reports
+        `currentgame` and `state` to every client). Raises OSError (nothing answers),
+        http.client.HTTPException or ValueError."""
+        connection = http.client.HTTPConnection("127.0.0.1", int(self._base_port()), timeout=timeout)
+        try:
+            connection.request("GET", "/serverinfo", headers={"Accept": "application/xml, text/xml"})
+            response = connection.getresponse()
+            body = response.read(MAX_SERVER_INFO_BYTES + 1)
+            status = response.status
+        finally:
+            connection.close()
+        if status != 200:
+            raise ValueError(f"Sunshine answered HTTP {status} to /serverinfo.")
+        if len(body) > MAX_SERVER_INFO_BYTES:
+            raise ValueError("Sunshine's /serverinfo answer is too large.")
+        return parse_server_info(body)
+
+
+MAX_SERVER_INFO_BYTES = 256 * 1024
+
+
+def parse_server_info(data):
+    """(running app id or None, state or None) from Sunshine's /serverinfo XML."""
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", "replace")
+    if "<!DOCTYPE" in data or "<!ENTITY" in data:
+        raise ValueError("Sunshine's /serverinfo answer is not in the usual format.")
+    try:
+        root = ET.fromstring(data.strip())
+    except ET.ParseError as error:
+        raise ValueError("Sunshine sent an unreadable /serverinfo answer.") from error
+    game_text = (root.findtext("currentgame") or "").strip()
+    state = (root.findtext("state") or "").strip() or None
+    try:
+        game = int(game_text) if game_text else None
+    except ValueError:
+        game = None
+    return game, state
+
+
+def app_running_from(current_game, state):
+    """True when /serverinfo says an app runs, False when it says none does, None otherwise."""
+    state = (state or "").upper()
+    if state.endswith("_SERVER_BUSY") or (current_game is not None and current_game != 0):
+        return True
+    if current_game == 0 or state.endswith("_SERVER_FREE"):
+        return False
+    return None
+
 
 def sunshine_supports_display_settings(version):
     """True from Sunshine 2025.118.151840 (the first release with per-stream display settings),
@@ -914,28 +1157,39 @@ def sunshine_pids(ps=None):
     return found
 
 
-def stream_activity(base_port, ps=None):
-    """True when a stream is running or starting, False when not, None when Orbit cannot tell.
+def _listener_ports(base_port):
+    # HTTPS (base - 5), HTTP (base), web UI (base + 1) and RTSP (base + 21): only Sunshine listens there.
+    return {base_port - 5, base_port, base_port + 1, base_port + 21}
 
-    Sunshine opens its video, control and audio UDP ports (base + 9, 10, 11) when the first
-    stream starts and closes them after the last one ends, and a client being set up keeps an
-    RTSP connection (TCP base + 21) open. Only sockets owned by Sunshine count.
-    """
+
+def _listener_pids(connections, base_port):
+    """Owners of TCP listeners on Sunshine's ports, so a renamed build or a fork still counts."""
+    ports = _listener_ports(base_port)
+    found = set()
+    for connection in connections:
+        if getattr(connection, "type", None) != socket.SOCK_STREAM or getattr(connection, "status", None) != "LISTEN":
+            continue
+        port = getattr(getattr(connection, "laddr", None), "port", None)
+        pid = getattr(connection, "pid", None)
+        if port in ports and pid:
+            found.add(pid)
+    return found
+
+
+def sunshine_processes(base_port, ps=None):
+    """Sunshine's pids: processes named sunshine.exe plus the owners of its TCP listeners."""
     ps = ps or psutil
+    pids = set(sunshine_pids(ps))
     try:
-        pids = sunshine_pids(ps)
+        pids |= _listener_pids(ps.net_connections(kind="inet"), base_port)
     except Exception:
-        LOGGER.warning("Could not list processes to look for Sunshine", exc_info=True)
-        return None
-    if not pids:
-        return False
+        pass
+    return pids
+
+
+def _stream_sockets_open(connections, pids, base_port):
     stream_udp = {base_port + 9, base_port + 10, base_port + 11}
     rtsp = base_port + 21
-    try:
-        connections = ps.net_connections(kind="inet")
-    except Exception:
-        LOGGER.warning("Could not list network connections to check for a running stream", exc_info=True)
-        return None
     for connection in connections:
         if getattr(connection, "pid", None) not in pids:
             continue
@@ -946,6 +1200,75 @@ def stream_activity(base_port, ps=None):
         if kind == socket.SOCK_STREAM and port == rtsp and getattr(connection, "status", None) == "ESTABLISHED":
             return True
     return False
+
+
+SERVER_INFO_ERRORS = (OSError, ValueError, http.client.HTTPException, DisplaySetupError)
+
+
+@dataclass(frozen=True)
+class SunshineActivity:
+    """What Sunshine is doing; None in a field means Orbit could not tell."""
+    pids: frozenset = frozenset()
+    streaming: bool | None = False  # its stream sockets are open
+    app_running: bool | None = False  # /serverinfo reports a running app (restarting would close it)
+
+    @property
+    def busy(self):
+        if self.streaming or self.app_running:
+            return True
+        if self.streaming is None or self.app_running is None:
+            return None
+        return False
+
+
+def sunshine_activity(base_port, ps=None, server_info=None):
+    """Whether Sunshine streams or runs an app right now, judged conservatively.
+
+    Sunshine opens its video, control and audio UDP ports (base + 9, 10, 11) when the first
+    stream starts and closes them after the last one ends, and a client being set up keeps an
+    RTSP connection (TCP base + 21) open. Only sockets owned by Sunshine count; its process is
+    found by name and as the owner of its listeners. A client that left without quitting leaves
+    no sockets but keeps the app running, which a restart would close, so `server_info()` (see
+    SunshineWebAPI.server_info) is asked too. When something answers there but no Sunshine
+    process is found, or it cannot be read while Sunshine runs, the answer is "cannot tell".
+    """
+    ps = ps or psutil
+    try:
+        named = sunshine_pids(ps)
+    except Exception:
+        LOGGER.warning("Could not list processes to look for Sunshine", exc_info=True)
+        return SunshineActivity(frozenset(), None, None)
+    try:
+        connections = list(ps.net_connections(kind="inet"))
+    except Exception:
+        LOGGER.warning("Could not list network connections to check for a running stream", exc_info=True)
+        connections = None
+    pids = set(named) | (_listener_pids(connections, base_port) if connections is not None else set())
+    if not pids:
+        if server_info is None:
+            return SunshineActivity(frozenset(), False, False)
+        try:
+            server_info()
+        except SERVER_INFO_ERRORS:
+            return SunshineActivity(frozenset(), False, False)  # nothing answers: Sunshine is not running
+        LOGGER.warning("Something answers on Sunshine's port %s, but Orbit could not find Sunshine's process",
+                       base_port)
+        return SunshineActivity(frozenset(), None, None)
+    streaming = None if connections is None else _stream_sockets_open(connections, pids, base_port)
+    app_running = False
+    if server_info is not None:
+        try:
+            app_running = app_running_from(*server_info())
+        except SERVER_INFO_ERRORS:
+            LOGGER.info("Could not read Sunshine's /serverinfo", exc_info=True)
+            app_running = None
+    return SunshineActivity(frozenset(pids), streaming, app_running)
+
+
+def stream_activity(base_port, ps=None, server_info=None):
+    """True when a stream (or, with `server_info`, a Sunshine app) is running, False when not,
+    None when Orbit cannot tell."""
+    return sunshine_activity(base_port, ps, server_info).busy
 
 
 # -- Windows: the driver, its settings file and the displays ----------------------------------------
@@ -1349,14 +1672,29 @@ class StreamDisplayService:
         return value if isinstance(value, dict) else {}
 
     def _save_state(self, state):
-        self._store_provider().replace(SETTINGS_SECTION, state)
+        try:
+            self._store_provider().replace(SETTINGS_SECTION, state)
+        except (OSError, ValueError) as error:
+            LOGGER.error("Could not save the display settings", exc_info=True)
+            raise DisplaySetupError(503, SETTINGS_NOT_SAVED) from error
 
     def _restore_state(self, previous):
         """Puts the section back exactly as it was (None: it did not exist)."""
         if previous is None:
-            self._store_provider().remove(SETTINGS_SECTION)
+            try:
+                self._store_provider().remove(SETTINGS_SECTION)
+            except (OSError, ValueError) as error:
+                LOGGER.error("Could not remove the display settings", exc_info=True)
+                raise DisplaySetupError(503, SETTINGS_NOT_SAVED) from error
         else:
             self._save_state(previous)
+
+    def _rollback_state(self, previous):
+        """_restore_state during a rollback: a failure is logged, so the original error still reaches the app."""
+        try:
+            self._restore_state(previous)
+        except DisplaySetupError:
+            LOGGER.error("Could not put Orbit's display settings back after a failed change")
 
     @staticmethod
     def fill_state(state):
@@ -1379,19 +1717,24 @@ class StreamDisplayService:
     def virtual_display(self):
         return detect_virtual_display(self.platform)
 
+    def activity(self):
+        return sunshine_activity(int(self._base_port()), self._ps, self.sunshine.server_info)
+
     def stream_active(self):
-        return stream_activity(int(self._base_port()), self._ps)
+        return self.activity().busy
 
     def _require_idle(self):
-        active = self.stream_active()
-        if active is None:
-            raise DisplaySetupError(409, STREAM_UNKNOWN)
-        if active:
+        activity = self.activity()
+        if activity.streaming:
             raise DisplaySetupError(409, STREAM_RUNNING)
+        if activity.app_running:
+            raise DisplaySetupError(409, APP_RUNNING)
+        if activity.busy is None:
+            raise DisplaySetupError(409, STREAM_UNKNOWN)
 
     def _sunshine_pids(self):
         try:
-            return frozenset(sunshine_pids(self._ps))
+            return frozenset(sunshine_processes(int(self._base_port()), self._ps))
         except Exception:
             return frozenset()
 
@@ -1405,19 +1748,28 @@ class StreamDisplayService:
         self._device_cache = (pids, self._clock(), devices)
         return devices
 
+    def _lookup_device(self, refresh=False):
+        """(device id or None, reason or None, missing) where `missing` is True only when Sunshine's
+        log was read, lists displays and the virtual one is not among them. A log that cannot be
+        fetched raises its DisplaySetupError (428 or 502)."""
+        devices = self.display_devices(refresh=refresh)
+        if devices is None:
+            return None, NO_DEVICE_LIST, False
+        device = pick_vdd_device(devices)
+        if device is None:
+            return None, VDD_NOT_IN_SUNSHINE, True
+        if not valid_device_id(device.get("device_id")):
+            LOGGER.warning("Sunshine's log lists the virtual display with an unexpected id; not using it")
+            return None, DEVICE_ID_INVALID, False
+        return device["device_id"], None, False
+
     def vdd_device_id(self, refresh=False):
         """(device id or None, reason or None) for Sunshine's output_name."""
         try:
-            devices = self.display_devices(refresh=refresh)
+            device_id, reason, _ = self._lookup_device(refresh=refresh)
         except DisplaySetupError as error:
             return None, error.detail
-        if devices is None:
-            return None, ("Sunshine's log does not list the PC's displays yet. Restart Sunshine, or update it to "
-                          "2025.118 or newer.")
-        device = pick_vdd_device(devices)
-        if device is None:
-            return None, VDD_NOT_IN_SUNSHINE
-        return device["device_id"], None
+        return device_id, reason
 
     # status -----------------------------------------------------------------------------------
 
@@ -1436,12 +1788,14 @@ class StreamDisplayService:
         virtual = self.virtual_display()
         second = self.second_state(state)
         saved = state.get("savedSunshineConfig")
+        activity = self.activity()
         payload = {
             "sunshineVersion": None,
-            "sunshineRunning": bool(self._sunshine_pids()),
+            "sunshineRunning": bool(activity.pids),
             "loginSaved": login_saved,
             "sunshineSupported": None,
-            "streamActive": self.stream_active(),
+            "streamActive": activity.streaming,
+            "appRunning": activity.app_running,
             "virtualDisplay": {**virtual.payload(), "deviceId": None, "deviceIdReason": None,
                                "attached": None, "position": None},
             "config": dict.fromkeys(REPORTED_KEYS),
@@ -1520,7 +1874,7 @@ class StreamDisplayService:
         return False
 
     def _restart_sunshine(self):
-        """Restarts Sunshine, only while nobody streams. True when it answers again."""
+        """Restarts Sunshine, only while nobody streams and no app runs. True when it answers again."""
         self._require_idle()
         old_pids = self._sunshine_pids()
         self.sunshine.restart()
@@ -1528,15 +1882,32 @@ class StreamDisplayService:
         return self._wait_for_sunshine(old_pids)
 
     def _resolve_device_id(self, virtual):
-        """The VDD's id from Sunshine's log. Sunshine lists displays only when it starts, so when
-        the driver runs but is missing from the list, Sunshine is restarted once (while idle)."""
-        device_id, reason = self.vdd_device_id(refresh=True)
-        if device_id or virtual.device_status not in ("running", "unknown"):
+        """The VDD's id from Sunshine's log. Sunshine lists displays only when it starts, so when the
+        log lists displays but not the running driver, Sunshine is restarted once (while idle). A log
+        that cannot be fetched is a Sunshine failure (502), never a reason to restart it."""
+        device_id, reason, missing = self._lookup_device(refresh=True)
+        if device_id or not missing or virtual.device_status not in ("running", "unknown"):
             return device_id, reason, False
         if not self._restart_sunshine():
             return None, "Sunshine is still restarting. Try again in a few seconds.", True
-        device_id, reason = self.vdd_device_id(refresh=True)
+        device_id, reason, _ = self._lookup_device(refresh=True)
         return device_id, reason, True
+
+    def _device_id_in_use(self, state, current):
+        """The virtual display's id while one feature stays on and the other changes: the id saved
+        when it was turned on, else Sunshine's log, else Sunshine's current output_name is kept (with
+        a warning) rather than dropped."""
+        stored = state.get("outputName")
+        if valid_device_id(stored):
+            return stored, None
+        device_id, reason = self.vdd_device_id(refresh=True)
+        if device_id:
+            return device_id, None
+        kept = current.get("output_name")
+        kept = kept if isinstance(kept, str) and kept.strip() else None
+        warning = ("Orbit could not find the virtual display in Sunshine's log, so Sunshine keeps the display it "
+                   "uses now." + (f" {reason}" if reason else ""))
+        return kept, warning
 
     def _apply_sunshine(self, current, new_state, device_id):
         """Saves `new_state`, posts the matching full map and restarts Sunshine. When Sunshine cannot
@@ -1577,7 +1948,7 @@ class StreamDisplayService:
         try:
             self.sunshine.save_config(target)
         except DisplaySetupError:
-            self._restore_state(previous)
+            self._rollback_state(previous)
             raise
         try:
             ready = self._restart_sunshine()
@@ -1588,7 +1959,7 @@ class StreamDisplayService:
                 LOGGER.error("Could not put Sunshine's previous settings back after a failed restart")
                 raise DisplaySetupError(502, "Sunshine took the new settings but could not restart, and Orbit could "
                                              "not put the previous settings back. Restart Sunshine on the PC.") from error
-            self._restore_state(previous)
+            self._rollback_state(previous)
             raise
         return {"changed": True, "restarted": True, "sunshineReady": ready}
 
@@ -1606,15 +1977,17 @@ class StreamDisplayService:
             new_state = copy.deepcopy(state)
             new_state["fill"] = {"enabled": bool(enabled), "onlyDisplay": bool(enabled and only_display)}
             warning = None
-            device_id = state.get("outputName") if self.second_state(state)["active"] else None
-            if enabled:
+            device_id = None
+            if self.second_state(state)["active"]:
+                device_id, warning = self._device_id_in_use(state, current)
+            if enabled and not valid_device_id(device_id):
                 virtual = self.virtual_display()
                 if virtual.driver == "vdd" and virtual.device_status != "disabled":
                     found, reason, restarted = self._resolve_device_id(virtual)
                     if found:
-                        device_id = found
+                        device_id, warning = found, None
                     else:
-                        warning = reason
+                        warning = warning or reason
                     if restarted:
                         current = self._current_config()
                 elif virtual.driver == "vdd":
@@ -1630,17 +2003,11 @@ class StreamDisplayService:
     def set_second_screen(self, enabled, width=None, height=None, refresh=60, position="right"):
         self._begin()
         try:
+            if not enabled:
+                return self._second_screen_off()
             current = self._current_config()
             state = self.state()
             new_state = copy.deepcopy(state)
-            if not enabled:
-                new_state["secondScreen"] = {**self.second_state(state), "active": False}
-                device_id = None
-                if self.fill_state(state)["enabled"]:
-                    device_id, _ = self.vdd_device_id()
-                result = self._apply_sunshine(current, new_state, device_id)
-                self._stop_placer()
-                return {**result, "placement": None, "placementHint": None}
             virtual = self.virtual_display()
             if virtual.driver == "vdd" and virtual.device_status == "disabled":
                 raise DisplaySetupError(409, VDD_DISABLED)
@@ -1664,6 +2031,24 @@ class StreamDisplayService:
                     "reload": mode["reload"], "elevated": mode["elevated"]}
         finally:
             self._operation.release()
+
+    def _second_screen_off(self):
+        state = self.state()
+        second = self.second_state(state)
+        if not second["active"]:
+            # Already off (a defensive "Stop" from the app): Sunshine is not asked or changed at all.
+            self._stop_placer()
+            return {"changed": False, "restarted": False, "sunshineReady": None, "warning": None,
+                    "placement": None, "placementHint": None}
+        current = self._current_config()
+        new_state = copy.deepcopy(state)
+        new_state["secondScreen"] = {**second, "active": False}
+        device_id, warning = None, None
+        if self.fill_state(state)["enabled"]:
+            device_id, warning = self._device_id_in_use(state, current)
+        result = self._apply_sunshine(current, new_state, device_id)
+        self._stop_placer()
+        return {**result, "warning": warning, "placement": None, "placementHint": None}
 
     def revert(self):
         """Turns full-screen streaming and the second screen off and puts Orbit's keys back."""
@@ -1692,25 +2077,37 @@ class StreamDisplayService:
         return folder / f"vdd_settings-{secrets.token_hex(6)}.xml"
 
     def _elevated_apply(self, path, new_data, instances):
-        """One UAC prompt: saves `new_data` (when given) to `path` and restarts the driver instances."""
+        """One UAC prompt: saves `new_data` (when given) to `path` and restarts the driver instances.
+        Raises DisplaySetupError; its `kind` says why for the cases where the helper changed nothing
+        on purpose (declined, timeout, busy, stream, streamUnknown)."""
         staged = None
         try:
             if new_data is not None:
-                staged = self._staging_path()
-                staged.write_bytes(new_data)
+                try:
+                    staged = self._staging_path()
+                    staged.write_bytes(new_data)
+                except OSError as error:
+                    LOGGER.error("Could not stage the Virtual Display Driver settings", exc_info=True)
+                    raise DisplaySetupError(503, STAGING_FAILED) from error
             script = build_helper_script(str(staged) if staged else None, str(path) if staged else None,
                                          hashlib.sha256(new_data).hexdigest() if new_data is not None else None,
-                                         instances)
+                                         instances, not_after=time.time() + PROMPT_WAIT_SECONDS,
+                                         base_port=int(self._base_port()), sunshine_pids=self._sunshine_pids())
             try:
                 code = self.platform.run_elevated(script)
             except ElevationDeclined as error:
-                raise DisplaySetupError(409, UAC_DECLINED) from error
+                raise DisplaySetupError(409, UAC_DECLINED, kind="declined") from error
+            except ElevationTimedOut as error:
+                raise DisplaySetupError(409, PROMPT_TIMEOUT, kind="timeout") from error
+            except ElevationBusy as error:
+                raise DisplaySetupError(409, PROMPT_STILL_OPEN, kind="busy") from error
             except ElevationFailed as error:
                 raise DisplaySetupError(503, str(error)) from error
             except OSError as error:
                 raise DisplaySetupError(503, "Windows could not start the administrator helper.") from error
             if code != 0:
-                raise DisplaySetupError(503, HELPER_FAILURES.get(code, f"The administrator helper failed (code {code})."))
+                detail = HELPER_FAILURES.get(code, f"The administrator helper failed (code {code}).")
+                raise DisplaySetupError(409 if code in HELPER_CONFLICTS else 503, detail, kind=HELPER_CONFLICTS.get(code))
         finally:
             if staged is not None:
                 try:
@@ -1718,12 +2115,42 @@ class StreamDisplayService:
                 except OSError:
                     pass
 
-    def _mode_now_offered(self, width, height, refresh):
+    def _driver_stuck(self, virtual):
         try:
-            vdd = next((display for display in self.platform.list_displays() if display.vdd and display.attached), None)
-            return vdd is not None and self.platform.display_offers_mode(vdd.name, width, height, refresh)
+            return any(self.platform.device_status(instance) == "problem" for instance in virtual.instances)
         except Exception:
             return False
+
+    def _reload_took(self, virtual, width, height, refresh):
+        """After RELOAD_DRIVER: the driver still runs and Windows lists the new size for the virtual
+        display, whether it is on the desktop or not (Sunshine's ensure_* options keep it off the
+        desktop between streams)."""
+        if self._driver_stuck(virtual):
+            return False
+        try:
+            vdd = next((display for display in self.platform.list_displays() if display.vdd), None)
+            return vdd is not None and bool(self.platform.display_offers_mode(vdd.name, width, height, refresh))
+        except Exception:
+            return False
+
+    _NOT_RESTARTED = {
+        "declined": "The administrator prompt on the PC was declined, so the Virtual Display Driver was not restarted.",
+        "timeout": ("Nobody approved the administrator prompt on the PC in time, so the Virtual Display Driver was not "
+                    "restarted."),
+        "busy": PROMPT_STILL_OPEN,
+        "stream": ("A stream started, or an app was running in Sunshine, before the administrator prompt was approved, "
+                   "so the Virtual Display Driver was not restarted."),
+        "streamUnknown": "Orbit could not check whether a stream was running, so the Virtual Display Driver was not restarted.",
+    }
+
+    def _kept_after_reload(self, error, virtual):
+        """The answer when RELOAD_DRIVER reached the driver but the restart through UAC did not happen:
+        the new file stays (adding sizes is harmless, and the driver may already use it)."""
+        detail = self._NOT_RESTARTED.get(error.kind, "Windows could not restart the Virtual Display Driver.")
+        detail += " " + KEPT_NEW_SIZE
+        if self._driver_stuck(virtual):
+            detail += " " + DRIVER_STUCK
+        return DisplaySetupError(error.status, detail, kind=error.kind)
 
     def _ensure_mode_locked(self, width, height, refresh, virtual=None):
         virtual = virtual or self.virtual_display()
@@ -1761,18 +2188,22 @@ class StreamDisplayService:
         if not restartable:
             result["reload"] = "nextStart"
             return result
+        pipe_sent = False
         try:
             self.platform.send_pipe_command("RELOAD_DRIVER")
+            pipe_sent = True
             self._sleep(1.0)
-            if self._mode_now_offered(width, height, refresh):
+            if self._reload_took(virtual, width, height, refresh):
                 result["reload"] = "pipe"
                 return result
         except OSError:
             LOGGER.info("The Virtual Display Driver's pipe did not take RELOAD_DRIVER; restarting the device instead")
         try:
             self._elevated_apply(path, None, restartable)
-        except DisplaySetupError:
-            # Nothing half-applied: without a driver restart, put the previous file back.
+        except DisplaySetupError as error:
+            if pipe_sent:
+                raise self._kept_after_reload(error, virtual) from error
+            # Nothing half-applied: the driver never saw the new file, so put the previous one back.
             try:
                 self.platform.write_file_as_user(path, old_data)
             except (NeedsElevation, OSError):
@@ -1829,6 +2260,12 @@ class StreamDisplayService:
         if not self._start_placer or not self._desktop_available():
             return
         with self._placer_lock:
+            # Read again under the lock: a status() that read the state before a concurrent
+            # "second screen off" finished must not start a placer that outlives the feature.
+            second = self.second_state(self.state())
+            if not second["active"]:
+                return
+            position = second["position"] or position
             if self._placer is not None and self._placer.is_alive():
                 self._placer.position = position
                 return
@@ -1848,7 +2285,8 @@ class StreamDisplayService:
 class _Placer(threading.Thread):
     """While the second screen is on: when Sunshine puts the virtual display on the desktop at the
     start of a stream, move it to the chosen side (a few tries per activation, never fighting the
-    user's own arrangement afterwards)."""
+    user's own arrangement afterwards). It ends by itself once the saved state says the second
+    screen is off, so it never moves the display during fill streams afterwards."""
 
     INTERVAL = 3.0
     TRIES_PER_ACTIVATION = 3
@@ -1865,6 +2303,15 @@ class _Placer(threading.Thread):
     def run(self):
         tries = 0
         while not self._stop_event.wait(self.INTERVAL):
+            try:
+                second = self.service.second_state(self.service.state())
+            except Exception:
+                continue
+            if not second["active"]:
+                return
+            position = second["position"] or self.position or "right"
+            if position != self.position:
+                self.position, tries = position, 0
             try:
                 target = self.service.placement_target(self.service.platform.list_displays(), self.position)
             except Exception:
@@ -1925,6 +2372,12 @@ def create_stream_display_router(verify_control, require_secure, service, requir
             return operation()
         except DisplaySetupError as error:
             raise HTTPException(status_code=error.status, detail=error.detail) from error
+        except OSError as error:
+            # Every expected failure is a DisplaySetupError; this keeps an unexpected Windows error
+            # a plain sentence instead of a 500 with a traceback.
+            LOGGER.exception("Display setup failed with a Windows error")
+            raise HTTPException(status_code=503, detail="Windows refused a step of the display setup. "
+                                                        "Try again in a moment.") from error
 
     def respond(result):
         return {**ACTION_DEFAULTS, **result, "display": run(service.status)}
@@ -1985,7 +2438,8 @@ def tray_setup_text(virtual=None):
         "(make it the main display, or the only one), and dd_resolution_option and dd_refresh_rate_option "
         "(auto, so each stream gets your device's size). Orbit saves your previous Sunshine settings first and "
         "puts them back when you turn the feature off. Sunshine restarts to use them, but never while someone is "
-        "streaming. Adding a new screen size can ask for administrator permission once.\n\n"
+        "streaming or an app is still running in it. Adding a new screen size can ask for administrator permission "
+        "once.\n\n"
         f"{driver_line}\n\n"
         "Copy the install command to the clipboard?"
     )
