@@ -1117,6 +1117,8 @@ final class MacStreamWindowController {
         let completions = exitCompletions
         exitCompletions = []
         completions.forEach { $0() }
+        // A new stream may have started while the old one was leaving full screen.
+        if pendingEnter != nil { enterWhenReady() }
     }
 
     /// Enters full screen once the window is on screen and no animation or exit is under way.

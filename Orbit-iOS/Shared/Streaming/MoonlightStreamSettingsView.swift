@@ -32,7 +32,7 @@ struct MoonlightStreamSettingsView: View {
     }
 
     private var bitrateOptions: [TVStreamOption<Int>] {
-        var options = [TVStreamOption(value: 0, title: "Recommended", detail: "\(bitrateText(recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps")]
+        var options = [TVStreamOption(value: 0, title: "Recommended", detail: "\(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps")]
         var presets = Self.bitratePresetsKbps
         if !store.settings.usesRecommendedBitrate, !presets.contains(store.settings.customBitrateKbps) { presets.append(store.settings.customBitrateKbps); presets.sort() }
         options += presets.map { TVStreamOption(value: $0, title: bitrateText($0), detail: nil) }
@@ -50,7 +50,7 @@ struct MoonlightStreamSettingsView: View {
                 } header: {
                     Text("Video")
                 } footer: {
-                    Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
+                    Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
                 }
 
                 Section {
@@ -291,7 +291,7 @@ struct MoonlightStreamSettingsView: View {
         } header: {
             Text("Video")
         } footer: {
-            Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.width)×\(pixelSize.height) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
+            Text("Moonlight recommends \(bitrateText(recommendedBitrateKbps)) for \(pixelSize.description) at \(store.settings.frameRate) fps. Lower it on Wi-Fi or away from home if the picture breaks up.")
         }
     }
 
@@ -437,13 +437,14 @@ private struct MoonlightFillScreenHelpView: View {
     let optimizeGameSettings: Bool
     let accent: Color
 
-    private static let installCommand = "winget install --id=VirtualDrivers.Virtual-Display-Driver -e"
+    /// Wraps at the space before the package id on a phone.
+    private static let installCommand = "winget install -e --id VirtualDrivers.Virtual-Display-Driver"
     private static let driverURL = URL(string: "https://github.com/VirtualDrivers/Virtual-Display-Driver")!
 
     var body: some View {
         Form {
             Section {
-                Text("Orbit asks the PC for a \(size.width) × \(size.height) picture, the shape of this screen. Sunshine can only send a full picture in that shape when one of the PC's displays can switch to exactly that size. A normal monitor cannot, so Sunshine fits the 16:9 desktop into the frame and adds black bars itself. Nothing breaks: you simply still see bars.")
+                Text("Orbit asks the PC for a \(size.description) picture, the shape of this screen. Sunshine can only send a full picture in that shape when one of the PC's displays can switch to exactly that size. A normal monitor cannot, so Sunshine fits the 16:9 desktop into the frame and adds black bars itself. Nothing breaks: you simply still see bars.")
             } header: {
                 Text("Why there are black bars")
             }
@@ -451,9 +452,10 @@ private struct MoonlightFillScreenHelpView: View {
             Section {
                 step(1, "Install a virtual display on the PC, for example the free Virtual Display Driver. In Terminal on the PC:")
                 Text(Self.installCommand)
-                    .font(.callout.monospaced())
+                    .font(.footnote.monospaced())
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                step(2, "Add \(size.width) × \(size.height) to the virtual display's resolutions, at the frame rate you stream at.")
+                step(2, "Add \(size.description) to the virtual display's resolutions, at the frame rate you stream at.")
                 step(3, "In Sunshine's web UI, under Audio/Video, choose the virtual display as the display to stream and let Sunshine change its resolution to the one the client asks for.")
                 step(4, optimizeGameSettings
                      ? "Keep Optimize game settings on in Stream Settings: it is what lets Sunshine switch the display to this size."
