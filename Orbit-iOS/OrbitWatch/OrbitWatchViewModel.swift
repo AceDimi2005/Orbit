@@ -114,6 +114,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var isUnlocking: Bool = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
+    /// The PC's custom buttons for the Buttons page (OrbitWatchDeck.swift).
+    let deck = WatchDeckStore()
 
     // Wrist Motion Air Mouse state
     @Published var isMotionCursorActive: Bool = false
@@ -160,7 +162,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     private var lastPhoneContextAt: Double = 0
     private var pendingSelection: (id: String, until: Date)?
 
-    private var target: OrbitWatchControlTarget {
+    var target: OrbitWatchControlTarget {
         OrbitWatchControlTarget(id: selectedPCID, host: host, agentPort: agentPort,
                                 securePort: securePort, fingerprint: certificateFingerprint, token: apiToken)
     }
@@ -169,7 +171,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         isOnline && lastTelemetryAt.map { (0...12).contains(Date().timeIntervalSince($0)) } == true
     }
     var canControlPC: Bool { hasDirectCredentials || (phoneCanRelay && !selectedPCID.isEmpty) }
-    private var phoneCanRelay: Bool {
+    var phoneCanRelay: Bool {
         WCSession.isSupported() && WCSession.default.activationState == .activated && WCSession.default.isReachable
     }
 
@@ -227,6 +229,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             selectedTab = 2
         } else if hostOrPath.contains("media") || hostOrPath.contains("volume") {
             selectedTab = 3
+        } else if hostOrPath.contains("button") || hostOrPath.contains("deck") {
+            selectedTab = WatchDeckStore.tab
         } else {
             selectedTab = 0
         }
@@ -843,7 +847,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
 
     // MARK: - Supported watchOS HTTP networking
 
-    private func client(for destination: OrbitWatchControlTarget) throws -> OrbitWatchHTTPClient {
+    func client(for destination: OrbitWatchControlTarget) throws -> OrbitWatchHTTPClient {
         if httpTarget != destination || httpClient == nil {
             httpClient = try OrbitWatchHTTPClient(target: destination)
             httpTarget = destination
@@ -867,7 +871,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         return reply
     }
 
-    private func sendPhoneMessage(_ message: [String: Any], timeout: TimeInterval = 6) async throws -> [String: Any] {
+    func sendPhoneMessage(_ message: [String: Any], timeout: TimeInterval = 6) async throws -> [String: Any] {
         guard phoneCanRelay else { throw WatchControlError("Open Orbit on your nearby iPhone") }
         return try await withCheckedThrowingContinuation { continuation in
             let reply = WatchReplyWaiter(continuation)
@@ -996,6 +1000,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             try? OrbitWidgetConnectionStore.setDefault(id: selectedPCID)
         }
 
+        deck.applyPhonePayload(payload)
         statusMessage = isOnline ? "Synced · \(pcName)" : "Offline · \(pcName)"
         saveSnapshotForComplications()
     }

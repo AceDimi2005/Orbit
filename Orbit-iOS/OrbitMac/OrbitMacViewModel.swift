@@ -185,6 +185,9 @@ final class OrbitMacViewModel: ObservableObject {
     var iphoneBrowser: NWBrowser?
     var pairingAttempt = UUID()
 
+    /// The PC's custom buttons (OrbitMacDeckView.swift).
+    let deck = MacDeckModel()
+
     // MARK: Agent updates
     @Published var agentLatestVersion: String?
     @Published var agentUpdateAvailable = false
@@ -345,6 +348,7 @@ final class OrbitMacViewModel: ObservableObject {
         closeInputSocket()
         pendingVolume = nil; volumeWorker?.cancel(); volumeWorker = nil
         agentUpdateAvailable = false; agentLatestVersion = nil; agentUpdateMessage = nil
+        deck.reset()
         wasOnline = false
     }
 
@@ -465,6 +469,7 @@ final class OrbitMacViewModel: ObservableObject {
                 await fetchNetworkConfig()
                 guard version == generation else { return }
                 await refreshGames()
+                await refreshDeck(silent: true)
             }
             if specs == nil, Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
         } catch {

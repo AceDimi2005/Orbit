@@ -187,6 +187,7 @@ struct MacRootView: View {
             if OrbitProStore.shared.isProUnlocked { MacSessionsView() } else { MacProLockedPage(title: "Sessions", message: "Recorded sessions with FPS, temperature and power graphs are part of Orbit Pro.") }
         case .library: MacLibraryView()
         case .pcs: MacPCsView()
+        case .deck: MacDeckView(deck: vm.deck)
         }
     }
 

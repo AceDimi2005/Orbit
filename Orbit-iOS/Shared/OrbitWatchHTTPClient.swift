@@ -42,6 +42,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
     case certificateRejected(String)
     case http(Int, String?)
     case cursorNotAcknowledged
+    /// The PC's agent has no button deck yet (`POST /api/deck/buttons/{id}/run` is an unknown route).
+    case deckUnavailable
+    /// The PC refused to run a deck button and said why (deleted button, invalid action…).
+    case deckRejected(String)
 
     var statusCode: Int? {
         if case let .http(status, _) = self { return status }
@@ -75,6 +79,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
             return detail.map { "PC error \(status): \($0)" } ?? "The PC returned error \(status)."
         case .cursorNotAcknowledged:
             return "The PC did not confirm the cursor command. Check Orbit Agent."
+        case .deckUnavailable:
+            return "Buttons need the latest Orbit agent on your PC. Update it, then try again."
+        case let .deckRejected(message):
+            return message
         }
     }
 }
@@ -83,8 +91,18 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
 /// Keep one ephemeral session per immutable PC; never use a Watch WebSocket here.
 final class OrbitWatchHTTPClient: @unchecked Sendable {
     let target: OrbitWatchControlTarget
+    /// Cursor, telemetry and other quick commands: 3 s per request, 4 s in all.
     private let session: URLSession
     private let authentication: OrbitWatchHTTPDelegate
+    /// Settings shared by both sessions (pinned delegate, no cache, no cookies).
+    private let baseConfiguration: URLSessionConfiguration
+    private let deckSessionLock = NSLock()
+    private var deckSessionStorage: URLSession?
+
+    /// The PC answers a deck run only when the button has finished: opening an app waits up to 2.5 s,
+    /// OBS up to 6 s, and a sequence adds pauses. Runs get their own session with this timeout so a
+    /// button that worked is not reported as unanswered (the iPhone relay allows 12 s).
+    static let deckRunTimeout: TimeInterval = 15
 
     convenience init(target: OrbitWatchControlTarget) throws {
         try self.init(target: target, configuration: .ephemeral)
@@ -115,12 +133,40 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
         safeConfiguration.httpShouldSetCookies = false
         safeConfiguration.urlCredentialStorage = nil
         safeConfiguration.urlCache = nil
+        baseConfiguration = safeConfiguration
         session = URLSession(configuration: safeConfiguration, delegate: authentication, delegateQueue: nil)
     }
 
-    deinit { session.invalidateAndCancel() }
+    deinit {
+        session.invalidateAndCancel()
+        deckSessionStorage?.invalidateAndCancel()
+    }
+
+    /// Created on the first deck run, with the same pinned delegate as the quick session.
+    private var deckSession: URLSession {
+        deckSessionLock.lock(); defer { deckSessionLock.unlock() }
+        if let deckSessionStorage { return deckSessionStorage }
+        let configuration = baseConfiguration.copy() as! URLSessionConfiguration
+        configuration.timeoutIntervalForRequest = Self.deckRunTimeout
+        configuration.timeoutIntervalForResource = Self.deckRunTimeout
+        let created = URLSession(configuration: configuration, delegate: authentication, delegateQueue: nil)
+        deckSessionStorage = created
+        return created
+    }
+
+    /// Request and resource timeouts of the quick session and of the deck-run session (checked by tests).
+    var timeouts: (quick: (request: TimeInterval, resource: TimeInterval), deckRun: (request: TimeInterval, resource: TimeInterval)) {
+        let quick = session.configuration
+        let deck = deckSession.configuration
+        return ((quick.timeoutIntervalForRequest, quick.timeoutIntervalForResource),
+                (deck.timeoutIntervalForRequest, deck.timeoutIntervalForResource))
+    }
 
     func data(path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
+        try await data(path: path, method: method, query: query, using: session)
+    }
+
+    private func data(path: String, method: String, query: [URLQueryItem], using session: URLSession) async throws -> Data {
         let allowedPath = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-.")
         guard path.hasPrefix("/api/"), path.unicodeScalars.allSatisfy(allowedPath.contains),
               !path.split(separator: "/").contains(".."),
@@ -194,6 +240,35 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
               acknowledgement.status == "sent" else {
             throw OrbitWatchHTTPError.cursorNotAcknowledged
         }
+    }
+
+    /// Runs one button of the PC's deck (`POST /api/deck/buttons/{id}/run`) and returns the PC's
+    /// `detail` sentence, if any. Sent once: a timeout can arrive after the PC already pressed the
+    /// keys, so it is never replayed.
+    func runDeckButton(id: String) async throws -> String? {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        guard (1...64).contains(id.unicodeScalars.count), id.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw OrbitWatchHTTPError.invalidRequest
+        }
+        let response: Data
+        do {
+            response = try await data(path: "/api/deck/buttons/\(id)/run", method: "POST", query: [], using: deckSession)
+        } catch let error as OrbitWatchHTTPError {
+            guard case let .http(status, detail) = error else { throw error }
+            // FastAPI answers an unknown route with the bare detail "Not Found"; the deck's own
+            // refusals (404 deleted button, 409 OBS, 428 confirm, 429 busy, 503, 504 OBS timeout…)
+            // are sentences meant for people. Pairing errors keep the Watch's own wording.
+            if status == 404, detail == nil || detail == "Not Found" { throw OrbitWatchHTTPError.deckUnavailable }
+            let sentence = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if (400..<600).contains(status), ![401, 403, 405].contains(status), !sentence.isEmpty {
+                throw OrbitWatchHTTPError.deckRejected(sentence)
+            }
+            throw error
+        }
+        struct Reply: Decodable { let detail: String? }
+        let detail = (try? JSONDecoder().decode(Reply.self, from: response))?.detail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail?.isEmpty == false ? detail : nil
     }
 }
 

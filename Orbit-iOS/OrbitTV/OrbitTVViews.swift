@@ -999,6 +999,8 @@ struct TVControlsAndGamesTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
+                TVDeckSection()
+
                 VStack(alignment: .leading, spacing: 16) {
                     TVSectionHeader("Windows Desktop & Display", subtitle: "Control active windows, take PC screenshots, or switch HDR directly from your Siri Remote") {
                         Text(vm.statusBanner)

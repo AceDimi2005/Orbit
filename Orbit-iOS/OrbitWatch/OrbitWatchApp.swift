@@ -15,6 +15,15 @@ struct OrbitWatchApp: App {
                 .onOpenURL { url in
                     viewModel.handleDeepLink(url)
                 }
+                #if DEBUG
+                .onAppear {
+                    // The watchOS Simulator cannot open URLs; for screenshots:
+                    // `SIMCTL_CHILD_ORBIT_WATCH_LINK=orbitwatch://buttons xcrun simctl launch <device> com.dimitrie.orbit.watchkitapp`
+                    if let link = ProcessInfo.processInfo.environment["ORBIT_WATCH_LINK"].flatMap(URL.init(string:)) {
+                        viewModel.handleDeepLink(link)
+                    }
+                }
+                #endif
         }
     }
 }

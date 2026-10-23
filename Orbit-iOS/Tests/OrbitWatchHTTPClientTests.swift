@@ -5,6 +5,8 @@ private struct MockHTTPResult: @unchecked Sendable {
     var body = Data("{\"status\":\"sent\"}".utf8)
     var headers: [String: String] = [:]
     var error: URLError?
+    /// Seconds before the mock answers, to exercise the sessions' real timeouts.
+    var delay: TimeInterval = 0
 }
 
 private final class MockHTTPStore: @unchecked Sendable {
@@ -36,8 +38,19 @@ private final class MockWatchURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    private let stateLock = NSLock()
+    private var stopped = false
+
     override func startLoading() {
         let result = Self.store.next(request)
+        guard result.delay > 0 else { answer(result); return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + result.delay) { [self] in
+            stateLock.lock(); let isStopped = stopped; stateLock.unlock()
+            if !isStopped { answer(result) }
+        }
+    }
+
+    private func answer(_ result: MockHTTPResult) {
         if let error = result.error {
             client?.urlProtocol(self, didFailWithError: error)
             return
@@ -49,7 +62,9 @@ private final class MockWatchURLProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        stateLock.lock(); stopped = true; stateLock.unlock()
+    }
 }
 
 @main
@@ -94,7 +109,8 @@ private struct OrbitWatchHTTPClientTests {
         try await errorsAndAmbiguousFailuresNeverReplayClicks()
         try await acknowledgementIsRequired()
         try await malformedRequestsAreRejectedBeforeSending()
-        print("PASS: Watch HTTP target validation, HTTPS pin selection, immutable destination, exact cursor fields, explicit legacy HTTP, bounded legacy fallback, auth/desktop errors, refused redirects, no timeout replay and PC acknowledgement")
+        try await deckButtonsRunOnceWithPlainErrors()
+        print("PASS: Watch HTTP target validation, HTTPS pin selection, immutable destination, exact cursor fields, explicit legacy HTTP, bounded legacy fallback, auth/desktop errors, refused redirects, no timeout replay, PC acknowledgement and deck button runs")
     }
 
     static func invalidConnectionsNeverReachTheNetwork() throws {
@@ -215,6 +231,95 @@ private struct OrbitWatchHTTPClientTests {
             preconditionFailure("Invalid cursor packet was accepted")
         } catch let error as OrbitCursorPipelineError { precondition(error == .invalidPacket) }
         precondition(MockWatchURLProtocol.store.requests.isEmpty)
+    }
+}
+
+extension OrbitWatchHTTPClientTests {
+    /// `POST /api/deck/buttons/{id}/run`: pinned HTTPS, the id goes into the path only after
+    /// validation, older agents and refused buttons get plain sentences, and nothing is replayed.
+    static func deckButtonsRunOnceWithPlainErrors() async throws {
+        let id = "3f2c9a8e-1b7d-4c55-9e0a-2d6f8b1c4e77"
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data("{\"status\":\"done\",\"detail\":\" Pressed Ctrl+Shift+M \"}".utf8))])
+        let detail = try await client().runDeckButton(id: id)
+        precondition(detail == "Pressed Ctrl+Shift+M")
+        let request = MockWatchURLProtocol.store.requests.only
+        precondition(request.httpMethod == "POST")
+        precondition(request.url?.scheme == "https" && request.url?.port == 8766 && request.url?.host == "desktop.local")
+        precondition(request.url?.path == "/api/deck/buttons/\(id)/run" && request.url?.query == nil)
+        precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer paired-test-token")
+
+        // A reply without a detail (or not JSON at all) still means the PC ran the button.
+        for body in ["{\"status\":\"done\"}", "{\"status\":\"done\",\"detail\":\"  \"}", "ok"] {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data(body.utf8))])
+            let none = try await client().runDeckButton(id: "deck_button-2")
+            precondition(none == nil)
+        }
+
+        MockWatchURLProtocol.store.prepare([])
+        for bad in ["", "../status", "a/b", "a b", "id?x=1", "%2e%2e", "ü", String(repeating: "a", count: 65), "id\n"] {
+            do {
+                _ = try await client().runDeckButton(id: bad)
+                preconditionFailure("Unsafe deck button id was accepted: \(bad)")
+            } catch let error as OrbitWatchHTTPError { precondition(error == .invalidRequest) }
+        }
+        precondition(MockWatchURLProtocol.store.requests.isEmpty)
+
+        let cases: [(Int, String, OrbitWatchHTTPError)] = [
+            (404, "{\"detail\":\"Not Found\"}", .deckUnavailable),
+            (404, "{}", .deckUnavailable),
+            (404, "{\"detail\":\"That button was deleted on another device.\"}", .deckRejected("That button was deleted on another device.")),
+            (409, "{\"detail\":\"OBS is not running on the PC.\"}", .deckRejected("OBS is not running on the PC.")),
+            (428, "{\"detail\":\"Confirm it on your device first.\"}", .deckRejected("Confirm it on your device first.")),
+            (429, "{\"detail\":\"The PC is still running other buttons. Try again in a moment.\"}",
+             .deckRejected("The PC is still running other buttons. Try again in a moment.")),
+            (504, "{\"detail\":\" OBS didn't answer in time. \"}", .deckRejected("OBS didn't answer in time.")),
+            (500, "{\"detail\":\"The PC could not run the button.\"}", .deckRejected("The PC could not run the button.")),
+            // Pairing errors and bare statuses keep the Watch's own sentences.
+            (401, "{\"detail\":\"Invalid token\"}", .http(401, "Invalid token")),
+            (403, "{\"detail\":\"Forbidden\"}", .http(403, "Forbidden")),
+            (405, "{\"detail\":\"Method Not Allowed\"}", .http(405, "Method Not Allowed")),
+            (500, "Internal Server Error", .http(500, nil)),
+            (429, "{\"detail\":\"   \"}", .http(429, "   ")),
+        ]
+        for (status, body, expected) in cases {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(status: status, body: Data(body.utf8))])
+            do {
+                _ = try await client().runDeckButton(id: id)
+                preconditionFailure("HTTP \(status) must fail")
+            } catch let error as OrbitWatchHTTPError {
+                precondition(error == expected, "HTTP \(status): \(error)")
+                precondition(!(error.errorDescription ?? "").isEmpty)
+            }
+            precondition(MockWatchURLProtocol.store.requests.count == 1)
+        }
+        precondition(OrbitWatchHTTPError.deckUnavailable.localizedDescription.contains("Update"))
+
+        // A deck run may take longer than a cursor click: the PC answers when the button has finished
+        // (apps up to 2.5 s, OBS up to 6 s, sequences with pauses), so runs use their own session.
+        let timeouts = try client().timeouts
+        precondition(timeouts.quick == (3, 4), "quick session: \(timeouts.quick)")
+        precondition(timeouts.deckRun == (OrbitWatchHTTPClient.deckRunTimeout, OrbitWatchHTTPClient.deckRunTimeout))
+        precondition((12...20).contains(OrbitWatchHTTPClient.deckRunTimeout))
+        let slow = try client()
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data("{\"status\":\"done\",\"detail\":\"Recording started\"}".utf8), delay: 4.5)])
+        let slowDetail = try await slow.runDeckButton(id: id)
+        precondition(slowDetail == "Recording started")
+        // The same delay is still too slow for a cursor command on the quick session.
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(delay: 4.5)])
+        do {
+            try await slow.sendCursor(.init(click: "left"))
+            preconditionFailure("A cursor command must not wait 4.5 s")
+        } catch let error as URLError { precondition(error.code == .timedOut, "\(error.code)") }
+        precondition(MockWatchURLProtocol.store.requests.count == 1)
+
+        for code in [URLError.timedOut, URLError.networkConnectionLost] {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(error: URLError(code))])
+            do {
+                _ = try await client().runDeckButton(id: id)
+                preconditionFailure("Transport error must fail without replay")
+            } catch let error as URLError { precondition(error.code == code) }
+            precondition(MockWatchURLProtocol.store.requests.count == 1)
+        }
     }
 }
 
