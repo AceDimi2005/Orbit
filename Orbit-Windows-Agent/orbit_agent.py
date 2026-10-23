@@ -44,6 +44,7 @@ import orbit_power_after
 import orbit_push
 import orbit_tasks
 from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
+from orbit_deck import create_deck_router
 from orbit_events import EventLog, create_events_router
 from orbit_processes import collect_processes, terminate_process
 from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
@@ -701,18 +702,31 @@ def keyboard_input(text: str = "", key: str = "", authorization: str = Header(No
     key_name = key.lower() if key else ""
     if (key_name and key_name not in orbit_input.KEY_NAMES) or len(text) > 1000:
         raise HTTPException(status_code=422, detail="Unsupported key or text too long")
-    u32 = ctypes.windll.user32
-    u32.VkKeyScanW.argtypes = [ctypes.c_wchar]
-    u32.VkKeyScanW.restype = ctypes.c_short
-    codes = [u32.VkKeyScanW(char) if ord(char) <= 0xFFFF else -1 for char in text]
-    if -1 in codes:
-        raise HTTPException(status_code=422, detail="Some characters are not available in the PC keyboard layout")
+    codes = _layout_key_codes(text)
     with orbit_input.INPUT_LOCK:
         if key_name:
             try:
                 orbit_input.tap(key_name)
             except OSError as error:
                 raise HTTPException(status_code=503, detail="Windows did not accept the key press. The PC may be locked.") from error
+        _type_key_codes(codes)
+    return {"status": "sent"}
+
+
+def _layout_key_codes(text):
+    """VkKeyScanW codes for each character; 422 when the PC's keyboard layout lacks one."""
+    u32 = ctypes.windll.user32
+    u32.VkKeyScanW.argtypes = [ctypes.c_wchar]
+    u32.VkKeyScanW.restype = ctypes.c_short
+    codes = [u32.VkKeyScanW(char) if ord(char) <= 0xFFFF else -1 for char in text]
+    if -1 in codes:
+        raise HTTPException(status_code=422, detail="Some characters are not available in the PC keyboard layout")
+    return codes
+
+
+def _type_key_codes(codes):
+    u32 = ctypes.windll.user32
+    with orbit_input.INPUT_LOCK:
         for code in codes:
             modifiers = [vk for mask, vk in ((1, 0x10), (2, 0x11), (4, 0x12)) if (code >> 8) & mask]
             for modifier in modifiers:
@@ -720,7 +734,12 @@ def keyboard_input(text: str = "", key: str = "", authorization: str = Header(No
             tap_key(code & 0xFF)
             for modifier in reversed(modifiers):
                 u32.keybd_event(modifier, 0, 2, 0)
-    return {"status": "sent"}
+
+
+def type_text(text):
+    """Types text like /api/input/keyboard does (deck text buttons). Raises HTTPException."""
+    require_windows()
+    _type_key_codes(_layout_key_codes(text))
 
 
 class HotkeyBody(BaseModel):
@@ -957,6 +976,14 @@ def start_notification_features():
     except Exception:
         LOGGER.exception("Notifications could not start; the rest of Orbit keeps working")
     return stop_all
+
+
+# Custom button deck and OBS buttons (orbit_deck). The lambdas look the agent's functions up at
+# call time, so the deck always runs the current perform_action and type_text.
+app.include_router(create_deck_router(
+    verify_token, require_https, require_windows=lambda: require_windows(),
+    perform_action=lambda name: perform_action(name), type_text=lambda text: type_text(text),
+    boot_mode=lambda: BOOT_MODE))
 
 
 def sunshine_entries():
