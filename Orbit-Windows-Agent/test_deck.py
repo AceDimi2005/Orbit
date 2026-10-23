@@ -219,9 +219,12 @@ class ActionValidationTests(unittest.TestCase):
         self.assertRefused({"type": "sequence", "steps": [{"type": "system", "name": "sleep"}, step]}, "last step")
         self.assertEqual(deck.validate_action({"type": "sequence", "steps": [step, {"type": "system", "name": "sleep"}]})["steps"][-1],
                          {"type": "system", "name": "sleep"})
-        for delay, expected in ((0, 0), (3000, 3000), (150.4, 150), (None, deck.DEFAULT_DELAY_MS)):
+        # The same range as the apps' editor (DESIGN F4: 0-5000 ms, 150 when left out).
+        self.assertEqual((deck.MAX_DELAY_MS, deck.DEFAULT_DELAY_MS), (5000, 150))
+        for delay, expected in ((0, 0), (3000, 3000), (5000, 5000), (4999.6, 5000), (150.4, 150), (None, 150)):
             self.assertEqual(deck.validate_action({"type": "sequence", "steps": [step], "delayMs": delay})["delayMs"], expected)
-        for delay in (-1, 3001, True, "100", float("nan"), float("inf")):
+        # A 400-digit integer (json.loads gives an int) is refused, not an OverflowError.
+        for delay in (-1, 5001, 5000.5, True, "100", float("nan"), float("inf"), -float("inf"), 10 ** 400, -10 ** 400):
             with self.subTest(delay=delay):
                 self.assertRefused({"type": "sequence", "steps": [step], "delayMs": delay}, "pause between steps")
 
@@ -367,6 +370,15 @@ class DeckRouteTests(TempFolderTestCase):
         response = self.ctx.client.post("/api/deck/run", content=nan, headers=AUTH)
         self.assertEqual(response.status_code, 422)
         self.assertIn("pause between steps", response.json()["detail"])
+        huge_sequence = '{"type": "sequence", "steps": [{"type": "media", "name": "mute"}], "delayMs": ' + "9" * 400 + "}"
+        for method, path, content in (
+                ("post", "/api/deck/run", '{"action": ' + huge_sequence + "}"),
+                ("put", "/api/deck", '{"buttons": [{"title": "Huge", "action": ' + huge_sequence + "}]}")):
+            with self.subTest(path=path):
+                response = getattr(self.ctx.client, method)(path, content=content, headers=AUTH)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("pause between steps", response.json()["detail"])
+        self.ctx.perform.assert_not_called()
 
     def test_a_change_from_another_device_is_detected(self):
         saved = self.put([button()]).json()
@@ -401,6 +413,24 @@ class DeckRouteTests(TempFolderTestCase):
             response = self.ctx.client.post("/api/deck/buttons/BAD/run", headers=AUTH)
         self.assertEqual(response.status_code, 404)
         self.ctx.perform.assert_not_called()
+
+    def test_a_hand_edited_updated_at_never_blocks_saving(self):
+        from datetime import datetime, timezone
+        fixed = datetime(2026, 10, 24, 12, 0, 0, tzinfo=timezone.utc)
+        for stamp, shown in (("2026-13-45T99:99:99Z", deck.NEVER_SAVED), ("0000-01-01T00:00:00Z", deck.NEVER_SAVED),
+                             ("9999-12-31T23:59:59Z", "9999-12-31T23:59:59Z")):
+            with self.subTest(stamp=stamp):
+                ctx = make_app(self.folder / stamp.replace(":", "-"), clock=lambda: fixed)
+                self.addCleanup(ctx.client.close)
+                ctx.store.replace("deck", {"buttons": [], "updatedAt": stamp})
+                self.assertEqual(ctx.client.get("/api/deck", headers=AUTH).json()["updatedAt"], shown)
+                response = ctx.client.put("/api/deck", json={"buttons": [button()]}, headers=AUTH)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["updatedAt"], "2026-10-24T12:00:00Z")
+                # The next save still gets a later time than this one.
+                again = ctx.client.put("/api/deck", json={"buttons": [], "baseUpdatedAt": "2026-10-24T12:00:00Z"},
+                                       headers=AUTH)
+                self.assertEqual(again.json()["updatedAt"], "2026-10-24T12:00:01Z")
 
     def test_running_a_saved_button(self):
         saved = self.put([button()]).json()["buttons"][0]
@@ -487,6 +517,28 @@ class DeckRouteTests(TempFolderTestCase):
         self.assertEqual(results, [200] * deck.MAX_CONCURRENT_RUNS)
 
 
+    def test_a_launch_waiting_for_permission_frees_its_run_slot(self):
+        answered = threading.Event()
+        self.addCleanup(answered.set)
+        apps = MagicMock()
+        apps.find.return_value = deck.StartMenuApp(id=APP_ID, name="HWiNFO", path="C:\\Start Menu\\HWiNFO.lnk")
+        perform = MagicMock(side_effect=lambda name: {"status": "sent", "executed": name})
+        runner = deck.DeckRunner(perform_action=perform, type_text=MagicMock(), apps=apps, obs=MagicMock(),
+                                 open_target=lambda target: answered.wait(5), sleep=MagicMock(), open_wait=0.05)
+        ctx = make_app(self.folder / "uac", perform=perform, apps=apps, runner=runner)
+        self.addCleanup(ctx.client.close)
+        for _ in range(deck.MAX_CONCURRENT_RUNS):
+            response = ctx.client.post("/api/deck/run", json={"action": {"type": "launch", "appID": APP_ID}}, headers=AUTH)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["detail"], "Windows is still opening HWiNFO. If the PC asks for permission, answer it there.")
+        # Other buttons still run while the prompts wait on the PC.
+        self.assertEqual(ctx.client.post("/api/deck/run", json={"action": {"type": "system", "name": "lock"}},
+                                         headers=AUTH).status_code, 200)
+        answered.set()
+        for thread in [thread for thread in threading.enumerate() if thread.name == "orbit-deck-open"]:
+            thread.join(5)
+
+
 # MARK: - Running each kind of action
 
 class RunnerTests(unittest.TestCase):
@@ -559,6 +611,48 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as failed:
             self.run_action({"type": "launch", "appID": APP_ID})
         self.assertIn("may have been uninstalled", failed.exception.detail)
+
+    def test_an_open_that_waits_for_an_answer_on_the_pc_does_not_hold_the_run(self):
+        # ShellExecuteW blocks while a UAC prompt (an app that needs administrator rights) waits.
+        answered, opened = threading.Event(), []
+
+        def waiting(target):
+            opened.append(target)
+            answered.wait(5)
+            if target.startswith("steam:"):
+                raise deck.ShellOpenError(5)  # Declined on the PC.
+        runner = deck.DeckRunner(perform_action=self.perform, type_text=self.type_text, apps=self.apps, obs=self.obs,
+                                 open_target=waiting, sleep=self.sleep, open_wait=0.05)
+        app = deck.StartMenuApp(id=APP_ID, name="MSI Afterburner", path="C:\\ProgramData\\Start Menu\\MSI Afterburner.lnk")
+        self.apps.find.return_value = app
+        launch = deck.validate_action({"type": "launch", "appID": APP_ID})
+        link = deck.validate_action({"type": "openUrl", "url": "steam://rungameid/620"})
+        started = time.monotonic()
+        with self.assertLogs("orbit.deck", "INFO") as logs:
+            for _ in range(deck.MAX_PENDING_OPENS - 1):
+                self.assertEqual(runner.run(launch, confirmed=False),
+                                 "Windows is still opening MSI Afterburner. If the PC asks for permission, answer it there.")
+            self.assertEqual(runner.run(link, confirmed=False),
+                             "Windows is still opening the link. If the PC asks which app to use, answer it there.")
+            self.assertLess(time.monotonic() - started, 3)
+            # Every waiting open is a thread; past the limit a run is refused instead of starting more.
+            with self.assertRaises(HTTPException) as busy:
+                runner.run(launch, confirmed=False)
+            self.assertEqual(busy.exception.status_code, 429)
+            self.assertIn("Answer it on the PC", busy.exception.detail)
+            self.assertEqual(len(opened), deck.MAX_PENDING_OPENS)
+            answered.set()
+            for thread in [thread for thread in threading.enumerate() if thread.name == "orbit-deck-open"]:
+                thread.join(5)
+        output = "\n".join(logs.output)
+        self.assertIn("Opened MSI Afterburner after Windows asked on the PC", output)
+        self.assertIn("Could not open a link after Windows asked on the PC", output)
+        self.assertNotIn("rungameid", output)  # Links are never logged.
+        # Once answered, opens are quick again and their errors come back as usual.
+        self.assertEqual(runner.run(launch, confirmed=False), "Opened MSI Afterburner")
+        with self.assertRaises(HTTPException) as failed:
+            runner.run(link, confirmed=False)
+        self.assertEqual(failed.exception.status_code, 503)
 
     def test_system_and_media_use_perform_action(self):
         for name in sorted(deck.SYSTEM_ACTIONS - deck.POWER_ACTIONS):
@@ -1013,7 +1107,8 @@ class FakeOBS:
             if name not in state["inputs"]:
                 return {"result": False, "code": 600, "comment": "No input was found."}, None
             if state["inputs"][name] is None:
-                return {"result": False, "code": 605, "comment": "The input has no audio."}, None
+                # What obs-websocket answers (RequestStatus::InvalidResourceState, RequestHandler_Inputs.cpp).
+                return {"result": False, "code": 604, "comment": "The specified input does not support audio."}, None
             state["inputs"][name] = not state["inputs"][name]
             return ok, {"inputMuted": state["inputs"][name]}
         return {"result": False, "code": 204, "comment": "Unknown request"}, None
@@ -1168,6 +1263,8 @@ class OBSControllerTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as failed:
             obs.run("StartRecord", {})
         self.assertEqual(failed.exception.detail, "OBS is already recording.")
+        self.assertEqual(deck._obs_failure("ToggleInputMute", {"inputName": "Cam"}, deck.OBSResult(False, 605, None, {})),
+                         "\u201cCam\u201d in OBS has no audio to mute.")
         result = deck.OBSResult(False, 702, "Some new failure.", {})
         self.assertEqual(deck._obs_failure("ToggleStream", {}, result), "OBS couldn't do that: Some new failure.")
         self.assertEqual(deck._obs_failure("ToggleStream", {}, deck.OBSResult(False, 207, None, {}))[:12], "OBS is busy ")

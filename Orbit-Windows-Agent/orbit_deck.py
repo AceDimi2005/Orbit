@@ -26,7 +26,8 @@ Actions are tagged by "type":
                                                        restart need "confirm": true
     media    {"name": "playpause"}                     playpause, next, previous, mute, volumeup, volumedown
     obs      {"request": "ToggleRecord", "data": {}}   an allowlisted obs-websocket 5 request
-    sequence {"steps": [Action], "delayMs": 200}       at most 8 steps, no sequence inside a sequence
+    sequence {"steps": [Action], "delayMs": 150}       at most 8 steps, no sequence inside a sequence;
+                                                       a pause of 0 to 5000 ms between steps (150 if left out)
 
 Every route needs the main token and the encrypted port. A run answers
 `{"status": "done", "detail": "Pressed Ctrl+Shift+M"}`, or an HTTP error whose `detail` says in
@@ -37,7 +38,10 @@ send `"confirm": true` itself (428 otherwise).
 Launch buttons open `.lnk` shortcuts from the Start menu (the signed-in user's and the one for
 all users) with ShellExecuteW, exactly as clicking them would. Shortcut IDs are the SHA-1 of the
 shortcut's path, so they stay the same while the shortcut exists; the agent only ever opens
-shortcuts it lists itself, never a path sent by a device.
+shortcuts it lists itself, never a path sent by a device. A program that needs administrator
+rights makes Windows show a UAC prompt on the PC, and ShellExecuteW waits for it: after
+OPEN_WAIT_SECONDS the run answers "done" with a detail saying Windows is still opening it, so a
+prompt nobody answers never holds a run slot (the same goes for links Windows asks about).
 
 OBS buttons talk to obs-websocket 5 (bundled with OBS Studio 28 and later) on 127.0.0.1. The
 WebSocket password is read from OBS's own settings on this PC
@@ -94,11 +98,17 @@ MAX_SYMBOL_LENGTH = 64
 MAX_TEXT_LENGTH = 1000          # the same limit as /api/input/keyboard
 MAX_NAME_LENGTH = 256           # OBS scene and source names, app names
 MAX_SEQUENCE_STEPS = 8
-MAX_DELAY_MS = 3000
-DEFAULT_DELAY_MS = 200
+# The pause between sequence steps; the apps offer the same range (DESIGN F4: 0-5000 ms, default 150).
+MAX_DELAY_MS = 5000
+DEFAULT_DELAY_MS = 150
 MAX_DECK_BYTES = 512 * 1024
 MAX_BODY_BYTES = 1024 * 1024
 MAX_CONCURRENT_RUNS = 4
+# ShellExecuteW waits while Windows shows a UAC prompt (programs that need administrator rights)
+# or asks which app opens a link. A run stops waiting after OPEN_WAIT_SECONDS, so it never holds a
+# run slot until someone answers on the PC; at most MAX_PENDING_OPENS opens may still be waiting.
+OPEN_WAIT_SECONDS = 2.5
+MAX_PENDING_OPENS = 4
 DEFAULT_SYMBOL = "square.grid.2x2.fill"
 DEFAULT_COLOR = "#0A84FF"
 # updatedAt of a deck that was never saved (always a string, so clients can decode it as a date).
@@ -299,8 +309,9 @@ def validate_action(value, *, inside_sequence=False):
     delay = value.get("delayMs")
     if delay is None:
         delay = DEFAULT_DELAY_MS
-    if (isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay)
-            or not 0 <= delay <= MAX_DELAY_MS):
+    # Integers are compared as they are: math.isfinite() of a 400-digit number would overflow.
+    if (isinstance(delay, bool) or not isinstance(delay, (int, float))
+            or (isinstance(delay, float) and not math.isfinite(delay)) or not 0 <= delay <= MAX_DELAY_MS):
         raise DeckError(f"The pause between steps must be between 0 and {MAX_DELAY_MS:,} milliseconds.")
     return {"type": "sequence", "steps": clean_steps, "delayMs": int(round(delay))}
 
@@ -392,6 +403,13 @@ def _parse_iso(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def _parse_iso_or_none(text):
+    try:
+        return _parse_iso(text)
+    except (ValueError, OverflowError):
+        return None
+
+
 class _ChangedElsewhere(Exception):
     pass
 
@@ -423,8 +441,8 @@ class DeckStore:
             seen.add(button["id"].casefold())
             buttons.append(button)
         updated = section.get("updatedAt")
-        if not isinstance(updated, str) or not _ISO_SECONDS.match(updated):
-            updated = NEVER_SAVED
+        if not isinstance(updated, str) or not _ISO_SECONDS.match(updated) or _parse_iso_or_none(updated) is None:
+            updated = NEVER_SAVED  # Also impossible dates such as 2026-13-45T99:99:99Z.
         return {"buttons": buttons, "updatedAt": updated}
 
     def load(self):
@@ -447,7 +465,10 @@ class DeckStore:
             if previous != NEVER_SAVED:
                 # Every save gets a later time than the last one, even within the same second,
                 # so baseUpdatedAt always tells two saves apart.
-                earliest = _parse_iso(previous) + timedelta(seconds=1)
+                try:
+                    earliest = _parse_iso(previous) + timedelta(seconds=1)
+                except OverflowError:  # 9999-12-31T23:59:59Z from a hand-edited file.
+                    earliest = moment
                 if moment < earliest:
                     moment = earliest
             return {"buttons": buttons, "updatedAt": _iso(moment)}
@@ -1221,7 +1242,7 @@ def _obs_failure(request, data, result):
         return f"OBS has no scene called “{scene}”. Edit the button and choose the scene again."
     if request == "ToggleInputMute" and code == 600:
         return f"OBS has no audio source called “{source}”. Edit the button and choose it again."
-    if request == "ToggleInputMute" and code == 605:
+    if request == "ToggleInputMute" and code in (604, 605):  # obs-websocket answers 604 (InvalidResourceState).
         return f"“{source}” in OBS has no audio to mute."
     if request == "StartRecord" and code == 500:
         return "OBS is already recording."
@@ -1356,13 +1377,16 @@ def _typing_text(text):
 class DeckRunner:
     """Runs validated actions. Windows work goes through the callables the agent passes in."""
 
-    def __init__(self, *, perform_action, type_text, apps, obs, open_target=None, sleep=time.sleep):
+    def __init__(self, *, perform_action, type_text, apps, obs, open_target=None, sleep=time.sleep,
+                 open_wait=OPEN_WAIT_SECONDS):
         self._perform_action = perform_action
         self._type_text = type_text
         self._apps = apps
         self._obs = obs
         self._open = open_target or shell_open
         self._sleep = sleep
+        self._open_wait = open_wait
+        self._pending_opens = threading.BoundedSemaphore(MAX_PENDING_OPENS)
 
     def run(self, action, *, confirmed):
         if is_power_action(action) and not confirmed:
@@ -1387,6 +1411,52 @@ class DeckRunner:
                                     f"Step {index + 1} of {len(steps)} didn't work: {reason}{earlier}") from error
         return f"Ran {len(steps)} step{'s' if len(steps) != 1 else ''}"
 
+    def _open_soon(self, target, what):
+        """Opens `target` on a short-lived thread (with its own COM apartment, see shell_open).
+
+        True when Windows finished within `open_wait` seconds (its error is raised here as usual);
+        False while it is still busy, typically because a UAC prompt or an "open with" question on
+        the PC waits for an answer. The thread then finishes on its own and only logs the outcome.
+        `what` names the target in the log (an app name or "a link", never the link itself).
+        """
+        if not self._pending_opens.acquire(blocking=False):
+            raise HTTPException(429, "Windows on the PC is still waiting for an answer about something you opened "
+                                     "earlier. Answer it on the PC, then try again.")
+        lock, finished, state = threading.Lock(), threading.Event(), {"done": False, "late": False, "error": None}
+
+        def work():
+            error = None
+            try:
+                self._open(target)
+            except Exception as caught:
+                error = caught
+            finally:
+                self._pending_opens.release()
+            with lock:
+                state.update(done=True, error=error)
+                late = state["late"]
+            finished.set()
+            if late:
+                if error is None:
+                    LOGGER.info("Opened %s after Windows asked on the PC", what)
+                else:
+                    LOGGER.warning("Could not open %s after Windows asked on the PC: %s", what, error)
+
+        try:
+            threading.Thread(target=work, name="orbit-deck-open", daemon=True).start()
+        except RuntimeError as error:  # No thread could be started.
+            self._pending_opens.release()
+            raise HTTPException(503, "The PC is too busy to open this right now. Try again.") from error
+        finished.wait(self._open_wait)
+        with lock:
+            if not state["done"]:
+                state["late"] = True
+                return False
+            error = state["error"]
+        if error is not None:
+            raise error
+        return True
+
     def _run_step(self, action):
         kind = action["type"]
         if kind == "hotkey":
@@ -1404,9 +1474,11 @@ class DeckRunner:
         if kind == "openUrl":
             url = _validate_url(action["url"])
             try:
-                self._open(url)
+                opened = self._open_soon(url, "a link")
             except OSError as error:
                 raise HTTPException(503, _link_failure(url, error)) from error
+            if not opened:
+                return "Windows is still opening the link. If the PC asks which app to use, answer it there."
             return f"Opened {_short_url(url)}"
         if kind == "launch":
             app = self._apps.find(action["appID"])
@@ -1414,9 +1486,12 @@ class DeckRunner:
                 name = action.get("name") or "This app"
                 raise HTTPException(404, f"{name} is no longer in the PC's Start menu. Edit the button and choose the app again.")
             try:
-                self._open(app.path)
+                opened = self._open_soon(app.path, app.name)
             except OSError as error:
                 raise HTTPException(503, _launch_failure(app.name, error)) from error
+            if not opened:
+                # Programs that need administrator rights wait for the UAC prompt on the PC.
+                return f"Windows is still opening {app.name}. If the PC asks for permission, answer it there."
             return f"Opened {app.name}"
         if kind == "system":
             self._perform_action(action["name"])
