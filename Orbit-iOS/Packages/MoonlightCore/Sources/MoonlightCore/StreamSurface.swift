@@ -3,11 +3,13 @@ import Combine
 import Foundation
 import SwiftUI
 
-/// Lets SwiftUI reach into the platform view: software keyboard on iOS, mouse capture on macOS.
+/// Lets SwiftUI reach into the platform view: software keyboard on iOS, mouse capture and full screen on macOS.
 @MainActor
 public final class MoonlightSurfaceHandle: ObservableObject {
     @Published public internal(set) var keyboardVisible = false
     @Published public internal(set) var mouseCaptured = false
+    /// macOS: the stream's window is in full screen.
+    @Published public internal(set) var isFullScreen = false
     weak var view: MoonlightStreamSurfaceView?
 
     public init() {}
@@ -27,6 +29,13 @@ public final class MoonlightSurfaceHandle: ObservableObject {
     public func captureMouse() {
         #if os(macOS)
         view?.capture()
+        #endif
+    }
+
+    /// macOS: enters or leaves full screen (the same as Control-Option-Shift-F).
+    public func toggleFullScreen() {
+        #if os(macOS)
+        view?.toggleFullScreen()
         #endif
     }
 }
@@ -404,11 +413,12 @@ public struct MoonlightStreamSurface: UIViewRepresentable {
 import AppKit
 
 /// Hosts the video layer; a click captures the mouse (relative movement, hidden cursor) and the
-/// keyboard. Control+Option+Shift+Z or the overlay button releases them.
+/// keyboard. Control+Option+Shift+Z or the overlay button releases them, Control+Option+Shift+F
+/// toggles full screen and Control+Option+Shift+Q ends the stream.
 public final class MoonlightStreamSurfaceView: NSView {
     weak var handle: MoonlightSurfaceHandle?
     var onToggleOverlay: (() -> Void)?
-    /// ⌃⌥⇧Q while captured: end the stream without hunting for the overlay.
+    /// ⌃⌥⇧Q: end the stream without hunting for the overlay.
     var onEndStream: (() -> Void)?
     public var session: MoonlightStreamSession? { didSet { attachLayer() } }
     public var settings = MoonlightStreamSettings()
@@ -416,7 +426,9 @@ public final class MoonlightStreamSurfaceView: NSView {
 
     private var videoLayer: AVSampleBufferDisplayLayer?
     private var modifierState = NSEvent.ModifierFlags()
-    private var resignObserver: NSObjectProtocol?
+    private var windowObservers: [NSObjectProtocol] = []
+    /// Keys pressed as part of an Orbit chord; their key-up is swallowed too.
+    private var chordKeys = Set<UInt16>()
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -426,7 +438,7 @@ public final class MoonlightStreamSurfaceView: NSView {
 
     required init?(coder: NSCoder) { fatalError("Not used") }
 
-    deinit { if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) } }
+    deinit { windowObservers.forEach(NotificationCenter.default.removeObserver) }
 
     public override var acceptsFirstResponder: Bool { true }
     public override var isFlipped: Bool { true }
@@ -441,13 +453,35 @@ public final class MoonlightStreamSurfaceView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
         guard let window else { return }
         window.acceptsMouseMovedEvents = true
         window.makeFirstResponder(self)
-        resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+        let center = NotificationCenter.default
+        windowObservers.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
             self?.releaseCapture()
+        })
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            windowObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                self?.fullScreenChanged()
+            })
         }
+        handle?.isFullScreen = window.styleMask.contains(.fullScreen)
+    }
+
+    // MARK: Full screen
+
+    public func toggleFullScreen() {
+        guard let window else { return }
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.toggleFullScreen(nil)
+    }
+
+    private func fullScreenChanged() {
+        handle?.isFullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        // The window moved and resized; keep the hidden cursor over the video so clicks stay in the stream.
+        if isCaptured { parkCursor() }
     }
 
     private func attachLayer() {
@@ -471,14 +505,20 @@ public final class MoonlightStreamSurfaceView: NSView {
         isCaptured = true
         NSCursor.hide()
         CGAssociateMouseAndMouseCursorPosition(0)
-        if let window, let screen = window.screen {
-            // Park the hidden cursor over the view so it never leaves the window.
-            let center = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: nil)
-            let screenPoint = window.convertPoint(toScreen: center)
-            CGWarpMouseCursorPosition(CGPoint(x: screenPoint.x, y: screen.frame.maxY - screenPoint.y))
-        }
+        parkCursor()
         window?.makeFirstResponder(self)
         handle?.mouseCaptured = true
+    }
+
+    /// Puts the hidden cursor over the middle of the view so it never leaves the window.
+    private func parkCursor() {
+        guard let window else { return }
+        let center = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: nil)
+        let screenPoint = window.convertPoint(toScreen: center)
+        // Core Graphics measures from the top of the primary display (the one with the menu bar), whichever
+        // display the window is on.
+        guard let primary = NSScreen.screens.first ?? window.screen else { return }
+        CGWarpMouseCursorPosition(CGPoint(x: screenPoint.x, y: primary.frame.maxY - screenPoint.y))
     }
 
     public func releaseCapture() {
@@ -541,16 +581,28 @@ public final class MoonlightStreamSurfaceView: NSView {
     ]
 
     public override func keyDown(with event: NSEvent) {
+        if handleChord(event) { return }
         guard isCaptured else { super.keyDown(with: event); return }
-        if event.modifierFlags.contains([.control, .option, .shift]) {
-            if event.keyCode == 0x06 { releaseCapture(); return }          // Z: give the mouse and keyboard back
-            if event.keyCode == 0x0C { releaseCapture(); onEndStream?(); return }   // Q: end the stream
-        }
         guard let virtualKey = MoonlightVirtualKey.fromMacKeyCode(event.keyCode) else { return }
         session?.sendKey(virtualKey: virtualKey, pressed: true, modifiers: Self.modifiers(event.modifierFlags))
     }
 
+    /// Orbit's own Control-Option-Shift chords. They work with or without capture and never reach the PC.
+    private func handleChord(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains([.control, .option, .shift]) else { return false }
+        switch event.keyCode {
+        case 0x06: releaseCapture()                    // Z: give the mouse and keyboard back
+        case 0x0C: releaseCapture(); onEndStream?()    // Q: end the stream
+        case 0x03: if !event.isARepeat { toggleFullScreen() }   // F: full screen on or off
+        default: return false
+        }
+        chordKeys.insert(event.keyCode)
+        return true
+    }
+
     public override func keyUp(with event: NSEvent) {
+        // The PC never saw the chord's key go down, so it does not get the key going up either.
+        if chordKeys.remove(event.keyCode) != nil { return }
         guard isCaptured, let virtualKey = MoonlightVirtualKey.fromMacKeyCode(event.keyCode) else { return }
         session?.sendKey(virtualKey: virtualKey, pressed: false, modifiers: Self.modifiers(event.modifierFlags))
     }

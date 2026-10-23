@@ -39,7 +39,8 @@ private enum MacSettingsDefaults {
             "mac.refreshInterval": 2.0,
             "mac.notifyOnline": true,
             "mac.previewAutoStart": true,
-            "mac.pointerSpeed": 1.4
+            "mac.pointerSpeed": 1.4,
+            MacStreamWindowController.fullScreenKey: true
         ])
     }
 }
@@ -70,6 +71,7 @@ private struct MacSettingsGeneralTab: View {
     @AppStorage("mac.pointerSpeed") private var pointerSpeed: Double = 1.4
     @AppStorage("mac.autoOpenMoonlight") private var autoOpenMoonlight = false
     @AppStorage(MacStreamBackend.storageKey) private var streamBackendRaw = MacStreamBackend.orbit.rawValue
+    @AppStorage(MacStreamWindowController.fullScreenKey) private var streamFullScreen = true
     @State private var launchAtLogin = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
@@ -196,11 +198,15 @@ private struct MacSettingsGeneralTab: View {
             Picker("Stream with", selection: $streamBackendRaw) {
                 ForEach(MacStreamBackend.allCases) { backend in Text(backend.title).tag(backend.rawValue) }
             }
+            Toggle("Open streams in full screen", isOn: $streamFullScreen)
+                .disabled(streamBackendRaw == MacStreamBackend.moonlight.rawValue)
             Toggle("Open Moonlight after launching a game", isOn: $autoOpenMoonlight)
         } header: {
             Text("Remote & preview")
         } footer: {
-            Text("Pointer speed scales trackpad movement sent to the PC from the Remote section.")
+            Text("Pointer speed scales trackpad movement sent to the PC from the Remote section. "
+                 + (streamFullScreen ? "Streams in Orbit open in full screen on the display you start them from. " : "Streams in Orbit open in a window. ")
+                 + "Control-Option-Shift-F switches between full screen and a window, and the Mac stays awake while a stream plays.")
         }
     }
 
