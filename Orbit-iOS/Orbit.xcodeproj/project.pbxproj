@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A70000000000000000000107 /* ShareStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000104 /* ShareStyle.swift */; };
+		A70000000000000000000106 /* SendToPCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000103 /* SendToPCView.swift */; };
+		A70000000000000000000105 /* SendToPCModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000102 /* SendToPCModel.swift */; };
+		A70000000000000000000104 /* ShareItemLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000101 /* ShareItemLoader.swift */; };
+		A70000000000000000000103 /* SendToPCService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000100 /* SendToPCService.swift */; };
+		A70000000000000000000102 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
+		A70000000000000000000101 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
+		A70000000000000000000100 /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
 		A10000000000000000000001 /* OrbitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* OrbitApp.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* ContentView.swift */; };
 		A10000000000000000000003 /* ModelsAndServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* ModelsAndServices.swift */; };
@@ -203,6 +211,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000104 /* ShareStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareStyle.swift; sourceTree = "<group>"; };
+		B20000000000000000000103 /* SendToPCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendToPCView.swift; sourceTree = "<group>"; };
+		B20000000000000000000102 /* SendToPCModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendToPCModel.swift; sourceTree = "<group>"; };
+		B20000000000000000000101 /* ShareItemLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareItemLoader.swift; sourceTree = "<group>"; };
+		B20000000000000000000100 /* SendToPCService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendToPCService.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* Orbit.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Orbit.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000002 /* OrbitApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -534,6 +547,11 @@
 				B70000000000000000000003 /* Info.plist */,
 				B70000000000000000000005 /* OrbitShare.entitlements */,
 				B70000000000000000000004 /* PrivacyInfo.xcprivacy */,
+				B20000000000000000000100 /* SendToPCService.swift */,
+				B20000000000000000000101 /* ShareItemLoader.swift */,
+				B20000000000000000000102 /* SendToPCModel.swift */,
+				B20000000000000000000103 /* SendToPCView.swift */,
+				B20000000000000000000104 /* ShareStyle.swift */,
 			);
 			path = OrbitShare;
 			sourceTree = "<group>";
@@ -955,6 +973,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A70000000000000000000107 /* ShareStyle.swift in Sources */,
+				A70000000000000000000106 /* SendToPCView.swift in Sources */,
+				A70000000000000000000105 /* SendToPCModel.swift in Sources */,
+				A70000000000000000000104 /* ShareItemLoader.swift in Sources */,
+				A70000000000000000000103 /* SendToPCService.swift in Sources */,
+				A70000000000000000000102 /* OrbitProEntitlement.swift in Sources */,
+				A70000000000000000000101 /* OrbitWidgetConnectionStore.swift in Sources */,
+				A70000000000000000000100 /* OrbitAPIClient.swift in Sources */,
 				A70000000000000000000001 /* ShareViewController.swift in Sources */,
 				A70000000000000000000003 /* OrbitError.swift in Sources */,
 			);

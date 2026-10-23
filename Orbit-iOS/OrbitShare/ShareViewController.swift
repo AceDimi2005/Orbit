@@ -3,17 +3,29 @@ import UIKit
 
 /// Principal class of the "Send to PC" Share Extension (`NSExtensionPrincipalClass` in Info.plist).
 ///
-/// UIKit owns the extension request; the sheet itself is SwiftUI. The view controller hands the
-/// SwiftUI view two closures so it never touches `NSExtensionContext` directly.
+/// UIKit owns the extension request; the sheet itself is SwiftUI (`SendToPCView`). The model gets
+/// the shared items and two closures, so it never touches `NSExtensionContext` directly, and the
+/// request is ended exactly once: completed after a send, cancelled otherwise.
 final class ShareViewController: UIViewController {
+    private var model: SendToPCModel?
+    private var requestEnded = false
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Orbit is dark-only, like the app.
         overrideUserInterfaceStyle = .dark
         view.backgroundColor = .black
+        // Swiping the sheet down would leave the request open (and an upload running); the sheet
+        // closes through Cancel, Done or a finished send instead.
+        isModalInPresentation = true
 
-        let root = SendToPCView(onCancel: { [weak self] in self?.cancel() })
-        let host = UIHostingController(rootView: root)
+        let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
+        let model = SendToPCModel(items: items,
+                                  finish: { [weak self] in self?.finish() },
+                                  cancel: { [weak self] in self?.cancel() })
+        self.model = model
+
+        let host = UIHostingController(rootView: SendToPCView(model: model))
         host.view.backgroundColor = .clear
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -25,47 +37,31 @@ final class ShareViewController: UIViewController {
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         host.didMove(toParent: self)
+        model.start()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // If the host closed the sheet some other way, end the request so the extension does not
+        // linger (and come back blank next time). Only when the view really left its window:
+        // the host app going to the background must not stop an upload.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.requestEnded, self.view.window == nil else { return }
+            self.model?.cancel()
+        }
     }
 
     /// Ends the request after the items were sent. The host app sees the share as completed.
     func finish() {
+        guard !requestEnded else { return }
+        requestEnded = true
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 
     /// Ends the request without sending anything. The host app sees the share as cancelled.
     func cancel() {
+        guard !requestEnded else { return }
+        requestEnded = true
         extensionContext?.cancelRequest(withError: CocoaError(.userCancelled))
-    }
-}
-
-/// Placeholder sheet. The PC picker, item preview and send actions replace the body later.
-struct SendToPCView: View {
-    let onCancel: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 14) {
-                Image(systemName: "paperplane.circle.fill")
-                    .font(.system(size: 52, weight: .semibold))
-                    .foregroundStyle(.tint)
-                    .accessibilityHidden(true)
-                Text("Send to PC")
-                    .font(.title2.weight(.semibold))
-                Text("Open links, copy text and save files on your Windows PC.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Orbit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
     }
 }
