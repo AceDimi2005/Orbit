@@ -47,9 +47,14 @@ stale_sensors = snapshot(sensor_age=60, telemetryAvailable=True, hostname='Inten
                          cpuTemp=40, gpuTemp=35, ramUsedGB=8, ramTotalGB=16, cpuPowerWatts=20, gpuPowerWatts=15,
                          gpuSource='NVIDIA SMI', activeGame=None, fps=None,
                          fpsUnavailableReason='No game is running', sessionLocked=True)
-stale_telemetry = snapshot(telemetry_age=60, telemetryAvailable=True, hostname='Intents-PC', cpuUsage=3)
+# Telemetry stopped: the agent clears only LIVE_OPTIONAL_FIELDS, so CPU load and memory keep their last values.
+stale_telemetry = snapshot(telemetry_age=60, telemetryAvailable=True, hostname='Intents-PC', cpuUsage=3,
+                           ramUsedGB=8, ramTotalGB=16)
+# Right after the agent starts: no sample yet, CPU load and memory are placeholder zeros.
+agent_start = snapshot(telemetry_age=60, hostname='Intents-PC')
 assert stale_sensors['cpuTemp'] is None and stale_sensors['gpuTemp'] == 35 and stale_sensors['sensorStatus']
-assert stale_telemetry['telemetryAvailable'] is False
+assert stale_telemetry['telemetryAvailable'] is False and stale_telemetry['cpuUsage'] == 3 and stale_telemetry['ramUsedGB'] == 8
+assert agent_start['telemetryAvailable'] is False and agent_start['cpuUsage'] == 0.0
 
 with patch.object(agent, 'API_TOKEN', TOKEN), patch.object(agent, 'sunshine_entries', lambda: [
         {'name': 'Desktop'}, {'name': 'Cyberpunk 2077', 'detached': ['steam://rungameid/1091500']},
@@ -83,6 +88,16 @@ for link in LINKS:
     except ValueError:
         python_links[link] = False
 
+# Addresses typed into the Link field without a scheme (Swift adds https:// to the first group only).
+TYPED_LINKS = {
+    'localhost:3000': 'https://localhost:3000', '192.168.1.20:8080/x': 'https://192.168.1.20:8080/x',
+    'example.com:8080/x': 'https://example.com:8080/x', 'example.com': 'https://example.com',
+    'Example.COM:443#top': 'https://Example.COM:443#top', 'intranet:80?q=1': 'https://intranet:80?q=1',
+    '[::1]:8443/': 'https://[::1]:8443/', 'https://example.com': 'https://example.com',
+    'javascript:alert(1)': 'javascript:alert(1)', 'mailto:someone@example.com': 'mailto:someone@example.com',
+    'ftp://example.com/file': 'ftp://example.com/file', 'user:secret@example.com': 'user:secret@example.com',
+}
+
 TYPED = {'line breaks': 'a\nb\r\nc', 'max composed': '\u00e9' * 1000, 'too long composed': '\u00e9' * 1001,
          'max decomposed': 'e\u0301' * 500, 'too long decomposed': 'e\u0301' * 501, 'emoji': 'hi \U0001F3AE',
          'empty': ''}
@@ -102,7 +117,7 @@ for name, text in CLIPBOARD.items():
         python_clipboard[name] = False
 
 fixtures = {
-    'full': full, 'staleSensors': stale_sensors, 'staleTelemetry': stale_telemetry,
+    'full': full, 'staleSensors': stale_sensors, 'staleTelemetry': stale_telemetry, 'agentStart': agent_start,
     'olderAgent': {'hostname': 'Old-PC', 'cpuUsage': 5},
     'invalid': {'hostname': 'Odd-PC', 'telemetryAvailable': True, 'cpuUsage': 400, 'cpuTemp': 1e300,
                 'gpuUsage': 'busy', 'ramUsedGB': 40, 'ramTotalGB': 32, 'fps': -3, 'isMuted': 'no'},
@@ -117,10 +132,15 @@ fixtures = {
         {'name': 'busy', 'status': 503, 'body': json.dumps({'detail': 'Windows could not execute this action'})},
         {'name': 'html', 'status': 502, 'body': '<html>Bad gateway</html>'},
     ],
+    # GET /api/downloads shapes (DESIGN F1). Only queued/downloading/staging hold the rule back.
     'downloads': {'downloads': [{'id': 'steam:620', 'state': 'downloading'}, {'id': 'steam:730', 'state': 'finished'},
                                 {'id': 'epic:Fortnite', 'state': 'paused'}, {'id': 'steam:1', 'state': 'failed'}],
                   'active': True},
-    'links': LINKS, 'typed': TYPED, 'clipboard': CLIPBOARD,
+    'downloadsPausedOnly': {'downloads': [{'id': 'epic:Fortnite', 'state': 'paused'}, {'id': 'steam:730', 'state': 'finished'}],
+                            'active': False},
+    'downloadsNone': {'downloads': [], 'active': False, 'stores': {'steam': True, 'epic': False, 'gog': False}},
+    'downloadsTwo': {'downloads': [{'id': 'steam:1', 'state': 'queued'}, {'id': 'gog:2', 'state': 'staging'}], 'active': True},
+    'links': LINKS, 'typed': TYPED, 'clipboard': CLIPBOARD, 'typedLinks': list(TYPED_LINKS),
 }
 
 DRIVER = r'''
@@ -167,6 +187,12 @@ import Foundation
 
         let staleTelemetry = try status(input["staleTelemetry"]!)
         precondition(staleTelemetry.telemetryAvailable == false && staleTelemetry.value(.cpuTemperature) == nil)
+        // The agent keeps the last CPU load and memory while telemetry is stale: never report them as live.
+        precondition(staleTelemetry.cpuUsage == 3 && staleTelemetry.memoryUsage == 50)
+        for reading in OrbitPCReading.allCases { precondition(staleTelemetry.value(reading) == nil, "stale \(reading)") }
+        precondition(staleTelemetry.missingReason(.cpuUsage, pc: "P") == "P isn't reporting live readings right now. Try again in a few seconds.")
+        let agentStart = try status(input["agentStart"]!)
+        precondition(agentStart.value(.cpuUsage) == nil && agentStart.value(.memoryUsage) == nil)
         precondition(staleTelemetry.missingReason(.gpuUsage, pc: "P") == "P isn't reporting live readings right now. Try again in a few seconds.")
         precondition(staleTelemetry.statusSentence(pc: "P") == "P is on, but it isn't reporting live readings right now.")
 
@@ -200,8 +226,29 @@ import Foundation
         precondition(errors["html"]?[1].hasPrefix("Intents-PC couldn't do that (error 502).") == true)
         output["errors"] = errors
 
-        let downloads = try JSONDecoder().decode(OrbitDownloadsReport.self, from: JSONSerialization.data(withJSONObject: input["downloads"]!))
-        precondition(downloads.unfinishedCount == 2 && downloads.active == true)
+        // Sleep PC When Downloads Finish: the PC fires the rule a minute after the last download that
+        // was active since the rule was set stops, then counts down; with nothing downloading it waits.
+        func downloadsReport(_ key: String) throws -> OrbitDownloadsReport {
+            try JSONDecoder().decode(OrbitDownloadsReport.self, from: JSONSerialization.data(withJSONObject: input[key]!))
+        }
+        let downloads = try downloadsReport("downloads")
+        precondition(downloads.activeCount == 1 && downloads.pausedCount == 1 && downloads.active == true)
+        var powerAfter: [String: String] = [:]
+        powerAfter["active"] = OrbitDownloadsReport.powerAfterSentence(downloads, action: .sleep, delaySeconds: 60, pc: "P")
+        precondition(powerAfter["active"] == "P will sleep about 2 minutes after its download finishes. Paused downloads don't count. You can cancel this in Orbit.", powerAfter["active"]!)
+        let pausedOnly = try downloadsReport("downloadsPausedOnly")
+        precondition(pausedOnly.activeCount == 0 && pausedOnly.pausedCount == 1)
+        powerAfter["pausedOnly"] = OrbitDownloadsReport.powerAfterSentence(pausedOnly, action: .shutdown, delaySeconds: 60, pc: "P")
+        precondition(powerAfter["pausedOnly"] == "P isn't downloading anything right now, so it will wait for the next Steam, Epic or GOG download and shut down about 2 minutes after it finishes. Paused downloads count once you resume them. You can cancel this in Orbit.", powerAfter["pausedOnly"]!)
+        powerAfter["none"] = OrbitDownloadsReport.powerAfterSentence(try downloadsReport("downloadsNone"), action: .sleep, delaySeconds: 90, pc: "P")
+        precondition(powerAfter["none"] == "P isn't downloading anything right now, so it will wait for the next Steam, Epic or GOG download and sleep about 2 minutes 30 seconds after it finishes. You can cancel this in Orbit.", powerAfter["none"]!)
+        powerAfter["two"] = OrbitDownloadsReport.powerAfterSentence(try downloadsReport("downloadsTwo"), action: .sleep, delaySeconds: 30, pc: "P")
+        precondition(powerAfter["two"] == "P will sleep about 90 seconds after its 2 downloads finish. You can cancel this in Orbit.", powerAfter["two"]!)
+        powerAfter["unknown"] = OrbitDownloadsReport.powerAfterSentence(nil, action: .shutdown, delaySeconds: 600, pc: "P")
+        precondition(powerAfter["unknown"] == "P will shut down about 11 minutes after its downloads finish. You can cancel this in Orbit.", powerAfter["unknown"]!)
+        output["powerAfterSentences"] = powerAfter
+        output["downloadsActiveStates"] = OrbitDownloadsReport.activeStates.sorted()
+        output["downloadsQuietSeconds"] = OrbitDownloadsReport.quietSeconds
 
         // Input checks, compared with the agent's validators by the Python side.
         var links: [String: Bool] = [:]
@@ -217,6 +264,20 @@ import Foundation
         output["clipboard"] = clipboard
         let bare = try OrbitIntentInput.webLink(URL(string: "example.com/page")!)
         precondition(bare == "https://example.com/page", bare)
+        // Typed without a scheme: URL parsing reads "localhost:3000" as the scheme "localhost".
+        for (typed, expected) in [("localhost:3000", "https://localhost:3000"), ("example.com:8080/x", "https://example.com:8080/x"),
+                                  ("myserver:8080?q=1", "https://myserver:8080?q=1")] {
+            let link = try OrbitIntentInput.webLink(URL(string: typed)!)
+            precondition(link == expected, link)
+        }
+        var typedLinks: [String: String] = [:]
+        for case let link as String in input["typedLinks"] as! [Any] {
+            typedLinks[link] = OrbitIntentInput.withScheme(link)
+        }
+        output["typedLinks"] = typedLinks
+        for refused in ["javascript:alert(1)", "mailto:someone@example.com", "ftp://example.com/file", "steam://rungameid/1", "user:secret@example.com"] {
+            precondition((try? OrbitIntentInput.webLink(URL(string: refused)!)) == nil, refused)
+        }
         precondition(OrbitIntentInput.displayLink("https://example.com/watch?v=1") == "example.com/watch")
         precondition(OrbitIntentInput.delayPhrase(60) == "1 minute" && OrbitIntentInput.delayPhrase(90) == "90 seconds" && OrbitIntentInput.delayPhrase(600) == "10 minutes")
         precondition(OrbitIntentInput.powerAfterDelay == 30...600)
@@ -255,7 +316,78 @@ for feature in ('openUrl', 'powerAfter', 'downloads'):
     assert feature in orbit_capabilities.KNOWN_FEATURES, feature
 assert 'openUrl' in result['features'], result['features']
 assert len(result['readings']) == 9
+assert result['typedLinks'] == TYPED_LINKS, {k: v for k, v in result['typedLinks'].items() if TYPED_LINKS[k] != v}
+for typed, link in TYPED_LINKS.items():
+    accepted = True
+    try:
+        orbit_links.validate_url(link)
+    except ValueError:
+        accepted = False
+    # Everything Swift turns into an https link is a link the agent opens; the rest stays refused.
+    assert accepted == link.startswith('https://'), (typed, link, accepted)
 
-print(f"PASS: Shortcuts actions vs agent: status/readings ({len(result['readings'])} readings, units, missing and invalid "
-      f"sensors), status sentences, Sunshine list, {len(result['errors'])} error replies, {len(LINKS)} links match "
-      f"orbit_links, typed text and clipboard limits match the agent, power-after body, action names")
+# Sleep PC When Downloads Finish vs the agent's rule (orbit_downloads / orbit_power_after, DESIGN F1): the
+# real PowerAfter and DownloadsWatcher with one pretend launcher, as the sentences above describe them.
+# Those modules arrive with the F1 agent work; until they're in this checkout only the Swift side runs.
+try:
+    import orbit_downloads
+    import orbit_power_after
+except ImportError:
+    power_after_note = 'power-after timing (F1 agent modules not in this checkout, skipped)'
+else:
+    assert set(result['downloadsActiveStates']) == set(orbit_downloads.ACTIVE_STATES), orbit_downloads.ACTIVE_STATES
+    assert 'paused' not in orbit_downloads.ACTIVE_STATES
+    assert result['downloadsQuietSeconds'] == orbit_power_after.DOWNLOADS_QUIET_SECONDS
+    import types
+    from unittest.mock import MagicMock
+
+    def power_after_machine(observations):
+        """A PowerAfter whose downloads come from `observations` ({id: state}); `perform` only records."""
+        clock = [1000.0]
+        done = []
+        launcher = types.SimpleNamespace(present=lambda: True, scan=lambda tracked: [
+            orbit_downloads.Observation(ident, 'steam', ident, 'complete' if state == 'finished' else state, 0.5, 5, 10)
+            for ident, state in observations.items()])
+        watcher = orbit_downloads.DownloadsWatcher(monotonic=lambda: clock[0], clock=lambda: clock[0], emit=MagicMock(),
+                                                   scanners={'steam': launcher})
+        watcher.poll()
+        machine = orbit_power_after.PowerAfter(perform=done.append, downloads=lambda: watcher, emit=MagicMock(),
+                                               monotonic=lambda: clock[0], clock=lambda: clock[0], idle_seconds=lambda: None)
+
+        def advance(seconds):
+            results = []
+            for _ in range(int(seconds)):
+                clock[0] += 1
+                watcher.poll()
+                results.append(machine.tick())
+            return [r for r in results if r]
+        def change(ident, state):
+            observations[ident] = state
+            watcher.poll()  # the launcher reports the change now; then time runs
+        return machine, change, advance, done
+
+    # One active download and one paused before the rule ("about 2 minutes after its download finishes",
+    # "paused downloads don't count").
+    machine, change, advance, done = power_after_machine({'steam:620': 'downloading', 'epic:1': 'paused'})
+    machine.set_rule({'trigger': 'downloads', 'action': 'sleep', 'delaySeconds': 60, 'taskID': None})
+    assert advance(600) == [] and done == []  # still downloading
+    change('steam:620', 'finished')
+    assert advance(orbit_power_after.DOWNLOADS_QUIET_SECONDS - 1) == []
+    assert advance(1) == ['scheduled']
+    assert advance(59) == [] and advance(1) == ['executed'] and done == ['sleep'], done
+
+    # Nothing active, only a paused download ("waits for the next download", "count once you resume them").
+    machine, change, advance, done = power_after_machine({'epic:1': 'paused'})
+    machine.set_rule({'trigger': 'downloads', 'action': 'shutdown', 'delaySeconds': 60, 'taskID': None})
+    assert advance(3600) == [] and done == [], 'a rule set while nothing downloads must wait for a download'
+    change('epic:1', 'downloading')  # resumed
+    assert advance(120) == []
+    change('epic:1', 'finished')
+    assert advance(59) == [] and advance(1) == ['scheduled']
+    assert advance(60) == ['executed'] and done == ['shutdown'], done
+    power_after_note = 'power-after timing matches orbit_power_after (active, paused and idle cases)'
+
+print(f"PASS: Shortcuts actions vs agent: status/readings ({len(result['readings'])} readings, units, missing, stale and "
+      f"invalid sensors), status sentences, Sunshine list, {len(result['errors'])} error replies, {len(LINKS)} links match "
+      f"orbit_links, {len(TYPED_LINKS)} typed addresses, typed text and clipboard limits match the agent, power-after "
+      f"body and {len(result['powerAfterSentences'])} downloads sentences, action names; {power_after_note}")

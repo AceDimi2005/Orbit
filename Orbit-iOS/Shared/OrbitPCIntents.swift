@@ -2,7 +2,7 @@ import AppIntents
 import Foundation
 
 // Free Shortcuts actions for a paired PC (DESIGN.md F3). Wake, Sleep, Shut Down and Restart stay
-// in OrbitWidgetConnectionStore.swift with their Orbit Pro check.
+// in OrbitPowerIntents.swift with their Orbit Pro check.
 //
 // Every action takes an optional `pc` (empty = the default PC), checks its input first, answers
 // with one sentence, and stops with a plain-language `OrbitIntentError` when the PC is off, the
@@ -139,21 +139,11 @@ enum OrbitPCActions {
         let features = try await client.features()
         guard features.contains("powerAfter") else { throw OrbitIntentError.olderCompanion(client.pcName) }
         try await client.send("PUT", "/api/power/after", json: OrbitPowerAfterRequest(action: action.rawValue, delaySeconds: delaySeconds))
-        var unfinished: Int?
+        var downloads: OrbitDownloadsReport?
         if features.contains("downloads") {
-            unfinished = (try? await client.get(OrbitDownloadsReport.self, "/api/downloads"))?.unfinishedCount
+            downloads = try? await client.get(OrbitDownloadsReport.self, "/api/downloads")
         }
-        let delay = OrbitIntentInput.delayPhrase(delaySeconds)
-        let cancel = " You can cancel this in Orbit."
-        switch unfinished {
-        case let count? where count > 0:
-            let downloads = count == 1 ? "its download finishes" : "its \(count) downloads finish"
-            return "\(client.pcName) will \(action.verb) \(delay) after \(downloads)." + cancel
-        case 0?:
-            return "\(client.pcName) isn't downloading anything right now. When its next Steam, Epic or GOG downloads finish, it will \(action.verb) after \(delay)." + cancel
-        default:
-            return "\(client.pcName) will \(action.verb) \(delay) after its downloads finish." + cancel
-        }
+        return OrbitDownloadsReport.powerAfterSentence(downloads, action: action, delaySeconds: delaySeconds, pc: client.pcName)
     }
 
     // MARK: Helpers
@@ -258,6 +248,9 @@ struct SendTextToPCClipboardIntent: AppIntent {
     static let title: LocalizedStringResource = "Copy Text to PC Clipboard"
     static let description = IntentDescription("Puts text on your PC's clipboard, ready to paste with Ctrl+V.", categoryName: "Text & Links")
     static let openAppWhenRun = false
+    /// Puts input on the PC (typing, the clipboard, a link or a game), so it runs only while this
+    /// iPhone is unlocked: Siri on a locked iPhone asks to unlock first.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Text", inputOptions: String.IntentInputOptions(multiline: true), requestValueDialog: "What should Orbit copy to the PC?")
     var text: String
@@ -281,6 +274,9 @@ struct TypeTextOnPCIntent: AppIntent {
     static let description = IntentDescription("Types text into the window that's in front on your PC, as if you typed it on its keyboard (up to 1,000 characters).",
                                                categoryName: "Text & Links")
     static let openAppWhenRun = false
+    /// Puts input on the PC (typing, the clipboard, a link or a game), so it runs only while this
+    /// iPhone is unlocked: Siri on a locked iPhone asks to unlock first.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Text", inputOptions: String.IntentInputOptions(multiline: true), requestValueDialog: "What should Orbit type on the PC?")
     var text: String
@@ -303,6 +299,9 @@ struct OpenURLOnPCIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Link on PC"
     static let description = IntentDescription("Opens a web link in your PC's default browser.", categoryName: "Text & Links")
     static let openAppWhenRun = false
+    /// Puts input on the PC (typing, the clipboard, a link or a game), so it runs only while this
+    /// iPhone is unlocked: Siri on a locked iPhone asks to unlock first.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Link", requestValueDialog: "Which link should open on the PC?")
     var url: URL
@@ -334,6 +333,9 @@ struct LaunchPCGameIntent: AppIntent {
     static let title: LocalizedStringResource = "Launch Game on PC"
     static let description = IntentDescription("Starts a game or app from Sunshine's app list on your PC.", categoryName: "Games")
     static let openAppWhenRun = false
+    /// Puts input on the PC (typing, the clipboard, a link or a game), so it runs only while this
+    /// iPhone is unlocked: Siri on a locked iPhone asks to unlock first.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Game", description: "A name from Sunshine's app list on the PC.",
                requestValueDialog: "Which game should start on the PC?", optionsProvider: OrbitSunshineAppOptionsProvider())
@@ -400,14 +402,17 @@ struct GetPCStatusIntent: AppIntent {
 
 struct SleepWhenDownloadsFinishIntent: AppIntent {
     static let title: LocalizedStringResource = "Sleep PC When Downloads Finish"
-    static let description = IntentDescription("Waits for Steam, Epic and GOG downloads on your PC to finish, then puts it to sleep or shuts it down after a short countdown you can cancel in Orbit.",
+    static let description = IntentDescription("Waits for the Steam, Epic and GOG downloads on your PC to finish, then puts it to sleep or shuts it down after a countdown you can cancel in Orbit. If nothing is downloading yet, it waits for the next download.",
                                                categoryName: "Power")
     static let openAppWhenRun = false
+    // Stays runnable on a locked iPhone (the default policy): its bedtime automation ("Sleep Focus
+    // on") usually runs while the iPhone is locked, Siri's Pro "Shut Down PC" already works there,
+    // and the PC cancels the countdown by itself when someone uses its keyboard or mouse.
 
     @Parameter(title: "Action", default: .sleep)
     var action: OrbitPCPowerAfterAction
 
-    @Parameter(title: "Countdown (seconds)", description: "How long the PC waits after the downloads finish, from 30 to 600 seconds.",
+    @Parameter(title: "Countdown (seconds)", description: "How long the PC counts down once its downloads are done, from 30 to 600 seconds. Using the PC during the countdown keeps it on.",
                default: 60, controlStyle: .field, inclusiveRange: (30, 600))
     var delaySeconds: Int
 

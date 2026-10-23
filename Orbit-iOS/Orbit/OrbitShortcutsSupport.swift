@@ -29,13 +29,15 @@ struct OrbitShortcutsHelpSections: View {
         Row(title: "Power On, Sleep, Shut Down, Restart PC", detail: "Power actions, with Orbit Pro.", icon: "power")
     ]
 
+    // Every idea has to work while the iPhone is on the PC's network, which is how Orbit reaches
+    // the PC: "leave home" fires once the iPhone is already off the home Wi-Fi, so it isn't here.
     private let ideas: [Row] = [
-        Row(title: "Leave home → Lock PC", detail: "Nobody can use the PC while you're out.", icon: "location.fill"),
+        Row(title: "Sleep Focus on → Lock PC", detail: "Windows locks when you go to bed, while your iPhone is still on your home Wi-Fi.", icon: "bed.double.fill"),
         Row(title: "Alarm stops → Power On PC", detail: "The PC is ready by the time you sit down (Orbit Pro).", icon: "alarm.fill"),
-        Row(title: "Sleep Focus on → Sleep PC When Downloads Finish", detail: "Big downloads finish overnight, then the PC sleeps instead of running until morning.", icon: "moon.fill"),
-        Row(title: "Arrive home → Power On PC, then Launch Game on PC", detail: "Add a Wait of a minute between them so Windows can start.", icon: "house.fill"),
+        Row(title: "Sleep Focus on → Sleep PC When Downloads Finish", detail: "Big downloads finish overnight, then the PC sleeps instead of running until morning. If nothing is downloading yet, it waits for the next download.", icon: "moon.fill"),
+        Row(title: "Join home Wi-Fi → Power On PC, then Launch Game on PC", detail: "Add a Wait of a minute between them so Windows can start (Orbit Pro for Power On).", icon: "wifi"),
         Row(title: "Back Tap → Toggle PC Mute", detail: "Settings → Accessibility → Touch → Back Tap runs any shortcut. The Action button works too.", icon: "hand.tap.fill"),
-        Row(title: "Every evening → Get PC Reading", detail: "Pick GPU temperature, then If it's above 85, Show Notification.", icon: "thermometer.high")
+        Row(title: "Every evening → Get PC Status, then Get PC Reading", detail: "If the status doesn't contain \"isn't reachable\", read GPU temperature and Show Notification when it's above 85. Get PC Reading stops with an error while the PC is off.", icon: "thermometer.high")
     ]
 
     var body: some View {
@@ -48,7 +50,7 @@ struct OrbitShortcutsHelpSections: View {
         } header: {
             Text("Shortcuts actions")
         } footer: {
-            Text("In the Shortcuts app, tap +, then search for Orbit. Leave the PC empty to use your default PC. Siri also knows \"Lock my PC with Orbit\" and \"How is my PC doing in Orbit\".")
+            Text("In the Shortcuts app, tap +, then search for Orbit. Leave the PC empty to use your default PC. Typing, copying, links and games ask you to unlock your iPhone first. Siri also knows \"Lock my PC with Orbit\" and \"How is my PC doing in Orbit\".")
         }
         .orbitRow()
 
@@ -57,7 +59,7 @@ struct OrbitShortcutsHelpSections: View {
         } header: {
             Text("Automation ideas")
         } footer: {
-            Text("Create them in Shortcuts → Automation → New Automation, and turn off Ask Before Running if you like.")
+            Text("Create them in Shortcuts → Automation → New Automation, and turn off Ask Before Running if you like. Orbit reaches the PC over your home network, so automations work while your iPhone is on the same Wi-Fi as the PC.")
         }
         .orbitRow()
     }
@@ -75,13 +77,50 @@ struct OrbitShortcutsHelpSections: View {
     }
 }
 
+/// Keeps the PC names Siri and Spotlight understand ("Lock Gaming PC with Orbit") in step with the
+/// saved PCs: refreshed at launch and whenever the app saves, renames or removes a PC or changes the
+/// default PC. The store is shared with the widgets and the watch, so it only calls a hook
+/// (`OrbitWidgetConnectionStore.connectionsDidChange`) that the app sets here.
+@MainActor
+enum OrbitShortcutsParameters {
+    private static var lastSignature: String?
+    private static var refreshPending = false
+
+    static func start() {
+        OrbitWidgetConnectionStore.connectionsDidChange = {
+            Task { @MainActor in OrbitShortcutsParameters.scheduleRefresh() }
+        }
+        refresh()
+    }
+
+    /// Saving a PC writes the store several times in a row; refresh once afterwards.
+    private static func scheduleRefresh() {
+        guard !refreshPending else { return }
+        refreshPending = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            refreshPending = false
+            refresh()
+        }
+    }
+
+    private static func refresh() {
+        // Names in picker order (default PC first): only a real change reaches Siri.
+        let signature = OrbitPCEntity.all().map { "\($0.id)\u{1F}\($0.name)" }.joined(separator: "\u{1E}")
+        guard signature != lastSignature else { return }
+        lastSignature = signature
+        OrbitAppShortcuts.updateAppShortcutParameters()
+    }
+}
+
 #if DEBUG
 /// `ORBIT_INTENTS_SELFTEST=read|all` (in the simulator pass `SIMCTL_CHILD_ORBIT_INTENTS_SELFTEST`)
 /// runs the Shortcuts actions against the default PC, prints one PASS/FAIL line each and exits.
 /// It refuses to run unless `ORBIT_INTENTS_SELFTEST_PC` equals the default PC's name, so it is never
 /// pointed at a real PC by accident: use it with a pretend PC only. `read` only reads; `all` also
 /// changes the volume, types, copies, opens a link, launches an app, locks and sets a downloads rule;
-/// `offline` expects a PC that doesn't answer; `older` expects an agent without `powerAfter`.
+/// `offline` expects a PC that doesn't answer; `older` expects an agent without `powerAfter`;
+/// `downloads` only sets a downloads rule (sleep, 30 s countdown) and prints what the action says.
 enum OrbitIntentsSelfTest {
     static func run(mode: String) -> Never {
         let semaphore = DispatchSemaphore(value: 0)
@@ -119,6 +158,10 @@ enum OrbitIntentsSelfTest {
             await check("status while offline") { try await OrbitPCActions.status(pc: pc) }
             await expectFailure("reading while offline", containing: "isn't reachable") { try await OrbitPCActions.reading(.cpuTemperature, pc: pc).dialog }
             await expectFailure("lock while offline", containing: "isn't reachable") { try await OrbitPCActions.lock(pc: pc) }
+            print("SELFTEST done")
+            return
+        case "downloads":
+            await check("sleep when downloads finish") { try await OrbitPCActions.sleepWhenDownloadsFinish(.sleep, delaySeconds: 30, pc: pc) }
             print("SELFTEST done")
             return
         case "older":

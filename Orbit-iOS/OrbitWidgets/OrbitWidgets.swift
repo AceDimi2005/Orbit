@@ -75,7 +75,7 @@ private struct OrbitShortcutsView: View {
     var body: some View {
         switch family {
         case .accessoryCircular:
-            OrbitProPowerButton(intent: OrbitWakePCIntent()) {
+            OrbitProPowerButton(intent: OrbitWidgetWakePCIntent()) {
                 ZStack {
                     AccessoryWidgetBackground()
                     Image(systemName: "power")
@@ -93,13 +93,13 @@ private struct OrbitShortcutsView: View {
                 }
                 .font(.caption.weight(.bold))
                 HStack(spacing: 6) {
-                    OrbitProPowerButton(intent: OrbitWakePCIntent()) {
+                    OrbitProPowerButton(intent: OrbitWidgetWakePCIntent()) {
                         Label("Wake", systemImage: "power")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     Text("·").foregroundStyle(.secondary)
-                    OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
+                    OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent()) {
                         Label("Off", systemImage: "power.circle.fill")
                             .font(.system(size: 10, weight: .semibold))
                     }
@@ -115,21 +115,21 @@ private struct OrbitShortcutsView: View {
                         subtitle: "Wake-on-LAN",
                         symbol: "power",
                         tint: Color(red: 0.35, green: 0.94, blue: 0.66),
-                        intent: OrbitWakePCIntent()
+                        intent: OrbitWidgetWakePCIntent()
                     )
                     powerActionButton(
                         title: "Sleep",
                         subtitle: "Standby",
                         symbol: "moon.zzz.fill",
                         tint: Color(red: 1.0, green: 0.78, blue: 0.36),
-                        intent: OrbitSleepPCIntent()
+                        intent: OrbitWidgetSleepPCIntent()
                     )
                     powerActionButton(
                         title: "Shut Down",
                         subtitle: "Turn Off",
                         symbol: "power.circle.fill",
                         tint: Color(red: 1.0, green: 0.45, blue: 0.48),
-                        intent: OrbitShutdownPCIntent()
+                        intent: OrbitWidgetShutdownPCIntent()
                     )
                 }
                 HStack(spacing: 8) {
@@ -141,7 +141,7 @@ private struct OrbitShortcutsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 header
                 Spacer(minLength: 0)
-                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetWakePCIntent()) {
                     HStack(spacing: 8) {
                         Image(systemName: "power")
                             .font(.system(size: 13, weight: .bold))
@@ -160,7 +160,7 @@ private struct OrbitShortcutsView: View {
                 }
                 .buttonStyle(.plain)
 
-                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent()) {
                     HStack(spacing: 8) {
                         Image(systemName: "power.circle.fill")
                             .font(.system(size: 13, weight: .bold))
@@ -269,7 +269,7 @@ struct OrbitWakeControlCenterWidget: ControlWidget {
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
-            ControlWidgetButton(action: OrbitWakePCIntent()) {
+            ControlWidgetButton(action: OrbitWidgetWakePCIntent()) {
                 Label("Power On PC", systemImage: "power")
             }
         }
@@ -284,7 +284,7 @@ struct OrbitShutdownControlCenterWidget: ControlWidget {
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
-            ControlWidgetButton(action: OrbitShutdownPCIntent()) {
+            ControlWidgetButton(action: OrbitWidgetShutdownPCIntent()) {
                 Label("Shut Down PC", systemImage: "power.circle.fill")
             }
         }
@@ -299,7 +299,7 @@ struct OrbitSleepControlCenterWidget: ControlWidget {
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
-            ControlWidgetButton(action: OrbitSleepPCIntent()) {
+            ControlWidgetButton(action: OrbitWidgetSleepPCIntent()) {
                 Label("Sleep PC", systemImage: "moon.zzz.fill")
             }
         }
@@ -623,7 +623,7 @@ private struct OrbitLiveActivityPanel: View {
             }
 
             HStack(spacing: 6) {
-                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetWakePCIntent()) {
                     Label("Power On", systemImage: "power")
                         .font(.system(size: 10, weight: .bold))
                         .frame(maxWidth: .infinity)
@@ -633,7 +633,7 @@ private struct OrbitLiveActivityPanel: View {
                 }
                 .buttonStyle(.plain)
 
-                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent()) {
                     Label("Shut Down", systemImage: "power.circle.fill")
                         .font(.system(size: 10, weight: .bold))
                         .frame(maxWidth: .infinity)
@@ -790,7 +790,7 @@ private struct OrbitLiveActivityPanel: View {
                         .padding(.vertical, 4)
                         .background(accent.opacity(0.16), in: Capsule())
                 }
-                OrbitProPowerButton(intent: OrbitWakePCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetWakePCIntent()) {
                     Label("On", systemImage: "power")
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -798,7 +798,7 @@ private struct OrbitLiveActivityPanel: View {
                         .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
                 }
                 .buttonStyle(.plain)
-                OrbitProPowerButton(intent: OrbitShutdownPCIntent()) {
+                OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent()) {
                     Label("Off", systemImage: "power.circle.fill")
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)

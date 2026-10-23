@@ -9,7 +9,7 @@ struct OrbitApp: App {
         if let mode = ProcessInfo.processInfo.environment["ORBIT_INTENTS_SELFTEST"] { OrbitIntentsSelfTest.run(mode: mode) }
         #endif
         OrbitIntentClient.startMirroringDemoMode()
-        OrbitAppShortcuts.updateAppShortcutParameters()
+        OrbitShortcutsParameters.start()
         OrbitBackgroundRefresh.register()
         Self.migrateDefaultTheme()
     }
@@ -72,9 +72,10 @@ struct OrbitAppShortcuts: AppShortcutsProvider {
             systemImageName: "arrow.triangle.2.circlepath"
         )
         // Free actions (OrbitPCIntents.swift). Apple allows 10 App Shortcuts; 2 are left for the
-        // button deck and presentation actions. Keep App Shortcut intents out of the widget
-        // extension: iOS runs an intent that both targets compile in the widget process while
-        // Orbit is closed, where App Shortcuts fail ("Couldn't find AppShortcutsProvider").
+        // button deck and presentation actions. Keep every App Shortcut intent out of the widget
+        // extension (the Pro ones above live in Shared/OrbitPowerIntents.swift): iOS runs an intent
+        // that both targets compile in the widget process while Orbit is closed, where App Shortcuts
+        // fail ("Couldn't find AppShortcutsProvider", "Unable to run App Shortcut").
         AppShortcut(
             intent: LockPCIntent(),
             phrases: [

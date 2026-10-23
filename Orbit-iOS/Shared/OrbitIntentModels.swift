@@ -96,16 +96,18 @@ enum OrbitPCReading: String, AppEnum, CaseIterable {
     case cpuTemperature, gpuTemperature, cpuUsage, gpuUsage, memoryUsage, fps, cpuPower, gpuPower, totalPower
 
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "PC Reading")
+    /// Titles are what people say to Siri ("What's my PC's CPU temperature in Orbit"), so the unit
+    /// goes in the subtitle and spoken variants in the synonyms.
     static let caseDisplayRepresentations: [OrbitPCReading: DisplayRepresentation] = [
-        .cpuTemperature: "CPU temperature (°C)",
-        .gpuTemperature: "GPU temperature (°C)",
-        .cpuUsage: "CPU load (%)",
-        .gpuUsage: "GPU load (%)",
-        .memoryUsage: "Memory used (%)",
-        .fps: "Game FPS",
-        .cpuPower: "CPU power (W)",
-        .gpuPower: "GPU power (W)",
-        .totalPower: "CPU + GPU power (W)"
+        .cpuTemperature: DisplayRepresentation(title: "CPU temperature", subtitle: "In °C", synonyms: ["CPU temp", "processor temperature"]),
+        .gpuTemperature: DisplayRepresentation(title: "GPU temperature", subtitle: "In °C", synonyms: ["GPU temp", "graphics card temperature"]),
+        .cpuUsage: DisplayRepresentation(title: "CPU load", subtitle: "In %", synonyms: ["CPU usage", "processor load"]),
+        .gpuUsage: DisplayRepresentation(title: "GPU load", subtitle: "In %", synonyms: ["GPU usage", "graphics card load"]),
+        .memoryUsage: DisplayRepresentation(title: "Memory use", subtitle: "In %", synonyms: ["memory usage", "RAM usage", "memory"]),
+        .fps: DisplayRepresentation(title: "Game FPS", subtitle: "Frames per second", synonyms: ["FPS", "frame rate", "frames per second"]),
+        .cpuPower: DisplayRepresentation(title: "CPU power", subtitle: "In watts", synonyms: ["CPU power draw", "processor power"]),
+        .gpuPower: DisplayRepresentation(title: "GPU power", subtitle: "In watts", synonyms: ["GPU power draw", "graphics card power"]),
+        .totalPower: DisplayRepresentation(title: "Total power", subtitle: "CPU + GPU, in watts", synonyms: ["power draw", "power use", "CPU and GPU power"])
     ]
 
     /// Lower-case name for sentences ("Gaming PC's CPU temperature is 62 °C").
@@ -240,7 +242,10 @@ struct OrbitPCStatusReport: Decodable {
     }
 
     /// The reading in its unit, rounded to one decimal; nil when the PC does not report it.
+    /// While `telemetryAvailable` is false the agent clears only some fields: CPU load and memory keep
+    /// their last values (0 right after the agent starts), so nothing counts as a live reading then.
     func value(_ reading: OrbitPCReading) -> Double? {
+        guard telemetryAvailable != false else { return nil }
         let raw: Double?
         switch reading {
         case .cpuTemperature: raw = cpuTemp
@@ -360,8 +365,35 @@ struct OrbitDownloadsReport: Decodable {
     var downloads: [Item]?
     var active: Bool?
 
-    var unfinishedCount: Int {
-        (downloads ?? []).filter { ["queued", "downloading", "staging", "paused"].contains($0.state ?? "") }.count
+    /// The states the PC's downloads rule waits for (`orbit_downloads.ACTIVE_STATES`).
+    static let activeStates: Set<String> = ["queued", "downloading", "staging"]
+    /// The agent fires a downloads rule once nothing has been active for this long
+    /// (`orbit_power_after.DOWNLOADS_QUIET_SECONDS`), then starts the countdown.
+    static let quietSeconds = 60
+
+    var activeCount: Int { (downloads ?? []).filter { Self.activeStates.contains($0.state ?? "") }.count }
+    var pausedCount: Int { (downloads ?? []).filter { $0.state == "paused" }.count }
+
+    /// What `Sleep PC When Downloads Finish` says once the rule is set, matching how the PC runs it
+    /// (`orbit_power_after`): the rule needs a download that is active after it was set, fires a
+    /// minute after the last one stops, then counts down. With nothing downloading it waits for the
+    /// next download. A download that was already paused doesn't count until it's resumed.
+    /// `report` is nil when the PC can't list its downloads.
+    static func powerAfterSentence(_ report: OrbitDownloadsReport?, action: OrbitPCPowerAfterAction, delaySeconds: Int, pc: String) -> String {
+        let total = OrbitIntentInput.delayPhrase(quietSeconds + delaySeconds)
+        let cancel = " You can cancel this in Orbit."
+        guard let report else {
+            return "\(pc) will \(action.verb) about \(total) after its downloads finish." + cancel
+        }
+        let active = report.activeCount
+        let paused = report.pausedCount
+        if active == 0 {
+            let note = paused > 0 ? " Paused downloads count once you resume them." : ""
+            return "\(pc) isn't downloading anything right now, so it will wait for the next Steam, Epic or GOG download and \(action.verb) about \(total) after it finishes.\(note)" + cancel
+        }
+        let downloads = active == 1 ? "its download finishes" : "its \(active) downloads finish"
+        let note = paused > 0 ? " Paused downloads don't count." : ""
+        return "\(pc) will \(action.verb) about \(total) after \(downloads).\(note)" + cancel
     }
 }
 
@@ -407,13 +439,28 @@ enum OrbitIntentInput {
 
     /// The link `Open Link on PC` sends: http or https, a host, no user name or password, at most
     /// 4096 characters and nothing that must be percent-encoded (same rules as `orbit_links`).
-    /// A bare "example.com" gets https:// in front.
+    /// A typed address without a scheme gets https:// in front (see `withScheme`).
     static func webLink(_ url: URL) throws -> String {
-        var text = url.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if url.scheme == nil, !text.isEmpty, !text.hasPrefix("/") {
-            text = "https://" + text
-        }
-        return try webLink(text)
+        try webLink(withScheme(url.absoluteString))
+    }
+
+    /// Puts https:// in front of an address typed without a scheme: "example.com/page", and also
+    /// "localhost:3000", "example.com:8080/x" or "192.168.1.20:8080", which URL parsing reads as the
+    /// scheme "localhost", "example.com" or "192.168.1.20". Anything else that has a scheme
+    /// ("ftp://…", "mailto:…", "javascript:…") stays as it is, so the checks refuse it.
+    static func withScheme(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.hasPrefix("/") else { return text }
+        if text.hasPrefix("[") { return "https://" + text }  // [IPv6]:port
+        guard let colon = text.firstIndex(of: ":") else { return "https://" + text }
+        let head = text[..<colon]
+        let rest = text[text.index(after: colon)...]
+        let scheme = head.lowercased()
+        if scheme == "http" || scheme == "https" || rest.hasPrefix("//") { return text }
+        guard !head.isEmpty, head.allSatisfy({ ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "-" || $0 == "." }) else { return text }
+        let port = rest.prefix { $0.isASCII && $0.isNumber }
+        let hostAndPort = !port.isEmpty && (port.endIndex == rest.endIndex || "/?#".contains(rest[port.endIndex]))
+        return head.contains(".") || scheme == "localhost" || hostAndPort ? "https://" + text : text
     }
 
     static func webLink(_ text: String) throws -> String {
@@ -431,11 +478,11 @@ enum OrbitIntentInput {
             throw OrbitIntentError.invalid("This link contains characters such as quotes or backslashes that must be percent-encoded.")
         }
         guard let colon = text.firstIndex(of: ":") else {
-            throw OrbitIntentError.invalid("Only http and https links can be opened on the PC.")
+            throw OrbitIntentError.invalid("Only http and https links can be opened on the PC. Use a full link such as https://example.com.")
         }
         let scheme = text[..<colon].lowercased()
         guard scheme == "http" || scheme == "https" else {
-            throw OrbitIntentError.invalid("Only http and https links can be opened on the PC.")
+            throw OrbitIntentError.invalid("Only http and https links can be opened on the PC. Use a full link such as https://example.com.")
         }
         let rest = text[text.index(after: colon)...]
         guard rest.hasPrefix("//") else {
@@ -470,13 +517,13 @@ enum OrbitIntentInput {
         return text
     }
 
-    /// "1 minute", "90 seconds", "10 minutes".
+    /// "1 minute", "90 seconds", "10 minutes", "2 minutes 30 seconds".
     static func delayPhrase(_ seconds: Int) -> String {
-        if seconds % 60 == 0 {
-            let minutes = seconds / 60
-            return minutes == 1 ? "1 minute" : "\(minutes) minutes"
-        }
-        return "\(seconds) seconds"
+        let minutes = seconds / 60
+        let minutesText = minutes == 1 ? "1 minute" : "\(minutes) minutes"
+        if seconds % 60 == 0 { return minutesText }
+        if seconds < 120 { return "\(seconds) seconds" }
+        return "\(minutesText) \(seconds % 60) seconds"
     }
 
     /// The short form of a link for dialogs: host and path, like the PC's own toast.
