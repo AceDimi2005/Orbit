@@ -24,7 +24,7 @@ class FeatureWiringTests(unittest.TestCase):
 
     def test_new_actions_require_main_token_and_https_before_doing_anything(self):
         posts = (("/api/input/hotkey", {"keys": ["alt", "f10"]}), ("/api/open-url", {"url": "https://example.com"}),
-                 ("/api/webcam/install", None))
+                 ("/api/webcam/install", None), ("/api/webcam/uninstall", None))
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)

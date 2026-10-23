@@ -57,8 +57,9 @@ SOFTWARE.
 virtual camera by tshino: https://github.com/tshino/softcam (tag v1.8.1, commit
 afb424c2415b04da627fa1a7b4706575c2ba3010), built by this repository's
 `.github/workflows/softcam.yml`. Orbit PC Companion copies them to
-`%ProgramData%\Orbit\Webcam\` and registers them when you set up the iPhone webcam. The license
-also ships as `webcam/LICENSE-softcam.txt`.
+`%ProgramFiles%\Orbit\Webcam\` and registers them when you set up the iPhone webcam (and
+unregisters and deletes them when you remove it). The license also ships as
+`webcam/LICENSE-softcam.txt`.
 
 MIT License
 

@@ -8,35 +8,49 @@ Store apps only use Media Foundation and never see it.
 
 Files: `webcam/softcam64.dll` and `webcam/softcam32.dll` next to this module, SHA-256 pinned in
 `DLL_SHA256`. The self-updater copies only top-level files, so when a bundled DLL is missing or
-different, setup downloads it from raw.githubusercontent.com/<owner>/<repo>/main/
-Orbit-Windows-Agent/webcam/ (a host orbit_updater already trusts) and uses it only when its
-SHA-256 matches the pin.
+different, setup downloads it from raw.githubusercontent.com/<owner>/<repo>/<ref>/
+Orbit-Windows-Agent/webcam/ (a host orbit_updater already trusts): first from this agent's release
+tag `pc-v<version>` (it never moves, so a later Softcam rebuild on main cannot break an older agent),
+then from main. A download is used only when its SHA-256 matches the pin.
 
 Setup needs administrator rights once, because DirectShow filters are COM servers registered
-machine-wide (HKLM) and load inside every camera app, 64-bit and 32-bit:
+machine-wide (HKLM) and load inside every camera app of every user, 64-bit and 32-bit:
 
 1. Check the Microsoft Visual C++ 2015-2022 runtime, x64 and x86, at least 14.44 (the DLLs are
    linked with MSVC 14.44). Missing or older: refuse with the winget commands.
-2. Copy the verified DLLs to `%ProgramData%\\Orbit\\Webcam\\<INSTALL_ID>\\` as the signed-in user.
-   The folder name comes from the pinned hashes, so a new build never overwrites a DLL that a
-   running app still has loaded.
+2. Nothing to do when the versioned folder already holds both verified DLLs and both registry
+   views point at them ("alreadyInstalled"). Otherwise find a verified copy of each DLL: the
+   installed folder, the bundled `webcam/` folder, the download cache, else a download.
 3. One UAC prompt (ShellExecuteExW "runas") starts Windows PowerShell, which
-   - makes Administrators the owner of `%ProgramData%\\Orbit` and gives it a protected ACL
-     (SYSTEM and Administrators full control, Users and app packages read and execute only).
-     Registered DLLs load into other users' and elevated processes, so nobody but an
-     administrator may change, add or rename anything in that tree (no DLL planting);
-   - copies any DLL the user could not copy and checks every SHA-256 again;
-   - runs `%SystemRoot%\\System32\\regsvr32.exe /s` for softcam64.dll and
-     `%SystemRoot%\\SysWOW64\\regsvr32.exe /s` for softcam32.dll, and unregisters the first one
-     again when the second one fails, so nothing is left half registered.
+   - creates `<Program Files>\\Orbit\\Webcam\\<INSTALL_ID>\\` in the native Program Files folder
+     (found through HKLM and GetSystemWindowsDirectoryW, never through environment variables a
+     user can change). Only administrators may create or change anything under Program Files,
+     so no other account can plant a DLL there, which matters because Windows looks for the
+     DLL's own dependencies (MSVCP140.dll, ...) next to it. Folders that are links (reparse
+     points) are refused. The name comes from the pinned hashes, so a new build never
+     overwrites a DLL that a running app still has loaded;
+   - reads each DLL into memory, checks its SHA-256 there and only then writes it into the
+     folder, then checks the written file again (a file that changed on the way is never used);
+   - runs `<Windows>\\System32\\regsvr32.exe /s` for softcam64.dll and `<Windows>\\SysWOW64\\regsvr32.exe /s`
+     for softcam32.dll. When the second one fails, the first view is put back as it was before:
+     an older Orbit webcam that was registered there is registered again, otherwise the new
+     registration is removed;
+   - after success, deletes older Orbit webcam version folders (a file that an open app still
+     has loaded stays until the next setup or removal).
 4. Success is reported only after the agent itself read CLSID {AEF3B972-5FA5-4647-9571-358EB472BC9E}
-   InprocServer32 in both registry views (pointing at exactly these files) and the camera's entry
-   in the DirectShow video input device category.
+   InprocServer32 in both registry views (pointing at exactly these files) and found the camera in
+   the DirectShow video input category: a subkey of CLSID\\{860BB310-5D01-11D0-BD3B-00A0C911CE86}\\Instance
+   whose CLSID value is Softcam's (Softcam 1.8.1 names that subkey "DirectShow Softcam").
+
+Removing the webcam (POST /api/webcam/uninstall) uses the same single prompt: `regsvr32 /u /s` for
+every registry view that points at Orbit's webcam folder (when that DLL is gone, its registry keys
+are deleted directly), then the webcam folder is deleted. Another program's registration of the
+same camera is left alone.
 
 HTTP contract (main token; HTTPS port only, 426 over HTTP; 501 when not Windows):
 
 GET /api/webcam -> 200
-    {"installed": bool,      DLLs present in the versioned ProgramData folder with the pinned hashes
+    {"installed": bool,      DLLs present in the versioned Program Files folder with the pinned hashes
      "registered": bool,     registry verified as in step 4
      "active": bool,         a virtual camera exists now (a phone is sending, or just stopped < 5 s ago)
      "clients": int,         phones connected to /ws/camera
@@ -44,8 +58,10 @@ GET /api/webcam -> 200
      "reason": str | null,   plain-words reason the webcam cannot be used now; null when ready
      "connected": bool,      an app on the PC opened the camera (Softcam 1.8.1 cannot tell when it
                              closes it again, so this stays true until the camera is recreated)
-     "installing": bool, "installStage": null | "preparing" | "waitingForApproval" | "verifying",
-     "installError": str | null,   why the last setup failed (cleared when a new one starts)
+     "installing": bool,     a setup runs now
+     "uninstalling": bool,   a removal runs now
+     "installStage": null | "preparing" | "waitingForApproval" | "verifying",   of the running setup or removal
+     "installError": str | null,   why the last setup or removal failed (cleared when a new one starts)
      "runtime": {"ok": bool, "required": "14.44", "x64": "14.44.35211" | null, "x86": ... | null,
                  "missing": ["x86"], "commands": ["winget install Microsoft.VCRedist.2015+.x86"]} | null,
      "cameraName": "DirectShow Softcam", "softcamVersion": "1.8.1",
@@ -58,8 +74,18 @@ POST /api/webcam/install (no body). Waits up to 90 s, so give the request a 120 
         PC; poll GET /api/webcam until "installing" is false, then read "registered"/"installError".
         Another POST while a setup runs joins it (never a second prompt).
     403 the Windows prompt was declined; 409 Visual C++ runtime missing/too old (detail has the
-        winget commands), Windows on ARM, or not signed in; 503 download, copy or registration
-        failed. Errors are {"detail": "<plain sentence>"}.
+        winget commands), Windows on ARM, not signed in, or a removal is running; 503 download,
+        copy or registration failed. Errors are {"detail": "<plain sentence>"}.
+
+POST /api/webcam/uninstall (no body). Same waiting rules (90 s, then 202 and poll "uninstalling"):
+    200 {"status": "uninstalled" | "notInstalled", "filesLeft": bool, ...the GET fields}
+        "notInstalled": nothing of Orbit's webcam was on the PC, so no prompt was shown.
+        "filesLeft": the camera is gone, but an open app (or Orbit PC Companion itself, after a
+        phone streamed) still has a webcam file loaded; restart the PC and remove it again to
+        delete the files.
+    202 {"status": "waitingForApproval", ...}; 403 declined; 409 Windows on ARM, not signed in, or
+        a setup is running; 503 Windows still lists Orbit's camera afterwards.
+    Phones streaming at that moment are closed with 4001 notInstalled.
 
 WS /ws/camera (wss on the TLS port only; `Authorization: Bearer <main token>` header; a token in
 the query string, a wrong token or plain ws:// is refused before the handshake completes):
@@ -72,9 +98,12 @@ the query string, a wrong token or plain ws:// is refused before the handshake c
         replace it (the newest frame wins, nothing queues up).
     agent  -> text {"connected": bool} right after "ready", whenever it changes, and every 5 s.
     agent  -> text {"error": "<plain sentence>", "code": "<code>"} right before it closes:
-        1008 badHello, 1003 badFrame (not JPEG), 1009 frameTooLarge, 4001 notInstalled,
-        4002 replaced (a newer connection took over the camera), 4003 cameraUnavailable,
-        4004 unsupported (not Windows, Windows on ARM, nobody signed in), 1011 internal.
+        1008 badHello, 1003 badFrame (not JPEG), 1009 frameTooLarge, 4001 notInstalled (also when
+        the webcam is removed while streaming), 4002 replaced (a newer connection took over the
+        camera), 4003 cameraUnavailable (Windows would not create the camera within 2 s, usually
+        because an app still has the previous camera open; this also ends the phone that was
+        streaming when a new format could not start), 4004 unsupported (not Windows, Windows on
+        ARM, nobody signed in), 1011 internal.
     The camera is created on the first hello and deleted 5 s after the last phone disconnects, so
     a quick reconnect with the same format keeps apps streaming. A different format recreates
     the camera; apps that had it open must reopen it (Softcam cannot resize a connected camera).
@@ -92,8 +121,10 @@ import io
 import json
 import logging
 import math
+import ntpath
 import os
 from pathlib import Path
+import re
 import stat
 import struct
 import sys
@@ -106,6 +137,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+import orbit_capabilities
 import orbit_events
 import orbit_notify
 
@@ -129,12 +161,19 @@ CAMERA_NAME = "DirectShow Softcam"
 CLSID = "{AEF3B972-5FA5-4647-9571-358EB472BC9E}"
 VIDEO_INPUT_CATEGORY = "{860BB310-5D01-11D0-BD3B-00A0C911CE86}"  # CLSID_VideoInputDeviceCategory
 INPROC_KEY = "SOFTWARE\\Classes\\CLSID\\" + CLSID + "\\InprocServer32"
-CATEGORY_INSTANCE_KEY = "SOFTWARE\\Classes\\CLSID\\" + VIDEO_INPUT_CATEGORY + "\\Instance\\" + CLSID
+# DirectShow lists a filter in a category under Instance\<szInstance>, with CLSID, FriendlyName and
+# FilterData values. Softcam's DllRegisterServer passes its filter name as szInstance
+# (IFilterMapper2::RegisterFilter(CLSID, L"DirectShow Softcam", 0, &CLSID_VideoInputDeviceCategory,
+# L"DirectShow Softcam", ...)), so the subkey is "DirectShow Softcam", not the CLSID.
+INSTANCE_ROOT_KEY = "SOFTWARE\\Classes\\CLSID\\" + VIDEO_INPUT_CATEGORY + "\\Instance"
+CATEGORY_INSTANCE_KEY = INSTANCE_ROOT_KEY + "\\" + CAMERA_NAME
+MAX_INSTANCE_SUBKEYS = 4096
+WINDOWS_CURRENT_VERSION_KEY = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion"
 DLL_SHA256 = {
     "softcam64.dll": "f62432a498c06b053eae3d437f445ff64e8b847be92b689e5ee01f0f2fdf911a",
     "softcam32.dll": "aa2e2d870a1d280d3f11382b0fdba5cb760a66830cc3d6353a03b3571f44c66d",
 }
-# The versioned folder in %ProgramData%\Orbit\Webcam: a prefix of the hash of both pins.
+# The versioned folder in <Program Files>\Orbit\Webcam: a prefix of the hash of both pins.
 INSTALL_ID = hashlib.sha256("".join(f"{name}={DLL_SHA256[name]}\n" for name in sorted(DLL_SHA256))
                             .encode("ascii")).hexdigest()[:16]
 MAX_DLL_BYTES = 4 * 1024 * 1024
@@ -166,6 +205,10 @@ HEARTBEAT_SECONDS = 5.0
 CONNECTION_POLL_SECONDS = 1.0
 INSTALL_WAIT_SECONDS = 90.0
 ELEVATED_TIMEOUT_SECONDS = 120.0
+# Softcam refuses a new camera while an app's filter still maps the previous one's shared memory
+# (until its next frame poll, or for as long as its graph is stopped), so creation is retried.
+CREATE_RETRY_SECONDS = 2.0
+CREATE_RETRY_INTERVAL = 0.05
 
 CLOSE_POLICY = 1008
 CLOSE_UNSUPPORTED_DATA = 1003
@@ -190,6 +233,14 @@ REGISTRATION_MESSAGES = {
                     "webcam takes that camera over.",
 }
 NOT_SIGNED_IN = "Sign in to Windows on the PC first. The iPhone webcam works on the signed-in desktop."
+CAMERA_BUSY_MESSAGE = ("The PC could not start the DirectShow Softcam camera. An app on the PC may still have the "
+                       "previous camera open, or another program is sending video to it. Close the camera in that "
+                       "app (or restart the app) and try again.")
+REPLACED_MESSAGE = "Another device started using this PC's webcam."
+REMOVED_MESSAGE = "The iPhone webcam was removed from this PC. Set it up again to use it."
+BUSY_MESSAGES = {"install": "The iPhone webcam is being set up on the PC right now. Try again when that finishes.",
+                 "uninstall": "The iPhone webcam is being removed from the PC right now. Try again when that "
+                              "finishes."}
 
 
 class UnsupportedPC(Exception):
@@ -263,18 +314,70 @@ def is_verified(path, name, use_cache=True):
     return file_sha256(path, use_cache) == DLL_SHA256[name]
 
 
-def program_data():
-    return Path(os.environ.get("PROGRAMDATA") or os.environ.get("ALLUSERSPROFILE") or "C:\\ProgramData")
+def _is_windows():
+    return sys.platform == "win32"
 
 
-def orbit_program_data():
-    """`%ProgramData%\\Orbit`: owned by Administrators once the webcam is set up. Features must
-    keep per-user data in `%LOCALAPPDATA%\\Orbit` instead."""
-    return program_data() / "Orbit"
+def _windows_directory():
+    """The Windows folder as Windows itself reports it (GetSystemWindowsDirectoryW); None when unknown."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        function = kernel32.GetSystemWindowsDirectoryW
+        function.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+        function.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(1024)
+        length = function(buffer, len(buffer))
+    except Exception:
+        return None
+    if not 0 < length < len(buffer):
+        return None
+    return buffer.value or None
+
+
+def system_root():
+    """C:\\Windows. On Windows from GetSystemWindowsDirectoryW, never from %SystemRoot% or %windir%:
+    users can override those for their own processes, and the elevated command runs programs from
+    this folder. Elsewhere (unit tests, the pretend PC) the environment stands in for Windows."""
+    if _is_windows():
+        return _windows_directory() or "C:\\Windows"
+    return os.environ.get("SystemRoot") or os.environ.get("windir") or "C:\\Windows"
+
+
+_PLAIN_FOLDER = re.compile(r"[A-Za-z]:\\[^\\%\"<>|?*\x00-\x1f][^%\"<>|?*\x00-\x1f]*")
+
+
+def _program_files_from_registry(registry, view):
+    value = _read_value(registry, WINDOWS_CURRENT_VERSION_KEY, "ProgramFilesDir", view)
+    if isinstance(value, str) and _PLAIN_FOLDER.fullmatch(value.strip()):
+        return value.strip().rstrip("\\")
+    return None
+
+
+def program_files():
+    """The native Program Files folder, where only administrators may create or change files. On
+    Windows it comes from HKLM (the 64-bit view, so a 32-bit agent also gets C:\\Program Files),
+    never from %ProgramFiles%, which users can override."""
+    if not _is_windows():
+        return Path(os.environ.get("ProgramW6432") or os.environ.get("PROGRAMFILES") or "C:\\Program Files")
+    view = 0 if native_machine() == "x86" else KEY_WOW64_64KEY
+    value = _program_files_from_registry(winreg, view) if winreg is not None else None
+    if value:
+        return Path(value)
+    drive = ntpath.splitdrive(system_root())[0] or "C:"
+    return Path(drive + "\\Program Files")
+
+
+def orbit_program_files():
+    return program_files() / "Orbit"
+
+
+def webcam_root():
+    """`<Program Files>\\Orbit\\Webcam`: one folder per pinned build, created by the elevated setup."""
+    return orbit_program_files() / "Webcam"
 
 
 def install_directory():
-    return orbit_program_data() / "Webcam" / INSTALL_ID
+    return webcam_root() / INSTALL_ID
 
 
 def bundled_directories():
@@ -308,7 +411,6 @@ class Layout:
     process_bits: int            # this Python process
     targets: tuple
     powershell: str              # the native Windows PowerShell, as this process must name it
-    icacls: str                  # as the elevated PowerShell sees it
     sender_dll: str              # the DLL this process loads to send frames
     runtime_dirs: dict = field(default_factory=dict)  # VC++ runtime folder per arch, as this process sees it
 
@@ -342,10 +444,6 @@ def process_bits():
     return struct.calcsize("P") * 8
 
 
-def system_root():
-    return os.environ.get("SystemRoot") or os.environ.get("windir") or "C:\\Windows"
-
-
 def platform_layout():
     """Which DLLs to register with which regsvr32, in which registry view. Raises UnsupportedPC."""
     machine = native_machine()
@@ -373,7 +471,7 @@ def platform_layout():
         sender = "softcam64.dll" if bits == 64 else "softcam32.dll"
     return Layout(machine=machine, process_bits=bits, targets=targets,
                   powershell=path(native_folder, "WindowsPowerShell", "v1.0", "powershell.exe"),
-                  icacls=path("System32", "icacls.exe"), sender_dll=sender, runtime_dirs=runtime_dirs)
+                  sender_dll=sender, runtime_dirs=runtime_dirs)
 
 
 def files_installed(layout, folder=None):
@@ -395,38 +493,80 @@ def _read_value(registry, path, name, view):
         return None
 
 
-def _key_exists(registry, path, view):
+def _subkey_names(registry, path, view):
     try:
-        with _open_machine_key(registry, path, view):
-            return True
+        with _open_machine_key(registry, path, view) as key:
+            names = []
+            for index in range(MAX_INSTANCE_SUBKEYS):
+                try:
+                    names.append(registry.EnumKey(key, index))
+                except OSError:  # ERROR_NO_MORE_ITEMS
+                    break
+            return names
     except OSError:
-        return False
+        return []
+
+
+def _listed(registry, view):
+    """Whether the DirectShow video input category lists Softcam's CLSID in this registry view: a
+    subkey of ...\\Instance whose CLSID value is ours. Softcam 1.8.1 names it "DirectShow Softcam";
+    any name counts as long as its CLSID value points at the filter, and a subkey without that
+    value never does."""
+    names = sorted(_subkey_names(registry, INSTANCE_ROOT_KEY, view),
+                   key=lambda name: name.lower() != CAMERA_NAME.lower())  # the usual name first
+    for name in names:
+        value = _read_value(registry, INSTANCE_ROOT_KEY + "\\" + name, "CLSID", view)
+        if isinstance(value, str) and value.strip().upper() == CLSID.upper():
+            return True
+    return False
 
 
 def _normalized_path(value):
     if not isinstance(value, str) or not value.strip():
         return None
-    text = os.path.expandvars(value.strip().strip('"'))
-    return os.path.normcase(os.path.normpath(text))
+    return os.path.normcase(os.path.normpath(value.strip().strip('"')))
+
+
+_VERSION_FOLDER = re.compile(r"[0-9a-f]{16}")
+
+
+def orbit_dll_path(value, name):
+    """`value` (a registered InprocServer32 path), cleaned up, when it names Orbit's own copy of
+    `name` in a version folder of the admin-only webcam folder; None for anything else (another
+    program's camera, environment variables, odd values). Only such paths are ever handed to an
+    elevated regsvr32."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().strip('"')
+    if not text or "%" in text:
+        return None
+    actual = os.path.normcase(os.path.normpath(text))
+    folder, file_name = os.path.split(actual)
+    root = os.path.normcase(os.path.normpath(str(webcam_root())))
+    if file_name != os.path.normcase(name) or os.path.dirname(folder) != root:
+        return None
+    if not _VERSION_FOLDER.fullmatch(os.path.basename(folder).lower()):
+        return None
+    return os.path.normpath(text)
 
 
 @dataclass(frozen=True)
 class Registration:
     ok: bool
     problem: object  # None, "missing", "notListed", "olderOrbit" or "otherProgram"
-    paths: dict
+    paths: dict      # dll name -> the registered InprocServer32 path (None when missing)
 
 
 _PROBLEM_ORDER = ("otherProgram", "olderOrbit", "missing", "notListed")
 
 
 def registration_state(layout, folder=None, registry=None):
-    """Whether both views register exactly these DLLs as the Softcam camera."""
+    """Whether both views register exactly these DLLs as the Softcam camera, listed in the
+    DirectShow video input category."""
     registry = winreg if registry is None else registry
     folder = Path(folder) if folder is not None else install_directory()
     if registry is None:
         return Registration(False, "missing", {})
-    webcam_root = _normalized_path(str(orbit_program_data() / "Webcam"))
     problems, paths = [], {}
     for target in layout.targets:
         value = _read_value(registry, INPROC_KEY, "", target.view)
@@ -435,11 +575,30 @@ def registration_state(layout, folder=None, registry=None):
         if actual is None:
             problems.append("missing")
         elif actual != _normalized_path(str(folder / target.name)):
-            problems.append("olderOrbit" if actual.startswith(webcam_root + os.sep) else "otherProgram")
-        elif not _key_exists(registry, CATEGORY_INSTANCE_KEY, target.view):
+            problems.append("olderOrbit" if orbit_dll_path(value, target.name) else "otherProgram")
+        elif not _listed(registry, target.view):
             problems.append("notListed")
     problem = next((name for name in _PROBLEM_ORDER if name in problems), None)
     return Registration(problem is None, problem, paths)
+
+
+def orbit_registrations(layout, registry=None):
+    """{dll name: path} for the registry views whose camera is one of Orbit's webcam DLLs (any version)."""
+    paths = registration_state(layout, registry=registry).paths
+    owned = {}
+    for target in layout.targets:
+        path = orbit_dll_path(paths.get(target.name), target.name)
+        if path:
+            owned[target.name] = path
+    return owned
+
+
+def webcam_files_left():
+    """Whether anything is left in the webcam folder (a removal deletes it)."""
+    try:
+        return any(webcam_root().iterdir())
+    except OSError:
+        return False
 
 
 # Visual C++ runtime --------------------------------------------------------------------------
@@ -575,9 +734,27 @@ def runtime_message(runtime):
 
 # Getting verified DLLs -------------------------------------------------------------------------
 
-def download_url(name):
+_RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+")
+
+
+def _agent_version():
+    try:
+        return str(orbit_capabilities.capabilities_payload().get("agentVersion") or "")
+    except Exception:
+        return ""
+
+
+def download_refs():
+    """Where in the repository to download the DLLs from: this agent's release tag first (a tag
+    never moves, so these exact files stay there even after main switches to a newer Softcam
+    build), then main for builds that have no release yet."""
+    version = _agent_version()
+    return ([f"pc-v{version}"] if _RELEASE_VERSION.fullmatch(version) else []) + ["main"]
+
+
+def download_url(name, ref="main"):
     import orbit_updater
-    return (f"https://raw.githubusercontent.com/{orbit_updater.GITHUB_OWNER}/{orbit_updater.GITHUB_REPO}/main/"
+    return (f"https://raw.githubusercontent.com/{orbit_updater.GITHUB_OWNER}/{orbit_updater.GITHUB_REPO}/{ref}/"
             f"{DOWNLOAD_FOLDER}{name}")
 
 
@@ -600,40 +777,54 @@ def _write_atomically(path, data):
 
 
 def download_dll(name, fetch=None):
-    """Downloads one DLL from the repository's main branch into the cache; only a file with the
-    pinned SHA-256 is kept. Raises InstallError(503)."""
+    """Downloads one DLL into the cache (see download_refs); only a file with the pinned SHA-256
+    is kept. Raises InstallError(503)."""
     import orbit_updater
-    url = download_url(name)
     fetch = fetch or orbit_updater._fetch_bytes
-    try:
-        data = fetch(url, timeout=20.0, accept="application/octet-stream")
-    except urllib.error.HTTPError as error:
-        raise InstallError(503, f"Could not download the webcam driver ({name}) from GitHub (HTTP {error.code}). "
-                                "Download the full Orbit PC Companion again and try again.") from error
-    except (urllib.error.URLError, OSError, ValueError) as error:
-        raise InstallError(503, f"Could not download the webcam driver ({name}) from GitHub. Check the PC's "
-                                "internet connection, or download the full Orbit PC Companion again, then try "
-                                "again.") from error
-    if len(data) > MAX_DLL_BYTES or hashlib.sha256(data).hexdigest() != DLL_SHA256[name]:
+    http_error, mismatch = None, False
+    for ref in download_refs():
+        try:
+            data = fetch(download_url(name, ref), timeout=20.0, accept="application/octet-stream")
+        except urllib.error.HTTPError as error:
+            http_error = error  # 404: no such release tag (yet); try the next ref
+            continue
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise InstallError(503, f"Could not download the webcam driver ({name}) from GitHub. Check the PC's "
+                                    "internet connection, or download the full Orbit PC Companion again, then try "
+                                    "again.") from error
+        if len(data) > MAX_DLL_BYTES or hashlib.sha256(data).hexdigest() != DLL_SHA256[name]:
+            LOGGER.warning("The %s downloaded from %s does not match the pinned SHA-256; not used", name, ref)
+            mismatch = True
+            continue
+        path = cache_directory() / name
+        try:
+            _write_atomically(path, data)
+        except OSError as error:
+            raise InstallError(503, "Could not save the downloaded webcam driver on the PC. Check the free disk "
+                                    "space and try again.") from error
+        return path
+    if mismatch:
         raise InstallError(503, f"The webcam driver on GitHub ({name}) is a different version than this Orbit PC "
                                 "Companion expects, so it was not used. Update Orbit PC Companion from its tray menu, "
                                 "then try again.")
-    path = cache_directory() / name
-    try:
-        _write_atomically(path, data)
-    except OSError as error:
-        raise InstallError(503, "Could not save the downloaded webcam driver on the PC. Check the free disk space "
-                                "and try again.") from error
-    return path
+    code = f" (HTTP {http_error.code})" if http_error is not None else ""
+    raise InstallError(503, f"Could not download the webcam driver ({name}) from GitHub{code}. Download the full "
+                            "Orbit PC Companion again and try again.")
+
+
+def source_directories():
+    """Where verified DLLs may already be: the installed folder (admin-only), next to the agent,
+    and the download cache."""
+    return [install_directory()] + bundled_directories() + [cache_directory()]
 
 
 def ensure_sources(layout, download=None):
-    """A verified copy of every DLL this PC needs: bundled, cached or freshly downloaded."""
+    """A verified copy of every DLL this PC needs: installed, bundled, cached or freshly downloaded."""
     sources = {}
     for target in layout.targets:
         name = target.name
-        folders = bundled_directories() + [cache_directory()]
-        source = next((folder / name for folder in folders if is_verified(folder / name, name, use_cache=False)), None)
+        source = next((folder / name for folder in source_directories()
+                       if is_verified(folder / name, name, use_cache=False)), None)
         if source is None:
             LOGGER.info("%s is missing or different next to the agent; downloading it", name)
             source = (download or download_dll)(name)
@@ -643,47 +834,9 @@ def ensure_sources(layout, download=None):
     return sources
 
 
-def precopy(sources, folder):
-    """Copies the verified DLLs into the versioned folder as the signed-in user. Once a setup
-    protected the folder, only administrators may write there and the elevated step copies the
-    files itself. Returns the names still missing (for the log)."""
-    pending = []
-    for name, source in sources.items():
-        destination = folder / name
-        if is_verified(destination, name, use_cache=False):
-            continue
-        temporary = None
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=folder)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(Path(source).read_bytes())
-                stream.flush()
-                os.fsync(stream.fileno())
-            if file_sha256(temporary, use_cache=False) != DLL_SHA256[name]:
-                raise OSError("the copy does not match the pinned SHA-256")
-            os.replace(temporary, destination)
-            temporary = None
-        except OSError as error:
-            LOGGER.info("Could not copy %s to %s as the user (%s); the elevated step copies it", name, folder, error)
-            pending.append(name)
-        finally:
-            if temporary is not None:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
-    return pending
-
-
 # The elevated step -------------------------------------------------------------------------------
 
 _PS_QUOTES = "'\u2018\u2019\u201a\u201b"  # PowerShell ends a single-quoted string at any of these
-ACL_GRANTS = ("*S-1-5-18:(OI)(CI)F",       # SYSTEM
-              "*S-1-5-32-544:(OI)(CI)F",   # Administrators
-              "*S-1-5-32-545:(OI)(CI)RX",  # Users
-              "*S-1-15-2-1:(OI)(CI)RX",    # ALL APPLICATION PACKAGES
-              "*S-1-15-2-2:(OI)(CI)RX")    # ALL RESTRICTED APPLICATION PACKAGES
 
 
 def ps_quote(value):
@@ -696,51 +849,152 @@ def ps_quote(value):
     return "'" + "".join(character * 2 if character in _PS_QUOTES else character for character in text) + "'"
 
 
-def elevation_script(layout, folder, sources):
-    """The one-line PowerShell script the UAC prompt runs. Exit codes: 0 done; 10-13 the
-    ProgramData folder could not be created or protected; 20 copy failed; 21 hash mismatch;
-    30-39 / 40-49 regsvr32 failed for the first / second DLL (code - 30 or - 40 is regsvr32's
-    own exit code: 3 = the DLL could not be loaded, 5 = DllRegisterServer failed, 9 = other);
-    90 the script failed.
+REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: a junction or symbolic link
+_VERSION_FOLDER_PATTERN = "'^[0-9a-f]{16}$'"
 
-    Cmdlets that matter stop on errors (-ErrorAction Stop, caught or trapped); native tools are
-    judged by $LASTEXITCODE only, so their messages on stderr never abort the script. Piping
-    regsvr32 (a GUI program) to Out-Null makes PowerShell wait for it and set $LASTEXITCODE.
+
+def _fails(path_expression, expected):
+    """PowerShell condition: the file's SHA-256 is not `expected`."""
+    return (f"(Get-FileHash -LiteralPath {path_expression} -Algorithm SHA256 -ErrorAction Stop).Hash "
+            f"-ne '{expected}'")
+
+
+def _is_link(path_expression):
+    """PowerShell condition: the existing folder is a junction or symbolic link."""
+    attributes = f"[int]((Get-Item -LiteralPath {path_expression} -Force -ErrorAction Stop).Attributes)"
+    return f"(({attributes} -band {REPARSE_POINT}) -ne 0)"
+
+
+def _regsvr32(executable, dll, unregister=False):
+    return f"& {ps_quote(executable)} {'/u /s' if unregister else '/s'} {ps_quote(dll)} 2>&1 | Out-Null"
+
+
+def _exit_on_failure(base, cleanup=()):
+    """After a regsvr32: exit with base + its exit code (0-9; 9 = other) when it failed."""
+    steps = ["$c = [int]$LASTEXITCODE", "if ($c -lt 0 -or $c -gt 9) { $c = 9 }", *cleanup, f"exit ({base} + $c)"]
+    return "if ($LASTEXITCODE -ne 0) { " + "; ".join(steps) + " }"
+
+
+def _old_version_folders(webcam, keep=None):
+    """Pipeline that deletes Orbit's version folders in `webcam` (not links, not `keep`)."""
+    keep_test = f"$_.Name -ne {ps_quote(keep)} -and " if keep else ""
+    return (f"Get-ChildItem -LiteralPath {webcam} -Directory -Force -ErrorAction SilentlyContinue | Where-Object {{ "
+            f"{keep_test}$_.Name -match {_VERSION_FOLDER_PATTERN} -and "
+            f"(([int]$_.Attributes) -band {REPARSE_POINT}) -eq 0 }} | Remove-Item -Recurse -Force "
+            "-ErrorAction SilentlyContinue")
+
+
+def elevation_script(layout, folder, sources, previous=None):
+    """The one-line PowerShell script the setup's UAC prompt runs. `previous` maps each DLL name to
+    the path its registry view pointed at before (for the rollback). Exit codes: 0 done; 13 the
+    folder could not be created; 14 a folder is a link (reparse point); 20 a copy failed; 21 a hash
+    did not match; 30-39 / 40-49 regsvr32 failed for the first / second DLL (code - 30 or - 40 is
+    regsvr32's own exit code: 3 = the DLL could not be loaded, 5 = DllRegisterServer failed, 9 =
+    other); 90 the script failed.
+
+    The folder is in Program Files, so only administrators can have put anything there. Nothing
+    is written before its hash is checked in memory. Cmdlets that matter stop on errors
+    (-ErrorAction Stop, caught or trapped); native tools are judged by $LASTEXITCODE only, so
+    their messages on stderr never abort the script. Piping regsvr32 (a GUI program) to Out-Null
+    makes PowerShell wait for it and set $LASTEXITCODE.
     """
     q = ps_quote
     folder = Path(folder)
-    root = folder.parent.parent
-    icacls = q(layout.icacls)
+    webcam = folder.parent
+    previous = previous or {}
     statements = [
         "trap { exit 90 }",
-        f"try {{ New-Item -ItemType Directory -Force -Path {q(folder)} -ErrorAction Stop | Out-Null }} catch {{ exit 13 }}",
-        f"& {icacls} {q(root)} /setowner '*S-1-5-32-544' /T /C /Q 2>&1 | Out-Null",
-        "if ($LASTEXITCODE -ne 0) { exit 10 }",
-        f"& {icacls} {q(root)} /reset /T /C /Q 2>&1 | Out-Null",
-        "if ($LASTEXITCODE -ne 0) { exit 11 }",
-        f"& {icacls} {q(root)} /inheritance:r /grant:r {' '.join(q(grant) for grant in ACL_GRANTS)} /C /Q 2>&1 "
-        "| Out-Null",
-        "if ($LASTEXITCODE -ne 0) { exit 12 }",
+        "$step = 'orbit-webcam-install'",
+        f"try {{ [void][IO.Directory]::CreateDirectory({q(folder)}) }} catch {{ exit 13 }}",
+        f"foreach ($p in @({', '.join(q(path) for path in (webcam.parent, webcam, folder))})) "
+        f"{{ if {_is_link('$p')} {{ exit 14 }} }}",
     ]
     for target in layout.targets:
         expected = DLL_SHA256[target.name].upper()
-        hash_of_d = "(Get-FileHash -LiteralPath $d -Algorithm SHA256 -ErrorAction Stop).Hash"
         statements += [
             f"$d = {q(folder / target.name)}",
-            f"if (-not (Test-Path -LiteralPath $d -PathType Leaf) -or {hash_of_d} -ne '{expected}') "
-            f"{{ try {{ Copy-Item -LiteralPath {q(sources[target.name])} -Destination $d -Force -ErrorAction Stop }} "
-            "catch { exit 20 } }",
-            f"if ({hash_of_d} -ne '{expected}') {{ exit 21 }}",
+            f"$s = {q(sources[target.name])}",
+            f"if (-not (Test-Path -LiteralPath $d -PathType Leaf) -or {_fails('$d', expected)}) {{ $b = $null; "
+            f"try {{ if ((Get-Item -LiteralPath $s -Force -ErrorAction Stop).Length -le {MAX_DLL_BYTES}) "
+            "{ $b = [IO.File]::ReadAllBytes($s) } } catch { exit 20 }; if ($null -eq $b) { exit 21 }; "
+            "if ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($b)).Replace('-', '') "
+            f"-ne '{expected}') {{ exit 21 }}; try {{ [IO.File]::WriteAllBytes($d, $b) }} catch {{ exit 20 }} }}",
+            f"if ({_fails('$d', expected)}) "
+            "{ Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue; exit 21 }",
         ]
-    registered = []
+    done = []
     for index, target in enumerate(layout.targets):
-        statements.append(f"& {q(target.regsvr32)} /s {q(folder / target.name)} 2>&1 | Out-Null")
-        rollback = "".join(f"& {q(done.regsvr32)} /u /s {q(folder / done.name)} 2>&1 | Out-Null; "
-                           for done in registered)
-        statements.append("if ($LASTEXITCODE -ne 0) { $c = [int]$LASTEXITCODE; if ($c -lt 0 -or $c -gt 9) { $c = 9 }; "
-                          f"{rollback}exit ({30 + 10 * index} + $c) }}")
-        registered.append(target)
+        new = folder / target.name
+        statements.append(_regsvr32(target.regsvr32, new))
+        cleanup = [step for step in (_undo(item, previous) for item in done) if step]
+        restore = _restorable(target, new, previous)
+        if restore:  # Put the older Orbit webcam back in the view whose registration just failed.
+            cleanup.append(f"if (Test-Path -LiteralPath {q(restore)} -PathType Leaf) "
+                           f"{{ {_regsvr32(target.regsvr32, restore)} }}")
+        statements.append(_exit_on_failure(30 + 10 * index, cleanup))
+        done.append((target, new))
+    statements.append(_old_version_folders(q(webcam), keep=folder.name))
     statements.append("exit 0")
+    return "; ".join(statements)
+
+
+def _restorable(target, new, previous):
+    """The older Orbit DLL that `target`'s view pointed at before, when it can be registered again."""
+    before = previous.get(target.name)
+    if _normalized_path(before) == _normalized_path(str(new)):
+        return None
+    return orbit_dll_path(before, target.name)
+
+
+def _undo(item, previous):
+    """Rollback of a registration this script made: back to how that view was before the prompt."""
+    target, new = item
+    if _normalized_path(previous.get(target.name)) == _normalized_path(str(new)):
+        return ""  # It was registered to this very file already: leave it.
+    restore = _restorable(target, new, previous)
+    remove = _regsvr32(target.regsvr32, new, unregister=True)
+    if restore:
+        return (f"if (Test-Path -LiteralPath {ps_quote(restore)} -PathType Leaf) "
+                f"{{ {_regsvr32(target.regsvr32, restore)} }} else {{ {remove} }}")
+    # Nothing (or another program's camera, whose DLL is never run elevated) was there before.
+    return remove
+
+
+def _classes_key(target):
+    classes = "SOFTWARE\\Classes\\WOW6432Node" if target.view == KEY_WOW64_32KEY else "SOFTWARE\\Classes"
+    return "Registry::HKEY_LOCAL_MACHINE\\" + classes
+
+
+def uninstall_script(layout, owned):
+    """The one-line PowerShell script the removal's UAC prompt runs. `owned` maps DLL names to
+    the Orbit webcam DLL their registry view points at (see orbit_registrations); other views are
+    left alone. Exit codes: 0 done; 14 the webcam folder is a link, so it was not deleted; 50 files
+    are still in use and stay; 60-69 / 70-79 regsvr32 /u failed for the first / second DLL; 90 the
+    script failed."""
+    q = ps_quote
+    statements = ["trap { exit 90 }", "$step = 'orbit-webcam-uninstall'"]
+    for index, target in enumerate(layout.targets):
+        path = owned.get(target.name)
+        if not path:
+            continue
+        classes = _classes_key(target)
+        clsid_key = classes + "\\CLSID\\" + CLSID
+        instances = classes + "\\CLSID\\" + VIDEO_INPUT_CATEGORY + "\\Instance"
+        # When the DLL is gone, DllUnregisterServer cannot run: delete what it would have deleted.
+        statements.append(
+            f"if (Test-Path -LiteralPath {q(path)} -PathType Leaf) {{ "
+            f"{_regsvr32(target.regsvr32, path, unregister=True)}; {_exit_on_failure(60 + 10 * index)} }} else {{ "
+            f"Remove-Item -LiteralPath {q(clsid_key)} -Recurse -Force -ErrorAction SilentlyContinue; "
+            f"Get-ChildItem -LiteralPath {q(instances)} -ErrorAction SilentlyContinue | Where-Object "
+            f"{{ $_.GetValue('CLSID') -eq {q(CLSID)} }} | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }}")
+    webcam, orbit = webcam_root(), orbit_program_files()
+    statements += [
+        f"$w = {q(webcam)}",
+        f"if (Test-Path -LiteralPath $w) {{ if {_is_link('$w')} {{ exit 14 }}; {_old_version_folders('$w')}; "
+        f"try {{ [IO.Directory]::Delete($w) }} catch {{ }}; try {{ [IO.Directory]::Delete({q(orbit)}) }} catch {{ }} }}",
+        "if (Test-Path -LiteralPath $w) { exit 50 }",
+        "exit 0",
+    ]
     return "; ".join(statements)
 
 
@@ -844,9 +1098,11 @@ def failure_message(code, layout, timed_out, registration):
     """A plain sentence for a setup that did not end with a verified registration."""
     if timed_out:
         return "The webcam setup on the PC did not finish within 2 minutes. Try again."
-    if code in (10, 11, 12, 13):
-        return (f"Windows could not prepare the webcam folder ({orbit_program_data()}), so nothing was registered. "
-                "Try again.")
+    if code == 13:
+        return f"Windows could not create the webcam folder ({install_directory()}), so nothing was registered. Try again."
+    if code == 14:
+        return (f"The webcam folder ({webcam_root()}) or its parent is a link to another folder, so nothing was "
+                "registered. Delete that link and try again.")
     if code == 20:
         return ("Windows could not copy the webcam files. Close apps that may be using a camera (Zoom, Teams, "
                 "browsers, OBS) and try again.")
@@ -870,6 +1126,25 @@ def failure_message(code, layout, timed_out, registration):
     return f"The webcam setup failed on the PC (code {code}). Try again."
 
 
+def _elevate(elevate, layout, script, what):
+    """Runs the script through the one UAC prompt. Returns (exit code or None, timed out)."""
+    try:
+        return (elevate or run_elevated)(layout.powershell, powershell_parameters(script),
+                                         ELEVATED_TIMEOUT_SECONDS), False
+    except ElevationDeclined as error:
+        raise InstallError(403, f"The webcam was not {what}: the Windows administrator prompt was declined on the PC. "
+                                "Try again and choose Yes. If you are not an administrator on this PC, ask one to "
+                                "approve it.") from error
+    except ElevationFailed as error:
+        if error.code == ERROR_FILE_NOT_FOUND:
+            message = f"Windows PowerShell was not found on the PC, so the webcam could not be {what}."
+            raise InstallError(503, message) from error
+        raise InstallError(503, f"Windows could not ask for administrator permission (error {error.code}). Try "
+                                "again.") from error
+    except TimeoutError:
+        return None, True
+
+
 def install_webcam(progress=lambda stage: None, *, elevate=None, download=None, registry=None):
     """Sets the webcam up (see the module docstring). Returns "installed" or "alreadyInstalled";
     raises InstallError. Blocks while the UAC prompt is open."""
@@ -881,31 +1156,17 @@ def install_webcam(progress=lambda stage: None, *, elevate=None, download=None, 
     if not runtime["ok"]:
         raise InstallError(409, runtime_message(runtime))
     progress("preparing")
-    sources = ensure_sources(layout, download)
     folder = install_directory()
-    precopy(sources, folder)
-    if files_installed(layout, folder) and registration_state(layout, folder, registry).ok:
-        return "alreadyInstalled"
-    script = elevation_script(layout, folder, sources)
+    before = registration_state(layout, folder, registry)
+    if files_installed(layout, folder) and before.ok:
+        return "alreadyInstalled"  # Before any download: a set-up PC needs no source files.
+    sources = ensure_sources(layout, download)
+    script = elevation_script(layout, folder, sources, previous=before.paths)
     progress("waitingForApproval")
     orbit_notify.notify("Approve the webcam setup",
                         "Windows asks whether Windows PowerShell may make changes. Choose Yes to finish setting up the "
                         "iPhone webcam. No prompt on screen? Click the flashing shield in the taskbar.")
-    code, timed_out = None, False
-    try:
-        code = (elevate or run_elevated)(layout.powershell, powershell_parameters(script), ELEVATED_TIMEOUT_SECONDS)
-    except ElevationDeclined as error:
-        raise InstallError(403, "The webcam was not set up: the Windows administrator prompt was declined on the PC. "
-                                "Try again and choose Yes. If you are not an administrator on this PC, ask one to "
-                                "approve it.") from error
-    except ElevationFailed as error:
-        if error.code == ERROR_FILE_NOT_FOUND:
-            raise InstallError(503, "Windows PowerShell was not found on the PC, so the webcam could not be set "
-                                    "up.") from error
-        raise InstallError(503, f"Windows could not ask for administrator permission (error {error.code}). Try "
-                                "again.") from error
-    except TimeoutError:
-        timed_out = True
+    code, timed_out = _elevate(elevate, layout, script, "set up")
     progress("verifying")
     registration = registration_state(layout, folder, registry)
     if files_installed(layout, folder) and registration.ok:
@@ -919,40 +1180,102 @@ def install_webcam(progress=lambda stage: None, *, elevate=None, download=None, 
     raise InstallError(503, failure_message(code, layout, timed_out, registration))
 
 
-class Installer:
-    """At most one setup at a time; callers that arrive while one runs share its result."""
+def uninstall_failure_message(code, layout, timed_out):
+    """A plain sentence for a removal after which Windows still lists Orbit's camera."""
+    if timed_out:
+        return "Removing the webcam on the PC did not finish within 2 minutes. Try again."
+    if isinstance(code, int) and 60 <= code < 60 + 10 * len(layout.targets):
+        target = layout.targets[(code - 60) // 10]
+        return (f"Windows could not remove the webcam driver ({target.name}, regsvr32 error {(code - 60) % 10}). Close "
+                "apps that may be using a camera (Zoom, Teams, browsers, OBS) and try again.")
+    if code == 90:
+        return "The webcam removal script failed on the PC. Try again."
+    return "Windows still lists Orbit's DirectShow Softcam camera on the PC. Try again."
 
-    def __init__(self, runner=None):
+
+def uninstall_webcam(progress=lambda stage: None, *, elevate=None, registry=None, camera=None):
+    """Removes Orbit's webcam from Windows (see the module docstring). Returns "uninstalled" or
+    "notInstalled"; raises InstallError. Blocks while the UAC prompt is open."""
+    try:
+        layout = platform_layout()
+    except UnsupportedPC as error:
+        raise InstallError(409, str(error)) from error
+    progress("preparing")
+    owned = orbit_registrations(layout, registry)
+    if not owned and not webcam_files_left():
+        return "notInstalled"
+    script = uninstall_script(layout, owned)
+    progress("waitingForApproval")
+    orbit_notify.notify("Approve removing the webcam",
+                        "Windows asks whether Windows PowerShell may make changes. Choose Yes to remove the iPhone "
+                        "webcam from this PC. No prompt on screen? Click the flashing shield in the taskbar.")
+    code, timed_out = _elevate(elevate, layout, script, "removed")
+    progress("verifying")
+    remaining = orbit_registrations(layout, registry)
+    if remaining:
+        LOGGER.warning("Webcam removal failed: exit %s, timed out %s, still registered %s", code, timed_out, remaining)
+        raise InstallError(503, uninstall_failure_message(code, layout, timed_out))
+    if code not in (0, 14, 50, None):
+        LOGGER.warning("The elevated webcam removal exited with %s, but nothing of Orbit's is registered", code)
+    (camera or CAMERA).end_all(CameraError("notInstalled", REMOVED_MESSAGE, CLOSE_NOT_INSTALLED))
+    left = webcam_files_left()
+    if left:
+        LOGGER.info("Webcam files are still in use and stay in %s", webcam_root())
+    orbit_notify.notify("iPhone webcam removed",
+                        f'The "{CAMERA_NAME}" camera was removed from this PC.'
+                        + (f" Some files are still in use and stay in {webcam_root()}; restart the PC and remove the "
+                           "webcam again to delete them." if left else ""))
+    return "uninstalled"
+
+
+class Installer:
+    """At most one setup or removal at a time. Callers asking for the one that runs share its
+    result; asking for the other one meanwhile is refused (409)."""
+
+    def __init__(self, runner=None, uninstaller=None):
         self._runner = runner
+        self._uninstaller = uninstaller
         self._lock = threading.Lock()
         self._future = None
+        self._operation = None
         self._stage = None
         self.last_error = None
 
-    def start(self):
+    def start(self, operation="install"):
+        if operation not in BUSY_MESSAGES:
+            raise ValueError(f"Unknown webcam operation {operation!r}")
         with self._lock:
             if self._future is not None and not self._future.done():
+                if self._operation != operation:
+                    raise InstallError(409, BUSY_MESSAGES[self._operation])
                 return self._future
             future = concurrent.futures.Future()
             future.set_running_or_notify_cancel()
             self._future = future
+            self._operation = operation
             self._stage = "preparing"
             self.last_error = None
-        threading.Thread(target=self._run, args=(future,), name="orbit-webcam-setup", daemon=True).start()
+        threading.Thread(target=self._run, args=(future, operation), name=f"orbit-webcam-{operation}",
+                         daemon=True).start()
         return future
 
     def _set_stage(self, stage):
         with self._lock:
             self._stage = stage
 
-    def _run(self, future):
+    def _run(self, future, operation):
+        if operation == "install":
+            runner = self._runner or install_webcam
+        else:
+            runner = self._uninstaller or uninstall_webcam
         try:
-            result = (self._runner or install_webcam)(progress=self._set_stage)
+            result = runner(progress=self._set_stage)
         except InstallError as error:
             failure = error
         except BaseException:
-            LOGGER.exception("Webcam setup failed")
-            failure = InstallError(503, "Webcam setup failed on the PC. Try again; agent.log has the details.")
+            LOGGER.exception("Webcam %s failed", operation)
+            what = "setup" if operation == "install" else "removal"
+            failure = InstallError(503, f"Webcam {what} failed on the PC. Try again; agent.log has the details.")
         else:
             with self._lock:
                 self._stage = None
@@ -963,10 +1286,17 @@ class Installer:
             self.last_error = failure.message
         future.set_exception(failure)
 
+    def _running(self, operation):
+        with self._lock:
+            return self._future is not None and not self._future.done() and self._operation == operation
+
     @property
     def installing(self):
-        with self._lock:
-            return self._future is not None and not self._future.done()
+        return self._running("install")
+
+    @property
+    def uninstalling(self):
+        return self._running("uninstall")
 
     @property
     def stage(self):
@@ -1112,7 +1442,11 @@ class CameraManager:
     """Owns the one Softcam camera of this process. A single worker thread makes every DLL call:
     it creates the camera for the newest phone, converts and sends only the newest frame (frames
     that arrive while it is busy replace the waiting one), polls scIsConnected and deletes the
-    camera GRACE_SECONDS after the last phone left. Callers never block on it."""
+    camera GRACE_SECONDS after the last phone left. Callers never block on it.
+
+    Invariant: a phone is only registered while a camera exists. When a camera cannot be
+    (re)created, every phone is ended with cameraUnavailable instead of streaming into nothing,
+    and the next camera starts a new session (a new webcam.connected)."""
 
     def __init__(self, library_loader=None, converter=None, emit=None, clock=time.monotonic):
         self._loader = library_loader
@@ -1139,15 +1473,28 @@ class CameraManager:
 
     # Called from the event loop (never blocks on the DLL) ------------------------------------
 
-    def start_sender(self, sender_id, camera_format, on_replaced=None):
+    def start_sender(self, sender_id, camera_format, on_ended=None):
         """Queues "make the camera ready for this phone". The future resolves with a dict or
-        fails with CameraError. Older phones are replaced (`on_replaced` of theirs is called)."""
+        fails with CameraError. Older phones are ended: `on_ended(CameraError)` of theirs is
+        called from the worker with "replaced", or with the error that stopped the camera."""
         future = concurrent.futures.Future()
         with self._cond:
             if self._closed:
                 future.set_exception(CameraError("internal", "The webcam is shutting down.", CLOSE_INTERNAL))
                 return future
-            self._commands.append((sender_id, tuple(camera_format), on_replaced, future))
+            self._commands.append(("start", sender_id, tuple(camera_format), on_ended, future))
+            self._ensure_thread()
+            self._cond.notify_all()
+        return future
+
+    def end_all(self, error):
+        """Queues "end every phone with `error` and delete the camera" (the webcam was removed)."""
+        future = concurrent.futures.Future()
+        with self._cond:
+            if self._closed:
+                future.set_result(None)
+                return future
+            self._commands.append(("end", error, future))
             self._ensure_thread()
             self._cond.notify_all()
         return future
@@ -1170,8 +1517,12 @@ class CameraManager:
             if self._active == sender_id:
                 self._active = None
                 self._pending = None
-            if not self._senders and self._camera is not None:
-                self._grace_deadline = self._clock() + GRACE_SECONDS
+            if not self._senders:
+                if self._camera is not None:
+                    self._grace_deadline = self._clock() + GRACE_SECONDS
+                else:
+                    self._session = False
+                    self._grace_deadline = None
             self._cond.notify_all()
 
     @property
@@ -1228,8 +1579,10 @@ class CameraManager:
                 if command is None and self._pending is not None:
                     frame, self._pending = self._pending, None
             try:
-                if command is not None:
-                    self._start(*command)
+                if command is not None and command[0] == "start":
+                    self._start(*command[1:])
+                elif command is not None:
+                    self._end_all(*command[1:])
                 elif frame is not None:
                     self._send(frame)
                 self._housekeeping()
@@ -1238,11 +1591,52 @@ class CameraManager:
         self._delete_camera()
         with self._cond:
             waiting, self._commands = list(self._commands), deque()
-        for _sender, _format, _callback, future in waiting:
-            if future.set_running_or_notify_cancel():
+        for command in waiting:
+            future = command[-1]
+            if not future.set_running_or_notify_cancel():
+                continue
+            if command[0] == "start":
                 future.set_exception(CameraError("internal", "The webcam is shutting down.", CLOSE_INTERNAL))
+            else:
+                future.set_result(None)
 
-    def _start(self, sender_id, camera_format, on_replaced, future):
+    def _create_camera(self, camera_format):
+        """scCreateCamera, retried for up to CREATE_RETRY_SECONDS: Softcam refuses a new camera while
+        an app's DirectShow filter still maps the previous camera's shared memory, which it
+        releases at its next frame poll (or only when the app closes it, while its graph is
+        stopped). Runs on the worker; close() interrupts it. Returns the handle or None."""
+        deadline = self._clock() + CREATE_RETRY_SECONDS
+        while True:
+            handle = self._library.create(*camera_format)
+            if handle:
+                return handle
+            with self._cond:
+                remaining = deadline - self._clock()
+                if self._closed or remaining <= 0:
+                    return None
+                self._cond.wait(min(CREATE_RETRY_INTERVAL, remaining))
+
+    def _drop_senders(self):
+        """Forgets every phone (the camera is gone) and returns their on_ended callbacks."""
+        with self._cond:
+            callbacks = [info.get("on_ended") for info in self._senders.values()]
+            self._senders = {}
+            self._active = None
+            self._pending = None
+            if self._camera is None:
+                self._session = False
+                self._grace_deadline = None
+        return [callback for callback in callbacks if callback is not None]
+
+    @staticmethod
+    def _tell(callbacks, error):
+        for callback in callbacks:
+            try:
+                callback(error)
+            except Exception:
+                LOGGER.exception("Could not tell a phone that its webcam stream ended")
+
+    def _start(self, sender_id, camera_format, on_ended, future):
         if not future.set_running_or_notify_cancel():
             return
         try:
@@ -1250,13 +1644,14 @@ class CameraManager:
                 self._library = (self._loader or load_sender_library)()
             created = False
             if self._camera is not None and self._format != camera_format:
+                with self._cond:  # The current phone's frames wait while the camera is rebuilt.
+                    self._active = None
+                    self._pending = None
                 self._delete_camera()
             if self._camera is None:
-                handle = self._library.create(*camera_format)
+                handle = self._create_camera(camera_format)
                 if not handle:
-                    raise CameraError("cameraUnavailable", "Another program on the PC is already sending video to "
-                                                           "the DirectShow Softcam camera. Close it and try again.",
-                                      CLOSE_CAMERA_UNAVAILABLE)
+                    raise CameraError("cameraUnavailable", CAMERA_BUSY_MESSAGE, CLOSE_CAMERA_UNAVAILABLE)
                 with self._cond:
                     self._camera, self._format = handle, camera_format
                     self._connected = False
@@ -1264,34 +1659,40 @@ class CameraManager:
                 self._send_failure_logged = False
                 created = True
             with self._cond:
-                replaced = [info for other, info in self._senders.items() if other != sender_id]
-                self._senders = {sender_id: {"format": camera_format, "on_replaced": on_replaced}}
+                replaced = [info.get("on_ended") for other, info in self._senders.items() if other != sender_id]
+                self._senders = {sender_id: {"format": camera_format, "on_ended": on_ended}}
                 self._active = sender_id
                 self._pending = None
                 self._grace_deadline = None
                 self._last_format = camera_format
                 announce = created and not self._session
                 self._session = True
-        except CameraError as error:
+        except Exception as failure:
+            if isinstance(failure, CameraError):
+                error = failure
+            else:
+                LOGGER.exception("Could not start the virtual camera")
+                error = CameraError("cameraUnavailable", "The PC could not start the virtual camera. Restart Orbit PC "
+                                                         "Companion and try again.", CLOSE_CAMERA_UNAVAILABLE)
+            if self._camera is None:  # No camera left: nobody may keep sending into nothing.
+                self._tell(self._drop_senders(), error)
             future.set_exception(error)
             return
-        except Exception:
-            LOGGER.exception("Could not start the virtual camera")
-            future.set_exception(CameraError("cameraUnavailable", "The PC could not start the virtual camera. Restart "
-                                                                  "Orbit PC Companion and try again.",
-                                             CLOSE_CAMERA_UNAVAILABLE))
-            return
-        for info in replaced:
-            callback = info.get("on_replaced")
-            if callback is not None:
-                try:
-                    callback()
-                except Exception:
-                    LOGGER.exception("Could not tell a replaced phone")
+        self._tell([callback for callback in replaced if callback is not None],
+                   CameraError("replaced", REPLACED_MESSAGE, CLOSE_REPLACED))
         width, height, fps = camera_format
         future.set_result({"created": created, "width": width, "height": height, "fps": fps})
         if announce:
             (self._emit or _emit_connected)(camera_format)
+
+    def _end_all(self, error, future):
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            self._delete_camera()
+            self._tell(self._drop_senders(), error)
+        finally:
+            future.set_result(None)
 
     def _send(self, frame):
         sender_id, data = frame
@@ -1379,7 +1780,8 @@ def status_payload(manager, installer, boot_mode=False, registry=None):
     payload = {"installed": False, "registered": False, "active": camera["active"], "clients": camera["clients"],
                "width": camera["width"], "height": camera["height"], "fps": camera["fps"], "reason": None,
                "connected": camera["connected"], "installing": installer.installing,
-               "installStage": installer.stage, "installError": installer.last_error, "runtime": None,
+               "uninstalling": installer.uninstalling, "installStage": installer.stage,
+               "installError": installer.last_error, "runtime": None,
                "cameraName": CAMERA_NAME, "softcamVersion": SOFTCAM_VERSION, "limits": dict(LIMITS)}
     try:
         layout = platform_layout()
@@ -1394,9 +1796,13 @@ def status_payload(manager, installer, boot_mode=False, registry=None):
     payload["runtime"] = runtime
     if boot_mode:
         reason = NOT_SIGNED_IN
-    elif payload["installing"]:
-        reason = ("Waiting for you to approve the Windows prompt on the PC."
-                  if payload["installStage"] == "waitingForApproval" else "Setting up the iPhone webcam on the PC.")
+    elif payload["installing"] or payload["uninstalling"]:
+        if payload["installStage"] == "waitingForApproval":
+            reason = "Waiting for you to approve the Windows prompt on the PC."
+        elif payload["installing"]:
+            reason = "Setting up the iPhone webcam on the PC."
+        else:
+            reason = "Removing the iPhone webcam from the PC."
     elif payload["installed"] and registration.ok:
         reason = None if HAS_PILLOW else "Orbit PC Companion is missing Pillow. Run install_orbit.bat again."
     elif not runtime["ok"]:
@@ -1517,16 +1923,21 @@ async def handle_camera_socket(websocket, *, authorized, manager, boot_mode=lamb
         await fail("badHello", str(error), CLOSE_POLICY)
         return
 
-    replaced = asyncio.Event()
+    ended = asyncio.Event()
+    ending = {}
 
-    def on_replaced():
+    def on_ended(error):
+        """From the camera worker: a newer phone took over, or the camera stopped (CameraError)."""
+        def mark():
+            ending.setdefault("error", error)
+            ended.set()
         try:
-            loop.call_soon_threadsafe(replaced.set)
+            loop.call_soon_threadsafe(mark)
         except RuntimeError:
             pass  # The connection's loop is gone already.
 
     sender_id = uuid.uuid4().hex
-    future = manager.start_sender(sender_id, camera_format, on_replaced)
+    future = manager.start_sender(sender_id, camera_format, on_ended)
     try:
         await asyncio.wrap_future(future)
     except CameraError as error:
@@ -1546,10 +1957,11 @@ async def handle_camera_socket(websocket, *, authorized, manager, boot_mode=lamb
                     return
                 last_value, last_sent = connected, now
             try:
-                await asyncio.wait_for(replaced.wait(), STATUS_INTERVAL)
+                await asyncio.wait_for(ended.wait(), STATUS_INTERVAL)
             except asyncio.TimeoutError:
                 continue
-            await fail("replaced", "Another device started using this PC's webcam.", CLOSE_REPLACED)
+            error = ending.get("error") or CameraError("replaced", REPLACED_MESSAGE, CLOSE_REPLACED)
+            await fail(error.code, error.message, error.close_code)
             return
 
     async def receive_loop():
@@ -1601,11 +2013,26 @@ INSTALLER = Installer()
 
 def create_webcam_router(verify_control, require_https, require_windows, authorized, boot_mode=lambda: False,
                          manager=None, installer=None):
-    """`GET /api/webcam`, `POST /api/webcam/install` and `WS /ws/camera`."""
+    """`GET /api/webcam`, `POST /api/webcam/install`, `POST /api/webcam/uninstall` and `WS /ws/camera`."""
     camera = manager or CAMERA
     setup = installer or INSTALLER
     router = APIRouter()
     guards = [Depends(verify_control), Depends(require_https)]
+
+    def run(operation):
+        """Starts (or joins) the setup or removal and waits up to INSTALL_WAIT_SECONDS for it."""
+        try:
+            future = setup.start(operation)
+            result = future.result(timeout=INSTALL_WAIT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            return JSONResponse(status_code=202, headers={"Cache-Control": "no-store"},
+                                content={"status": "waitingForApproval", **status_payload(camera, setup, False)})
+        except InstallError as error:
+            raise HTTPException(status_code=error.status, detail=error.message) from error
+        body = {"status": result}
+        if operation == "uninstall":
+            body["filesLeft"] = webcam_files_left()
+        return {**body, **status_payload(camera, setup, False)}
 
     @router.get("/api/webcam", dependencies=guards)
     def webcam_status(response: Response):
@@ -1620,15 +2047,16 @@ def create_webcam_router(verify_control, require_https, require_windows, authori
         if boot_mode():
             raise HTTPException(status_code=409, detail="Sign in to Windows on the PC first. The webcam is set up "
                                                         "from the signed-in desktop.")
-        future = setup.start()
-        try:
-            result = future.result(timeout=INSTALL_WAIT_SECONDS)
-        except concurrent.futures.TimeoutError:
-            return JSONResponse(status_code=202, headers={"Cache-Control": "no-store"},
-                                content={"status": "waitingForApproval", **status_payload(camera, setup, False)})
-        except InstallError as error:
-            raise HTTPException(status_code=error.status, detail=error.message) from error
-        return {"status": result, **status_payload(camera, setup, False)}
+        return run("install")
+
+    @router.post("/api/webcam/uninstall", dependencies=guards)
+    def webcam_uninstall(response: Response):
+        require_windows()
+        response.headers["Cache-Control"] = "no-store"
+        if boot_mode():
+            raise HTTPException(status_code=409, detail="Sign in to Windows on the PC first. The webcam is removed "
+                                                        "from the signed-in desktop.")
+        return run("uninstall")
 
     @router.websocket("/ws/camera")
     async def camera_socket(websocket: WebSocket):

@@ -54,8 +54,8 @@ def make_jpeg(size, color=(200, 30, 10), mode="RGB", quality=95, painter=None, i
 
 
 class FakeKey:
-    def __init__(self, values):
-        self.values = values
+    def __init__(self, view, path, values):
+        self.view, self.path, self.values = view, path, values
 
     def __enter__(self):
         return self
@@ -65,19 +65,32 @@ class FakeKey:
 
 
 class FakeRegistry:
-    """HKLM only, with separate 64-bit and 32-bit views like Windows (KEY_WOW64_64KEY / 32KEY)."""
+    """HKLM only, with separate 64-bit and 32-bit views like Windows (KEY_WOW64_64KEY / 32KEY).
+    Creating a key creates its parents, and EnumKey lists subkeys with their original names."""
     HKEY_LOCAL_MACHINE = 0x80000002
     KEY_READ = 0x20019
 
     def __init__(self):
-        self.keys = {}
+        self.keys = {}    # (view, lower-case path) -> {lower-case value name: value}
+        self.names = {}   # (view, lower-case path) -> the path as written
         self.opened = []
 
-    def set(self, view, path, name, value):
-        self.keys.setdefault((view, path.lower()), {})[name.lower()] = value
-
     def create(self, view, path):
-        self.keys.setdefault((view, path.lower()), {})
+        parts = path.split("\\")
+        for index in range(1, len(parts) + 1):
+            partial = "\\".join(parts[:index])
+            self.keys.setdefault((view, partial.lower()), {})
+            self.names.setdefault((view, partial.lower()), partial)
+        return self.keys[(view, path.lower())]
+
+    def set(self, view, path, name, value):
+        self.create(view, path)[name.lower()] = value
+
+    def delete_tree(self, view, path):
+        prefix = path.lower()
+        for key in [key for key in self.keys if key[0] == view and (key[1] == prefix or key[1].startswith(prefix + "\\"))]:
+            del self.keys[key]
+            self.names.pop(key, None)
 
     def OpenKey(self, root, path, reserved=0, access=0):
         assert root == self.HKEY_LOCAL_MACHINE
@@ -87,30 +100,40 @@ class FakeRegistry:
         values = self.keys.get((view, path.lower()))
         if values is None:
             raise FileNotFoundError(2, "The system cannot find the file specified")
-        return FakeKey(values)
+        return FakeKey(view, path, values)
 
     def QueryValueEx(self, key, name):
         if name.lower() not in key.values:
             raise FileNotFoundError(2, "The system cannot find the file specified")
         return key.values[name.lower()], 1
 
+    def EnumKey(self, key, index):
+        prefix = key.path.lower() + "\\"
+        children = sorted({self.names[candidate][len(prefix):].split("\\")[0]
+                           for candidate in self.names if candidate[0] == key.view and candidate[1].startswith(prefix)})
+        if index >= len(children):
+            raise OSError(259, "No more data is available")
+        return children[index]
+
 
 class WindowsEnvironment(unittest.TestCase):
-    """A pretend x64 Windows: temporary ProgramData, SystemRoot and LocalAppData, a fake registry."""
+    """A pretend x64 Windows: temporary Program Files, SystemRoot and LocalAppData, a fake registry.
+    `_is_windows` is off even on Windows (CI), so nothing touches the real Program Files."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        self.program_data = self.root / "ProgramData"
+        self.program_files = self.root / "Program Files"
         self.system_root = self.root / "Windows"
         self.local = self.root / "Local"
-        for folder in (self.program_data, self.system_root, self.local):
+        for folder in (self.program_files, self.system_root, self.local):
             folder.mkdir()
-        environment = {"PROGRAMDATA": str(self.program_data), "SystemRoot": str(self.system_root),
-                       "LOCALAPPDATA": str(self.local)}
+        environment = {"ProgramW6432": str(self.program_files), "PROGRAMFILES": str(self.program_files),
+                       "SystemRoot": str(self.system_root), "LOCALAPPDATA": str(self.local)}
         self.registry = FakeRegistry()
         for patcher in (patch.dict(os.environ, environment),
+                        patch.object(webcam, "_is_windows", return_value=False),
                         patch.object(webcam, "_native_machine_from_windows", return_value="x64"),
                         patch.object(webcam, "process_bits", return_value=64),
                         patch.object(webcam, "winreg", self.registry)):
@@ -138,20 +161,33 @@ class WindowsEnvironment(unittest.TestCase):
             self.registry.set(view, path, "Bld", version[2])
             self.registry.set(view, path, "Version", "v%d.%d.%d.00" % version)
 
-    def install_files(self):
-        folder = self.folder()
+    def install_files(self, folder=None):
+        folder = Path(folder) if folder is not None else self.folder()
         folder.mkdir(parents=True, exist_ok=True)
         for name in webcam.DLL_SHA256:
             shutil.copyfile(WEBCAM_DIR / name, folder / name)
 
-    def register(self, paths=None, listed=True):
+    def register(self, paths=None, listed=True, instance=webcam.CAMERA_NAME, instance_clsid=webcam.CLSID):
+        """What Softcam's DllRegisterServer writes: the CLSID's InprocServer32 and, through
+        IFilterMapper2::RegisterFilter, Instance\\DirectShow Softcam with CLSID, FriendlyName and
+        FilterData in the video input category."""
         folder = self.folder()
         for target in self.layout().targets:
             value = (paths or {}).get(target.name, str(folder / target.name))
             self.registry.set(target.view, webcam.INPROC_KEY, "", value)
             self.registry.set(target.view, webcam.INPROC_KEY, "ThreadingModel", "Both")
             if listed:
-                self.registry.set(target.view, webcam.CATEGORY_INSTANCE_KEY, "FriendlyName", webcam.CAMERA_NAME)
+                key = webcam.INSTANCE_ROOT_KEY + "\\" + instance
+                if instance_clsid is not None:
+                    self.registry.set(target.view, key, "CLSID", instance_clsid)
+                self.registry.set(target.view, key, "FriendlyName", webcam.CAMERA_NAME)
+                self.registry.set(target.view, key, "FilterData", b"\x02\x00\x00\x00")
+
+    def unregister(self):
+        """What DllUnregisterServer removes in both views."""
+        for target in self.layout().targets:
+            self.registry.delete_tree(target.view, "SOFTWARE\\Classes\\CLSID\\" + webcam.CLSID)
+            self.registry.delete_tree(target.view, webcam.CATEGORY_INSTANCE_KEY)
 
 
 # Pinned files ----------------------------------------------------------------------------------
@@ -199,8 +235,9 @@ class PinnedFilesTests(unittest.TestCase):
         expected = hashlib.sha256((f"softcam32.dll={GIVEN_PINS['softcam32.dll']}\n"
                                    f"softcam64.dll={GIVEN_PINS['softcam64.dll']}\n").encode()).hexdigest()[:16]
         self.assertEqual(webcam.INSTALL_ID, expected)
-        with patch.dict(os.environ, {"PROGRAMDATA": "/pd"}):
-            self.assertEqual(webcam.install_directory(), Path("/pd") / "Orbit" / "Webcam" / expected)
+        with patch.object(webcam, "_is_windows", return_value=False), \
+             patch.dict(os.environ, {"ProgramW6432": "/pf", "PROGRAMFILES": "/pf"}):
+            self.assertEqual(webcam.install_directory(), Path("/pf") / "Orbit" / "Webcam" / expected)
 
 
 # Which Windows ---------------------------------------------------------------------------------
@@ -275,6 +312,132 @@ class NativeMachineTests(unittest.TestCase):
             self.assertIsNone(webcam._native_machine_from_windows())
         with patch.object(webcam.ctypes, "WinDLL", create=True, side_effect=AttributeError("no IsWow64Process2")):
             self.assertIsNone(webcam._native_machine_from_windows())
+
+
+class WindowsFoldersTests(unittest.TestCase):
+    """On Windows the folders the elevated step uses come from Windows itself, never from
+    %SystemRoot%, %windir% or %ProgramFiles%, which a user can override for their own processes."""
+
+    USER_OVERRIDES = {"SystemRoot": "C:\\Users\\Mallory\\FakeWindows", "windir": "C:\\Users\\Mallory\\FakeWindows",
+                      "ProgramFiles": "C:\\Users\\Mallory\\FakeProgramFiles",
+                      "ProgramW6432": "C:\\Users\\Mallory\\FakeProgramFiles"}
+
+    def setUp(self):
+        self.kernel32 = MagicMock()
+        self.windows = "D:\\Windows"
+
+        def get_windows_directory(buffer, size):
+            buffer.value = self.windows
+            return len(self.windows)
+        self.kernel32.GetSystemWindowsDirectoryW.side_effect = get_windows_directory
+        self.registry = FakeRegistry()
+        for patcher in (patch.object(webcam, "_is_windows", return_value=True),
+                        patch.object(webcam.ctypes, "WinDLL", create=True, return_value=self.kernel32),
+                        patch.object(webcam, "_native_machine_from_windows", return_value="x64"),
+                        patch.object(webcam, "process_bits", return_value=64),
+                        patch.object(webcam, "winreg", self.registry),
+                        patch.dict(os.environ, self.USER_OVERRIDES)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_the_windows_folder_comes_from_getsystemwindowsdirectoryw(self):
+        self.assertEqual(webcam.system_root(), "D:\\Windows")
+        function = self.kernel32.GetSystemWindowsDirectoryW
+        self.assertEqual(function.argtypes, [ctypes.c_wchar_p, ctypes.c_uint])
+        self.assertEqual(function.restype, ctypes.c_uint)
+        layout = webcam.platform_layout()
+        self.assertEqual(layout.powershell, os.path.join("D:\\Windows", "System32", "WindowsPowerShell", "v1.0",
+                                                         "powershell.exe"))
+        self.assertEqual(layout.targets[1].regsvr32, os.path.join("D:\\Windows", "SysWOW64", "regsvr32.exe"))
+        self.assertNotIn("Mallory", repr(layout))
+
+    def test_a_failed_call_falls_back_to_c_windows_not_the_environment(self):
+        self.kernel32.GetSystemWindowsDirectoryW.side_effect = lambda buffer, size: 0
+        self.assertEqual(webcam.system_root(), "C:\\Windows")
+        with patch.object(webcam.ctypes, "WinDLL", create=True, side_effect=OSError("no kernel32")):
+            self.assertEqual(webcam.system_root(), "C:\\Windows")
+
+    def test_program_files_comes_from_the_64_bit_view_of_hklm(self):
+        key = webcam.WINDOWS_CURRENT_VERSION_KEY
+        self.registry.set(webcam.KEY_WOW64_64KEY, key, "ProgramFilesDir", "E:\\Apps\\Program Files")
+        self.registry.set(webcam.KEY_WOW64_32KEY, key, "ProgramFilesDir", "E:\\Apps\\Program Files (x86)")
+        expected = Path("E:\\Apps\\Program Files") / "Orbit" / "Webcam" / webcam.INSTALL_ID
+        self.assertEqual(webcam.install_directory(), expected)
+        with patch.object(webcam, "process_bits", return_value=32):  # a 32-bit agent too
+            self.assertEqual(webcam.install_directory(), expected)
+
+    def test_odd_or_missing_values_fall_back_to_program_files_on_the_windows_drive(self):
+        key = webcam.WINDOWS_CURRENT_VERSION_KEY
+        for value in (None, "%SystemDrive%\\Program Files", "Program Files", "E:\\", 7):
+            with self.subTest(value=value):
+                if value is not None:
+                    self.registry.set(webcam.KEY_WOW64_64KEY, key, "ProgramFilesDir", value)
+                self.assertEqual(webcam.program_files(), Path("D:\\Program Files"))
+
+    def test_32_bit_windows_reads_its_only_view(self):
+        self.registry.set(0, webcam.WINDOWS_CURRENT_VERSION_KEY, "ProgramFilesDir", "C:\\Program Files")
+        with patch.object(webcam, "_native_machine_from_windows", return_value="x86"):
+            self.assertEqual(webcam.program_files(), Path("C:\\Program Files"))
+
+
+class RegistrationTests(WindowsEnvironment):
+    """The camera counts as listed only when the video input category has a subkey whose CLSID value
+    is Softcam's, like the one Softcam's DllRegisterServer creates."""
+
+    def test_the_instance_key_is_the_one_softcams_registerfilter_call_creates(self):
+        # RegisterFilter(CLSID, L"DirectShow Softcam", 0, &CLSID_VideoInputDeviceCategory, L"DirectShow Softcam", ...)
+        self.assertEqual(webcam.CATEGORY_INSTANCE_KEY, "SOFTWARE\\Classes\\CLSID\\{860BB310-5D01-11D0-BD3B-00A0C911CE86}"
+                                                       "\\Instance\\DirectShow Softcam")
+
+    def test_softcams_own_category_entry_counts_in_both_views(self):
+        self.install_files()
+        self.register()
+        self.assertEqual(webcam.registration_state(self.layout()), webcam.Registration(True, None, {
+            name: str(self.folder() / name) for name in ("softcam64.dll", "softcam32.dll")}))
+
+    def test_a_key_named_after_the_clsid_without_a_clsid_value_does_not_count(self):
+        self.install_files()
+        self.register(instance=webcam.CLSID, instance_clsid=None)
+        self.assertEqual(webcam.registration_state(self.layout()).problem, "notListed")
+
+    def test_any_subkey_whose_clsid_value_is_softcams_counts(self):
+        self.install_files()
+        self.register(instance="Some other name", instance_clsid=webcam.CLSID.lower())
+        self.assertTrue(webcam.registration_state(self.layout()).ok)
+
+    def test_other_filters_in_the_category_do_not_count(self):
+        self.install_files()
+        self.register(listed=False)
+        for target in self.layout().targets:
+            self.registry.set(target.view, webcam.INSTANCE_ROOT_KEY + "\\OBS Virtual Camera", "CLSID",
+                              "{A3FCE0F5-3493-419F-958A-ABA1250EC20B}")
+        self.assertEqual(webcam.registration_state(self.layout()).problem, "notListed")
+        self.register(instance_clsid="{A3FCE0F5-3493-419F-958A-ABA1250EC20B}")  # our name, another filter
+        self.assertEqual(webcam.registration_state(self.layout()).problem, "notListed")
+
+    def test_each_view_needs_its_own_entry(self):
+        self.install_files()
+        self.register()
+        self.registry.delete_tree(webcam.KEY_WOW64_32KEY, webcam.CATEGORY_INSTANCE_KEY)
+        self.assertEqual(webcam.registration_state(self.layout()).problem, "notListed")
+
+    def test_only_orbits_version_folders_count_as_orbits_dlls(self):
+        older = webcam.webcam_root() / "0123456789abcdef"
+        self.assertEqual(webcam.orbit_dll_path(str(older / "softcam64.dll"), "softcam64.dll"),
+                         os.path.normpath(str(older / "softcam64.dll")))
+        self.assertEqual(webcam.orbit_dll_path('"' + str(older / "softcam32.dll") + '"', "softcam32.dll"),
+                         os.path.normpath(str(older / "softcam32.dll")))
+        for value, name in ((str(older / "softcam64.dll"), "softcam32.dll"),
+                            (str(webcam.webcam_root() / "softcam64.dll"), "softcam64.dll"),
+                            (str(webcam.webcam_root() / "not-a-version" / "softcam64.dll"), "softcam64.dll"),
+                            (str(older / "sub" / "softcam64.dll"), "softcam64.dll"),
+                            ("%ProgramFiles%\\Orbit\\Webcam\\0123456789abcdef\\softcam64.dll", "softcam64.dll"),
+                            (str(self.root / "Users" / "Orbit" / "Webcam" / "0123456789abcdef" / "softcam64.dll"),
+                             "softcam64.dll"),
+                            ("C:\\Program Files\\OtherCam\\softcam.dll", "softcam64.dll"), (None, "softcam64.dll"),
+                            ("", "softcam64.dll")):
+            with self.subTest(value=value):
+                self.assertIsNone(webcam.orbit_dll_path(value, name))
 
 
 # Visual C++ runtime ----------------------------------------------------------------------------
@@ -379,13 +542,39 @@ class FileVersionTests(unittest.TestCase):
 
 # Getting verified DLLs ---------------------------------------------------------------------------
 
+RAW = "https://raw.githubusercontent.com/AceDimi2005/Orbit/"
+
+
+def http_error(code=404):
+    return urllib.error.HTTPError("u", code, "Not Found", {}, None)
+
+
 class SourceTests(WindowsEnvironment):
+    def setUp(self):
+        super().setUp()
+        version = patch.object(webcam, "_agent_version", return_value="4.4.0")
+        version.start()
+        self.addCleanup(version.stop)
+
     def test_bundled_dlls_are_used_without_any_download(self):
         download = Mock(side_effect=AssertionError("no download"))
         sources = webcam.ensure_sources(self.layout(), download)
         self.assertEqual(sources, {name: WEBCAM_DIR / name for name in ("softcam64.dll", "softcam32.dll")})
 
-    def test_a_missing_bundled_dll_is_downloaded_from_the_trusted_raw_url_and_cached(self):
+    def test_the_installed_folder_is_a_verified_source(self):
+        self.install_files()
+        empty = self.root / "agent-without-dlls"
+        empty.mkdir()
+        with patch.object(webcam, "bundled_directories", return_value=[empty]):
+            sources = webcam.ensure_sources(self.layout(), Mock(side_effect=AssertionError("no download")))
+        self.assertEqual(sources, {name: self.folder() / name for name in ("softcam64.dll", "softcam32.dll")})
+        (self.folder() / "softcam32.dll").write_bytes(b"MZ damaged")
+        with patch.object(webcam, "bundled_directories", return_value=[empty]):
+            download = Mock(return_value=WEBCAM_DIR / "softcam32.dll")
+            sources = webcam.ensure_sources(self.layout(), download)
+        download.assert_called_once_with("softcam32.dll")  # a changed file is never a source
+
+    def test_a_missing_bundled_dll_is_downloaded_from_the_release_tag_and_cached(self):
         fetch = Mock(side_effect=lambda url, **kwargs: (WEBCAM_DIR / url.rsplit("/", 1)[1]).read_bytes())
         empty = self.root / "agent-without-dlls"
         empty.mkdir()
@@ -395,8 +584,8 @@ class SourceTests(WindowsEnvironment):
             self.assertEqual(sources["softcam64.dll"], cache / "softcam64.dll")
             self.assertTrue(webcam.is_verified(cache / "softcam32.dll", "softcam32.dll", use_cache=False))
             urls = [call.args[0] for call in fetch.call_args_list]
-            self.assertEqual(urls, ["https://raw.githubusercontent.com/AceDimi2005/Orbit/main/Orbit-Windows-Agent/webcam/"
-                                    + name for name in ("softcam64.dll", "softcam32.dll")])
+            self.assertEqual(urls, [RAW + "pc-v4.4.0/Orbit-Windows-Agent/webcam/" + name
+                                    for name in ("softcam64.dll", "softcam32.dll")])
             for call in fetch.call_args_list:
                 orbit_updater.validate_github_url(call.args[0])
                 self.assertEqual(call.kwargs["accept"], "application/octet-stream")
@@ -404,34 +593,59 @@ class SourceTests(WindowsEnvironment):
             webcam.ensure_sources(self.layout(), lambda name: webcam.download_dll(name, fetch=fetch))
             fetch.assert_not_called()  # the cache is reused
 
+    def test_without_the_release_tag_main_is_used(self):
+        def fetch(url, **kwargs):
+            if "/pc-v4.4.0/" in url:
+                raise http_error(404)
+            return (WEBCAM_DIR / url.rsplit("/", 1)[1]).read_bytes()
+        fetch = Mock(side_effect=fetch)
+        self.assertTrue(webcam.is_verified(webcam.download_dll("softcam64.dll", fetch=fetch), "softcam64.dll"))
+        self.assertEqual([call.args[0] for call in fetch.call_args_list],
+                         [RAW + "pc-v4.4.0/Orbit-Windows-Agent/webcam/softcam64.dll",
+                          RAW + "main/Orbit-Windows-Agent/webcam/softcam64.dll"])
+
+    def test_refs_are_the_release_tag_then_main(self):
+        self.assertEqual(webcam.download_refs(), ["pc-v4.4.0", "main"])
+        for version in ("", "4.4", "4.4.0-beta", "../main"):
+            with self.subTest(version=version), patch.object(webcam, "_agent_version", return_value=version):
+                self.assertEqual(webcam.download_refs(), ["main"])
+
     def test_a_download_with_another_hash_is_refused_and_not_kept(self):
         fetch = Mock(return_value=b"MZ not the pinned build")
-        with self.assertRaises(webcam.InstallError) as raised:
+        with self.assertLogs("orbit.webcam", "WARNING"), self.assertRaises(webcam.InstallError) as raised:
             webcam.download_dll("softcam64.dll", fetch=fetch)
         self.assertEqual(raised.exception.status, 503)
         self.assertIn("different version", raised.exception.message)
+        self.assertEqual(fetch.call_count, 2)
         self.assertFalse((webcam.cache_directory() / "softcam64.dll").exists())
 
+    def test_a_tag_with_another_build_falls_back_to_main(self):
+        def fetch(url, **kwargs):
+            return b"MZ other build" if "/pc-v4.4.0/" in url else (WEBCAM_DIR / "softcam32.dll").read_bytes()
+        with self.assertLogs("orbit.webcam", "WARNING"):
+            path = webcam.download_dll("softcam32.dll", fetch=fetch)
+        self.assertTrue(webcam.is_verified(path, "softcam32.dll", use_cache=False))
+
     def test_download_failures_are_explained(self):
-        cases = ((urllib.error.HTTPError("u", 404, "Not Found", {}, None), "HTTP 404"),
-                 (urllib.error.URLError("offline"), "internet connection"), (TimeoutError("slow"), "internet connection"))
-        for error, text in cases:
+        cases = ((http_error(404), "HTTP 404", 2), (urllib.error.URLError("offline"), "internet connection", 1),
+                 (TimeoutError("slow"), "internet connection", 1))
+        for error, text, calls in cases:
             with self.subTest(error=error):
+                fetch = Mock(side_effect=error)
                 with self.assertRaises(webcam.InstallError) as raised:
-                    webcam.download_dll("softcam32.dll", fetch=Mock(side_effect=error))
+                    webcam.download_dll("softcam32.dll", fetch=fetch)
                 self.assertEqual(raised.exception.status, 503)
                 self.assertIn(text, raised.exception.message)
+                self.assertEqual(fetch.call_count, calls)  # no second try when the PC is offline
 
-    def test_precopy_copies_verified_files_and_reports_what_it_could_not_copy(self):
-        folder = self.folder()
-        sources = {name: WEBCAM_DIR / name for name in webcam.DLL_SHA256}
-        self.assertEqual(webcam.precopy(sources, folder), [])
-        self.assertTrue(webcam.files_installed(self.layout(), folder))
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["softcam32.dll", "softcam64.dll"])
-        with patch.object(webcam.os, "replace", side_effect=PermissionError("protected")):
-            (folder / "softcam32.dll").write_bytes(b"damaged")
-            self.assertEqual(webcam.precopy(sources, folder), ["softcam32.dll"])
-        self.assertFalse(any(p.name.endswith(".tmp") for p in folder.iterdir()))
+
+class AgentVersionTests(unittest.TestCase):
+    def test_the_release_tag_follows_the_agent_version_in_the_capabilities(self):
+        with patch.object(webcam.orbit_capabilities, "capabilities_payload",
+                          return_value={"agentVersion": "4.4.0", "features": []}):
+            self.assertEqual(webcam.download_refs(), ["pc-v4.4.0", "main"])
+        with patch.object(webcam.orbit_capabilities, "capabilities_payload", side_effect=RuntimeError("not set")):
+            self.assertEqual(webcam.download_refs(), ["main"])
 
 
 # The elevated step -------------------------------------------------------------------------------
@@ -462,44 +676,142 @@ def _balanced(script):
     return not inside and all(value == 0 for value in depth.values())
 
 
+def _statements(script):
+    """The script's top-level statements: split at "; " outside quotes, braces and parentheses."""
+    statements, depth, inside, current, index = [], 0, False, [], 0
+    while index < len(script):
+        character = script[index]
+        if inside:
+            if character in webcam._PS_QUOTES:
+                if index + 1 < len(script) and script[index + 1] in webcam._PS_QUOTES:
+                    current.append(character)
+                    index += 1
+                else:
+                    inside = False
+        elif character in webcam._PS_QUOTES:
+            inside = True
+        elif character in "{(":
+            depth += 1
+        elif character in "})":
+            depth -= 1
+        elif depth == 0 and script.startswith("; ", index):
+            statements.append("".join(current))
+            current = []
+            index += 2
+            continue
+        current.append(character)
+        index += 1
+    statements.append("".join(current))
+    return statements
+
+
 class ScriptTests(WindowsEnvironment):
-    def script(self, layout=None, sources=None):
+    def script(self, layout=None, sources=None, previous=None):
         layout = layout or self.layout()
         sources = sources or {target.name: WEBCAM_DIR / target.name for target in layout.targets}
-        return webcam.elevation_script(layout, self.folder(), sources)
+        return webcam.elevation_script(layout, self.folder(), sources, previous=previous)
 
-    def test_the_script_protects_the_folder_verifies_hashes_and_registers_both_views(self):
+    def paths(self):
+        q = webcam.ps_quote
+        folder = self.folder()
+        return {"regsvr64": q(os.path.join(str(self.system_root), "System32", "regsvr32.exe")),
+                "regsvr32": q(os.path.join(str(self.system_root), "SysWOW64", "regsvr32.exe")),
+                "dll64": q(folder / "softcam64.dll"), "dll32": q(folder / "softcam32.dll")}
+
+    def registration_steps(self, statements):
+        p = self.paths()
+        first = statements.index(f"& {p['regsvr64']} /s {p['dll64']} 2>&1 | Out-Null")
+        second = statements.index(f"& {p['regsvr32']} /s {p['dll32']} 2>&1 | Out-Null")
+        return first, second, statements[first + 1], statements[second + 1]
+
+    def test_the_folder_is_in_program_files_which_only_administrators_can_write(self):
+        self.assertEqual(self.folder(), self.program_files / "Orbit" / "Webcam" / webcam.INSTALL_ID)
         script = self.script()
-        statements = script.split("; ")
-        root, folder = str(self.program_data / "Orbit"), str(self.folder())
-        icacls = webcam.ps_quote(os.path.join(str(self.system_root), "System32", "icacls.exe"))
-        self.assertEqual(statements[0], "trap { exit 90 }")
-        self.assertIn(f"& {icacls} '{root}' /setowner '*S-1-5-32-544' /T /C /Q 2>&1 | Out-Null", statements)
-        self.assertIn(f"& {icacls} '{root}' /reset /T /C /Q 2>&1 | Out-Null", statements)
-        protect = next(s for s in statements if "/inheritance:r" in s)
-        for grant in ("'*S-1-5-18:(OI)(CI)F'", "'*S-1-5-32-544:(OI)(CI)F'", "'*S-1-5-32-545:(OI)(CI)RX'",
-                      "'*S-1-15-2-1:(OI)(CI)RX'", "'*S-1-15-2-2:(OI)(CI)RX'"):
-            self.assertIn(grant, protect)
-        self.assertNotIn(" /T ", protect)  # the children inherit from the protected root
+        for text in ("icacls", "ProgramData", "/setowner", "/reset", "/grant", " /T "):
+            self.assertNotIn(text, script)
+
+    def test_the_script_checks_links_verifies_in_memory_then_registers_both_views(self):
+        script = self.script()
+        statements = _statements(script)
+        q, folder = webcam.ps_quote, self.folder()
+        self.assertEqual(statements[:3], ["trap { exit 90 }", "$step = 'orbit-webcam-install'",
+                                          f"try {{ [void][IO.Directory]::CreateDirectory({q(folder)}) }} catch {{ exit 13 }}"])
+        links = statements[3]
+        self.assertTrue(links.startswith(f"foreach ($p in @({q(folder.parent.parent)}, {q(folder.parent)}, {q(folder)}))"),
+                        links)
+        self.assertIn("-band 1024", links)
+        self.assertIn("exit 14", links)
+        first, second, failure64, failure32 = self.registration_steps(statements)
         for name, digest in GIVEN_PINS.items():
-            self.assertEqual(script.count(digest.upper()), 2)
-        regsvr64 = webcam.ps_quote(os.path.join(str(self.system_root), "System32", "regsvr32.exe"))
-        regsvr32 = webcam.ps_quote(os.path.join(str(self.system_root), "SysWOW64", "regsvr32.exe"))
-        dll64 = webcam.ps_quote(os.path.join(folder, "softcam64.dll"))
-        dll32 = webcam.ps_quote(os.path.join(folder, "softcam32.dll"))
-        first = statements.index(f"& {regsvr64} /s {dll64} 2>&1 | Out-Null")
-        second = statements.index(f"& {regsvr32} /s {dll32} 2>&1 | Out-Null")
-        self.assertLess(statements.index("if ($LASTEXITCODE -ne 0) { exit 12 }"), first)
+            expected = digest.upper()
+            destination = statements.index(f"$d = {q(folder / name)}")
+            self.assertEqual(statements[destination + 1], f"$s = {q(WEBCAM_DIR / name)}")
+            copy, verify = statements[destination + 2], statements[destination + 3]
+            self.assertLess(statements.index(links), destination)
+            self.assertLess(destination, first)
+            # Read into memory, size-capped, hash checked, and only then written.
+            read = copy.index("$b = [IO.File]::ReadAllBytes($s)")
+            checked = copy.index(f".Replace('-', '') -ne '{expected}') {{ exit 21 }}")
+            written = copy.index("[IO.File]::WriteAllBytes($d, $b)")
+            self.assertLess(copy.index(f".Length -le {webcam.MAX_DLL_BYTES}"), read)
+            self.assertLess(read, checked)
+            self.assertLess(checked, written)
+            self.assertIn("ComputeHash($b)", copy)
+            self.assertEqual(verify, f"if ((Get-FileHash -LiteralPath $d -Algorithm SHA256 -ErrorAction Stop).Hash -ne "
+                                     f"'{expected}') {{ Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue; "
+                                     "exit 21 }")
+            self.assertEqual(script.count(expected), 3)
         self.assertLess(first, second)
-        # When the 32-bit registration fails, the 64-bit one is removed again: nothing half applied.
-        failure64, failure32 = "; ".join(statements[first + 1:second]), "; ".join(statements[second + 1:])
+        # When the 32-bit registration fails on a fresh PC, the 64-bit one is removed again.
+        p = self.paths()
         self.assertNotIn("/u /s", failure64)
-        self.assertIn("exit (30 + $c)", failure64)
-        self.assertIn(f"& {regsvr64} /u /s {dll64} 2>&1 | Out-Null", failure32)
-        self.assertIn("exit (40 + $c)", failure32)
+        self.assertTrue(failure64.endswith("exit (30 + $c) }"))
+        self.assertIn(f"& {p['regsvr64']} /u /s {p['dll64']} 2>&1 | Out-Null", failure32)
+        self.assertTrue(failure32.endswith("exit (40 + $c) }"))
+        cleanup = statements[-2]
+        self.assertEqual(statements.index(cleanup), second + 2)
+        self.assertTrue(cleanup.startswith(f"Get-ChildItem -LiteralPath {q(folder.parent)} -Directory -Force"), cleanup)
+        for text in (f"$_.Name -ne '{webcam.INSTALL_ID}'", "'^[0-9a-f]{16}$'", "-band 1024) -eq 0",
+                     "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"):
+            self.assertIn(text, cleanup)
         self.assertEqual(statements[-1], "exit 0")
         self.assertNotIn('"', script)
         self.assertTrue(_balanced(script))
+
+    def test_an_upgrade_puts_the_older_orbit_webcam_back_when_the_32_bit_step_fails(self):
+        older = webcam.webcam_root() / "0123456789abcdef"
+        previous = {name: str(older / name) for name in ("softcam64.dll", "softcam32.dll")}
+        script = self.script(previous=previous)
+        _first, _second, failure64, failure32 = self.registration_steps(_statements(script))
+        p, q = self.paths(), webcam.ps_quote
+        old64, old32 = q(os.path.normpath(previous["softcam64.dll"])), q(os.path.normpath(previous["softcam32.dll"]))
+        self.assertIn(f"if (Test-Path -LiteralPath {old64} -PathType Leaf) {{ & {p['regsvr64']} /s {old64} 2>&1 | "
+                      f"Out-Null }} else {{ & {p['regsvr64']} /u /s {p['dll64']} 2>&1 | Out-Null }}", failure32)
+        self.assertIn(f"if (Test-Path -LiteralPath {old32} -PathType Leaf) {{ & {p['regsvr32']} /s {old32} 2>&1 | "
+                      "Out-Null }", failure32)
+        self.assertIn(f"if (Test-Path -LiteralPath {old64} -PathType Leaf) {{ & {p['regsvr64']} /s {old64} 2>&1 | "
+                      "Out-Null }", failure64)
+        self.assertLess(failure32.index(old64), failure32.index("exit (40 + $c)"))
+        self.assertTrue(_balanced(script))
+
+    def test_a_view_already_registered_to_these_files_is_left_alone(self):
+        p = self.paths()
+        script = self.script(previous={"softcam64.dll": str(self.folder() / "softcam64.dll"), "softcam32.dll": None})
+        _first, _second, failure64, failure32 = self.registration_steps(_statements(script))
+        self.assertNotIn(p["dll64"], failure32)
+        self.assertNotIn("/u /s", failure32)
+
+    def test_another_programs_dll_is_never_run_elevated(self):
+        p = self.paths()
+        for other in ("C:\\Program Files\\OtherCam\\softcam.dll",
+                      str(self.root / "Mallory" / "Orbit" / "Webcam" / "0123456789abcdef" / "softcam64.dll"),
+                      "%ProgramFiles%\\Orbit\\Webcam\\0123456789abcdef\\softcam64.dll"):
+            with self.subTest(other=other):
+                script = self.script(previous={"softcam64.dll": other, "softcam32.dll": other})
+                for text in ("OtherCam", "0123456789abcdef", "Mallory"):
+                    self.assertNotIn(text, script)
+                _first, _second, _failure64, failure32 = self.registration_steps(_statements(script))
+                self.assertIn(f"& {p['regsvr64']} /u /s {p['dll64']} 2>&1 | Out-Null", failure32)
 
     def test_32_bit_windows_registers_one_dll_without_wow64(self):
         with patch.object(webcam, "_native_machine_from_windows", return_value="x86"), \
@@ -532,14 +844,20 @@ class ScriptTests(WindowsEnvironment):
         # Only PowerShell's parser runs; the script itself is never executed.
         layout = webcam.platform_layout()
         sources = {target.name: WEBCAM_DIR / target.name for target in layout.targets}
-        script = webcam.elevation_script(layout, webcam.install_directory(), sources)
-        path = self.root / "script.ps1"
-        path.write_text(script, encoding="utf-8-sig")
-        check = ("$t = $null; $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
-                 f"'{path}', [ref]$t, [ref]$e); foreach ($x in $e) {{ Write-Output $x.Message }}; exit $e.Count")
-        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", check],
-                                capture_output=True, text=True, timeout=120)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        older = webcam.webcam_root() / "0123456789abcdef"
+        owned = {target.name: str(older / target.name) for target in layout.targets}
+        scripts = {"install": webcam.elevation_script(layout, webcam.install_directory(), sources),
+                   "upgrade": webcam.elevation_script(layout, webcam.install_directory(), sources, previous=owned),
+                   "uninstall": webcam.uninstall_script(layout, owned)}
+        for label, script in scripts.items():
+            with self.subTest(script=label):
+                path = self.root / f"{label}.ps1"
+                path.write_text(script, encoding="utf-8-sig")
+                check = ("$t = $null; $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
+                         f"'{path}', [ref]$t, [ref]$e); foreach ($x in $e) {{ Write-Output $x.Message }}; exit $e.Count")
+                result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", check],
+                                        capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "needs Windows PowerShell")
     def test_the_command_line_hands_powershell_the_exact_quoted_text(self):
@@ -553,6 +871,48 @@ class ScriptTests(WindowsEnvironment):
                                 timeout=120)
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertEqual(output.read_text(encoding="utf-8-sig"), text)
+
+
+class UninstallScriptTests(WindowsEnvironment):
+    def test_only_orbits_registrations_are_removed_then_the_folder(self):
+        q = webcam.ps_quote
+        older = webcam.webcam_root() / "0123456789abcdef"
+        owned = {"softcam64.dll": str(older / "softcam64.dll"), "softcam32.dll": str(self.folder() / "softcam32.dll")}
+        script = webcam.uninstall_script(self.layout(), owned)
+        statements = _statements(script)
+        self.assertEqual(statements[:2], ["trap { exit 90 }", "$step = 'orbit-webcam-uninstall'"])
+        regsvr64 = q(os.path.join(str(self.system_root), "System32", "regsvr32.exe"))
+        regsvr32 = q(os.path.join(str(self.system_root), "SysWOW64", "regsvr32.exe"))
+        for statement, regsvr, path, classes, base in (
+                (statements[2], regsvr64, owned["softcam64.dll"], "SOFTWARE\\Classes", 60),
+                (statements[3], regsvr32, owned["softcam32.dll"], "SOFTWARE\\Classes\\WOW6432Node", 70)):
+            with self.subTest(path=path):
+                self.assertTrue(statement.startswith(f"if (Test-Path -LiteralPath {q(path)} -PathType Leaf) {{ "
+                                                     f"& {regsvr} /u /s {q(path)} 2>&1 | Out-Null; "), statement)
+                self.assertIn(f"exit ({base} + $c)", statement)
+                # The DLL is gone: its keys are deleted directly, only in this view.
+                root = "Registry::HKEY_LOCAL_MACHINE\\" + classes + "\\CLSID\\"
+                self.assertIn(f"Remove-Item -LiteralPath {q(root + webcam.CLSID)} -Recurse", statement)
+                self.assertIn(f"Get-ChildItem -LiteralPath {q(root + webcam.VIDEO_INPUT_CATEGORY + chr(92) + 'Instance')}",
+                              statement)
+                self.assertIn(f"$_.GetValue('CLSID') -eq {q(webcam.CLSID)}", statement)
+        self.assertEqual(statements[4], f"$w = {q(webcam.webcam_root())}")
+        self.assertIn("exit 14", statements[5])
+        self.assertIn("[IO.Directory]::Delete($w)", statements[5])
+        self.assertIn(f"[IO.Directory]::Delete({q(webcam.orbit_program_files())})", statements[5])
+        self.assertIn("'^[0-9a-f]{16}$'", statements[5])
+        self.assertEqual(statements[6:], ["if (Test-Path -LiteralPath $w) { exit 50 }", "exit 0"])
+        self.assertNotIn('"', script)
+        self.assertTrue(_balanced(script))
+
+    def test_a_view_owned_by_another_program_is_not_touched(self):
+        script = webcam.uninstall_script(self.layout(), {"softcam32.dll": str(self.folder() / "softcam32.dll")})
+        self.assertNotIn("System32", script)
+        self.assertNotIn("softcam64", script)
+        self.assertIn("WOW6432Node", script)
+        files_only = webcam.uninstall_script(self.layout(), {})
+        self.assertNotIn("regsvr32", files_only)
+        self.assertIn("exit 50", files_only)
 
 
 class ElevationTests(unittest.TestCase):
@@ -653,11 +1013,13 @@ class InstallFlowTests(WindowsEnvironment):
         self.elevations = []
 
     def elevate(self, code=0, register=True, error=None):
+        """The approved prompt: what the elevated script does (copy, then register) is faked."""
         def run(executable, parameters, timeout):
-            self.elevations.append((executable, parameters, timeout))
+            self.elevations.append((executable, parameters, timeout, self.folder().exists()))
             if error is not None:
                 raise error
             if register:
+                self.install_files()
                 self.register()
             return code
         return run
@@ -666,13 +1028,15 @@ class InstallFlowTests(WindowsEnvironment):
         kwargs.setdefault("download", Mock(side_effect=AssertionError("no download")))
         return webcam.install_webcam(progress=self.stages.append, **kwargs)
 
-    def test_a_fresh_pc_copies_then_prompts_once_and_verifies_the_registry(self):
+    def test_a_fresh_pc_prompts_once_and_verifies_the_registry(self):
         self.assertEqual(self.install(elevate=self.elevate()), "installed")
         self.assertEqual(len(self.elevations), 1)
-        executable, parameters, timeout = self.elevations[0]
+        executable, parameters, timeout, folder_existed = self.elevations[0]
         self.assertEqual(executable, self.layout().powershell)
         self.assertTrue(parameters.endswith('"'))
-        self.assertIn("/setowner", parameters)
+        self.assertIn("CreateDirectory", parameters)
+        self.assertNotIn("icacls", parameters)
+        self.assertFalse(folder_existed)  # nothing is written to Program Files as the signed-in user
         self.assertEqual(timeout, webcam.ELEVATED_TIMEOUT_SECONDS)
         self.assertEqual(self.stages, ["preparing", "waitingForApproval", "verifying"])
         self.assertTrue(webcam.files_installed(self.layout()))
@@ -686,12 +1050,25 @@ class InstallFlowTests(WindowsEnvironment):
         self.assertEqual(self.install(elevate=Mock(side_effect=AssertionError("no prompt"))), "alreadyInstalled")
         self.notify.assert_not_called()
 
-    def test_declining_the_prompt_registers_nothing(self):
+    def test_an_installed_pc_needs_no_source_files_or_download(self):
+        self.install_files()
+        self.register()
+        empty = self.root / "agent-without-dlls"
+        empty.mkdir()
+        offline = Mock(side_effect=webcam.InstallError(503, "Could not download the webcam driver."))
+        with patch.object(webcam, "bundled_directories", return_value=[empty]), \
+             patch.object(webcam, "ensure_sources", side_effect=AssertionError("no sources needed")):
+            self.assertEqual(self.install(elevate=Mock(side_effect=AssertionError("no prompt")), download=offline),
+                             "alreadyInstalled")
+        offline.assert_not_called()
+
+    def test_declining_the_prompt_registers_and_writes_nothing(self):
         with self.assertRaises(webcam.InstallError) as raised:
             self.install(elevate=self.elevate(error=webcam.ElevationDeclined()))
         self.assertEqual(raised.exception.status, 403)
         self.assertIn("declined", raised.exception.message)
         self.assertFalse(webcam.registration_state(self.layout()).ok)
+        self.assertFalse(self.folder().exists())
         self.assertNotIn("verifying", self.stages)
 
     def test_a_missing_runtime_stops_before_copying_or_prompting(self):
@@ -714,16 +1091,21 @@ class InstallFlowTests(WindowsEnvironment):
         self.assertIn(webcam.VC_REDIST_PAGE, raised.exception.message)
 
     def test_success_is_only_reported_after_the_registry_is_verified(self):
+        def copied_but_not_listed(executable, parameters, timeout):
+            self.install_files()
+            self.register(listed=False)
+            return 0
         with self.assertLogs("orbit.webcam", "WARNING"), self.assertRaises(webcam.InstallError) as raised:
-            self.install(elevate=self.elevate(code=0, register=False))
+            self.install(elevate=copied_but_not_listed)
         self.assertIn("not registered correctly", raised.exception.message)
+        self.assertIn(webcam.REGISTRATION_MESSAGES["notListed"], raised.exception.message)
         self.assertNotIn("iPhone webcam is set up", [call.args[0] for call in self.notify.call_args_list])
 
     def test_exit_codes_map_to_plain_words(self):
         layout = self.layout()
         registration = webcam.Registration(False, "missing", {})
-        cases = {10: "prepare the webcam folder", 20: "Close apps", 21: "changed during setup",
-                 35: "regsvr32 error 5", 90: "script failed", 77: "code 77"}
+        cases = {13: "could not create the webcam folder", 14: "is a link", 20: "Close apps",
+                 21: "changed during setup", 35: "regsvr32 error 5", 90: "script failed", 77: "code 77"}
         for code, text in cases.items():
             with self.subTest(code=code):
                 self.assertIn(text, webcam.failure_message(code, layout, False, registration))
@@ -735,11 +1117,17 @@ class InstallFlowTests(WindowsEnvironment):
         state = webcam.registration_state(self.layout())
         self.assertEqual(state.problem, "otherProgram")
         self.assertEqual(self.install(elevate=self.elevate()), "installed")
+        self.assertNotIn("OtherCam", self.elevations[0][1])  # its DLL is never run elevated
 
-    def test_an_older_orbit_folder_is_recognised(self):
-        older = self.program_data / "Orbit" / "Webcam" / "0123456789abcdef"
+    def test_an_older_orbit_folder_is_recognised_and_restored_if_the_upgrade_fails(self):
+        older = webcam.webcam_root() / "0123456789abcdef"
+        self.install_files(older)
         self.register(paths={name: str(older / name) for name in webcam.DLL_SHA256})
         self.assertEqual(webcam.registration_state(self.layout()).problem, "olderOrbit")
+        self.assertEqual(self.install(elevate=self.elevate()), "installed")
+        parameters = self.elevations[0][1]
+        self.assertIn(f"if (Test-Path -LiteralPath {webcam.ps_quote(os.path.normpath(str(older / 'softcam64.dll')))} "
+                      "-PathType Leaf)", parameters)
 
     def test_a_missing_category_entry_is_not_registered(self):
         self.install_files()
@@ -753,6 +1141,7 @@ class InstallFlowTests(WindowsEnvironment):
         self.assertIn("2 minutes", raised.exception.message)
 
         def slow_but_done(executable, parameters, timeout):
+            self.install_files()
             self.register()
             raise TimeoutError()
         self.assertEqual(self.install(elevate=slow_but_done), "installed")
@@ -765,6 +1154,102 @@ class InstallFlowTests(WindowsEnvironment):
                     self.install(elevate=self.elevate(error=error))
                 self.assertEqual(raised.exception.status, status)
                 self.assertIn(text, raised.exception.message)
+
+
+class UninstallFlowTests(WindowsEnvironment):
+    def setUp(self):
+        super().setUp()
+        self.stages = []
+        self.elevations = []
+        self.camera = Mock()
+
+    def elevate(self, code=0, unregister=True, delete_files=True, error=None):
+        def run(executable, parameters, timeout):
+            self.elevations.append((executable, parameters, timeout))
+            if error is not None:
+                raise error
+            if unregister:
+                self.unregister()
+            if delete_files and webcam.webcam_root().exists():
+                shutil.rmtree(webcam.webcam_root())
+            return code
+        return run
+
+    def uninstall(self, **kwargs):
+        return webcam.uninstall_webcam(progress=self.stages.append, camera=self.camera, **kwargs)
+
+    def test_a_pc_without_orbits_webcam_needs_no_prompt(self):
+        self.assertEqual(self.uninstall(elevate=Mock(side_effect=AssertionError("no prompt"))), "notInstalled")
+        self.register(paths={name: "C:\\Program Files\\OtherCam\\softcam.dll" for name in webcam.DLL_SHA256})
+        self.assertEqual(self.uninstall(elevate=Mock(side_effect=AssertionError("no prompt"))), "notInstalled")
+        self.notify.assert_not_called()
+        self.camera.end_all.assert_not_called()
+
+    def test_removal_unregisters_with_one_prompt_and_ends_the_phones(self):
+        self.install_files()
+        self.register()
+        self.assertEqual(self.uninstall(elevate=self.elevate()), "uninstalled")
+        self.assertEqual(len(self.elevations), 1)
+        executable, parameters, _timeout = self.elevations[0]
+        self.assertEqual(executable, self.layout().powershell)
+        self.assertIn("orbit-webcam-uninstall", parameters)
+        self.assertEqual(parameters.count("/u /s"), 2)
+        self.assertEqual(self.stages, ["preparing", "waitingForApproval", "verifying"])
+        error = self.camera.end_all.call_args.args[0]
+        self.assertEqual((error.code, error.close_code), ("notInstalled", webcam.CLOSE_NOT_INSTALLED))
+        titles = [call.args[0] for call in self.notify.call_args_list]
+        self.assertEqual(titles, ["Approve removing the webcam", "iPhone webcam removed"])
+        self.assertFalse(webcam.webcam_files_left())
+
+    def test_another_programs_view_is_left_alone(self):
+        self.install_files()
+        self.register(paths={"softcam64.dll": "C:\\Program Files\\OtherCam\\softcam.dll"})
+        seen = []
+
+        def only_32(executable, parameters, timeout):
+            seen.append(parameters)
+            self.registry.delete_tree(webcam.KEY_WOW64_32KEY, "SOFTWARE\\Classes\\CLSID\\" + webcam.CLSID)
+            return 0
+        self.assertEqual(self.uninstall(elevate=only_32), "uninstalled")
+        self.assertNotIn("OtherCam", seen[0])
+        self.assertEqual(seen[0].count("/u /s"), 1)
+        self.assertEqual(webcam.registration_state(self.layout()).paths["softcam64.dll"],
+                         "C:\\Program Files\\OtherCam\\softcam.dll")
+
+    def test_leftover_files_alone_are_removed_with_a_prompt(self):
+        self.install_files()
+        self.assertEqual(self.uninstall(elevate=self.elevate(unregister=False)), "uninstalled")
+        self.assertNotIn("regsvr32", self.elevations[0][1])
+
+    def test_files_still_in_use_are_reported(self):
+        self.install_files()
+        self.register()
+        self.assertEqual(self.uninstall(elevate=self.elevate(code=50, delete_files=False)), "uninstalled")
+        self.assertTrue(webcam.webcam_files_left())
+        self.assertIn("still in use", self.notify.call_args_list[-1].args[1])
+
+    def test_declining_or_a_failed_removal_changes_nothing_and_says_why(self):
+        self.install_files()
+        self.register()
+        with self.assertRaises(webcam.InstallError) as raised:
+            self.uninstall(elevate=self.elevate(error=webcam.ElevationDeclined()))
+        self.assertEqual(raised.exception.status, 403)
+        self.assertIn("not removed", raised.exception.message)
+        for code, text in ((63, "softcam64.dll, regsvr32 error 3"), (75, "softcam32.dll, regsvr32 error 5"),
+                           (90, "script failed"), (0, "still lists")):
+            with self.subTest(code=code), self.assertLogs("orbit.webcam", "WARNING"):
+                with self.assertRaises(webcam.InstallError) as raised:
+                    self.uninstall(elevate=self.elevate(code=code, unregister=False, delete_files=False))
+                self.assertEqual(raised.exception.status, 503)
+                self.assertIn(text, raised.exception.message)
+        self.camera.end_all.assert_not_called()
+        self.assertTrue(webcam.registration_state(self.layout()).ok)
+
+    def test_windows_on_arm_is_refused(self):
+        with patch.object(webcam, "_native_machine_from_windows", return_value="arm64"):
+            with self.assertRaises(webcam.InstallError) as raised:
+                self.uninstall(elevate=Mock(side_effect=AssertionError("no prompt")))
+        self.assertEqual(raised.exception.status, 409)
 
 
 class InstallerTests(unittest.TestCase):
@@ -782,11 +1267,32 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: installer.stage == "waitingForApproval"))
         self.assertIs(installer.start(), first)
         self.assertTrue(installer.installing)
+        self.assertFalse(installer.uninstalling)
         release.set()
         self.assertEqual(first.result(5), "installed")
         self.assertEqual(calls, [1])
         self.assertFalse(installer.installing)
         self.assertIsNone(installer.stage)
+
+    def test_setup_and_removal_never_run_together(self):
+        release = threading.Event()
+
+        def runner(progress):
+            release.wait(5)
+            return "installed"
+        installer = webcam.Installer(runner, Mock(return_value="uninstalled"))
+        first = installer.start("install")
+        with self.assertRaises(webcam.InstallError) as raised:
+            installer.start("uninstall")
+        self.assertEqual(raised.exception.status, 409)
+        self.assertEqual(raised.exception.message, webcam.BUSY_MESSAGES["install"])
+        release.set()
+        self.assertEqual(first.result(5), "installed")
+        removal = installer.start("uninstall")
+        self.assertEqual(removal.result(5), "uninstalled")
+        self.assertFalse(installer.uninstalling)
+        with self.assertRaises(ValueError):
+            installer.start("reboot")
 
     def test_a_failure_is_remembered_until_the_next_setup(self):
         installer = webcam.Installer(Mock(side_effect=webcam.InstallError(403, "Declined.")))
@@ -798,12 +1304,14 @@ class InstallerTests(unittest.TestCase):
         self.assertIsNone(installer.last_error)
 
     def test_unexpected_errors_become_a_plain_message(self):
-        installer = webcam.Installer(Mock(side_effect=RuntimeError("boom")))
-        with self.assertLogs("orbit.webcam", "ERROR"):
-            with self.assertRaises(webcam.InstallError) as raised:
-                installer.start().result(5)
-        self.assertEqual(raised.exception.status, 503)
-        self.assertNotIn("boom", raised.exception.message)
+        installer = webcam.Installer(Mock(side_effect=RuntimeError("boom")), Mock(side_effect=RuntimeError("boom")))
+        for operation, text in (("install", "setup"), ("uninstall", "removal")):
+            with self.subTest(operation=operation), self.assertLogs("orbit.webcam", "ERROR"):
+                with self.assertRaises(webcam.InstallError) as raised:
+                    installer.start(operation).result(5)
+                self.assertEqual(raised.exception.status, 503)
+                self.assertNotIn("boom", raised.exception.message)
+                self.assertIn(text, raised.exception.message)
 
 
 # Frames ------------------------------------------------------------------------------------------
@@ -930,8 +1438,8 @@ class SoftcamLibraryTests(unittest.TestCase):
     def test_loading_uses_cdll_with_the_full_path(self):
         dll = MagicMock()
         with patch.object(webcam.ctypes, "CDLL", return_value=dll) as cdll:
-            library = webcam.SoftcamLibrary.load(Path("C:/ProgramData/Orbit/Webcam/x/softcam64.dll"))
-        cdll.assert_called_once_with(str(Path("C:/ProgramData/Orbit/Webcam/x/softcam64.dll")))
+            library = webcam.SoftcamLibrary.load(Path("C:/Program Files/Orbit/Webcam/x/softcam64.dll"))
+        cdll.assert_called_once_with(str(Path("C:/Program Files/Orbit/Webcam/x/softcam64.dll")))
         self.assertIsInstance(library, webcam.SoftcamLibrary)
 
 
@@ -964,21 +1472,32 @@ class SenderLibraryTests(WindowsEnvironment):
 # Camera worker -----------------------------------------------------------------------------------
 
 class FakeLibrary:
+    """Softcam as the worker sees it. `hold` is how long scCreateCamera keeps failing after a delete,
+    like Softcam while an app's filter still maps the old camera's shared memory."""
+
     def __init__(self):
         self.created, self.deleted, self.frames = [], [], []
         self.connected = False
         self.refuse = False
+        self.hold = 0.0
+        self.deleted_at = None
+        self.create_calls = 0
         self.handle = 0x5C0F0
+        self.lock = threading.Lock()
 
     def create(self, width, height, fps):
-        if self.refuse:
-            return None
-        self.handle += 1
-        self.created.append((width, height, fps, self.handle))
-        return self.handle
+        with self.lock:
+            self.create_calls += 1
+            if self.refuse or (self.deleted_at is not None and time.monotonic() - self.deleted_at < self.hold):
+                return None
+            self.handle += 1
+            self.created.append((width, height, fps, self.handle))
+            return self.handle
 
     def delete(self, camera):
-        self.deleted.append(camera)
+        with self.lock:
+            self.deleted.append(camera)
+            self.deleted_at = time.monotonic()
 
     def send(self, camera, bgr):
         self.frames.append((camera, bgr))
@@ -987,9 +1506,22 @@ class FakeLibrary:
         return self.connected
 
 
+class Ended:
+    """An on_ended callback that remembers the CameraError it got."""
+
+    def __init__(self):
+        self.errors = []
+        self.event = threading.Event()
+
+    def __call__(self, error):
+        self.errors.append(error)
+        self.event.set()
+
+
 class CameraManagerTests(unittest.TestCase):
     def setUp(self):
-        for name, value in (("GRACE_SECONDS", 0.15), ("CONNECTION_POLL_SECONDS", 0.02)):
+        for name, value in (("GRACE_SECONDS", 0.15), ("CONNECTION_POLL_SECONDS", 0.02), ("CREATE_RETRY_SECONDS", 0.3),
+                            ("CREATE_RETRY_INTERVAL", 0.01)):
             patcher = patch.object(webcam, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -999,8 +1531,8 @@ class CameraManagerTests(unittest.TestCase):
                                             emit=self.events.append)
         self.addCleanup(self.manager.close)
 
-    def start(self, sender, camera_format=(1280, 720, 30), on_replaced=None):
-        return self.manager.start_sender(sender, camera_format, on_replaced).result(3)
+    def start(self, sender, camera_format=(1280, 720, 30), on_ended=None):
+        return self.manager.start_sender(sender, camera_format, on_ended).result(3)
 
     def test_the_first_sender_creates_the_camera_and_announces_it_once(self):
         self.assertEqual(self.start("a"), {"created": True, "width": 1280, "height": 720, "fps": 30})
@@ -1055,11 +1587,68 @@ class CameraManagerTests(unittest.TestCase):
         self.assertEqual(self.library.deleted, [self.library.created[0][3]])
         self.assertEqual(len(self.events), 1)
 
-    def test_a_newer_sender_replaces_the_older_one(self):
-        replaced = threading.Event()
-        self.start("a", on_replaced=replaced.set)
+    def test_another_format_waits_for_an_app_to_let_go_of_the_old_camera(self):
+        self.library.hold = 0.1  # the app's filter notices at its next frame poll
+        ended = Ended()
+        self.start("a", on_ended=ended)
+        self.assertEqual(self.start("b", (1920, 1080, 30))["created"], True)
+        self.assertGreater(self.library.create_calls, 2)
+        self.assertTrue(ended.event.wait(3))
+        self.assertEqual([error.code for error in ended.errors], ["replaced"])
+        self.assertEqual(self.manager.snapshot()["clients"], 1)
+        self.assertEqual(len(self.events), 1)
+
+    def test_when_a_new_format_cannot_start_every_phone_is_ended_and_the_session_resets(self):
+        ended = Ended()
+        self.start("a", on_ended=ended)
+        self.library.hold = 60  # an app keeps the old camera open (its graph is stopped)
+        started = time.monotonic()
+        with self.assertRaises(webcam.CameraError) as raised:
+            self.start("b", (1920, 1080, 30))
+        self.assertGreaterEqual(time.monotonic() - started, 0.25)  # retried for CREATE_RETRY_SECONDS
+        self.assertEqual((raised.exception.code, raised.exception.close_code),
+                         ("cameraUnavailable", webcam.CLOSE_CAMERA_UNAVAILABLE))
+        self.assertEqual(raised.exception.message, webcam.CAMERA_BUSY_MESSAGE)
+        self.assertIn("may still have the previous camera open", webcam.CAMERA_BUSY_MESSAGE)
+        self.assertTrue(ended.event.wait(3))
+        self.assertEqual([(error.code, error.close_code) for error in ended.errors],
+                         [("cameraUnavailable", webcam.CLOSE_CAMERA_UNAVAILABLE)])
+        snapshot = self.manager.snapshot()
+        self.assertEqual((snapshot["active"], snapshot["clients"]), (False, 0))
+        self.assertFalse(self.manager.submit_frame("a", b"lost"))
+        self.manager.stop_sender("a")  # the ended phone leaving changes nothing
+        self.library.hold = 0
+        self.assertTrue(self.start("c")["created"])
+        self.assertEqual(len(self.events), 2)  # the next camera is a new session
+
+    def test_close_interrupts_the_retries(self):
+        self.library.refuse = True
+        with patch.object(webcam, "CREATE_RETRY_SECONDS", 30):
+            future = self.manager.start_sender("a", (1280, 720, 30))
+            self.assertTrue(wait_until(lambda: self.library.create_calls > 0))
+            started = time.monotonic()
+            self.manager.close()
+            with self.assertRaises(webcam.CameraError):
+                future.result(3)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_end_all_ends_every_phone_and_deletes_the_camera(self):
+        ended = Ended()
+        self.start("a", on_ended=ended)
+        removed = webcam.CameraError("notInstalled", webcam.REMOVED_MESSAGE, webcam.CLOSE_NOT_INSTALLED)
+        self.manager.end_all(removed).result(3)
+        self.assertEqual(ended.errors, [removed])
+        self.assertEqual(self.library.deleted, [self.library.created[0][3]])
+        self.assertEqual(self.manager.snapshot()["clients"], 0)
         self.start("b")
-        self.assertTrue(replaced.wait(3))
+        self.assertEqual(len(self.events), 2)
+
+    def test_a_newer_sender_replaces_the_older_one(self):
+        ended = Ended()
+        self.start("a", on_ended=ended)
+        self.start("b")
+        self.assertTrue(ended.event.wait(3))
+        self.assertEqual((ended.errors[0].code, ended.errors[0].close_code), ("replaced", webcam.CLOSE_REPLACED))
         self.assertFalse(self.manager.submit_frame("a", b"old"))
         self.assertTrue(self.manager.submit_frame("b", b"new"))
         self.assertEqual(self.manager.snapshot()["clients"], 1)
@@ -1126,7 +1715,7 @@ class RouteTests(WindowsEnvironment):
         super().setUp()
         self.manager = webcam.CameraManager(library_loader=FakeLibrary)
         self.addCleanup(self.manager.close)
-        self.installer = webcam.Installer(Mock(return_value="installed"))
+        self.installer = webcam.Installer(Mock(return_value="installed"), Mock(return_value="uninstalled"))
 
     def client(self, base_url="https://testserver", **kwargs):
         client = TestClient(make_app(self.manager, self.installer, **kwargs), base_url=base_url)
@@ -1146,6 +1735,7 @@ class RouteTests(WindowsEnvironment):
         for key in ("installed", "registered", "active", "clients", "width", "height", "fps", "reason"):
             self.assertIn(key, body)
         self.assertEqual((body["installed"], body["registered"], body["active"], body["clients"]), (False, False, False, 0))
+        self.assertEqual((body["installing"], body["uninstalling"]), (False, False))
         self.assertEqual((body["width"], body["height"], body["fps"]), (1280, 720, 30))
         self.assertIn("winget install", body["reason"])  # no runtime in this fake registry
         self.assertEqual(body["runtime"]["missing"], ["x64", "x86"])
@@ -1209,6 +1799,52 @@ class RouteTests(WindowsEnvironment):
         self.assertEqual(self.client().post("/api/webcam/install").status_code, 401)
         self.installer._runner.assert_not_called()
 
+    def test_uninstall_answers_with_the_result_and_whether_files_are_left(self):
+        response = self.client().post("/api/webcam/uninstall", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        body = response.json()
+        self.assertEqual((body["status"], body["filesLeft"]), ("uninstalled", False))
+        self.assertIn("registered", body)
+        self.install_files()  # a DLL that an open app still has loaded
+        self.installer._uninstaller.return_value = "uninstalled"
+        self.assertTrue(self.client().post("/api/webcam/uninstall", headers=AUTH).json()["filesLeft"])
+
+    def test_uninstall_still_waiting_for_the_prompt_answers_202(self):
+        release = threading.Event()
+
+        def uninstaller(progress):
+            progress("waitingForApproval")
+            release.wait(5)
+            return "uninstalled"
+        self.installer = webcam.Installer(Mock(return_value="installed"), uninstaller)
+        client = self.client()
+        with patch.object(webcam, "INSTALL_WAIT_SECONDS", 0.1):
+            response = client.post("/api/webcam/uninstall", headers=AUTH)
+            self.assertEqual(response.status_code, 202)
+            body = response.json()
+            self.assertEqual((body["status"], body["uninstalling"], body["installing"]),
+                             ("waitingForApproval", True, False))
+            self.assertIn("approve the Windows prompt", client.get("/api/webcam", headers=AUTH).json()["reason"])
+            # A setup meanwhile is refused, never a second prompt.
+            conflict = client.post("/api/webcam/install", headers=AUTH)
+            self.assertEqual(conflict.status_code, 409)
+            self.assertEqual(conflict.json(), {"detail": webcam.BUSY_MESSAGES["uninstall"]})
+        release.set()
+        self.assertTrue(wait_until(lambda: not self.installer.uninstalling))
+
+    def test_uninstall_errors_and_guards(self):
+        self.installer = webcam.Installer(Mock(), Mock(side_effect=webcam.InstallError(403, "Declined.")))
+        response = self.client().post("/api/webcam/uninstall", headers=AUTH)
+        self.assertEqual((response.status_code, response.json()), (403, {"detail": "Declined."}))
+        self.assertEqual(self.client().get("/api/webcam", headers=AUTH).json()["installError"], "Declined.")
+        self.installer._uninstaller.reset_mock()
+        self.assertEqual(self.client(boot=True).post("/api/webcam/uninstall", headers=AUTH).status_code, 409)
+        self.assertEqual(self.client(windows=False).post("/api/webcam/uninstall", headers=AUTH).status_code, 501)
+        self.assertEqual(self.client("http://testserver").post("/api/webcam/uninstall", headers=AUTH).status_code, 426)
+        self.assertEqual(self.client().post("/api/webcam/uninstall").status_code, 401)
+        self.installer._uninstaller.assert_not_called()
+
 
 # /ws/camera ----------------------------------------------------------------------------------------
 
@@ -1219,7 +1855,7 @@ HELLO = json.dumps({"width": 640, "height": 360, "fps": 30})
 class CameraSocketTests(unittest.TestCase):
     def setUp(self):
         for name, value in (("GRACE_SECONDS", 0.15), ("CONNECTION_POLL_SECONDS", 0.02), ("STATUS_INTERVAL", 0.02),
-                            ("HELLO_TIMEOUT", 2.0)):
+                            ("HELLO_TIMEOUT", 2.0), ("CREATE_RETRY_SECONDS", 0.2), ("CREATE_RETRY_INTERVAL", 0.01)):
             patcher = patch.object(webcam, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1344,8 +1980,31 @@ class CameraSocketTests(unittest.TestCase):
         self.library.refuse = True
         with self.connect() as socket:
             socket.send_text(HELLO)
-            self.assertEqual(self.read_json(socket)["code"], "cameraUnavailable")
+            self.assertEqual(self.read_json(socket), {"error": webcam.CAMERA_BUSY_MESSAGE, "code": "cameraUnavailable"})
             self.assertEqual(self.closed_with(socket), 4003)
+
+    def test_a_new_format_that_cannot_start_ends_both_phones(self):
+        with self.connect() as first:
+            first.send_text(HELLO)
+            self.read_until(first, "ready")
+            self.library.hold = 60  # an app keeps the 640x360 camera open
+            with self.connect() as second:
+                second.send_text(json.dumps({"width": 1280, "height": 720, "fps": 30}))
+                self.assertEqual(self.read_until(second, "error")["code"], "cameraUnavailable")
+                self.assertEqual(self.closed_with(second), 4003)
+            message = self.read_until(first, "error")
+            self.assertEqual(message, {"error": webcam.CAMERA_BUSY_MESSAGE, "code": "cameraUnavailable"})
+            self.assertEqual(self.closed_with(first), 4003)
+        self.assertEqual(self.manager.snapshot()["clients"], 0)
+
+    def test_removing_the_webcam_closes_the_phone_with_4001(self):
+        with self.connect() as socket:
+            socket.send_text(HELLO)
+            self.read_until(socket, "ready")
+            self.manager.end_all(webcam.CameraError("notInstalled", webcam.REMOVED_MESSAGE, webcam.CLOSE_NOT_INSTALLED))
+            self.assertEqual(self.read_until(socket, "error"), {"error": webcam.REMOVED_MESSAGE, "code": "notInstalled"})
+            self.assertEqual(self.closed_with(socket), 4001)
+        self.assertEqual(self.library.deleted, [self.library.created[0][3]])
 
     def test_a_newer_connection_takes_over(self):
         with self.connect() as first:
