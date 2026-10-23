@@ -28,7 +28,7 @@ TRUSTED_GITHUB_HOSTS = {
     " release-assets.githubusercontent.com".strip(),
 }
 UPDATABLE_EXTENSIONS = {".py", ".bat", ".ps1", ".txt", ".md", ".ico", ".json", ".cs"}
-PRESERVED_FILENAMES = {".orbit-token", ".orbit-widget-token"}
+PRESERVED_FILENAMES = {".orbit-token", ".orbit-widget-token", ".orbit-sunshine-login"}
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")

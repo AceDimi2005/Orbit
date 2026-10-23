@@ -24,6 +24,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path as PathParameter, Qu
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+import orbit_notify
+
 MAX_PREVIEW_BYTES = 64 * 1024 ** 2
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_DOWNLOAD_BYTES = 16 * 1024 ** 3
@@ -37,8 +39,12 @@ MAX_ARCHIVE_JOBS = 2
 ARCHIVE_TTL_SECONDS = 10 * 60
 ARCHIVE_SWEEP_SECONDS = 30
 CHUNK_BYTES = 256 * 1024
+# Uploads finishing close together (a batch from the share sheet) get one PC toast.
+UPLOAD_TOAST_QUIET_SECONDS = 2.0
+UPLOAD_TOAST_MAX_DELAY_SECONDS = 6.0
 AGENT_DIRECTORY = Path(__file__).absolute().parent
-SECRET_NAMES = frozenset({".orbit-token", ".orbit-widget-token", "server-key.pem", "server-cert.pem", ".orbit-tls-key.pem", ".env"})
+SECRET_NAMES = frozenset({".orbit-token", ".orbit-widget-token", ".orbit-sunshine-login", "server-key.pem",
+                          "server-cert.pem", ".orbit-tls-key.pem", ".env"})
 RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)", re.I)
 PREVIEW_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".heic", ".gif", ".webp", ".pdf", ".txt", ".md", ".log", ".json", ".csv", ".xml", ".html", ".rtf", ".mp4", ".mov", ".mp3", ".m4a"})
 
@@ -83,12 +89,13 @@ def _protected_paths():
     from orbit_tls import data_directory
     from orbit_history import default_history_path
     result = [AGENT_DIRECTORY / ".orbit-token", AGENT_DIRECTORY / ".orbit-widget-token",
-              data_directory().absolute()]
+              AGENT_DIRECTORY / ".orbit-sunshine-login", data_directory().absolute()]
     history = default_history_path().expanduser().absolute()
     if not os.environ.get("ORBIT_HISTORY_FILE"):
         result.append(history.parent)
     result.extend(Path(str(history) + suffix) for suffix in ("", "-wal", "-shm", "-journal"))
-    for name in ("ORBIT_TOKEN_FILE", "ORBIT_WIDGET_TOKEN_FILE", "ORBIT_TOKEN_PATH", "ORBIT_WIDGET_TOKEN_PATH"):
+    for name in ("ORBIT_TOKEN_FILE", "ORBIT_WIDGET_TOKEN_FILE", "ORBIT_TOKEN_PATH", "ORBIT_WIDGET_TOKEN_PATH",
+                 "ORBIT_SUNSHINE_LOGIN_FILE"):
         if os.environ.get(name):
             result.append(Path(os.environ[name]).absolute())
     return result
@@ -412,6 +419,7 @@ async def receive_upload(request, directory, name):
         # link is atomic and fails if another process created the destination.
         # Unlike replace(), it can never overwrite an existing file.
         os.link(temporary, destination)
+        UPLOAD_TOASTS.received(destination.name, total, parent)
         return {"path": str(destination), "name": destination.name, "sizeBytes": total}
     except HTTPException:
         raise
@@ -423,6 +431,91 @@ async def receive_upload(request, directory, name):
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def format_size(size):
+    """A size the way Windows Explorer writes it (1 KB = 1024 bytes): "512 bytes", "2.4 MB", "12 GB"."""
+    size = max(0, int(size))
+    if size < 1024:
+        return "1 byte" if size == 1 else f"{size} bytes"
+    value = float(size)
+    unit = "bytes"
+    for unit in ("KB", "MB", "GB", "TB"):
+        value /= 1024
+        if value < 1024:
+            break
+    return f"{value:.1f} {unit}" if value < 10 else f"{value:.0f} {unit}"
+
+
+def _folder_label(folder):
+    folder = Path(folder)
+    return folder.name or str(folder)
+
+
+def upload_toast_text(received):
+    """Title and message for uploads that finished together: [(name, size, folder), ...]."""
+    if len(received) == 1:
+        name, size, folder = received[0]
+        return "File received", f"Received {name} ({format_size(size)}) in {_folder_label(folder)}"
+    total = format_size(sum(size for _, size, _ in received))
+    folders = {str(folder) for _, _, folder in received}
+    where = _folder_label(received[0][2]) if len(folders) == 1 else f"{len(folders)} folders"
+    return "Files received", f"Received {len(received)} files ({total}) in {where}"
+
+
+class UploadToaster:
+    """Collects finished uploads and shows one PC toast once they stop arriving.
+
+    The toast waits for `quiet` seconds without a new upload (at most `max_delay` after the
+    first one), so twenty photos from the share sheet produce one toast instead of twenty.
+    Nothing is collected while no notifier is registered (boot instance, tests).
+    """
+
+    def __init__(self, quiet=UPLOAD_TOAST_QUIET_SECONDS, max_delay=UPLOAD_TOAST_MAX_DELAY_SECONDS,
+                 timer_factory=threading.Timer, clock=time.monotonic):
+        self.quiet = quiet
+        self.max_delay = max_delay
+        self._timer_factory = timer_factory
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._pending = []
+        self._first = None
+        self._timer = None
+
+    def received(self, name, size, folder):
+        try:
+            if not orbit_notify.has_notifier():
+                return
+            with self._lock:
+                self._pending.append((str(name), int(size), str(folder)))
+                now = self._clock()
+                if self._first is None:
+                    self._first = now
+                if self._timer is not None:
+                    self._timer.cancel()
+                delay = max(0.0, min(self.quiet, self._first + self.max_delay - now))
+                self._timer = self._timer_factory(delay, self.flush)
+                self._timer.daemon = True
+                self._timer.start()
+        except Exception:
+            # A toast must never turn a finished upload into an error.
+            pass
+
+    def flush(self):
+        """Shows the toast for everything collected so far; returns True when one was shown."""
+        with self._lock:
+            pending, self._pending = self._pending, []
+            self._first = None
+            timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        if not pending:
+            return False
+        title, message = upload_toast_text(pending)
+        return orbit_notify.notify(title, message)
+
+
+UPLOAD_TOASTS = UploadToaster()
 
 
 class _ArchiveCancelled(Exception):

@@ -7,5 +7,7 @@ __pycache__/
 *.pyc
 .venv/
 .orbit-token
+.orbit-widget-token
+.orbit-sunshine-login
 /output/
 .build/
