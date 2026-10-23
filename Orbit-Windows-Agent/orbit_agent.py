@@ -38,6 +38,7 @@ import orbit_events
 import orbit_input
 import orbit_links
 import orbit_notify
+import orbit_webcam
 from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
 from orbit_events import EventLog, create_events_router
 from orbit_processes import collect_processes, terminate_process
@@ -1225,6 +1226,12 @@ async def websocket_video_stream(websocket: WebSocket):
             await websocket.close(code=1011, reason="Screen preview failed")
         except RuntimeError:
             pass
+
+
+# iPhone as a webcam: GET /api/webcam, POST /api/webcam/install, WS /ws/camera (orbit_webcam.py).
+app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_windows, authorized,
+                                                     boot_mode=lambda: BOOT_MODE))
+register_feature("webcam")
 
 
 @app.post("/api/internal/handover")
