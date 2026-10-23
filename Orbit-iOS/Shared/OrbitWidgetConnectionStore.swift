@@ -57,6 +57,11 @@ enum OrbitWidgetConnectionStore {
         (try? defaults()) ?? .standard
     }
 
+    /// Called after this process saves, renames or removes a PC or changes the default PC. Orbit sets
+    /// it to refresh the PC names Siri understands (App Shortcut parameters); the widgets and the
+    /// watch leave it nil.
+    nonisolated(unsafe) static var connectionsDidChange: (() -> Void)?
+
     static func connections() -> [OrbitWidgetConnection] {
         guard let data = fallbackDefaults.data(forKey: profilesKey) else { return [] }
         return (try? JSONDecoder().decode([OrbitWidgetConnection].self, from: data)) ?? []
@@ -115,6 +120,7 @@ enum OrbitWidgetConnectionStore {
             UserDefaults.standard.set(id, forKey: selectedKey)
         }
         WidgetCenter.shared.reloadAllTimelines()
+        connectionsDidChange?()
     }
 
     static func syncPowerProfile(
@@ -155,12 +161,14 @@ enum OrbitWidgetConnectionStore {
             (try? defaults())?.set(encoded, forKey: profilesKey)
             UserDefaults.standard.set(encoded, forKey: profilesKey)
         }
+        connectionsDidChange?()
     }
 
     static func setDefault(id: String) throws {
         UserDefaults.standard.set(id, forKey: selectedKey)
         try defaults().set(id, forKey: selectedKey)
         WidgetCenter.shared.reloadAllTimelines()
+        connectionsDidChange?()
     }
 
     static func remove(id: String) throws {
@@ -174,6 +182,7 @@ enum OrbitWidgetConnectionStore {
         UserDefaults.standard.set(remaining, forKey: profilesKey)
         if storeDefaults.string(forKey: selectedKey) == id { storeDefaults.removeObject(forKey: selectedKey) }
         WidgetCenter.shared.reloadAllTimelines()
+        connectionsDidChange?()
     }
 
     static func readOnlyToken(for id: String) throws -> String {
@@ -418,7 +427,12 @@ enum OrbitWidgetPowerService {
         do {
             let (_, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                let label = action == "shutdown" ? "Shutting down" : (action == "sleep" ? "Sleeping" : "Restarting")
+                let label = switch action {
+                case "shutdown": "Shutting down"
+                case "sleep": "Sleeping"
+                case "lock": "Locked"
+                default: "Restarting"
+                }
                 let message = "\(label) \(connection.name)"
                 OrbitWidgetConnectionStore.recordPowerFeedback(message)
                 return message
@@ -450,86 +464,8 @@ enum OrbitWidgetPowerService {
     }
 }
 
-// MARK: - Shared AppIntents for Widgets, Control Center & Siri Shortcuts
-
-struct OrbitWakePCIntent: AppIntent {
-    static var title: LocalizedStringResource = "Power On PC (Wake-on-LAN)"
-    static var description = IntentDescription("Sends a Wake-on-LAN magic packet to turn on your paired PC.")
-    static var openAppWhenRun: Bool = false
-
-    @Parameter(title: "PC ID")
-    var pcID: String?
-
-    init() {}
-    init(pcID: String?) { self.pcID = pcID }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        #if os(iOS)
-        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
-        #endif
-        let result = try await OrbitWidgetPowerService.wakePC(id: pcID)
-        return .result(dialog: IntentDialog(stringLiteral: result))
-    }
-}
-
-struct OrbitShutdownPCIntent: AppIntent {
-    static var title: LocalizedStringResource = "Shut Down PC"
-    static var description = IntentDescription("Safely shuts down your paired Windows PC over encrypted HTTPS.")
-    static var openAppWhenRun: Bool = false
-
-    @Parameter(title: "PC ID")
-    var pcID: String?
-
-    init() {}
-    init(pcID: String?) { self.pcID = pcID }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        #if os(iOS)
-        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
-        #endif
-        let result = try await OrbitWidgetPowerService.sendPowerAction("shutdown", id: pcID)
-        return .result(dialog: IntentDialog(stringLiteral: result))
-    }
-}
-
-struct OrbitSleepPCIntent: AppIntent {
-    static var title: LocalizedStringResource = "Put PC to Sleep"
-    static var description = IntentDescription("Puts your paired Windows PC into sleep mode.")
-    static var openAppWhenRun: Bool = false
-
-    @Parameter(title: "PC ID")
-    var pcID: String?
-
-    init() {}
-    init(pcID: String?) { self.pcID = pcID }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        #if os(iOS)
-        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
-        #endif
-        let result = try await OrbitWidgetPowerService.sendPowerAction("sleep", id: pcID)
-        return .result(dialog: IntentDialog(stringLiteral: result))
-    }
-}
-
-struct OrbitRestartPCIntent: AppIntent {
-    static var title: LocalizedStringResource = "Restart PC"
-    static var description = IntentDescription("Restarts your paired Windows PC.")
-    static var openAppWhenRun: Bool = false
-
-    @Parameter(title: "PC ID")
-    var pcID: String?
-
-    init() {}
-    init(pcID: String?) { self.pcID = pcID }
-
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        #if os(iOS)
-        guard OrbitProEntitlement.cachedIsUnlocked else { throw OrbitProRequiredError() }
-        #endif
-        let result = try await OrbitWidgetPowerService.sendPowerAction("restart", id: pcID)
-        return .result(dialog: IntentDialog(stringLiteral: result))
-    }
-}
+// The Pro power intents (Power On, Shut Down, Sleep, Restart) live in OrbitPowerIntents.swift, compiled
+// into the app and the watch only: the widget extension and Control Center use their own types
+// (OrbitWidgets/OrbitWidgetPowerIntents.swift). See that file for why.
 
 #endif // !ORBIT_SHARE_EXTENSION
