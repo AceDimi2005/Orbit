@@ -43,7 +43,10 @@ final class WatchDeckStore: ObservableObject {
         var pcID: String
         var isPro: Bool
         var isDemo: Bool
-        var buttons: [OrbitDeckJSON]
+        var buttons: [OrbitRemoteDeckJSON]
+        /// `ready` when the buttons (even none) came from the PC or the iPhone's copy of its deck,
+        /// `notSynced` when nobody had this PC's buttons yet. Missing in decks saved by the first build.
+        var state: String?
     }
 
     init() {
@@ -53,7 +56,15 @@ final class WatchDeckStore: ObservableObject {
         isProUnlocked = stored.isPro
         isDemo = stored.isDemo
         buttons = stored.isDemo ? OrbitRemoteDeck.demo.buttons : stored.buttons.compactMap(OrbitRemoteDeckButton.init(json:))
-        phase = .ready
+        // An empty list only means "no buttons yet" when the PC's deck was really read; otherwise a
+        // launch without the iPhone keeps saying how to bring the buttons over.
+        if stored.isDemo || !buttons.isEmpty || stored.state == "ready" {
+            phase = .ready
+        } else if stored.state == "unsupported" {
+            phase = .unsupported
+        } else if !pcID.isEmpty {
+            phase = .notSynced
+        }
     }
 
     func buttons(for pcID: String) -> [OrbitRemoteDeckButton] {
@@ -148,7 +159,13 @@ final class WatchDeckStore: ObservableObject {
     /// Keeps the last deck for launches without the iPhone. The phone syncs every few seconds, so
     /// unchanged decks are not written again.
     private func save() {
-        let stored = Stored(pcID: pcID, isPro: isProUnlocked, isDemo: isDemo, buttons: isDemo ? [] : buttons.map(\.json))
+        let state: String? = switch phase {
+        case .ready: "ready"
+        case .unsupported: "unsupported"
+        case .notSynced: "notSynced"
+        default: nil
+        }
+        let stored = Stored(pcID: pcID, isPro: isProUnlocked, isDemo: isDemo, buttons: isDemo ? [] : buttons.map(\.json), state: state)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         guard let data = try? encoder.encode(stored), data != lastSaved else { return }

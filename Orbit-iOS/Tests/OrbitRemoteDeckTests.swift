@@ -177,7 +177,7 @@ private struct OrbitRemoteDeckTests {
     }
 
     static func actionDescriptions() {
-        func button(_ action: [String: OrbitDeckJSON], confirm: Bool = false, color: String = "#FF453A") -> OrbitRemoteDeckButton {
+        func button(_ action: [String: OrbitRemoteDeckJSON], confirm: Bool = false, color: String = "#FF453A") -> OrbitRemoteDeckButton {
             OrbitRemoteDeckButton(id: "x", title: "T", symbol: "no.such.symbol.anywhere", color: color, confirm: confirm, action: .object(action))
         }
         let hotkey = button(["type": .string("hotkey"), "keys": .array([.string("ctrl"), .string("shift"), .string("m")])])
@@ -207,7 +207,7 @@ private struct OrbitRemoteDeckTests {
         precondition(button(["type": .string("hotkey")], confirm: true).needsConfirmation)
 
         // Subtitles never just repeat the title.
-        func titled(_ title: String, _ action: [String: OrbitDeckJSON], confirm: Bool = false) -> OrbitRemoteDeckButton {
+        func titled(_ title: String, _ action: [String: OrbitRemoteDeckJSON], confirm: Bool = false) -> OrbitRemoteDeckButton {
             OrbitRemoteDeckButton(id: "x", title: title, symbol: "", color: "", confirm: confirm, action: .object(action))
         }
         precondition(titled("Screenshot", ["type": .string("system"), "name": .string("screenshot")]).subtitle == "Windows action")

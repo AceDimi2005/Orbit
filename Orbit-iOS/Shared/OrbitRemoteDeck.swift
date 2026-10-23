@@ -18,14 +18,14 @@ import AppKit
 // models). Keep it free of other app types.
 
 /// Any JSON value. Integers stay integers, so `delayMs: 200` is sent back as `200`, not `200.0`.
-enum OrbitDeckJSON: Codable, Hashable, Sendable {
+enum OrbitRemoteDeckJSON: Codable, Hashable, Sendable {
     case null
     case bool(Bool)
     case int(Int64)
     case number(Double)
     case string(String)
-    case array([OrbitDeckJSON])
-    case object([String: OrbitDeckJSON])
+    case array([OrbitRemoteDeckJSON])
+    case object([String: OrbitRemoteDeckJSON])
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -39,10 +39,10 @@ enum OrbitDeckJSON: Codable, Hashable, Sendable {
             self = .number(value)
         } else if let value = try? container.decode(String.self) {
             self = .string(value)
-        } else if let value = try? container.decode([OrbitDeckJSON].self) {
+        } else if let value = try? container.decode([OrbitRemoteDeckJSON].self) {
             self = .array(value)
         } else {
-            self = .object(try container.decode([String: OrbitDeckJSON].self))
+            self = .object(try container.decode([String: OrbitRemoteDeckJSON].self))
         }
     }
 
@@ -61,9 +61,9 @@ enum OrbitDeckJSON: Codable, Hashable, Sendable {
 
     var string: String? { if case let .string(value) = self { return value }; return nil }
     var bool: Bool? { if case let .bool(value) = self { return value }; return nil }
-    var array: [OrbitDeckJSON]? { if case let .array(value) = self { return value }; return nil }
-    var object: [String: OrbitDeckJSON]? { if case let .object(value) = self { return value }; return nil }
-    subscript(key: String) -> OrbitDeckJSON? { object?[key] }
+    var array: [OrbitRemoteDeckJSON]? { if case let .array(value) = self { return value }; return nil }
+    var object: [String: OrbitRemoteDeckJSON]? { if case let .object(value) = self { return value }; return nil }
+    subscript(key: String) -> OrbitRemoteDeckJSON? { object?[key] }
 }
 
 /// One button of the deck: `{"id","title","symbol","color","action":{…}}` plus an optional
@@ -74,11 +74,11 @@ struct OrbitRemoteDeckButton: Identifiable, Hashable, Sendable {
     var symbol: String
     var color: String
     var confirm: Bool
-    var action: OrbitDeckJSON
+    var action: OrbitRemoteDeckJSON
     /// Keys this build does not use, sent back unchanged when the Mac saves the deck.
-    var extra: [String: OrbitDeckJSON] = [:]
+    var extra: [String: OrbitRemoteDeckJSON] = [:]
 
-    init(id: String, title: String, symbol: String, color: String, confirm: Bool = false, action: OrbitDeckJSON) {
+    init(id: String, title: String, symbol: String, color: String, confirm: Bool = false, action: OrbitRemoteDeckJSON) {
         self.id = id
         self.title = title
         self.symbol = symbol
@@ -88,7 +88,7 @@ struct OrbitRemoteDeckButton: Identifiable, Hashable, Sendable {
     }
 
     /// A button from the PC. Returns nil when it has no usable id, so one broken button never hides the rest.
-    init?(json: OrbitDeckJSON) {
+    init?(json: OrbitRemoteDeckJSON) {
         guard var fields = json.object,
               let id = fields.removeValue(forKey: "id")?.string, OrbitRemoteDeck.isValidButtonID(id) else { return nil }
         self.id = id
@@ -111,15 +111,15 @@ struct OrbitRemoteDeckButton: Identifiable, Hashable, Sendable {
         color = dictionary["color"] as? String ?? ""
         confirm = dictionary["confirm"] as? Bool ?? false
         let type = dictionary["type"] as? String ?? ""
-        var action: [String: OrbitDeckJSON] = ["type": .string(type)]
+        var action: [String: OrbitRemoteDeckJSON] = ["type": .string(type)]
         if let power = dictionary["power"] as? String, OrbitRemoteDeck.powerActions.contains(power) {
-            let step: OrbitDeckJSON = .object(["type": .string("system"), "name": .string(power)])
+            let step: OrbitRemoteDeckJSON = .object(["type": .string("system"), "name": .string(power)])
             if type == "sequence" { action["steps"] = .array([step]) } else { action = step.object ?? action }
         }
         self.action = .object(action)
     }
 
-    var json: OrbitDeckJSON {
+    var json: OrbitRemoteDeckJSON {
         var fields = extra
         fields["id"] = .string(id)
         fields["title"] = .string(title)
@@ -137,7 +137,7 @@ extension OrbitRemoteDeckButton {
     /// `sleep`, `shutdown` or `restart` when this button (or a step of its sequence) turns the PC off.
     var powerAction: String? { Self.powerAction(in: action) }
 
-    private static func powerAction(in action: OrbitDeckJSON) -> String? {
+    private static func powerAction(in action: OrbitRemoteDeckJSON) -> String? {
         switch action["type"]?.string {
         case "system":
             let name = action["name"]?.string ?? ""
@@ -228,7 +228,7 @@ extension OrbitRemoteDeckButton {
         }
     }
 
-    private static func summary(of action: OrbitDeckJSON) -> String {
+    private static func summary(of action: OrbitRemoteDeckJSON) -> String {
         switch action["type"]?.string ?? "" {
         case "hotkey":
             let keys = (action["keys"]?.array ?? []).compactMap(\.string).map(keyName)
@@ -374,7 +374,7 @@ struct OrbitRemoteDeck: Decodable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let raw = try container.decodeIfPresent([OrbitDeckJSON].self, forKey: .buttons) ?? []
+        let raw = try container.decodeIfPresent([OrbitRemoteDeckJSON].self, forKey: .buttons) ?? []
         var seen = Set<String>()
         buttons = raw.compactMap(OrbitRemoteDeckButton.init(json:)).filter { seen.insert($0.id).inserted }
         updatedAt = try? container.decodeIfPresent(String.self, forKey: .updatedAt)
@@ -508,6 +508,15 @@ enum OrbitRemoteDeckService {
         return text == "Not Found" || text.hasPrefix("PC returned error 404")
     }
 
+    /// Where this device pairs a PC again: the Watch has no My PCs screen, it pairs through the iPhone.
+    static var pairAgainHint: String {
+        #if os(watchOS)
+        return "Pair this PC again in Orbit on iPhone."
+        #else
+        return "Pair it again in My PCs."
+        #endif
+    }
+
     static func message(for error: Error, status: Int?, running: Bool) -> String {
         if let urlError = error as? URLError {
             switch urlError.code {
@@ -522,8 +531,8 @@ enum OrbitRemoteDeckService {
             }
         }
         switch status {
-        case 401, 403: return "Your PC didn't accept this device. Pair it again in My PCs."
-        case 426: return "Your PC asked for a secure connection. Pair it again in My PCs."
+        case 401, 403: return "Your PC didn't accept this device. \(pairAgainHint)"
+        case 426: return "Your PC asked for a secure connection. \(pairAgainHint)"
         default: break
         }
         let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

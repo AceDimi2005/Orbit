@@ -179,6 +179,11 @@ struct TVDeckSection: View {
     @ViewBuilder
     private var content: some View {
         if !deck.buttons.isEmpty {
+            if !canRun {
+                // The cards stay visible but disabled, so say why.
+                banner(icon: "moon.zzz.fill", tint: TVPalette.amber, title: "PC offline — buttons unavailable",
+                       message: "Power on your PC from the Dashboard to run these buttons.")
+            }
             LazyVGrid(columns: columns, spacing: 20) {
                 ForEach(deck.buttons) { button in
                     card(button)

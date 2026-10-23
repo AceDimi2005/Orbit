@@ -30,11 +30,19 @@ final class MacDeckModel: ObservableObject {
     @Published fileprivate(set) var isSaving = false
     @Published var lastResult: Feedback?
     /// A button waiting for its confirmation, asked by the Buttons page (from the grid, the menu bar,
-    /// the Buttons menu or an `orbit://deck/<id>` link).
+    /// the Buttons menu or an `orbit://deck/<id>` link). Set it with `OrbitMacViewModel.askDeckConfirmation`.
     @Published var pendingConfirmation: OrbitRemoteDeckButton?
     fileprivate var loadedAt: Date?
     fileprivate var scope = ""
+    /// A button asked for by `orbit://deck/<id>`, kept only until the deck loads or `linkLifetime` passes,
+    /// so a question never pops up long after the link was opened.
     fileprivate var pendingLinkID: String?
+    fileprivate var pendingLinkDate: Date?
+    fileprivate var confirmationRequest = UUID()
+
+    static let linkLifetime: TimeInterval = 30
+    /// A confirmation that is not on screen after this long (no main window) is dropped.
+    static let confirmationShowDeadline: TimeInterval = 4
 
     /// Called when the PC or demo mode changes (`OrbitMacViewModel.resetConnection`).
     func reset() {
@@ -44,14 +52,42 @@ final class MacDeckModel: ObservableObject {
         isSaving = false
         lastResult = nil
         pendingConfirmation = nil
+        pendingLinkID = nil
+        pendingLinkDate = nil
         loadedAt = nil
         scope = ""
     }
 }
 
-/// Body of `PUT /api/deck`.
+/// Body of `PUT /api/deck`. `baseUpdatedAt` makes the PC refuse the save (409) when another device
+/// saved after this Mac read the deck, instead of silently overwriting that change.
 private struct MacDeckUpload: Encodable {
-    let buttons: [OrbitDeckJSON]
+    let buttons: [OrbitRemoteDeckJSON]
+    let baseUpdatedAt: String?
+}
+
+/// Brings Orbit's main window forward. `openWindow(id:)` on a WindowGroup adds another window, so it
+/// is used only when no main window is on screen.
+@MainActor
+enum MacMainWindow {
+    private static func isMain(_ window: NSWindow) -> Bool {
+        guard let identifier = window.identifier?.rawValue else { return false }
+        return identifier == "main" || identifier.hasPrefix("main-")
+    }
+
+    static var isOnScreen: Bool {
+        NSApp.windows.contains { isMain($0) && $0.isVisible && !$0.isMiniaturized }
+    }
+
+    static func show(_ openWindow: OpenWindowAction) {
+        if let window = NSApp.windows.first(where: { isMain($0) && ($0.isVisible || $0.isMiniaturized) }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 enum MacDeckChange {
@@ -136,6 +172,7 @@ extension OrbitMacViewModel {
             model.loadedAt = Date()
             if model.pendingLinkID != nil {
                 model.pendingLinkID = nil
+                model.pendingLinkDate = nil
                 model.lastResult = .init(message: OrbitRemoteDeckService.updateAgentMessage, isError: true)
             }
         case let .failed(message):
@@ -154,12 +191,29 @@ extension OrbitMacViewModel {
         return OrbitRemoteDeck.isLocked(index: index, proUnlocked: OrbitProStore.shared.isProUnlocked || isDemoMode)
     }
 
-    /// Runs at once, or asks first for power buttons (the Buttons page shows the question).
+    /// Runs at once, or asks first for power buttons (the Buttons page shows the question). Callers
+    /// outside the main window show it first (`MacMainWindow.show`).
     func requestDeckRun(_ button: OrbitRemoteDeckButton) {
         if button.needsConfirmation && !isDeckButtonLocked(button) {
-            deck.pendingConfirmation = button
+            askDeckConfirmation(button)
         } else {
             Task { await runDeckButton(button) }
+        }
+    }
+
+    /// Shows the Buttons page with the question. If it is still not on screen a few seconds later
+    /// (no main window), the question is dropped rather than appearing whenever the window opens next.
+    func askDeckConfirmation(_ button: OrbitRemoteDeckButton) {
+        let model = deck
+        if selectedSection != .deck { selectedSection = .deck }
+        model.pendingConfirmation = button
+        let request = UUID()
+        model.confirmationRequest = request
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MacDeckModel.confirmationShowDeadline))
+            guard let self, model.confirmationRequest == request, model.pendingConfirmation?.id == button.id,
+                  !(self.selectedSection == .deck && MacMainWindow.isOnScreen) else { return }
+            model.pendingConfirmation = nil
         }
     }
 
@@ -233,21 +287,30 @@ extension OrbitMacViewModel {
         defer { model.isSaving = false }
         do {
             let client = try self.client(for: pc)
-            let latest = try JSONDecoder().decode(OrbitRemoteDeck.self, from: try await client.data("/api/deck"))
-            var list = latest.buttons
-            try change.apply(to: &list)
-            guard list.count <= OrbitRemoteDeck.maxButtons else {
-                throw OrbitError(message: "Your PC keeps up to \(OrbitRemoteDeck.maxButtons) buttons. Delete one first.")
-            }
-            var saved = list
-            do {
-                let reply: OrbitDeckJSON = try await client.send("/api/deck", method: "PUT", body: MacDeckUpload(buttons: list.map(\.json)))
-                if reply["buttons"] != nil, let data = try? JSONEncoder().encode(reply),
-                   let echoed = try? JSONDecoder().decode(OrbitRemoteDeck.self, from: data) {
-                    saved = echoed.buttons
+            var saved: [OrbitRemoteDeckButton] = []
+            // Read, change, save with the deck's updatedAt. When another device saved in between, the
+            // PC answers 409: read its newer deck and apply the change once more on top of it.
+            for attempt in 1...2 {
+                let latest = try JSONDecoder().decode(OrbitRemoteDeck.self, from: try await client.data("/api/deck"))
+                var list = latest.buttons
+                try change.apply(to: &list)
+                guard list.count <= OrbitRemoteDeck.maxButtons else {
+                    throw OrbitError(message: "Your PC keeps up to \(OrbitRemoteDeck.maxButtons) buttons. Delete one first.")
                 }
-            } catch is DecodingError {
-                // Saved; the PC just answered with something other than the deck.
+                saved = list
+                do {
+                    let upload = MacDeckUpload(buttons: list.map(\.json), baseUpdatedAt: latest.updatedAt)
+                    let reply: OrbitRemoteDeckJSON = try await client.send("/api/deck", method: "PUT", body: upload)
+                    if reply["buttons"] != nil, let data = try? JSONEncoder().encode(reply),
+                       let echoed = try? JSONDecoder().decode(OrbitRemoteDeck.self, from: data) {
+                        saved = echoed.buttons
+                    }
+                    break
+                } catch is DecodingError {
+                    break // Saved; the PC just answered with something other than the deck.
+                } catch let error as OrbitError where error.statusCode == 409 && attempt == 1 && latest.updatedAt != nil {
+                    continue
+                }
             }
             guard version == generation else { return false }
             model.buttons = saved
@@ -271,26 +334,44 @@ extension OrbitMacViewModel {
     /// before running that button: a link from anywhere never presses keys on the PC by itself.
     func openDeck(from url: URL) {
         selectedSection = .deck
+        let model = deck
         let parts = url.pathComponents.filter { $0 != "/" }
         let id = parts.first == "run" ? parts.dropFirst().first : parts.first
         guard let id, OrbitRemoteDeck.isValidButtonID(id) else { return }
-        deck.pendingLinkID = id
+        guard isDemoMode || currentPC != nil else {
+            model.lastResult = .init(message: "Pair a PC first, then open the link again.", isError: true)
+            return
+        }
+        let requested = Date()
+        model.pendingLinkID = id
+        model.pendingLinkDate = requested
         resolveDeckLink()
         Task { await refreshDeckIfStale(maxAge: 10) }
+        // Orbit may have just launched and still be connecting; give it a moment, then let the link go.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MacDeckModel.linkLifetime))
+            guard let self, model.pendingLinkID == id, model.pendingLinkDate == requested else { return }
+            model.pendingLinkID = nil
+            model.pendingLinkDate = nil
+            model.lastResult = .init(message: "Couldn't reach \(self.selectedPCName) to run that button. Open the link again when the PC is online.", isError: true)
+        }
     }
 
     private func resolveDeckLink() {
         let model = deck
         guard let id = model.pendingLinkID, model.phase == .ready || isDemoMode else { return }
+        let requested = model.pendingLinkDate
         model.pendingLinkID = nil
+        model.pendingLinkDate = nil
+        guard let requested, Date().timeIntervalSince(requested) <= MacDeckModel.linkLifetime else { return }
         guard let button = model.buttons.first(where: { $0.id == id }) else {
-            model.lastResult = .init(message: "That button isn't on your PC anymore.", isError: true)
+            model.lastResult = .init(message: "That button isn't on \(isDemoMode ? "the example PC" : selectedPCName) anymore.", isError: true)
             return
         }
         if isDeckButtonLocked(button) {
             model.lastResult = .init(message: "Orbit Pro unlocks buttons beyond the first \(OrbitRemoteDeck.freeButtonLimit).", isError: true)
         } else {
-            model.pendingConfirmation = button
+            askDeckConfirmation(button)
         }
     }
 }
@@ -304,7 +385,7 @@ struct MacDeckPreset: Identifiable {
     let title: String
     let symbol: String
     let color: String
-    let action: OrbitDeckJSON
+    let action: OrbitRemoteDeckJSON
     var confirm = false
     var id: String { "\(group)/\(title)" }
 
@@ -312,12 +393,12 @@ struct MacDeckPreset: Identifiable {
         OrbitRemoteDeckButton(id: UUID().uuidString.lowercased(), title: title, symbol: symbol, color: color, confirm: confirm, action: action)
     }
 
-    private static func hotkey(_ keys: String...) -> OrbitDeckJSON {
+    private static func hotkey(_ keys: String...) -> OrbitRemoteDeckJSON {
         .object(["type": .string("hotkey"), "keys": .array(keys.map { .string($0) })])
     }
-    private static func system(_ name: String) -> OrbitDeckJSON { .object(["type": .string("system"), "name": .string(name)]) }
-    private static func media(_ name: String) -> OrbitDeckJSON { .object(["type": .string("media"), "name": .string(name)]) }
-    private static func obs(_ request: String) -> OrbitDeckJSON {
+    private static func system(_ name: String) -> OrbitRemoteDeckJSON { .object(["type": .string("system"), "name": .string(name)]) }
+    private static func media(_ name: String) -> OrbitRemoteDeckJSON { .object(["type": .string("media"), "name": .string(name)]) }
+    private static func obs(_ request: String) -> OrbitRemoteDeckJSON {
         .object(["type": .string("obs"), "request": .string(request), "data": .object([:])])
     }
 
@@ -764,8 +845,8 @@ struct MacMenuBarDeckRow: View {
     private func tap(_ button: OrbitRemoteDeckButton) {
         if button.needsConfirmation {
             // Ask in the main window, where the question has room and cannot vanish with the popover.
-            deck.pendingConfirmation = button
             openSection()
+            vm.askDeckConfirmation(button)
         } else {
             Task { await vm.runDeckButton(button) }
         }
@@ -773,8 +854,7 @@ struct MacMenuBarDeckRow: View {
 
     private func openSection() {
         vm.selectedSection = .deck
-        openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+        MacMainWindow.show(openWindow)
     }
 }
 
@@ -791,9 +871,14 @@ extension View {
 struct MacDeckCommands: View {
     @ObservedObject var vm: OrbitMacViewModel
     @ObservedObject var deck: MacDeckModel
+    /// The app's `openWindow` (commands may fire while the main window is closed).
+    let openWindow: OpenWindowAction
 
     var body: some View {
-        Button("Show Buttons") { vm.selectedSection = .deck }
+        Button("Show Buttons") {
+            vm.selectedSection = .deck
+            MacMainWindow.show(openWindow)
+        }
         Divider()
         if deck.buttons.isEmpty {
             Text(deck.phase == .unsupported ? "Update Orbit on your PC to use buttons" : "No buttons loaded")
@@ -801,7 +886,9 @@ struct MacDeckCommands: View {
         ForEach(Array(deck.buttons.prefix(9).enumerated()), id: \.element.id) { index, button in
             Button(button.needsConfirmation ? "\(button.displayTitle)…" : button.displayTitle) {
                 if button.needsConfirmation || vm.isDeckButtonLocked(button) {
+                    // The question appears on the Buttons page, so make sure it is on screen.
                     vm.selectedSection = .deck
+                    MacMainWindow.show(openWindow)
                 }
                 vm.requestDeckRun(button)
             }

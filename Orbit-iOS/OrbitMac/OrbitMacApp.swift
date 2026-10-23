@@ -135,7 +135,7 @@ struct OrbitMacApp: App {
                 }
             }
             CommandMenu("Buttons") {
-                MacDeckCommands(vm: viewModel, deck: viewModel.deck)
+                MacDeckCommands(vm: viewModel, deck: viewModel.deck, openWindow: openWindow)
             }
             CommandGroup(after: .sidebar) {
                 Divider()

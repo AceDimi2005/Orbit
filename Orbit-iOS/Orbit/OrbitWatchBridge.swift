@@ -367,6 +367,12 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             replyHandler?(payload)
         case "wake", "powerAction", "volume", "launchGame", "runDeck":
             Task {
+                #if canImport(UIKit)
+                // A deck button may take up to 12 s; keep an iPhone that WatchConnectivity woke in the
+                // background running until the Watch has its answer.
+                let backgroundTask = cmd == "runDeck" ? UIApplication.shared.beginBackgroundTask(withName: "OrbitRunDeck") : .invalid
+                defer { if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) } }
+                #endif
                 let result = await forwardPCCommand(message)
                 replyHandler?(result)
                 if result["status"] as? String == "failed", let failure = result["message"] as? String {
