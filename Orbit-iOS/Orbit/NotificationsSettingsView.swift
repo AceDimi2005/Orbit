@@ -287,7 +287,7 @@ struct NotificationsSettingsView: View {
     @Environment(\.orbitTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
-    private var pcName: String { vm.isDemoMode ? "Example PC" : vm.selectedPCName }
+    private var pcName: String { vm.isDemoMode ? vm.metrics.hostname : vm.selectedPCName }
     private var isOnline: Bool { vm.isDemoMode || vm.metrics.isOnline }
     private var features: OrbitPCFeatures { model.features }
 
@@ -297,11 +297,15 @@ struct NotificationsSettingsView: View {
             phoneSection
             if enabled && !vm.isDemoMode { deliverySection }
             statusNotices
-            if features.has("alerts") { alertKindsSection }
-            if features.has("downloads") { downloadsSection }
-            if features.has("powerAfter"), model.rule != nil || model.powerError != nil { powerSection }
-            if features.has("tasks") { tasksSection }
+            if features.has("alerts") { alertKindsSection.id("alerts") }
+            if features.has("downloads") { downloadsSection.id("downloads") }
+            if features.has("powerAfter"), model.rule != nil || model.powerError != nil { powerSection.id("power") }
+            if features.has("tasks") { tasksSection.id("tasks") }
         }
+        #if DEBUG
+        // `ORBIT_SELFTEST_SCROLL=downloads|power|tasks|alerts`: screenshots of the lower sections without swipes.
+        .modifier(OrbitSelfTestScroll())
+        #endif
         .orbitListChrome(isOnline: vm.metrics.isOnline)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
@@ -690,7 +694,7 @@ struct NotificationsSettingsView: View {
         var parts: [String] = [storeName(item.store)]
         if let total = item.bytesTotal, total > 0 {
             let done = item.bytesDone ?? (item.progress ?? 0) * total
-            parts.append("\(Self.bytes(done)) of \(Self.bytes(total))")
+            parts.append(done > 0 ? "\(Self.bytes(done)) of \(Self.bytes(total))" : Self.bytes(total))
         } else if let progress = item.progress, progress.isFinite {
             parts.append("\(Int((progress * 100).rounded()))%")
         }

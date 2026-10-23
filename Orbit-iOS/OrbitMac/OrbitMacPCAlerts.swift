@@ -51,6 +51,7 @@ final class MacPCAlertPoller {
     /// Features per PC; nil features = an agent older than `/api/capabilities`.
     private var features: [String: (features: Set<String>?, checkedAt: Date)] = [:]
     private var inFlight: Set<String> = []
+    private var wasEnabled = MacPCAlertPrefs.isEnabled
 
     func start(with viewModel: OrbitMacViewModel) {
         self.viewModel = viewModel
@@ -73,7 +74,12 @@ final class MacPCAlertPoller {
     }
 
     func pollAll() async {
-        guard MacPCAlertPrefs.isEnabled, let viewModel, !viewModel.isDemoMode else { return }
+        let enabled = MacPCAlertPrefs.isEnabled
+        defer { wasEnabled = enabled }
+        guard enabled else { return }
+        // Turned back on: start from "now", never with what happened while alerts were off.
+        if !wasEnabled { UserDefaults.standard.removeObject(forKey: MacPCAlertPrefs.cursorKey) }
+        guard let viewModel, !viewModel.isDemoMode else { return }
         let pcs = viewModel.savedPCs.filter(\.isSecure)
         await withTaskGroup(of: Void.self) { group in
             for pc in pcs {

@@ -42,6 +42,9 @@ enum OrbitEventFeed {
         var cursor: Int
         /// True when the PC's log was new to us or recreated: nothing was posted on purpose.
         var resynced: Bool
+        /// The highest id the PC's log has handed out. A stored "delivered" id above it belongs to an
+        /// older log of this PC (it was reinstalled or its log was reset) and should be lowered.
+        var latestID: Int
     }
 
     /// Reads the events after `cursor`.
@@ -56,16 +59,21 @@ enum OrbitEventFeed {
                      fetch: @Sendable (_ since: Int?, _ limit: Int) async throws -> OrbitPCEventPage) async throws -> Result {
         guard let start = cursor, start >= 0 else {
             let page = try await fetch(nil, 1)
-            return Result(toPost: [], cursor: max(0, page.latestID), resynced: true)
+            return Result(toPost: [], cursor: max(0, page.latestID), resynced: true, latestID: max(0, page.latestID))
         }
         var position = start
+        var delivered = delivered
+        var latest = start
         var candidates: [OrbitPCEvent] = []
         pages: for _ in 0..<maximumPages {
             let page = try await fetch(position, pageSize)
             if page.latestID < position {
                 // Ids only grow on a PC, so a smaller latestID means its log was recreated.
-                return Result(toPost: [], cursor: max(0, page.latestID), resynced: true)
+                return Result(toPost: [], cursor: max(0, page.latestID), resynced: true, latestID: max(0, page.latestID))
             }
+            latest = page.latestID
+            // A "delivered" mark above anything this log ever handed out came from an older log of the PC.
+            if delivered > page.latestID { delivered = start }
             for event in page.events.sorted(by: { $0.id < $1.id }) where event.id > position {
                 if let holdBack, let date = event.date, now.timeIntervalSince(date) < holdBack {
                     break pages
@@ -79,7 +87,7 @@ enum OrbitEventFeed {
                 break
             }
         }
-        return Result(toPost: Array(candidates.suffix(maximumPerPoll)), cursor: position, resynced: false)
+        return Result(toPost: Array(candidates.suffix(maximumPerPoll)), cursor: position, resynced: false, latestID: latest)
     }
 
     static func isFresh(_ event: OrbitPCEvent, now: Date) -> Bool {

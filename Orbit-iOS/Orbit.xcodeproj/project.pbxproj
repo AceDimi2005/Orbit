@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000105 /* OrbitNotifySelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000106 /* OrbitNotifySelfTest.swift */; };
 		A60000000000000000000101 /* OrbitMacPCAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000105 /* OrbitMacPCAlerts.swift */; };
 		A20000000000000000000104 /* NotificationsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000104 /* NotificationsSettingsView.swift */; };
 		A20000000000000000000103 /* OrbitNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000103 /* OrbitNotifications.swift */; };
@@ -213,6 +214,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000106 /* OrbitNotifySelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitNotifySelfTest.swift; sourceTree = "<group>"; };
 		B20000000000000000000105 /* OrbitMacPCAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacPCAlerts.swift; sourceTree = "<group>"; };
 		B20000000000000000000104 /* NotificationsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsSettingsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000103 /* OrbitNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitNotifications.swift; sourceTree = "<group>"; };
@@ -421,6 +423,7 @@
 				B20000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				B20000000000000000000103 /* OrbitNotifications.swift */,
 				B20000000000000000000104 /* NotificationsSettingsView.swift */,
+				B20000000000000000000106 /* OrbitNotifySelfTest.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -845,6 +848,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000105 /* OrbitNotifySelfTest.swift in Sources */,
 				A20000000000000000000104 /* NotificationsSettingsView.swift in Sources */,
 				A20000000000000000000103 /* OrbitNotifications.swift in Sources */,
 				A20000000000000000000102 /* OrbitEventFeed.swift in Sources */,

@@ -90,6 +90,7 @@ enum OrbitPushCryptoTests {
                 result["toPost"] = outcome.toPost.map(\.id)
                 result["cursor"] = outcome.cursor
                 result["resynced"] = outcome.resynced
+                result["latestID"] = outcome.latestID
             } catch {
                 result["error"] = "\(error.localizedDescription)"
             }

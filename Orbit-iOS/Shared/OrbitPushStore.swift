@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import UserNotifications
 
 /// What the iPhone app and its Notification Service Extension share for PC alerts, all in the App Group:
 ///
@@ -146,5 +147,56 @@ enum OrbitPushStore {
         var map = (store.dictionary(forKey: deliveredKey) as? [String: Int]) ?? [:]
         map.removeValue(forKey: pcID)
         store.set(map, forKey: deliveredKey)
+    }
+}
+
+// MARK: - What a pushed alert shows
+
+/// Turns the relay's generic push ("Orbit — New alert from your PC", ciphertext in `o`) into the PC's real
+/// alert. Used by the Notification Service Extension, and by the app's Debug self-test so the same code
+/// runs against the real keychain in the Simulator (where `simctl push` skips service extensions).
+enum OrbitPushContent {
+    /// Set on a push whose event the app's poller already showed: it arrives silently and the app removes it.
+    static let duplicateKey = "orbitDuplicate"
+
+    /// The decrypted alert, or the generic text when no stored key opens it.
+    static func process(_ original: UNNotificationContent) -> UNMutableNotificationContent {
+        decrypted(original) ?? fallback(original)
+    }
+
+    static func fallback(_ original: UNNotificationContent) -> UNMutableNotificationContent {
+        let content = (original.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
+        content.title = OrbitPushCrypto.fallbackTitle
+        content.body = OrbitPushCrypto.fallbackBody
+        content.userInfo["link"] = OrbitPushCrypto.defaultLink
+        content.userInfo.removeValue(forKey: "o")
+        return content
+    }
+
+    /// The alert with its real text, or nil when no stored key opens it.
+    static func decrypted(_ original: UNNotificationContent) -> UNMutableNotificationContent? {
+        guard let ciphertext = original.userInfo["o"] as? String,
+              let deviceID = OrbitPushStore.deviceID(create: false) else { return nil }
+        let keys = OrbitPushStore.allKeys()
+        guard !keys.isEmpty, let opened = OrbitPushCrypto.open(ciphertext, keys: keys, deviceID: deviceID),
+              let content = original.mutableCopy() as? UNMutableNotificationContent else { return nil }
+        let message = opened.message
+        content.title = message.title
+        content.body = message.body
+        if !message.pc.isEmpty { content.threadIdentifier = message.pc }
+        content.categoryIdentifier = OrbitEventFeed.notificationCategory(for: message.kind)
+        content.userInfo["link"] = message.link
+        content.userInfo["pcID"] = opened.id
+        content.userInfo["eventID"] = message.id
+        content.userInfo["kind"] = message.kind
+        content.userInfo.removeValue(forKey: "o")
+        // The app's own poller may have shown this event already (it records the same ids). An
+        // extension can't hide a push, so this copy arrives silently and the app removes it later.
+        if message.id > 0, !OrbitPushStore.recordDelivered(message.id, for: opened.id) {
+            content.userInfo[duplicateKey] = true
+            content.sound = nil
+            content.interruptionLevel = .passive
+        }
+        return content
     }
 }

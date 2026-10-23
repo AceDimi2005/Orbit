@@ -492,6 +492,8 @@ enum OrbitNotificationSwitch {
     static func disable() async {
         UserDefaults.standard.set(false, forKey: OrbitNotificationPreferences.enabledKey)
         OrbitEventPoller.shared.preferencesChanged()
+        // Turning alerts on again starts from "now", never with what happened while they were off.
+        OrbitEventPoller.forgetAllCursors()
         await OrbitPushRegistrar.shared.unregisterAll()
     }
 }
@@ -526,6 +528,10 @@ final class OrbitEventPoller {
         var map = (UserDefaults.standard.dictionary(forKey: cursorKey) as? [String: Int]) ?? [:]
         map.removeValue(forKey: pcID)
         UserDefaults.standard.set(map, forKey: cursorKey)
+    }
+
+    nonisolated static func forgetAllCursors() {
+        UserDefaults.standard.removeObject(forKey: cursorKey)
     }
 
     func setAppActive(_ active: Bool) {
@@ -566,9 +572,9 @@ final class OrbitEventPoller {
                 if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
                 return try await client.get("/api/events", query: query)
             }
-            if result.resynced, delivered > result.cursor {
-                // The PC's log started over: ids from 1 are new again.
-                OrbitPushStore.resetDelivered(for: link.id, to: result.cursor)
+            if delivered > result.latestID {
+                // The PC's log started over (reinstall, reset): its ids from 1 are new again.
+                OrbitPushStore.resetDelivered(for: link.id, to: min(previous ?? result.cursor, result.cursor))
             }
             for event in result.toPost where OrbitPushStore.recordDelivered(event.id, for: link.id) {
                 await OrbitLocalAlerts.post(event, pcID: link.id, pcName: link.name)
@@ -584,7 +590,7 @@ final class OrbitEventPoller {
 // MARK: - Posting and handling notifications
 
 enum OrbitLocalAlerts {
-    static let duplicateKey = "orbitDuplicate"
+    static let duplicateKey = OrbitPushContent.duplicateKey
 
     static func categories() -> Set<UNNotificationCategory> {
         let cancel = UNNotificationAction(identifier: OrbitEventFeed.cancelPowerAction, title: "Cancel", options: [])
@@ -664,6 +670,10 @@ final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories(OrbitLocalAlerts.categories())
+        #if DEBUG
+        if let mode = ProcessInfo.processInfo.environment["ORBIT_NOTIFY_SELFTEST"] { OrbitNotifySelfTest.start(mode: mode); return true }
+        if let link = ProcessInfo.processInfo.environment["ORBIT_SELFTEST_OPEN_URL"] { OrbitNotifySelfTest.open(link) }
+        #endif
         if OrbitNotificationPreferences.isEnabled {
             Task { @MainActor in OrbitPushRegistrar.shared.requestToken() }
         }

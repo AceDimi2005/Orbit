@@ -66,8 +66,8 @@ struct CompanionToolsView: View {
                         OrbitSectionHeader("Automation", icon: "bolt.badge.clock.fill")
                         LazyVGrid(columns: columns, spacing: 12) {
                             NavigationLink { NotificationsSettingsView(vm: vm) } label: {
-                                toolTile("Notifications", subtitle: notificationsEnabled ? "Alerts on · downloads & auto sleep" : "Downloads, heat & auto sleep",
-                                         icon: "bell.badge.fill", tint: .red, badge: notificationsEnabled ? "ON" : nil)
+                                toolTile("Notifications", subtitle: "Downloads, heat & sleep", icon: "bell.badge.fill", tint: .red,
+                                         badge: notificationsEnabled ? "ON" : nil)
                             }
                         }
 

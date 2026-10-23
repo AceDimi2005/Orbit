@@ -194,6 +194,12 @@ scenario("out-of-order and repeated ids", 40, [{"since": 40, "limit": 50, "page"
 scenario("older agent without more", 40, [{"since": 40, "limit": 50, "page": {"events": [event(41)], "latestID": 41}}],
          {"toPost": [41], "cursor": 41})
 scenario("PC unreachable", 40, [], {"error": True, "fetches": [[40, 50]]})
+scenario("delivered mark from an older log of the PC", 1,
+         [{"since": 1, "limit": 50, "page": page([event(2), event(3)], 3)}],
+         {"toPost": [2, 3], "cursor": 3, "latestID": 3}, delivered=62)
+scenario("held back event keeps latestID", 41,
+         [{"since": 41, "limit": 50, "page": page([event(42, age=5)], 42)}],
+         {"toPost": [], "cursor": 41, "latestID": 42}, delivered=42, hold_back=45)
 
 cases = {"crypto": crypto_cases, "feed": feed_cases, "newKeys": 64}
 
@@ -244,7 +250,7 @@ for name, expect in feed_expected.items():
         check("error" in result, f"feed {name}: a failing fetch must throw, got {result}")
     else:
         check("error" not in result, f"feed {name}: unexpected error {result.get('error')}")
-        for field in ("toPost", "cursor", "resynced"):
+        for field in ("toPost", "cursor", "resynced", "latestID"):
             if field in expect:
                 check(result.get(field) == expect[field], f"feed {name}: {field} = {result.get(field)!r}, expected {expect[field]!r}")
         check(result["unusedSteps"] == 0, f"feed {name}: {result['unusedSteps']} scripted pages were never read")
