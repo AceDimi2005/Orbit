@@ -6,10 +6,18 @@ when the user allows it, and handed to registered dispatchers (instant push) on 
 thread, so a slow network never holds up the feature that emitted it.
 
 Phones read the log with `GET /api/events?since=<id>&limit=<1..200>` (main token, HTTPS only):
-`{"events": [...oldest first...], "latestID": <newest stored id, 0 when empty>}`. Without
-`since` the newest `limit` events are returned. To page, ask again with `since` = the last id
-received while it is below `latestID`. Ids only grow; if `latestID` is ever below the `since`
-a client remembers, the log was reset on the PC and the client should start again from 0.
+`{"events": [...oldest first...], "latestID": <id>, "more": <bool>}`.
+
+- Without `since`: the newest `limit` events (`more` is false).
+- With `since`: the events after that id, oldest first. `more` is true when newer events are
+  still waiting; ask again with `since` = the id of the last event received. When `more` is
+  false the client is caught up and may remember `latestID` as its next `since`: every id up
+  to it was either returned or has expired.
+- `latestID` is the highest id this log has ever handed out (0 for a brand-new log). It never
+  goes down, not even when old events expire or every event is gone. Ids only grow, so a
+  `latestID` below the `since` a client remembers means the log was recreated on the PC (for
+  example after it was damaged or deleted) and the client should start again from 0.
+- Events older than 7 days are never listed (they are deleted before each read).
 
 Event kinds: pc.online, download.finished, download.failed, downloads.allFinished,
 temperature.high, task.finished, power.scheduled, power.cancelled, power.executing,
@@ -85,7 +93,8 @@ def _validated(kind, level, data):
 
 
 class EventLog:
-    """Thread-safe SQLite store; `append` prunes to the retention window and row limit."""
+    """Thread-safe SQLite store. Opening and `append` prune to the retention window and row
+    limit; `page` first deletes events that expired while nothing was appended."""
 
     def __init__(self, path=None, *, clock=time.time, retention_seconds=RETENTION_SECONDS, max_events=MAX_EVENTS):
         self.path = Path(path) if path is not None else default_events_path()
@@ -120,7 +129,7 @@ class EventLog:
                 );
                 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
             """)
-            self._prune(db, self._clock())
+            self._prune(db, self._now())
             db.commit()
             return db
         except BaseException:
@@ -131,6 +140,32 @@ class EventLog:
         db.execute("DELETE FROM events WHERE ts < ?", (now - self._retention,))
         db.execute("DELETE FROM events WHERE id < (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?)",
                    (self._max_events - 1,))
+
+    def _now(self):
+        now = self._clock()
+        if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
+            now = time.time()
+        return float(now)
+
+    @staticmethod
+    def _high_water_mark(db):
+        """The highest id ever handed out: AUTOINCREMENT's counter, which deleting rows never lowers."""
+        row = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'events'").fetchone()
+        sequence = int(row["seq"] or 0) if row is not None else 0
+        newest = db.execute("SELECT MAX(id) AS newest FROM events").fetchone()["newest"]
+        return max(sequence, int(newest or 0))
+
+    def _drop_expired(self, now):
+        """Deletes events past the retention window before a read (the PC may have been idle for
+        days, with no append to prune them). A failure here only leaves them hidden."""
+        cutoff = now - self._retention
+        if self._db.execute("SELECT 1 FROM events WHERE ts < ? LIMIT 1", (cutoff,)).fetchone() is None:
+            return
+        try:
+            with self._db:
+                self._prune(self._db, now)
+        except sqlite3.OperationalError:
+            LOGGER.warning("Could not delete expired events; they stay hidden", exc_info=True)
 
     @staticmethod
     def _row(row):
@@ -151,39 +186,48 @@ class EventLog:
         with self._lock:
             if self._closed:
                 raise RuntimeError("The event log is closed.")
-            now = self._clock()
-            if not isinstance(now, (int, float)) or not math.isfinite(now):
-                now = time.time()
+            now = self._now()
             with self._db:
                 cursor = self._db.execute(
                     "INSERT INTO events (ts, kind, level, title, body, data) VALUES (?, ?, ?, ?, ?, ?)",
-                    (float(now), kind, level, title, body, encoded))
+                    (now, kind, level, title, body, encoded))
                 identifier = cursor.lastrowid
                 self._prune(self._db, now)
             row = self._db.execute("SELECT * FROM events WHERE id = ?", (identifier,)).fetchone()
         return self._row(row)
 
     def latest_id(self):
+        """The highest id ever handed out (see the module docstring); 0 for a brand-new log."""
         with self._lock:
-            row = self._db.execute("SELECT MAX(id) AS latest FROM events").fetchone()
-        return int(row["latest"] or 0)
+            if self._closed:
+                raise RuntimeError("The event log is closed.")
+            return self._high_water_mark(self._db)
 
     def page(self, since=None, limit=DEFAULT_PAGE):
-        """Events oldest first: after `since`, or the newest `limit` ones without it."""
+        """`{"events", "latestID", "more"}`: events oldest first, after `since`, or the newest
+        `limit` ones without it. `more` is true when events after the last one returned remain."""
         limit = max(1, min(MAX_PAGE, int(limit)))
         with self._lock:
             if self._closed:
                 raise RuntimeError("The event log is closed.")
-            cutoff = self._clock() - self._retention
+            now = self._now()
+            self._drop_expired(now)
+            cutoff = now - self._retention
+            # The high-water mark is read first and bounds the rows, so "caught up to latestID"
+            # holds even if another process appends between the two statements.
+            latest = self._high_water_mark(self._db)
             if since is None:
                 rows = self._db.execute(
-                    "SELECT * FROM (SELECT * FROM events WHERE ts >= ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
-                    (cutoff, limit)).fetchall()
+                    "SELECT * FROM (SELECT * FROM events WHERE id <= ? AND ts >= ? ORDER BY id DESC LIMIT ?) "
+                    "ORDER BY id ASC", (latest, cutoff, limit)).fetchall()
+                more = False
             else:
-                rows = self._db.execute("SELECT * FROM events WHERE id > ? AND ts >= ? ORDER BY id ASC LIMIT ?",
-                                        (int(since), cutoff, limit)).fetchall()
-            latest = self._db.execute("SELECT MAX(id) AS latest FROM events").fetchone()["latest"]
-        return {"events": [self._row(row) for row in rows], "latestID": int(latest or 0)}
+                rows = self._db.execute(
+                    "SELECT * FROM events WHERE id > ? AND id <= ? AND ts >= ? ORDER BY id ASC LIMIT ?",
+                    (int(since), latest, cutoff, limit + 1)).fetchall()
+                more = len(rows) > limit
+                rows = rows[:limit]
+        return {"events": [self._row(row) for row in rows], "latestID": latest, "more": more}
 
     def close(self):
         with self._lock:

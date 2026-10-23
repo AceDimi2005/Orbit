@@ -1,4 +1,5 @@
 """Event log: storage, retention, paging, emit (toast + dispatch) and GET /api/events."""
+import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -36,6 +37,15 @@ class EventLogTests(unittest.TestCase):
         self.addCleanup(log.close)
         return log
 
+    def database(self):
+        """A separate connection to the log file that is closed afterwards (sqlite3's own context
+        manager only commits)."""
+        return contextlib.closing(sqlite3.connect(self.path))
+
+    def stored_titles(self):
+        with self.database() as db:
+            return [row[0] for row in db.execute("SELECT title FROM events ORDER BY id")]
+
     def test_append_returns_the_api_shape_with_iso_utc_time(self):
         log = self.open()
         event = log.append("download.finished", "Portal 2 finished downloading", "Ready to play.", data={"id": "steam:620"})
@@ -49,7 +59,7 @@ class EventLogTests(unittest.TestCase):
 
     def test_schema_matches_the_design(self):
         self.open().append("pc.online", "Online", "")
-        with sqlite3.connect(self.path) as db:
+        with self.database() as db:
             columns = [(row[1], row[2], row[5]) for row in db.execute("PRAGMA table_info(events)")]
             sql = db.execute("SELECT sql FROM sqlite_master WHERE name = 'events'").fetchone()[0]
         self.assertEqual(columns, [("id", "INTEGER", 1), ("ts", "REAL", 0), ("kind", "TEXT", 0), ("level", "TEXT", 0),
@@ -63,6 +73,11 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual(len(event["body"]), events.BODY_LIMIT)
         self.assertEqual(event["level"], "timeSensitive")
         self.assertEqual(log.append("summary.ready", "", "", level="passive")["title"], "summary.ready")
+        # A lone surrogate (possible in Windows file names) cannot be stored as UTF-8: it is replaced.
+        odd = log.append("download.finished", "Saved photo\udc80.jpg", "\U0001F3AE" * 400)
+        self.assertEqual(odd["title"], "Saved photo\ufffd.jpg")
+        self.assertLessEqual(len(odd["body"].encode("utf-16-le")) // 2, events.BODY_LIMIT)
+        self.assertEqual(log.page()["events"][-1], odd)
 
     def test_invalid_kind_level_and_data_are_programming_errors(self):
         log = self.open()
@@ -88,18 +103,19 @@ class EventLogTests(unittest.TestCase):
         self.clock.now += 6 * DAY
         log.append("pc.online", "recent", "")
         self.clock.now += DAY + 1
-        # The first event is now just over 7 days old: hidden right away, deleted at the next append.
+        # The first event is now just over 7 days old: a read deletes it before listing.
+        self.assertEqual(self.stored_titles(), ["old", "recent"])
         self.assertEqual([event["title"] for event in log.page()["events"]], ["recent"])
+        self.assertEqual(self.stored_titles(), ["recent"])
         log.append("pc.online", "new", "")
-        with sqlite3.connect(self.path) as db:
-            self.assertEqual([row[0] for row in db.execute("SELECT title FROM events ORDER BY id")], ["recent", "new"])
+        self.assertEqual(self.stored_titles(), ["recent", "new"])
         self.assertEqual(log.page(since=0)["latestID"], 3)
 
     def test_at_most_1000_events_are_kept_and_ids_keep_growing(self):
         log = self.open()
         for index in range(1005):
             log.append("task.finished", f"Task {index}", "")
-        with sqlite3.connect(self.path) as db:
+        with self.database() as db:
             count, low, high = db.execute("SELECT COUNT(*), MIN(id), MAX(id) FROM events").fetchone()
         self.assertEqual((count, low, high), (1000, 6, 1005))
         # Ids are never reused, even after old rows are deleted (AUTOINCREMENT).
@@ -113,10 +129,14 @@ class EventLogTests(unittest.TestCase):
         log.close()
         self.clock.now += 8 * DAY
         reopened = self.open()
-        with sqlite3.connect(self.path) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
-        self.assertEqual(reopened.page(), {"events": [], "latestID": 0})
+        self.assertEqual(self.stored_titles(), [])
+        # Every event expired while the agent was off, but latestID stays at the highest id handed
+        # out: a client that remembers since=5 must not mistake this for a reset log.
+        self.assertEqual(reopened.page(), {"events": [], "latestID": 5, "more": False})
+        self.assertEqual(reopened.page(since=5), {"events": [], "latestID": 5, "more": False})
+        self.assertEqual(reopened.latest_id(), 5)
         self.assertEqual(reopened.append("pc.online", "after", "")["id"], 6)
+        self.assertEqual(reopened.page(since=5)["events"][0]["title"], "after")
 
     def test_paging_newest_without_since_and_forward_with_since(self):
         log = self.open()
@@ -125,19 +145,92 @@ class EventLogTests(unittest.TestCase):
             log.append("download.finished", f"Game {index}", "")
         newest = log.page(limit=3)
         self.assertEqual([event["id"] for event in newest["events"]], [8, 9, 10])
-        self.assertEqual(newest["latestID"], 10)
+        self.assertEqual((newest["latestID"], newest["more"]), (10, False))
         first = log.page(since=0, limit=4)
         self.assertEqual([event["id"] for event in first["events"]], [1, 2, 3, 4])
-        self.assertEqual(first["latestID"], 10)
+        self.assertEqual((first["latestID"], first["more"]), (10, True))
         second = log.page(since=first["events"][-1]["id"], limit=4)
         self.assertEqual([event["id"] for event in second["events"]], [5, 6, 7, 8])
+        self.assertTrue(second["more"])
         last = log.page(since=8, limit=4)
         self.assertEqual([event["id"] for event in last["events"]], [9, 10])
-        self.assertEqual(log.page(since=10), {"events": [], "latestID": 10})
-        self.assertEqual(log.page(since=500), {"events": [], "latestID": 10})  # client sees latestID < since: reset
+        self.assertFalse(last["more"])
+        # A full page that happens to end at the newest event says there is nothing more.
+        exact = log.page(since=6, limit=4)
+        self.assertEqual(([event["id"] for event in exact["events"]], exact["more"]), ([7, 8, 9, 10], False))
+        self.assertEqual(log.page(since=10), {"events": [], "latestID": 10, "more": False})
+        # latestID below the client's since: this log was recreated, the client starts again from 0.
+        self.assertEqual(log.page(since=500), {"events": [], "latestID": 10, "more": False})
         self.assertEqual(len(log.page(limit=1000)["events"]), 10)
         self.assertEqual(len(log.page(limit=0)["events"]), 1)
         self.assertEqual(log.page(limit=2)["events"][0]["ts"], "2026-10-23T18:00:09Z")
+
+    def follow_the_documented_rule(self, log, since, limit):
+        """What a phone does: page while `more`, then remember `latestID`. Returns (ids, since)."""
+        received = []
+        for _ in range(100):
+            page = log.page(since=since, limit=limit)
+            received += [event["id"] for event in page["events"]]
+            if page["more"]:
+                since = page["events"][-1]["id"]
+                continue
+            return received, page["latestID"]
+        self.fail("The client never caught up")
+
+    def test_events_that_expire_while_the_pc_is_idle_do_not_trap_a_polling_client(self):
+        log = self.open()
+        for index in range(1, 11):
+            log.append("download.finished", f"Game {index}", "")
+        self.clock.now += 8 * DAY  # no append for 8 days: nothing pruned them yet
+        page = log.page(since=5)
+        self.assertEqual(page, {"events": [], "latestID": 10, "more": False})
+        self.assertEqual(self.stored_titles(), [])  # the read deleted them
+        self.assertEqual(self.follow_the_documented_rule(log, 5, 2), ([], 10))
+        self.assertEqual(log.append("pc.online", "back", "")["id"], 11)
+        self.assertEqual(self.follow_the_documented_rule(log, 10, 2), ([11], 11))
+
+    def test_a_client_following_the_rule_gets_every_event_once(self):
+        log = self.open()
+        for index in range(1, 8):
+            self.clock.now = START + index * DAY / 4
+            log.append("task.finished", f"Task {index}", "")
+        self.clock.now = START + 7.6 * DAY  # events 1 and 2 have expired, 3..7 have not
+        self.assertEqual(self.follow_the_documented_rule(log, 0, 2), ([3, 4, 5, 6, 7], 7))
+        self.assertEqual(self.follow_the_documented_rule(log, 7, 2), ([], 7))
+        for limit in (1, 3, 5, 200):
+            with self.subTest(limit=limit):
+                self.assertEqual(self.follow_the_documented_rule(log, 0, limit), ([3, 4, 5, 6, 7], 7))
+
+    def test_rows_never_go_past_the_latest_id_reported_with_them(self):
+        log = self.open()
+        for index in range(10):
+            log.append("pc.online", str(index), "")
+        # As if another process appended 8..10 between reading the high-water mark and the rows.
+        with patch.object(events.EventLog, "_high_water_mark", return_value=7):
+            page = log.page(since=0, limit=200)
+            newest = log.page(limit=200)
+        self.assertEqual(([event["id"] for event in page["events"]], page["latestID"], page["more"]),
+                         (list(range(1, 8)), 7, False))
+        self.assertEqual([event["id"] for event in newest["events"]][-1], 7)
+
+    def test_failing_to_delete_expired_events_still_hides_them(self):
+        log = self.open()
+        log.append("pc.online", "old", "")
+        self.clock.now += 8 * DAY
+        with patch.object(log, "_prune", side_effect=sqlite3.OperationalError("disk full")), \
+             self.assertLogs("orbit.events", "WARNING"):
+            self.assertEqual(log.page(since=0), {"events": [], "latestID": 1, "more": False})
+        self.assertEqual(self.stored_titles(), ["old"])
+        self.assertEqual(log.page(), {"events": [], "latestID": 1, "more": False})
+        self.assertEqual(self.stored_titles(), [])
+
+    def test_reads_without_expired_events_do_not_write(self):
+        log = self.open()
+        log.append("pc.online", "fresh", "")
+        with patch.object(log, "_prune") as prune:
+            log.page()
+            log.page(since=0)
+        prune.assert_not_called()
 
     def test_concurrent_appends_get_unique_increasing_ids(self):
         log = self.open()
@@ -161,6 +254,7 @@ class EventLogTests(unittest.TestCase):
         self.path.write_bytes(b"this is not a database" * 100)
         with self.assertLogs("orbit.events", "WARNING"):
             log = self.open()
+        self.assertEqual(log.latest_id(), 0)  # below any since a client remembers: it starts again
         self.assertEqual(log.append("pc.online", "fresh", "")["id"], 1)
         self.assertTrue(self.path.with_name("events.sqlite3.corrupt").exists())
 
@@ -172,6 +266,8 @@ class EventLogTests(unittest.TestCase):
             log.append("pc.online", "t", "")
         with self.assertRaises(RuntimeError):
             log.page()
+        with self.assertRaises(RuntimeError):
+            log.latest_id()
 
 
 class EmitTests(unittest.TestCase):
@@ -308,12 +404,16 @@ class EventsRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["cache-control"], "no-store")
         body = response.json()
-        self.assertEqual(body["latestID"], 5)
+        self.assertEqual(set(body), {"events", "latestID", "more"})
+        self.assertEqual((body["latestID"], body["more"]), (5, False))
         self.assertEqual([event["id"] for event in body["events"]], [4, 5])
         self.assertEqual(body["events"][0], {"id": 4, "ts": "2026-10-23T18:00:00Z", "kind": "download.finished",
                                              "level": "active", "title": "Game 3", "body": "Done", "data": {"index": 3}})
         response = self.client.get("/api/events", params={"since": 2, "limit": 200})
         self.assertEqual([event["id"] for event in response.json()["events"]], [3, 4, 5])
+        self.assertFalse(response.json()["more"])
+        response = self.client.get("/api/events", params={"since": 1, "limit": 2})
+        self.assertEqual(([event["id"] for event in response.json()["events"]], response.json()["more"]), ([2, 3], True))
         self.assertEqual(self.client.get("/api/events").json()["latestID"], 5)
 
     def test_parameter_bounds(self):
