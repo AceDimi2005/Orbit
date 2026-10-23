@@ -34,10 +34,15 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+import orbit_alerts
+import orbit_downloads
 import orbit_events
 import orbit_input
 import orbit_links
 import orbit_notify
+import orbit_power_after
+import orbit_push
+import orbit_tasks
 from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
 from orbit_events import EventLog, create_events_router
 from orbit_processes import collect_processes, terminate_process
@@ -285,7 +290,9 @@ def telemetry_worker():
             with STATE_LOCK:
                 STATE.update(update)
                 LAST_TELEMETRY = time.monotonic()
-            record_history(status_snapshot())
+            snapshot = status_snapshot()
+            record_history(snapshot)
+            orbit_alerts.observe(snapshot)  # temperature alerts; never raises
         except Exception:
             LOGGER.exception("Telemetry sample failed")
             with STATE_LOCK:
@@ -331,6 +338,7 @@ async def lifespan(application):
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
     for thread in threads:
         thread.start()
+    stop_notification_features = start_notification_features()
     if ADVERTISEMENT is not None:
         try:
             await asyncio.to_thread(ADVERTISEMENT.start)
@@ -344,6 +352,7 @@ async def lifespan(application):
         await asyncio.to_thread(ADVERTISEMENT.close)
     for thread in threads:
         await asyncio.to_thread(thread.join, 5)
+    await asyncio.to_thread(stop_notification_features)
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
     if recorder is not None:
         recorder.close()
@@ -799,7 +808,8 @@ def run_before_power_hooks(action_name):
     def run():
         for hook in hooks:
             try:
-                hook()
+                # A hook marked `accepts_action` learns which action follows (push: restart vs sleep).
+                hook(action_name) if getattr(hook, "accepts_action", False) else hook()
             except Exception:
                 LOGGER.exception("A before-%s hook failed", action_name)
 
@@ -893,6 +903,60 @@ def perform_action(action_name):
         if typing:
             orbit_input.INPUT_LOCK.release()
     return {"status": "sent", "executed": action_name}
+
+
+# -- Notifications (DESIGN F1): alerts, downloads, watched programs, power after, instant push ----
+app.include_router(orbit_alerts.create_alerts_router(verify_token))
+app.include_router(orbit_downloads.create_downloads_router(verify_token))
+app.include_router(orbit_tasks.create_tasks_router(verify_token))
+app.include_router(orbit_power_after.create_power_after_router(verify_token, require_windows=require_windows))
+app.include_router(orbit_push.create_push_router(verify_token))
+for _feature in ("alerts", "downloads", "tasks", "powerAfter", "push"):
+    register_feature(_feature)
+BEFORE_POWER_HOOKS.append(orbit_push.planned_offline)
+
+
+def start_notification_features():
+    """Starts the F1 workers (downloads, watched programs, power after, push relay) and announces
+    pc.online. Returns a function that stops them. A failure here never stops the agent itself."""
+    stop = threading.Event()
+    workers, wakers, push = [], [], None
+
+    def stop_all():
+        stop.set()
+        for wake in wakers:
+            wake()
+        deadline = time.monotonic() + 5
+        for worker in workers:
+            worker.join(max(0.1, deadline - time.monotonic()))
+        if push is not None:
+            orbit_events.unregister_dispatcher(push.dispatch)
+        orbit_push.set_shared_service(None)
+        orbit_power_after.set_shared_service(None)
+    try:
+        orbit_downloads.set_shared_watcher(None)
+        orbit_tasks.set_shared_watcher(None)
+        downloads, tasks = orbit_downloads.shared_watcher(), orbit_tasks.shared_watcher()
+        push = orbit_push.PushService(agent_version=AGENT_VERSION, on_back_online=orbit_alerts.announce_back_online,
+                                      boot_task_installed=lambda: BOOT_MODE or orbit_push.boot_task_installed_once())
+
+        def deliver_before_power():
+            orbit_events.flush_dispatch(2.0)
+            push.flush(4.0)
+        # perform_action is looked up when the rule fires, so it is always the agent's current one.
+        power = orbit_power_after.PowerAfter(perform=lambda action: perform_action(action),
+                                             downloads=orbit_downloads.shared_watcher, tasks=orbit_tasks.shared_watcher,
+                                             before_execute=deliver_before_power)
+        tasks.add_listener(power.task_changed)
+        orbit_power_after.set_shared_service(power)
+        orbit_push.set_shared_service(push)
+        orbit_events.register_dispatcher(push.dispatch)
+        wakers.extend((power.wake, push.wake))
+        workers.extend(service.start(stop) for service in (downloads, tasks, power, push))
+        orbit_alerts.announce_online()
+    except Exception:
+        LOGGER.exception("Notifications could not start; the rest of Orbit keeps working")
+    return stop_all
 
 
 def sunshine_entries():
@@ -1387,6 +1451,7 @@ if __name__ == "__main__":
     # single-instance mutex is not visible: ask it to hand the ports over to this one.
     if not BOOT_MODE and takeover_running_instance(API_TOKEN):
         print("Took over from the boot-time Orbit Companion instance.")
+        orbit_alerts.note_handover()  # that instance already announced this boot (pc.online)
 
     CERTIFICATE_FINGERPRINT = fingerprint
     PAIRING_MANAGER = PairingManager(fingerprint, pairing_payload)
@@ -1402,6 +1467,7 @@ if __name__ == "__main__":
 
     STOP_EVENT.clear()
     tray = None
+    tray_window = False
     if BOOT_MODE:
         print("Boot-time instance: no tray icon; hands over to the signed-in companion when it starts.")
     else:
@@ -1411,12 +1477,16 @@ if __name__ == "__main__":
             token_provider=lambda: API_TOKEN,
             log_path=log_file,
             notify_on_start=("--tray" in args),
+            # Sleep, shutdown or sign-out started from Windows: no "PC offline" push (orbit_push).
+            power_listener=orbit_push.system_power_event,
         )
-        tray.start()
+        tray_window = tray.start()
         # PC toasts from features (events, Send to PC, received files) go through the tray icon.
         orbit_notify.set_notifier(tray.show_notification)
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
+    # Without the tray's window (the boot-time instance) Windows calls back on suspend and resume.
+    stop_power_watch = orbit_push.watch_suspend_resume() if not tray_window else (lambda: None)
     try:
         asyncio.run(serve_both(
             app,
@@ -1432,5 +1502,6 @@ if __name__ == "__main__":
     finally:
         STOP_EVENT.set()
         orbit_notify.set_notifier(None)
+        stop_power_watch()
         if tray is not None:
             tray.close()

@@ -25,6 +25,11 @@ MAX_LOG_BYTES = 2 * 1024 * 1024
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
 WM_QUIT = 0x0012
+WM_ENDSESSION = 0x0016
+WM_POWERBROADCAST = 0x0218
+PBT_APMSUSPEND = 0x0004
+PBT_APMRESUMESUSPEND = 0x0007
+PBT_APMRESUMEAUTOMATIC = 0x0012
 WM_SETICON = 0x0080
 WM_COMMAND = 0x0111
 WM_LBUTTONUP = 0x0202
@@ -522,9 +527,12 @@ class OrbitTrayIcon:
     def __init__(self, *, status_provider, on_stop, startup_manager=None,
                  token_provider=None, update_checker=None, update_installer=None,
                  release_page_opener=None, icon_path=ICON_PATH, log_path=None,
-                 notify_on_start=False, apis=None, boot_task=None):
+                 notify_on_start=False, apis=None, boot_task=None, power_listener=None):
         self.status_provider = status_provider
         self.on_stop = on_stop
+        # power_listener("suspend" | "resume" | "session-ending"), called on the tray thread (the
+        # hidden window is top-level, so it gets WM_POWERBROADCAST and WM_ENDSESSION).
+        self.power_listener = power_listener
         self.startup = startup_manager or StartupManager()
         self.boot_task = boot_task or BootTaskManager()
         self.token_provider = token_provider
@@ -948,8 +956,27 @@ class OrbitTrayIcon:
             if self._hicon_big:
                 user32.SendMessageW(console, WM_SETICON, ICON_BIG, self._hicon_big)
 
+    def _power_event(self, kind):
+        if not callable(self.power_listener):
+            return
+        try:
+            self.power_listener(kind)
+        except Exception:
+            LOGGER.exception("Could not handle the Windows %s message", kind)
+
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
         user32, shell32, _ = self._get_apis()
+        if msg == WM_POWERBROADCAST:
+            event = int(wparam)
+            if event == PBT_APMSUSPEND:
+                self._power_event("suspend")  # Windows waits about 2 s for this answer
+            elif event in (PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND):
+                self._power_event("resume")
+            return 1
+        if msg == WM_ENDSESSION:
+            if wparam:  # the session really ends (shutdown, restart or sign-out); FALSE means cancelled
+                self._power_event("session-ending")
+            return 0
         if msg == WM_TRAYICON:
             event = int(lparam) & 0xFFFF
             if event in (WM_RBUTTONUP, WM_LBUTTONUP, WM_CONTEXTMENU, NIN_SELECT, NIN_KEYSELECT):
