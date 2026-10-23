@@ -167,22 +167,7 @@ struct OrbitPowerRule: Decodable, Equatable {
 
 struct OrbitPowerAfter: Decodable { var rule: OrbitPowerRule? }
 
-struct OrbitPowerAfterRequest: Encodable {
-    var trigger: String
-    var action: String
-    var delaySeconds: Int
-    var taskID: String?
-
-    // `taskID: null` is part of the contract, so encode it even when nil.
-    enum CodingKeys: String, CodingKey { case trigger, action, delaySeconds, taskID }
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(trigger, forKey: .trigger)
-        try container.encode(action, forKey: .action)
-        try container.encode(delaySeconds, forKey: .delaySeconds)
-        if let taskID { try container.encode(taskID, forKey: .taskID) } else { try container.encodeNil(forKey: .taskID) }
-    }
-}
+// OrbitPowerAfterRequest (PUT /api/power/after) is defined once in Shared/OrbitIntentModels.swift.
 
 struct OrbitPushRegistration: Encodable {
     var deviceID: String
