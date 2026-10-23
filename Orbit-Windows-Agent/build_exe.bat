@@ -64,6 +64,8 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "orbit_tls" ^
     --hidden-import "orbit_tray" ^
     --hidden-import "orbit_updater" ^
+    --hidden-import "orbit_webcam" ^
+    --add-data "webcam;webcam" ^
     orbit_agent.py
 
 if errorlevel 1 (

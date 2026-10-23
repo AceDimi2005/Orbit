@@ -13,7 +13,7 @@ class FeatureWiringTests(unittest.TestCase):
         paths = ("/api/files/roots", "/api/clipboard", "/api/audio/sessions", "/api/history/sessions", "/api/events",
                  "/api/alerts", "/api/downloads", "/api/tasks", "/api/power/after", "/api/push/status",
                  "/api/energy/price", "/api/energy/settings", "/api/energy/summary", "/api/summary",
-                 "/api/presentation", "/api/presentation/slide.png")
+                 "/api/presentation", "/api/presentation/slide.png", "/api/webcam")
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)
@@ -28,14 +28,16 @@ class FeatureWiringTests(unittest.TestCase):
         posts = (("/api/input/hotkey", {"keys": ["alt", "f10"]}), ("/api/open-url", {"url": "https://example.com"}),
                  ("/api/tasks", {"pid": 4, "createTime": 1.0, "mode": "exit"}),
                  ("/api/push/register", {"deviceID": "A", "apnsToken": "ab" * 32, "environment": "sandbox", "key": "A" * 44}),
-                 ("/api/presentation/next", {}), ("/api/presentation/goto", {"slide": 2}))
+                 ("/api/presentation/next", {}), ("/api/presentation/goto", {"slide": 2}),
+                 ("/api/webcam/install", None), ("/api/webcam/uninstall", None))
         puts = (("/api/energy/price", {"pricePerKWh": 1.07, "currency": "RON"}), ("/api/energy/settings", {"baseWatts": 70}))
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)
         with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"), \
              patch.object(agent.orbit_input, "press_chord") as press, patch.object(agent.orbit_links, "open_url") as opened, \
-             patch.object(agent.orbit_presentation, "_load_comtypes") as com:
+             patch.object(agent.orbit_presentation, "_load_comtypes") as com, \
+             patch.object(agent.orbit_webcam.INSTALLER, "start") as webcam_setup:
             for path, body in posts:
                 with self.subTest(path=path):
                     self.assertEqual(client.post(path, json=body).status_code, 401)
@@ -51,6 +53,7 @@ class FeatureWiringTests(unittest.TestCase):
             press.assert_not_called()
             opened.assert_not_called()
             com.assert_not_called()
+            webcam_setup.assert_not_called()
 
     def test_deck_routes_require_main_token_and_https_before_doing_anything(self):
         routes = (("get", "/api/deck", None), ("put", "/api/deck", {"buttons": []}),
@@ -94,7 +97,8 @@ class FeatureWiringTests(unittest.TestCase):
                     body = response.json()
                     self.assertEqual(body["agentVersion"], agent.AGENT_VERSION)
                     self.assertTrue({"events", "hotkeys", "openUrl", "alerts", "downloads", "tasks", "powerAfter", "push",
-                                     "energy", "summary", "presentation"} <= set(body["features"]))
+                                     "energy", "summary", "presentation",
+                                     "webcam"} <= set(body["features"]))
                     self.assertEqual(len(body["features"]), len(set(body["features"])))
 
     def test_every_new_module_is_bundled_into_the_standalone_exe(self):
@@ -103,9 +107,12 @@ class FeatureWiringTests(unittest.TestCase):
         for module in ("orbit_capabilities", "orbit_settings", "orbit_notify", "orbit_input", "orbit_events", "orbit_links",
                        "orbit_alerts", "orbit_downloads", "orbit_tasks", "orbit_power_after", "orbit_push",
                        "orbit_energy", "orbit_summary",
-                       "orbit_presentation", "comtypes.client.dynamic", "comtypes.client.lazybind"):
+                       "orbit_presentation", "comtypes.client.dynamic", "comtypes.client.lazybind",
+                       "orbit_webcam"):
             with self.subTest(module=module):
                 self.assertIn(f'--hidden-import "{module}"', script)
+        # The webcam DLLs live in a subfolder, which a one-file build only has when it is bundled.
+        self.assertIn('--add-data "webcam;webcam"', script)
 
     def test_stream_display_routes_need_main_token_and_https_and_are_bundled(self):
         from pathlib import Path

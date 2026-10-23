@@ -1,0 +1,17 @@
+Softcam (DirectShow virtual camera) built for Orbit's iPhone webcam
+Upstream: https://github.com/tshino/softcam
+Tag: v1.8.1
+Commit: afb424c2415b04da627fa1a7b4706575c2ba3010
+License: MIT, softcam (see LICENSE)
+License: MIT, DirectShow BaseClasses by Microsoft, linked into the DLLs (see LICENSE-BaseClasses)
+Build: msbuild softcam.sln /p:Configuration=Release for /p:Platform=x64 and /p:Platform=Win32
+Minimum Visual C++ runtime: 14.44 (x64 and x86 Visual C++ v14 Redistributable at least this version; the MSVC linker version stamped in the DLLs)
+Platform toolset: v143 (softcam default)
+MSVC tools: 14.44.35207
+Visual Studio: 18.11.1; MSBuild 18.11.1.51303
+Runner image: win25-vs2026 20261021.278.1
+Orbit commit: 8157ec7ed775dcfa0ccbe7e306b46aa965adc402
+Workflow run: https://github.com/AceDimi2005/Orbit/actions/runs/40023909188
+
+softcam64.dll: x64 (PE32+) DLL; linker 14.44; exports DllCanUnloadNow, DllGetClassObject, DllMain, DllRegisterServer, DllUnregisterServer, scCreateCamera, scDeleteCamera, scIsConnected, scSendFrame, scWaitForConnection; imports KERNEL32.dll, ole32.dll, MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, WINMM.dll, ADVAPI32.dll, api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-convert-l1-1-0.dll
+softcam32.dll: x86 (PE32) DLL; linker 14.44; exports DllCanUnloadNow, DllGetClassObject, DllMain, DllRegisterServer, DllUnregisterServer, scCreateCamera, scDeleteCamera, scIsConnected, scSendFrame, scWaitForConnection; imports KERNEL32.dll, ole32.dll, MSVCP140.dll, VCRUNTIME140.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, WINMM.dll, ADVAPI32.dll, api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-convert-l1-1-0.dll

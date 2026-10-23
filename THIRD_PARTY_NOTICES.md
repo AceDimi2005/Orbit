@@ -15,6 +15,7 @@ Not included in the apps, but used by them:
 - [Sunshine](https://github.com/LizardByte/Sunshine) by LizardByte (GPLv3) runs on the Windows PC and provides the game stream. Download: https://app.lizardbyte.dev/Sunshine/
 - [Moonlight](https://moonlight-stream.org) by the Moonlight Game Streaming Project (GPLv3) is the reference client; Orbit can hand a stream over to it on macOS.
 - Orbit Windows Agent (this repository, `Orbit-Windows-Agent/`, Python) is the telemetry and control companion.
+- The agent's iPhone webcam uses [Softcam](https://github.com/tshino/softcam) by tshino (MIT), which links Microsoft's DirectShow BaseClasses (MIT). Both run only on the PC; their notices are in `Orbit-Windows-Agent/THIRD_PARTY_NOTICES.md`.
 
 Orbit, Sunshine and Moonlight are independent projects; Orbit is not affiliated with or endorsed by the Moonlight project, LizardByte, NVIDIA or Apple.
 

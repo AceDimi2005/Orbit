@@ -45,6 +45,7 @@ import orbit_power_after
 import orbit_push
 import orbit_tasks
 import orbit_summary
+import orbit_webcam
 from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
 from orbit_deck import create_deck_router
 from orbit_events import EventLog, create_events_router
@@ -1351,6 +1352,11 @@ import orbit_presentation  # noqa: E402  (kept next to its wiring)
 app.include_router(orbit_presentation.create_presentation_router(
     verify_token, require_https, require_windows, boot_mode=lambda: BOOT_MODE))
 register_feature("presentation")
+
+# iPhone as a webcam: GET /api/webcam, POST /api/webcam/install, WS /ws/camera (orbit_webcam.py).
+app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_windows, authorized,
+                                                     boot_mode=lambda: BOOT_MODE))
+register_feature("webcam")
 
 
 @app.post("/api/internal/handover")

@@ -1,0 +1,2 @@
+# Byte-exact on every checkout (core.autocrlf on Windows too): SHA256SUMS pins these files as built.
+* -text
