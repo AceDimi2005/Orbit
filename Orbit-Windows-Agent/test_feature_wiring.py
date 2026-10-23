@@ -12,7 +12,8 @@ class FeatureWiringTests(unittest.TestCase):
     def test_new_routes_require_main_token_and_https(self):
         paths = ("/api/files/roots", "/api/clipboard", "/api/audio/sessions", "/api/history/sessions", "/api/events",
                  "/api/alerts", "/api/downloads", "/api/tasks", "/api/power/after", "/api/push/status",
-                 "/api/energy/price", "/api/energy/settings", "/api/energy/summary", "/api/summary")
+                 "/api/energy/price", "/api/energy/settings", "/api/energy/summary", "/api/summary",
+                 "/api/presentation", "/api/presentation/slide.png")
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)
@@ -26,13 +27,15 @@ class FeatureWiringTests(unittest.TestCase):
     def test_new_actions_require_main_token_and_https_before_doing_anything(self):
         posts = (("/api/input/hotkey", {"keys": ["alt", "f10"]}), ("/api/open-url", {"url": "https://example.com"}),
                  ("/api/tasks", {"pid": 4, "createTime": 1.0, "mode": "exit"}),
-                 ("/api/push/register", {"deviceID": "A", "apnsToken": "ab" * 32, "environment": "sandbox", "key": "A" * 44}))
+                 ("/api/push/register", {"deviceID": "A", "apnsToken": "ab" * 32, "environment": "sandbox", "key": "A" * 44}),
+                 ("/api/presentation/next", {}), ("/api/presentation/goto", {"slide": 2}))
         puts = (("/api/energy/price", {"pricePerKWh": 1.07, "currency": "RON"}), ("/api/energy/settings", {"baseWatts": 70}))
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)
         with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"), \
-             patch.object(agent.orbit_input, "press_chord") as press, patch.object(agent.orbit_links, "open_url") as opened:
+             patch.object(agent.orbit_input, "press_chord") as press, patch.object(agent.orbit_links, "open_url") as opened, \
+             patch.object(agent.orbit_presentation, "_load_comtypes") as com:
             for path, body in posts:
                 with self.subTest(path=path):
                     self.assertEqual(client.post(path, json=body).status_code, 401)
@@ -47,6 +50,7 @@ class FeatureWiringTests(unittest.TestCase):
                     self.assertEqual(client.put(path, json=body, headers={"Authorization": f"Bearer {token}"}).status_code, 426)
             press.assert_not_called()
             opened.assert_not_called()
+            com.assert_not_called()
 
     def test_deck_routes_require_main_token_and_https_before_doing_anything(self):
         routes = (("get", "/api/deck", None), ("put", "/api/deck", {"buttons": []}),
@@ -90,7 +94,7 @@ class FeatureWiringTests(unittest.TestCase):
                     body = response.json()
                     self.assertEqual(body["agentVersion"], agent.AGENT_VERSION)
                     self.assertTrue({"events", "hotkeys", "openUrl", "alerts", "downloads", "tasks", "powerAfter", "push",
-                                     "energy", "summary"} <= set(body["features"]))
+                                     "energy", "summary", "presentation"} <= set(body["features"]))
                     self.assertEqual(len(body["features"]), len(set(body["features"])))
 
     def test_every_new_module_is_bundled_into_the_standalone_exe(self):
@@ -98,7 +102,8 @@ class FeatureWiringTests(unittest.TestCase):
         script = (Path(agent.__file__).resolve().parent / "build_exe.bat").read_text(encoding="utf-8")
         for module in ("orbit_capabilities", "orbit_settings", "orbit_notify", "orbit_input", "orbit_events", "orbit_links",
                        "orbit_alerts", "orbit_downloads", "orbit_tasks", "orbit_power_after", "orbit_push",
-                       "orbit_energy", "orbit_summary"):
+                       "orbit_energy", "orbit_summary",
+                       "orbit_presentation", "comtypes.client.dynamic", "comtypes.client.lazybind"):
             with self.subTest(module=module):
                 self.assertIn(f'--hidden-import "{module}"', script)
 
