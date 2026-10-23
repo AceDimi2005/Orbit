@@ -1,0 +1,55 @@
+# Orbit push relay (Cloudflare Worker + one SQLite-backed Durable Object per PC).
+# Deploy steps: README.md. HTTP contract: PROTOCOL.md.
+#
+# No secrets in this file. Set them with:
+#   npx wrangler secret put APNS_KEY_P8     (the whole .p8 file, PEM)
+#   npx wrangler secret put APNS_KEY_ID     (10-character Key ID)
+#   npx wrangler secret put APNS_TEAM_ID    (10-character Team ID)
+# Optional, only if your production key cannot sign sandbox pushes:
+#   npx wrangler secret put APNS_SANDBOX_KEY_P8
+#   npx wrangler secret put APNS_SANDBOX_KEY_ID
+
+name = "orbit-push-relay"
+main = "src/index.js"
+# Durable Object RPC needs 2024-04-03 or later.
+compatibility_date = "2026-03-01"
+workers_dev = true
+
+[vars]
+# APNs topic = the iOS app's bundle id.
+APNS_TOPIC = "com.dimitrie.orbit"
+# Channels whose PC has been offline (or planned offline) this many days are
+# deleted with their device tokens. "0" keeps them forever.
+RETENTION_DAYS = "90"
+
+[[durable_objects.bindings]]
+name = "CHANNELS"
+class_name = "Channel"
+
+# SQLite-backed Durable Objects are the ones available on the Workers Free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Channel"]
+
+# Approximate per-IP limits, counted per Cloudflare location (needs Wrangler
+# 4.36 or newer). namespace_id only has to be unique within your account.
+[[ratelimits]]
+name = "CREATE_LIMITER"
+namespace_id = "7101"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[ratelimits]]
+name = "API_LIMITER"
+namespace_id = "7102"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+# Request logs are off: the relay does not keep IP addresses or request logs.
+# Use "npx wrangler tail" to watch live logs while debugging.
+[observability]
+enabled = false
