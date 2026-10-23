@@ -1,0 +1,52 @@
+name: Companion tests
+
+# Runs the Windows agent's unit tests (Orbit-Windows-Agent/test_*.py) on Windows, where the agent
+# really runs, and on Linux, which matches the macOS runs during development. The tests mock every
+# Windows API that changes something: nothing touches power, the screen or the network beyond pip.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Orbit-Windows-Agent/**"
+      - ".github/workflows/companion-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Check out Orbit
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            Orbit-Windows-Agent/requirements.txt
+            Orbit-Windows-Agent/requirements-dev.txt
+
+      - name: Install the agent's dependencies
+        run: python -m pip install --disable-pip-version-check -r Orbit-Windows-Agent/requirements-dev.txt
+
+      - name: Show the installed versions
+        run: python -m pip freeze --all
+
+      - name: Unit tests
+        run: python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
