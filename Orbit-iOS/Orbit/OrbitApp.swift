@@ -3,6 +3,9 @@ import SwiftUI
 
 @main
 struct OrbitApp: App {
+    /// APNs token and notification taps/actions for PC alerts (`OrbitNotifications.swift`).
+    @UIApplicationDelegateAdaptor(OrbitAppDelegate.self) private var appDelegate
+
     init() {
         #if DEBUG
         if let mode = ProcessInfo.processInfo.environment["ORBIT_IDENTITY_SELFTEST"] { OrbitIdentitySelfTest.run(mode: mode) }

@@ -228,7 +228,9 @@ enum OrbitBackgroundRefresh {
             guard let refresh = task as? BGAppRefreshTask else { task.setTaskCompleted(success: false); return }
             schedule()
             let work = Task { @MainActor in
-                let ok = await handler?() ?? false
+                // Without a view model (a background launch with no scene yet) only the alerts poll runs.
+                let ok: Bool
+                if let handler { ok = await handler() } else { ok = await OrbitEventPoller.shared.backgroundCheck() }
                 refresh.setTaskCompleted(success: ok)
             }
             refresh.expirationHandler = { work.cancel(); refresh.setTaskCompleted(success: false) }
@@ -539,17 +541,20 @@ final class OrbitViewModel: ObservableObject {
     }
     func setAppActive(_ active: Bool) {
         appActive = active
+        OrbitEventPoller.shared.setAppActive(active)
         if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else {
             monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed()
             activity.enterBackground()
-            if activity.isActive { OrbitBackgroundRefresh.schedule() }
+            if activity.isActive || OrbitNotificationPreferences.needsBackgroundRefresh { OrbitBackgroundRefresh.schedule() }
         }
     }
 
-    /// One poll while iOS runs Orbit in the background (BGAppRefreshTask): refreshes the Live
-    /// Activity and the widget snapshot cache. iOS decides when (and whether) this runs.
+    /// One poll while iOS runs Orbit in the background (BGAppRefreshTask): checks the selected PC for
+    /// alerts the pushes didn't deliver, then refreshes the Live Activity and the widget snapshot cache.
+    /// iOS decides when (and whether) this runs.
     func backgroundRefresh() async -> Bool {
-        guard !isDemoMode, isConfigured, activity.isActive else { return false }
+        let polledAlerts = await OrbitEventPoller.shared.backgroundCheck()
+        guard !isDemoMode, isConfigured, activity.isActive else { return polledAlerts }
         let version = generation
         do {
             let data = try await request("/api/status")

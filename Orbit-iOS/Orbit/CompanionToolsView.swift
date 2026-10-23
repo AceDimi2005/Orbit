@@ -11,6 +11,7 @@ struct CompanionToolsView: View {
     @State private var showsStreamSettings = false
     @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
+    @AppStorage(OrbitNotificationPreferences.enabledKey) private var notificationsEnabled = false
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 165, maximum: 340), spacing: 12)]
@@ -59,6 +60,14 @@ struct CompanionToolsView: View {
                             }
                             NavigationLink { PCProfilesView(vm: vm) } label: {
                                 toolTile("My PCs", subtitle: "\(vm.savedPCs.count) saved connection\(vm.savedPCs.count == 1 ? "" : "s")", icon: "desktopcomputer", tint: theme.accent)
+                            }
+                        }
+
+                        OrbitSectionHeader("Automation", icon: "bolt.badge.clock.fill")
+                        LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { NotificationsSettingsView(vm: vm) } label: {
+                                toolTile("Notifications", subtitle: "Downloads, heat & sleep", icon: "bell.badge.fill", tint: .red,
+                                         badge: notificationsEnabled ? "ON" : nil)
                             }
                         }
 

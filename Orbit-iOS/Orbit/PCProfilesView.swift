@@ -366,6 +366,7 @@ extension OrbitViewModel {
         Task { await connect() }
     }
     func removePC(_ profile: SavedPC) {
+        OrbitPushRegistrar.shared.forget(profile)
         try? OrbitWidgetConnectionStore.remove(id: profile.id)
         PCProfileStore.removeToken(profile.id)
         savedPCs.removeAll { $0.id == profile.id }; PCProfileStore.save(savedPCs)

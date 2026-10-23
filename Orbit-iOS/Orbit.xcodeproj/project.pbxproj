@@ -7,6 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A80000000000000000000102 /* OrbitPushStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000112 /* OrbitPushStore.swift */; };
+		A2000000000000000000010B /* OrbitPushStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000112 /* OrbitPushStore.swift */; };
+		A80000000000000000000101 /* OrbitPushCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000111 /* OrbitPushCrypto.swift */; };
+		A2000000000000000000010A /* OrbitPushCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000111 /* OrbitPushCrypto.swift */; };
+		A80000000000000000000100 /* OrbitEventFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000110 /* OrbitEventFeed.swift */; };
+		A60000000000000000000101 /* OrbitEventFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000110 /* OrbitEventFeed.swift */; };
+		A20000000000000000000109 /* OrbitEventFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000110 /* OrbitEventFeed.swift */; };
+		A60000000000000000000100 /* OrbitMacPCAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010F /* OrbitMacPCAlerts.swift */; };
+		A20000000000000000000108 /* OrbitNotifySelfTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010E /* OrbitNotifySelfTest.swift */; };
+		A20000000000000000000107 /* OrbitNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010D /* OrbitNotifications.swift */; };
+		A20000000000000000000106 /* NotificationsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010C /* NotificationsSettingsView.swift */; };
 		A40000000000000000000100 /* OrbitPowerIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010B /* OrbitPowerIntents.swift */; };
 		A30000000000000000000100 /* OrbitPowerIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010B /* OrbitPowerIntents.swift */; };
 		A20000000000000000000105 /* OrbitPowerIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000010B /* OrbitPowerIntents.swift */; };
@@ -222,6 +233,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000112 /* OrbitPushStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPushStore.swift; sourceTree = "<group>"; };
+		B20000000000000000000111 /* OrbitPushCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPushCrypto.swift; sourceTree = "<group>"; };
+		B20000000000000000000110 /* OrbitEventFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitEventFeed.swift; sourceTree = "<group>"; };
+		B2000000000000000000010F /* OrbitMacPCAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacPCAlerts.swift; sourceTree = "<group>"; };
+		B2000000000000000000010E /* OrbitNotifySelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitNotifySelfTest.swift; sourceTree = "<group>"; };
+		B2000000000000000000010D /* OrbitNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitNotifications.swift; sourceTree = "<group>"; };
+		B2000000000000000000010C /* NotificationsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsSettingsView.swift; sourceTree = "<group>"; };
 		B2000000000000000000010B /* OrbitPowerIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPowerIntents.swift; sourceTree = "<group>"; };
 		B2000000000000000000010A /* OrbitPCIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPCIntents.swift; sourceTree = "<group>"; };
 		B20000000000000000000109 /* OrbitPCEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPCEntity.swift; sourceTree = "<group>"; };
@@ -435,6 +453,9 @@
 				B10000000000000000000007 /* Info.plist */,
 				B20000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				B20000000000000000000105 /* OrbitShortcutsSupport.swift */,
+				B2000000000000000000010C /* NotificationsSettingsView.swift */,
+				B2000000000000000000010D /* OrbitNotifications.swift */,
+				B2000000000000000000010E /* OrbitNotifySelfTest.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -487,6 +508,9 @@
 				B20000000000000000000109 /* OrbitPCEntity.swift */,
 				B2000000000000000000010A /* OrbitPCIntents.swift */,
 				B2000000000000000000010B /* OrbitPowerIntents.swift */,
+				B20000000000000000000110 /* OrbitEventFeed.swift */,
+				B20000000000000000000111 /* OrbitPushCrypto.swift */,
+				B20000000000000000000112 /* OrbitPushStore.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -561,6 +585,7 @@
 				B60000000000000000000014 /* Info.plist */,
 				B60000000000000000000016 /* OrbitMac.entitlements */,
 				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
+				B2000000000000000000010F /* OrbitMacPCAlerts.swift */,
 			);
 			path = OrbitMac;
 			sourceTree = "<group>";
@@ -866,6 +891,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2000000000000000000010B /* OrbitPushStore.swift in Sources */,
+				A2000000000000000000010A /* OrbitPushCrypto.swift in Sources */,
+				A20000000000000000000109 /* OrbitEventFeed.swift in Sources */,
+				A20000000000000000000108 /* OrbitNotifySelfTest.swift in Sources */,
+				A20000000000000000000107 /* OrbitNotifications.swift in Sources */,
+				A20000000000000000000106 /* NotificationsSettingsView.swift in Sources */,
 				A20000000000000000000105 /* OrbitPowerIntents.swift in Sources */,
 				A20000000000000000000104 /* OrbitPCIntents.swift in Sources */,
 				A20000000000000000000103 /* OrbitPCEntity.swift in Sources */,
@@ -974,6 +1005,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000101 /* OrbitEventFeed.swift in Sources */,
+				A60000000000000000000100 /* OrbitMacPCAlerts.swift in Sources */,
 				A60000000000000000000001 /* OrbitMacApp.swift in Sources */,
 				A60000000000000000000002 /* OrbitMacModels.swift in Sources */,
 				A60000000000000000000003 /* OrbitMacDesign.swift in Sources */,
@@ -1026,6 +1059,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A80000000000000000000102 /* OrbitPushStore.swift in Sources */,
+				A80000000000000000000101 /* OrbitPushCrypto.swift in Sources */,
+				A80000000000000000000100 /* OrbitEventFeed.swift in Sources */,
 				A80000000000000000000001 /* NotificationService.swift in Sources */,
 				A80000000000000000000003 /* OrbitError.swift in Sources */,
 			);

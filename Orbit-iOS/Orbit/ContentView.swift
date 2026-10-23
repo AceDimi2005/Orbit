@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var isShowingProFromURL = false
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
+    @ObservedObject private var notificationRouter = OrbitNotificationRouter.shared
     @AppStorage("orbit.theme") private var rootTheme: OrbitTheme = .noir
     @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -71,6 +72,9 @@ struct ContentView: View {
         .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in OrbitProLockdown.enforce() }
         .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in OrbitProLockdown.enforce() }
         .sheet(isPresented: $isShowingProFromURL) { OrbitProPaywallView() }
+        .sheet(isPresented: $notificationRouter.showsNotifications) {
+            NavigationStack { NotificationsSettingsView(vm: vm, showsDoneButton: true) }
+        }
         .onOpenURL { url in
             guard url.scheme?.lowercased() == "orbit" else { return }
             switch url.host?.lowercased() {
@@ -79,6 +83,7 @@ struct ContentView: View {
             case "library": selectedTab = 1
             case "settings": selectedTab = 3
             case "files": selectedTab = 4
+            case "notifications": OrbitNotificationRouter.shared.showsNotifications = true
             case "wake":
                 selectedTab = 0
                 Task { await vm.wakePC() }
@@ -2177,6 +2182,10 @@ struct SettingsView: View {
                     }
                     NavigationLink { LiveActivitySettingsView(vm: vm) } label: {
                         settingsRow("Dynamic Island & Live Activity", icon: "capsule.portrait.tophalf.filled", tint: .mint, detail: vm.isDynamicIslandActive ? "Active" : "Off")
+                    }
+                    NavigationLink { NotificationsSettingsView(vm: vm) } label: {
+                        settingsRow("Notifications & PC Alerts", icon: "bell.badge.fill", tint: .red,
+                                    detail: UserDefaults.standard.bool(forKey: OrbitNotificationPreferences.enabledKey) ? "On" : "Off")
                     }
                     NavigationLink { WidgetHelpView(vm: vm) } label: {
                         settingsRow("Widgets, Control Center & Siri", icon: "square.grid.2x2.fill", tint: .orange)
