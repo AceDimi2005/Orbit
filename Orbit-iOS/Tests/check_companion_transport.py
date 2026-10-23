@@ -41,11 +41,6 @@ def redirect():
 SWIFT = r'''
 import Foundation
 import CryptoKit
-struct OrbitError: LocalizedError {
-    let message: String
-    var statusCode: Int? = nil
-    var errorDescription: String? { message }
-}
 private struct Status: Decodable { var agentVersion: String? }
 private struct FilePage: Decodable { var total: Int }
 private struct UploadReply: Decodable { var name: String; var sizeBytes: Int }
@@ -114,7 +109,9 @@ def main():
         swift = root / "Check.swift"
         swift.write_text(SWIFT)
         binary = root / "check"
-        subprocess.run(["swiftc", "-parse-as-library", str(ROOT / "Orbit-iOS/Orbit/OrbitAPIClient.swift"), str(swift), "-o", str(binary)], check=True)
+        # The production client and its production error type, nothing else from the app.
+        subprocess.run(["swiftc", "-parse-as-library", str(ROOT / "Orbit-iOS/Orbit/OrbitAPIClient.swift"),
+                        str(ROOT / "Orbit-iOS/Shared/OrbitError.swift"), str(swift), "-o", str(binary)], check=True)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]

@@ -106,5 +106,6 @@ precondition(history.series(for: .cpuLoad).isEmpty)
 print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address, legacy PC profiles and bounded telemetry history with missing/invalid/offline readings")
 ''')
     binary = temporary / "protocol-check"
-    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPCSync.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
+    # WakeOnLANService throws OrbitError, which lives in Shared/OrbitError.swift.
+    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPCSync.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitError.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary), str(temporary)], check=True)
