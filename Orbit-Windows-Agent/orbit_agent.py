@@ -1227,6 +1227,14 @@ async def websocket_video_stream(websocket: WebSocket):
             pass
 
 
+# Presentation remote: PowerPoint over COM, other presenters by keys (orbit_presentation.py).
+import orbit_presentation  # noqa: E402  (kept next to its wiring)
+
+app.include_router(orbit_presentation.create_presentation_router(
+    verify_token, require_https, require_windows, boot_mode=lambda: BOOT_MODE))
+register_feature("presentation")
+
+
 @app.post("/api/internal/handover")
 def api_handover(request: Request, authorization: str = Header(None)):
     """Asks this instance to exit so another one on the same PC can take the ports.
