@@ -222,6 +222,7 @@ final class OrbitMacViewModel: ObservableObject {
             Task { @MainActor in await self?.syncFromiPhone(silent: true) }
         }
         startPolling()
+        MacPCAlertPoller.shared.start(with: self)
         Task { await syncFromiPhone(silent: true) }
     }
 

@@ -5,6 +5,7 @@ struct TaskManagerView: View {
     @State private var search = ""
     @State private var sortOrder: ProcessSortOrder = .memory
     @State private var selectedProcess: PCProcess?
+    @ObservedObject private var featureStore = OrbitFeatureStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     private var sortedProcesses: [PCProcess] {
@@ -88,7 +89,7 @@ struct TaskManagerView: View {
                                     message: search.isEmpty ? "Keep Orbit Agent running on your PC." : "Try another name or PID.",
                                     tint: .orange)
                 } else {
-                    ForEach(sortedProcesses) { process in processRow(process) }
+                    ForEach(sortedProcesses) { process in processRow(process).contextMenu { watchMenu(for: process) } }
                 }
             }
             .orbitRow()
@@ -109,6 +110,7 @@ struct TaskManagerView: View {
         .refreshable { await vm.fetchProcesses() }
         .task(id: vm.connectionID) {
             vm.prepareAppIcons()
+            if let link = OrbitPCLink.current(vm) { _ = try? await featureStore.features(for: link) }
             while !Task.isCancelled {
                 if scenePhase == .active { await vm.fetchProcesses() }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
@@ -127,6 +129,37 @@ struct TaskManagerView: View {
             Button("Cancel", role: .cancel) { selectedProcess = nil }
         } message: {
             Text("Stops the selected process on your PC. Unsaved work may be lost.")
+        }
+    }
+
+    /// "Notify Me When It Finishes" / "Sleep When It Finishes" (PC alerts, agents with `tasks`).
+    @ViewBuilder
+    private func watchMenu(for process: PCProcess) -> some View {
+        let features = featureStore.cached(vm.selectedPCID)
+        if vm.isDemoMode || features.has("tasks") {
+            Menu {
+                Button("When It Closes", systemImage: "xmark.app") { watch(process, mode: "exit", sleepAfter: false) }
+                Button("When It Goes Idle", systemImage: "hourglass") { watch(process, mode: "idle", sleepAfter: false) }
+            } label: {
+                Label("Notify Me When It Finishes", systemImage: "bell.badge")
+            }
+            if vm.isDemoMode || features.has("powerAfter") {
+                Menu {
+                    Button("When It Closes", systemImage: "xmark.app") { watch(process, mode: "exit", sleepAfter: true) }
+                    Button("When It Goes Idle", systemImage: "hourglass") { watch(process, mode: "idle", sleepAfter: true) }
+                } label: {
+                    Label("Sleep When It Finishes", systemImage: "moon.zzz")
+                }
+            }
+        }
+    }
+
+    private func watch(_ process: PCProcess, mode: String, sleepAfter: Bool) {
+        OrbitHaptics.press()
+        Task {
+            let result = await OrbitTaskWatch.watch(process, mode: mode, sleepAfter: sleepAfter, vm: vm)
+            if result.ok { vm.processActionStatus = result.message; vm.processesError = nil; OrbitHaptics.success() }
+            else { vm.processesError = result.message; OrbitHaptics.error() }
         }
     }
 

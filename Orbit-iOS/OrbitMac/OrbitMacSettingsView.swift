@@ -86,6 +86,7 @@ private struct MacSettingsGeneralTab: View {
             menuBarSection
             telemetrySection
             notificationSection
+            MacPCAlertsSettingsSection()
             controlSection
             dataSection
         }
