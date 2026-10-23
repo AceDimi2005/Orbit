@@ -89,6 +89,7 @@ ID_EXIT = 1006
 ID_CHECK_UPDATES = 1007
 ID_TOGGLE_BOOT = 1008
 ID_STREAM_DISPLAY_SETUP = 1021  # "Set up full-screen streaming…" (orbit_stream_display)
+ID_ELECTRICITY_PRICE = 1061
 
 BOOT_TASK_NAME = "Orbit PC Companion (boot)"
 
@@ -628,6 +629,7 @@ class OrbitTrayIcon:
             {"id": ID_COPY_TOKEN, "label": "Copy manual pairing token", "enabled": bool(self.token_provider), "checked": False},
             {"id": ID_STREAM_DISPLAY_SETUP, "label": "Set up full-screen streaming…", "enabled": True, "checked": False},
         ])
+        items.append({"id": ID_ELECTRICITY_PRICE, "label": "Electricity price...", "enabled": True, "checked": False})
         if self.log_path and self.log_path.is_file():
             items.append({"id": ID_OPEN_LOG, "label": "Open agent log", "enabled": True, "checked": False})
         items.extend([
@@ -708,7 +710,22 @@ class OrbitTrayIcon:
         if command_id == ID_EXIT:
             self.request_stop()
             return "stopped"
+        if command_id == ID_ELECTRICITY_PRICE:
+            self.show_electricity_price()
+            return "electricity_price_shown"
         return None
+
+    def show_electricity_price(self):
+        """Country, price per kWh and its source, and how to change it from the phone (orbit_energy)."""
+        try:
+            import orbit_energy
+            title, text = orbit_energy.tray_price_message()
+        except Exception:
+            LOGGER.exception("Could not read the electricity price")
+            title = "Orbit · Electricity price"
+            text = ("Orbit could not read the electricity price on this PC right now.\n\n"
+                    "You can see and change it in Orbit on your iPhone: Tools > Electricity Cost.")
+        self._async_message_box(text, title, 0x00040040)
 
     def perform_update_check(self):
         """Run a synchronous GitHub update check and handle the interactive dialog."""

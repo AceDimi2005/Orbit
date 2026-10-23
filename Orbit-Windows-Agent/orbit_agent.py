@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 import orbit_alerts
 import orbit_downloads
+import orbit_energy
 import orbit_events
 import orbit_input
 import orbit_links
@@ -43,6 +44,7 @@ import orbit_notify
 import orbit_power_after
 import orbit_push
 import orbit_tasks
+import orbit_summary
 from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
 from orbit_deck import create_deck_router
 from orbit_events import EventLog, create_events_router
@@ -320,6 +322,8 @@ def record_history(metrics):
             recorder.record_sample(metrics)
         except Exception:
             LOGGER.exception("Could not save this session sample")
+    # Energy ledger and monthly summary (every tick, also without a history session; never raises).
+    orbit_energy.record_tick(metrics)
 
 
 @asynccontextmanager
@@ -335,6 +339,7 @@ async def lifespan(application):
         LOGGER.exception("The event log could not be opened; notifications from this PC are unavailable")
         event_log = None
     orbit_events.set_event_log(event_log)
+    orbit_energy.start(extra_trackers=(orbit_summary.GameTracker,), boot_mode=BOOT_MODE)
     STOP_EVENT.clear()
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
     for thread in threads:
@@ -357,6 +362,7 @@ async def lifespan(application):
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
     if recorder is not None:
         recorder.close()
+    await asyncio.to_thread(orbit_energy.stop)
     orbit_events.set_event_log(None)
     await asyncio.to_thread(orbit_events.flush_dispatch, 2.0)
     if event_log is not None:
@@ -367,7 +373,8 @@ app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=
               docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
-app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
+app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER,
+                                         detail_extras=orbit_energy.session_energy_extras))
 app.include_router(create_pairing_router(lambda: PAIRING_MANAGER))
 app.include_router(create_events_router(verify_token, orbit_events.current_log))
 register_feature("events")
@@ -787,6 +794,12 @@ def open_url_on_pc(body: OpenURLBody):
 
 
 register_feature("openUrl")
+
+# Electricity cost (orbit_energy) and the monthly summary (orbit_summary) share the energy ledger.
+app.include_router(orbit_energy.create_energy_router(verify_token, require_https))
+app.include_router(orbit_summary.create_summary_router(verify_token, require_https))
+register_feature("energy")
+register_feature("summary")
 
 
 @app.post("/api/input/gamepad")

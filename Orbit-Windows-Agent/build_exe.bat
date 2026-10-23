@@ -41,6 +41,8 @@ echo [2/3] Building OrbitCompanion.exe with embedded orbit.ico...
     --hidden-import "orbit_deck" ^
     --hidden-import "orbit_desktop" ^
     --hidden-import "orbit_downloads" ^
+    --hidden-import "orbit_energy" ^
+    --hidden-import "orbit_summary" ^
     --hidden-import "orbit_events" ^
     --hidden-import "orbit_icons" ^
     --hidden-import "orbit_input" ^

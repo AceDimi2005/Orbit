@@ -29,6 +29,10 @@ class APITests(unittest.TestCase):
     def setUp(self):
         self.token = patch.object(agent, "API_TOKEN", TOKEN)
         self.token.start()
+        # Lifespan tests must not open the real energy ledger or start the price download.
+        energy = patch.object(agent.orbit_energy, "start")
+        energy.start()
+        self.addCleanup(energy.stop)
         self.client = TestClient(agent.app)
 
     def tearDown(self):
