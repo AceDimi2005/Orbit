@@ -46,11 +46,13 @@ class APITests(unittest.TestCase):
         self.assertNotIn(WIDGET_TOKEN, response.text)
 
     def test_private_reads_and_mutations_require_auth(self):
-        for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps", "/api/sunshine/info"):
+        for path in ("/api/status", "/api/specs", "/api/network-info", "/api/sunshine/apps", "/api/sunshine/info",
+                     "/api/capabilities", "/api/events"):
             self.assertEqual(self.client.get(path).status_code, 401)
             self.assertEqual(self.client.get(path, headers={"Authorization": "Bearer wrong"}).status_code, 401)
         for path in ("/api/action/shutdown", "/api/volume?level=55", "/api/input/mouse", "/api/sunshine/launch?app=Example",
-                     "/api/sunshine/pin?pin=1234", "/api/sunshine/start"):
+                     "/api/sunshine/pin?pin=1234", "/api/sunshine/start", "/api/input/hotkey", "/api/open-url",
+                     "/api/input/keyboard?key=volumeup"):
             self.assertEqual(self.client.post(path).status_code, 401)
         self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": "a", "password": "b"}).status_code, 401)
         self.assertEqual(self.client.delete("/api/sunshine/credentials").status_code, 401)
@@ -495,6 +497,7 @@ class APITests(unittest.TestCase):
              patch.object(agent, "inventory_worker") as inventory, \
              patch.object(agent, "telemetry_worker") as telemetry, \
              patch.object(agent, "SessionRecorder"), \
+             patch.object(agent, "EventLog"), \
              patch.object(agent, "sensor_worker") as sensors:
             with TestClient(agent.app) as client:
                 self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)
@@ -502,6 +505,44 @@ class APITests(unittest.TestCase):
             telemetry.assert_called_once()
             sensors.assert_called_once()
             self.assertTrue(agent.STOP_EVENT.is_set())
+
+    def test_lifespan_opens_the_event_log_for_emit_and_closes_it(self):
+        import orbit_events
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.sqlite3"
+            opened = []
+
+            def event_log():
+                log = orbit_events.EventLog(path)
+                opened.append(log)
+                return log
+            with patch.object(agent, "load_api_token", return_value=TOKEN), \
+                 patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
+                 patch.object(agent, "inventory_worker"), patch.object(agent, "telemetry_worker"), \
+                 patch.object(agent, "sensor_worker"), patch.object(agent, "SessionRecorder"), \
+                 patch.object(agent, "EventLog", side_effect=event_log), \
+                 patch.object(orbit_events.orbit_notify, "notify"):
+                with TestClient(agent.app, base_url="https://testserver") as client:
+                    self.assertIs(orbit_events.current_log(), opened[0])
+                    orbit_events.emit("pc.online", "PC is online", "Ready.", level="passive")
+                    listed = client.get("/api/events", headers=AUTH).json()
+                    self.assertEqual([event["kind"] for event in listed["events"]], ["pc.online"])
+                self.assertIsNone(orbit_events.current_log())
+                with self.assertRaises(RuntimeError):
+                    opened[0].page()
+
+    def test_lifespan_survives_an_event_log_that_cannot_open(self):
+        import orbit_events
+        with patch.object(agent, "load_api_token", return_value=TOKEN), \
+             patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
+             patch.object(agent, "inventory_worker"), patch.object(agent, "telemetry_worker"), \
+             patch.object(agent, "sensor_worker"), patch.object(agent, "SessionRecorder"), \
+             patch.object(agent, "EventLog", side_effect=OSError("disk full")):
+            with self.assertLogs("orbit", "ERROR"):
+                with TestClient(agent.app, base_url="https://testserver") as client:
+                    self.assertIsNone(orbit_events.current_log())
+                    self.assertEqual(client.get("/api/events", headers=AUTH).status_code, 503)
+                    self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)
 
 
 class TokenTests(unittest.TestCase):

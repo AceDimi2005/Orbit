@@ -14,6 +14,7 @@ import secrets
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -22,11 +23,23 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
 
+if __name__ == "__main__":
+    # Run as a script, this module is `__main__`. Feature modules that `import orbit_agent`
+    # (power hooks, automation calling perform_action) must get this running module and its
+    # globals, not a second copy executed from scratch.
+    sys.modules.setdefault("orbit_agent", sys.modules[__name__])
+
 import psutil
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 
+import orbit_events
+import orbit_input
+import orbit_links
+import orbit_notify
+from orbit_capabilities import capabilities_payload, register_feature, set_agent_version
+from orbit_events import EventLog, create_events_router
 from orbit_processes import collect_processes, terminate_process
 from orbit_icons import ICON_PIXELS, ICONS, MAX_IDS_PER_REQUEST, parse_icon_ids
 from orbit_files import create_files_router
@@ -53,6 +66,7 @@ except (ImportError, OSError):
     HAS_PYCAW = False
 
 AGENT_VERSION = "4.4.0"
+set_agent_version(AGENT_VERSION)
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
 WIDGET_TOKEN = ""
@@ -156,6 +170,12 @@ def verify_token(authorization: str = Header(None)):
 def require_windows():
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="PC controls require Windows")
+
+
+def require_https(request: Request):
+    """Newer features answer only on the encrypted port; plain HTTP gets 426."""
+    if request.url.scheme != "https":
+        raise HTTPException(status_code=426, detail="This needs Orbit's encrypted connection. Pair the PC again in Orbit to turn it on.")
 
 
 @contextmanager
@@ -301,6 +321,12 @@ async def lifespan(application):
     WIDGET_TOKEN = load_widget_token()
     SPECS = basic_specs()
     HISTORY_RECORDER = SessionRecorder()
+    try:
+        event_log = EventLog()
+    except Exception:
+        LOGGER.exception("The event log could not be opened; notifications from this PC are unavailable")
+        event_log = None
+    orbit_events.set_event_log(event_log)
     STOP_EVENT.clear()
     threads = [threading.Thread(target=worker, daemon=True) for worker in (inventory_worker, telemetry_worker, sensor_worker)]
     for thread in threads:
@@ -321,6 +347,10 @@ async def lifespan(application):
     recorder, HISTORY_RECORDER = HISTORY_RECORDER, None
     if recorder is not None:
         recorder.close()
+    orbit_events.set_event_log(None)
+    await asyncio.to_thread(orbit_events.flush_dispatch, 2.0)
+    if event_log is not None:
+        event_log.close()
 
 
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
@@ -329,6 +359,15 @@ app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER))
 app.include_router(create_pairing_router(lambda: PAIRING_MANAGER))
+app.include_router(create_events_router(verify_token, orbit_events.current_log))
+register_feature("events")
+
+
+@app.get("/api/capabilities")
+def get_capabilities(authorization: str = Header(None)):
+    """Optional features this agent has; clients treat a 404 as an older agent without any."""
+    verify_token(authorization)
+    return capabilities_payload(AGENT_VERSION)
 
 
 @app.get("/api/discover")
@@ -646,10 +685,12 @@ def watch_summary(authorization: str = Header(None)):
 
 @app.post("/api/input/keyboard")
 def keyboard_input(text: str = "", key: str = "", authorization: str = Header(None)):
+    """Types `text` and/or presses one key. `key` takes any name from orbit_input.KEY_NAMES in any
+    case (ENTER, BACKSPACE, SPACE, ESC, WIN and TAB from older apps included)."""
     verify_token(authorization)
     require_windows()
-    special = {"ENTER": 0x0D, "BACKSPACE": 0x08, "SPACE": 0x20, "ESC": 0x1B, "WIN": 0x5B, "TAB": 0x09}
-    if (key and key.upper() not in special) or len(text) > 1000:
+    key_name = key.lower() if key else ""
+    if (key_name and key_name not in orbit_input.KEY_NAMES) or len(text) > 1000:
         raise HTTPException(status_code=422, detail="Unsupported key or text too long")
     u32 = ctypes.windll.user32
     u32.VkKeyScanW.argtypes = [ctypes.c_wchar]
@@ -657,16 +698,67 @@ def keyboard_input(text: str = "", key: str = "", authorization: str = Header(No
     codes = [u32.VkKeyScanW(char) if ord(char) <= 0xFFFF else -1 for char in text]
     if -1 in codes:
         raise HTTPException(status_code=422, detail="Some characters are not available in the PC keyboard layout")
-    if key:
-        tap_key(special[key.upper()])
-    for code in codes:
-        modifiers = [vk for mask, vk in ((1, 0x10), (2, 0x11), (4, 0x12)) if (code >> 8) & mask]
-        for modifier in modifiers:
-            u32.keybd_event(modifier, 0, 0, 0)
-        tap_key(code & 0xFF)
-        for modifier in reversed(modifiers):
-            u32.keybd_event(modifier, 0, 2, 0)
+    with orbit_input.INPUT_LOCK:
+        if key_name:
+            try:
+                orbit_input.tap(key_name)
+            except OSError as error:
+                raise HTTPException(status_code=503, detail="Windows did not accept the key press. The PC may be locked.") from error
+        for code in codes:
+            modifiers = [vk for mask, vk in ((1, 0x10), (2, 0x11), (4, 0x12)) if (code >> 8) & mask]
+            for modifier in modifiers:
+                u32.keybd_event(modifier, 0, 0, 0)
+            tap_key(code & 0xFF)
+            for modifier in reversed(modifiers):
+                u32.keybd_event(modifier, 0, 2, 0)
     return {"status": "sent"}
+
+
+class HotkeyBody(BaseModel):
+    keys: list = Field(max_length=32)
+
+
+@app.post("/api/input/hotkey", dependencies=[Depends(verify_token), Depends(require_https)])
+def hotkey_input(body: HotkeyBody):
+    """Presses a shortcut such as `{"keys": ["ctrl", "shift", "m"]}` (at most 5 allowlisted keys)."""
+    try:
+        keys = orbit_input.normalize_chord(body.keys)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    require_windows()
+    try:
+        orbit_input.press_chord(keys)
+    except OSError as error:
+        raise HTTPException(status_code=503, detail=str(error) or "Windows did not accept the shortcut.") from error
+    return {"status": "sent"}
+
+
+register_feature("hotkeys")
+
+
+class OpenURLBody(BaseModel):
+    url: str = Field(max_length=65536)
+
+
+@app.post("/api/open-url", dependencies=[Depends(verify_token), Depends(require_https)])
+def open_url_on_pc(body: OpenURLBody):
+    """Opens an http(s) link in the PC's default browser (Send to PC)."""
+    try:
+        url = orbit_links.validate_url(body.url)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    require_windows()
+    if BOOT_MODE:
+        raise HTTPException(status_code=409, detail="Sign in to Windows on the PC first. Links open on the signed-in desktop.")
+    try:
+        orbit_links.open_url(url)
+    except OSError as error:
+        raise HTTPException(status_code=503, detail=str(error) or "Windows could not open this link.") from error
+    orbit_notify.notify("Opened a link from your iPhone", orbit_links.display_url(url))
+    return {"status": "opened"}
+
+
+register_feature("openUrl")
 
 
 @app.post("/api/input/gamepad")
@@ -676,33 +768,79 @@ def gamepad_input(button: str, authorization: str = Header(None)):
     keymap = {"A": 0x20, "B": 0x1B, "X": 0x45, "Y": 0x52, "UP": 0x57, "DOWN": 0x53, "LEFT": 0x41, "RIGHT": 0x44}
     if button.upper() not in keymap:
         raise HTTPException(status_code=422, detail="Unsupported gamepad button")
-    tap_key(keymap[button.upper()])
+    with orbit_input.INPUT_LOCK:
+        tap_key(keymap[button.upper()])
     return {"status": "sent", "mode": "keyboard_mapping"}
+
+
+ACTIONS = frozenset({
+    "lock", "sleep", "restart", "shutdown",
+    "mute", "volume_up", "volume_down",
+    "media_play_pause", "media_next", "media_prev",
+    "toggle_hdr", "restore_display", "kill_game",
+    "show_desktop", "task_view", "alt_tab", "screenshot", "fullscreen",
+})
+POWER_ACTIONS = frozenset({"sleep", "restart", "shutdown"})
+KEYBOARD_ACTIONS = frozenset({"mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev",
+                              "fullscreen", "toggle_hdr", "show_desktop", "task_view", "alt_tab", "screenshot"})
+# Callables run without arguments right before the PC sleeps, restarts or shuts down through
+# perform_action (for example orbit_push.planned_offline). Feature modules append to this list.
+# They run in order on a helper thread; after BEFORE_POWER_HOOKS_TIMEOUT seconds the power action
+# goes ahead anyway, and a hook that raises is logged and skipped.
+BEFORE_POWER_HOOKS = []
+BEFORE_POWER_HOOKS_TIMEOUT = 5.0
+
+
+def run_before_power_hooks(action_name):
+    hooks = list(BEFORE_POWER_HOOKS)
+    if not hooks:
+        return
+
+    def run():
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:
+                LOGGER.exception("A before-%s hook failed", action_name)
+
+    worker = threading.Thread(target=run, name="orbit-before-power", daemon=True)
+    worker.start()
+    worker.join(BEFORE_POWER_HOOKS_TIMEOUT)
+    if worker.is_alive():
+        LOGGER.warning("Hooks before %s took longer than %s s; continuing", action_name, BEFORE_POWER_HOOKS_TIMEOUT)
 
 
 @app.post("/api/action/{action_name}")
 def execute_action(action_name: str, authorization: str = Header(None)):
     verify_token(authorization)
-    actions = {
-        "lock", "sleep", "restart", "shutdown",
-        "mute", "volume_up", "volume_down",
-        "media_play_pause", "media_next", "media_prev",
-        "toggle_hdr", "restore_display", "kill_game",
-        "show_desktop", "task_view", "alt_tab", "screenshot", "fullscreen",
-    }
-    if action_name not in actions:
+    return perform_action(action_name)
+
+
+def perform_action(action_name):
+    """Runs one PC action by name, for the HTTP route and for automation (power after downloads).
+
+    Returns `{"status": "sent", "executed": name}`. Raises HTTPException: 404 for an unknown name,
+    501 off Windows, 409 when kill_game finds no foreground game, 503 when Windows refuses.
+    """
+    if action_name not in ACTIONS:
         raise HTTPException(status_code=404, detail="Unknown PC action")
     require_windows()
     u32 = ctypes.windll.user32
+    # Key presses must not interleave with a shortcut being held by /api/input/hotkey.
+    typing = action_name in KEYBOARD_ACTIONS
+    if typing:
+        orbit_input.INPUT_LOCK.acquire()
     try:
         if action_name == "lock":
             if not u32.LockWorkStation():
                 raise OSError("LockWorkStation failed")
         elif action_name == "sleep":
+            run_before_power_hooks(action_name)
             # Do not force suspension; let Windows honor its power policy.
             if not ctypes.windll.powrprof.SetSuspendState(0, 0, 0):
                 raise OSError("SetSuspendState failed")
         elif action_name in {"restart", "shutdown"}:
+            run_before_power_hooks(action_name)
             subprocess.run(["shutdown", "/r" if action_name == "restart" else "/s", "/t", "3"], check=True,
                            timeout=5, capture_output=True, creationflags=0x08000000)
         elif action_name in {"mute", "volume_up", "volume_down", "media_play_pause", "media_next", "media_prev", "fullscreen"}:
@@ -751,6 +889,9 @@ def execute_action(action_name: str, authorization: str = Header(None)):
                 raise OSError("Windows rejected close request")
     except (OSError, subprocess.SubprocessError) as error:
         raise HTTPException(status_code=503, detail="Windows could not execute this action") from error
+    finally:
+        if typing:
+            orbit_input.INPUT_LOCK.release()
     return {"status": "sent", "executed": action_name}
 
 
@@ -1272,6 +1413,8 @@ if __name__ == "__main__":
             notify_on_start=("--tray" in args),
         )
         tray.start()
+        # PC toasts from features (events, Send to PC, received files) go through the tray icon.
+        orbit_notify.set_notifier(tray.show_notification)
         if ("--background" in args or "--tray" in args) and "--console" not in args:
             tray.set_console_visible(False)
     try:
@@ -1288,5 +1431,6 @@ if __name__ == "__main__":
         pass
     finally:
         STOP_EVENT.set()
+        orbit_notify.set_notifier(None)
         if tray is not None:
             tray.close()

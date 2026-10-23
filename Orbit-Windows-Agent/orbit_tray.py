@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 
+from orbit_notify import fit_utf16
 from orbit_tls import data_directory
 
 LOGGER = logging.getLogger("orbit.tray")
@@ -586,7 +587,7 @@ class OrbitTrayIcon:
         game = info.get("activeGame")
         suffix = f" · {game}" if game else ""
         text = f"Orbit PC Companion {version} ({ip_address}:{secure_port}){suffix}"
-        return text[:127]
+        return fit_utf16(text, 127)  # szTip is WCHAR[128] with the terminator
 
     def build_menu_items(self):
         """Return ordered menu item descriptors for inspection and native rendering."""
@@ -867,8 +868,9 @@ class OrbitTrayIcon:
         data.szTip = self.format_tooltip()
         if info_text:
             data.uFlags |= NIF_INFO
-            data.szInfoTitle = info_title[:63]
-            data.szInfo = info_text[:255]
+            # WCHAR[64] / WCHAR[256] with the terminator, counted in UTF-16 units (emoji take two).
+            data.szInfoTitle = fit_utf16(info_title, 63)
+            data.szInfo = fit_utf16(info_text, 255)
             data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND
         return data
 

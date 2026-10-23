@@ -601,5 +601,174 @@ class FolderArchiveTests(unittest.TestCase):
         self.assertEqual(list(self.archive_root.glob("archive-*")), [])
 
 
+class SunshineLoginProtectionTests(unittest.TestCase):
+    """The saved Sunshine web UI login (.orbit-sunshine-login) is a credential like the tokens."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+        app = FastAPI()
+        app.include_router(files.create_files_router(authorized))
+        self.client = TestClient(app, base_url="https://test", headers={"Authorization": "Bearer control"})
+        self.addCleanup(self.client.close)
+
+    def test_login_file_is_hidden_unreadable_and_cannot_be_created_or_renamed_to(self):
+        login = self.root / ".orbit-sunshine-login"
+        login.write_text('{"username": "admin", "password": "s3cret"}')
+        (self.root / "notes.txt").write_text("fine")
+        listing = self.client.get("/api/files/list", params={"path": str(self.root)}).json()
+        self.assertEqual([entry["name"] for entry in listing["entries"]], ["notes.txt"])
+        for variant in (".orbit-sunshine-login", ".ORBIT-SUNSHINE-LOGIN"):
+            with self.subTest(variant=variant):
+                response = self.client.get("/api/files/download", params={"path": str(self.root / variant)})
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn("s3cret", response.text)
+                response = self.client.post("/api/files/upload", params={"directory": str(self.root), "name": variant}, content=b"x")
+                self.assertEqual(response.status_code, 403)
+                response = self.client.post("/api/files/rename", json={"path": str(self.root / "notes.txt"), "name": variant})
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.client.post("/api/files/trash", json={"path": str(login)}).status_code, 403)
+        self.assertEqual(self.client.post("/api/files/archive", json={"path": str(login)}).status_code, 403)
+        self.assertEqual(login.read_text(), '{"username": "admin", "password": "s3cret"}')
+
+    def test_custom_login_path_from_the_environment_is_protected(self):
+        login = self.root / "sunshine-web-login.json"
+        login.write_text('{"username": "admin", "password": "s3cret"}')
+        with patch.dict(files.os.environ, {"ORBIT_SUNSHINE_LOGIN_FILE": str(login)}):
+            self.assertIn(login.absolute(), files._protected_paths())
+            self.assertEqual(self.client.get("/api/files/download", params={"path": str(login)}).status_code, 403)
+            listing = self.client.get("/api/files/list", params={"path": str(self.root)}).json()
+            self.assertEqual(listing["entries"], [])
+
+    def test_agent_folder_login_path_is_protected(self):
+        self.assertIn(files.AGENT_DIRECTORY / ".orbit-sunshine-login", files._protected_paths())
+        self.assertIn(".orbit-sunshine-login", files.SECRET_NAMES)
+
+    def test_ignore_files_exclude_the_login(self):
+        agent_folder = Path(files.__file__).resolve().parent
+        for ignore in (agent_folder / ".gitignore", agent_folder.parent / ".gitignore"):
+            with self.subTest(file=str(ignore)):
+                self.assertIn(".orbit-sunshine-login", ignore.read_text(encoding="utf-8").split())
+
+    def test_updater_never_replaces_the_login(self):
+        import orbit_updater
+        self.assertIn(".orbit-sunshine-login", orbit_updater.PRESERVED_FILENAMES)
+
+
+class FakeTimer:
+    created = []
+
+    def __init__(self, delay, function):
+        self.delay, self.function = delay, function
+        self.cancelled = False
+        self.daemon = False
+        FakeTimer.created.append(self)
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class UploadToastTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name).resolve()
+        (self.root / "Downloads").mkdir()
+        self.now = [100.0]
+        FakeTimer.created = []
+        self.toaster = files.UploadToaster(timer_factory=FakeTimer, clock=lambda: self.now[0])
+        for patcher in (patch.object(files, "UPLOAD_TOASTS", self.toaster),
+                        patch.object(files.orbit_notify, "has_notifier", return_value=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        notify = patch.object(files.orbit_notify, "notify", return_value=True)
+        self.notify = notify.start()
+        self.addCleanup(notify.stop)
+        app = FastAPI()
+        app.include_router(files.create_files_router(authorized))
+        self.client = TestClient(app, base_url="https://test", headers={"Authorization": "Bearer control"})
+        self.addCleanup(self.client.close)
+
+    def upload(self, name, content, folder="Downloads"):
+        return self.client.post("/api/files/upload", params={"directory": str(self.root / folder), "name": name}, content=content)
+
+    def test_sizes_read_like_windows_explorer(self):
+        self.assertEqual([files.format_size(value) for value in (0, 1, 512, 1023, 1024, 1536, 2_516_582, 12 * 1024 ** 2,
+                                                                  1024 ** 3 * 3 // 2, 5 * 1024 ** 4)],
+                         ["0 bytes", "1 byte", "512 bytes", "1023 bytes", "1.0 KB", "1.5 KB", "2.4 MB", "12 MB", "1.5 GB", "5.0 TB"])
+
+    def test_one_upload_gives_the_designed_toast_after_a_quiet_moment(self):
+        response = self.upload("photo.jpg", b"x" * 2_516_582)
+        self.assertEqual(response.status_code, 200)
+        self.notify.assert_not_called()
+        self.assertEqual(len(FakeTimer.created), 1)
+        self.assertEqual(FakeTimer.created[0].delay, files.UPLOAD_TOAST_QUIET_SECONDS)
+        self.assertTrue(FakeTimer.created[0].daemon)
+        FakeTimer.created[0].function()
+        self.notify.assert_called_once_with("File received", "Received photo.jpg (2.4 MB) in Downloads")
+        self.assertFalse(self.toaster.flush())
+
+    def test_a_batch_of_uploads_gives_one_toast(self):
+        for index in range(20):
+            self.now[0] += 0.2
+            self.assertEqual(self.upload(f"IMG_{index:04}.HEIC", b"x" * 1024).status_code, 200)
+        self.assertTrue(all(timer.cancelled for timer in FakeTimer.created[:-1]))
+        FakeTimer.created[-1].function()
+        self.notify.assert_called_once_with("Files received", "Received 20 files (20 KB) in Downloads")
+
+    def test_toast_waits_at_most_the_maximum_delay_after_the_first_upload(self):
+        self.upload("a.txt", b"a")
+        self.now[0] += files.UPLOAD_TOAST_MAX_DELAY_SECONDS - 0.5
+        self.upload("b.txt", b"b")
+        self.assertAlmostEqual(FakeTimer.created[-1].delay, 0.5)
+        self.now[0] += 5
+        self.upload("c.txt", b"c")
+        self.assertEqual(FakeTimer.created[-1].delay, 0.0)
+
+    def test_uploads_to_different_folders_say_how_many_folders(self):
+        (self.root / "Desktop").mkdir()
+        self.upload("a.txt", b"a" * 10)
+        self.upload("b.txt", b"b" * 10, folder="Desktop")
+        self.toaster.flush()
+        self.notify.assert_called_once_with("Files received", "Received 2 files (20 bytes) in 2 folders")
+
+    def test_failed_uploads_do_not_toast(self):
+        self.upload("taken.txt", b"first")
+        self.toaster.flush()
+        self.notify.reset_mock()
+        FakeTimer.created = []
+        self.assertEqual(self.upload("taken.txt", b"second").status_code, 409)
+        self.assertEqual(self.upload(".orbit-token", b"x").status_code, 403)
+        self.assertEqual(FakeTimer.created, [])
+        self.assertFalse(self.toaster.flush())
+        self.notify.assert_not_called()
+
+    def test_nothing_is_collected_without_a_notifier(self):
+        with patch.object(files.orbit_notify, "has_notifier", return_value=False):
+            self.assertEqual(self.upload("quiet.txt", b"x").status_code, 200)
+        self.assertEqual(FakeTimer.created, [])
+        self.assertFalse(self.toaster.flush())
+
+    def test_a_broken_toast_never_fails_the_upload(self):
+        def broken_timer(delay, function):
+            raise RuntimeError("cannot start thread")
+        self.toaster._timer_factory = broken_timer
+        response = self.upload("still-fine.txt", b"x")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((self.root / "Downloads" / "still-fine.txt").read_bytes(), b"x")
+
+    def test_real_timer_shows_the_toast(self):
+        shown = threading.Event()
+        self.notify.side_effect = lambda title, message: shown.set() or True
+        toaster = files.UploadToaster(quiet=0.01, max_delay=1)
+        toaster.received("song.mp3", 4_000_000, self.root / "Downloads")
+        self.assertTrue(shown.wait(5))
+        self.notify.assert_called_once_with("File received", "Received song.mp3 (3.8 MB) in Downloads")
+
+
 if __name__ == "__main__":
     unittest.main()
