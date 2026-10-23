@@ -899,8 +899,8 @@ struct TVControlsAndGamesTab: View {
 
     private var streamSettingsSummary: String {
         let settings = streamSettings.settings
-        let size = settings.pixelSize
-        var parts = ["\(size.height)p", "\(settings.frameRate) fps", "\(settings.bitrateKbps / 1000) Mbps"]
+        let size = settings.pixelSize(hostSupportsHEVC: sunshine.info?.supportsHEVC)
+        var parts = [size.shortTitle, "\(settings.frameRate) fps", "\(settings.bitrateKbps(for: size) / 1000) Mbps"]
         parts.append(settings.codec == .h264 || !MoonlightDeviceCapabilities.supportsHEVC ? "H.264" : "HEVC")
         if settings.requestsHDR { parts.append("HDR") }
         return parts.joined(separator: " · ")

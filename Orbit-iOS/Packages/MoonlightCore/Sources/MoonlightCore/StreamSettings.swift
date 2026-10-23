@@ -31,22 +31,44 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
             case .native: return "This screen's pixels"
             }
         }
-        public func pixelSize(native: CGSize) -> (width: Int, height: Int) {
+        /// Height of the preset in pixels; nil for Native, where the screen decides.
+        public var presetHeight: Int? {
             switch self {
-            case .hd720: return (1280, 720)
-            case .hd1080: return (1920, 1080)
-            case .qhd1440: return (2560, 1440)
-            case .uhd2160: return (3840, 2160)
-            case .native:
-                var width = Int(max(native.width, native.height))
-                var height = Int(min(native.width, native.height))
-                if width <= 0 || height <= 0 { return (1920, 1080) }
-                // Encoders want even dimensions; keep the aspect ratio of the panel.
-                width -= width % 2
-                height -= height % 2
-                return (min(width, 8192), min(height, 8192))
+            case .hd720: return 720
+            case .hd1080: return 1080
+            case .qhd1440: return 1440
+            case .uhd2160: return 2160
+            case .native: return nil
             }
         }
+
+        /// The frame for a screen of `native` pixels, before any codec limit.
+        /// - `.widescreen`: presets are their 16:9 size; Native is the largest 16:9 frame that fits the screen.
+        /// - `.native`: presets keep their height and take the screen's shape; Native is every pixel of the screen.
+        public func pixelSize(aspect: AspectMode, native: CGSize) -> MoonlightStreamSize {
+            let screen = MoonlightStreamSize.landscape(native)
+            switch (presetHeight, aspect) {
+            case (nil, .native):
+                return screen
+            case (nil, .widescreen):
+                return screen.largestWidescreenFit
+            case (let height?, .widescreen):
+                return MoonlightStreamSize(width: height * 16 / 9, height: height)
+            case (let height?, .native):
+                let ratio = MoonlightStreamSize.aspectRatio(of: native) ?? Double(screen.width) / Double(screen.height)
+                return MoonlightStreamSize(width: MoonlightStreamSize.nearestEven(Double(height) * ratio), height: height)
+            }
+        }
+    }
+
+    /// The shape of the picture the PC is asked for.
+    public enum AspectMode: String, Codable, CaseIterable, Identifiable, Sendable {
+        /// 16:9, the shape of a PC monitor: the whole PC picture shows, with black bars where the screen differs.
+        case widescreen
+        /// This screen's own shape. It fills the screen edge to edge only when the PC can output that shape.
+        case native
+        public var id: String { rawValue }
+        public var title: String { self == .widescreen ? "16:9" : "Fill Screen" }
     }
 
     public enum Codec: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -102,6 +124,8 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
     }
 
     public var resolution: Resolution = .hd1080
+    /// 16:9 or this screen's shape. Apple TV always streams 16:9 (see `effectiveAspect`).
+    public var aspect: AspectMode = .widescreen
     public var frameRate: Int = 60
     /// Only used when `usesRecommendedBitrate` is off.
     public var customBitrateKbps: Int = 20_000
@@ -122,11 +146,15 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
 
     public static let frameRateOptions = [30, 60, 90, 120]
     public static let bitrateRangeKbps = 500...150_000
+    /// H.264 encoders (NVENC, AMF, Quick Sync) stop at 4096 pixels per side; moonlight-common-c warns above it.
+    public static let h264MaxDimension = 4096
+    /// Nothing streams beyond 8K, whatever the codec.
+    public static let maxDimension = 8192
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case resolution, frameRate, customBitrateKbps, usesRecommendedBitrate, codec, hdr, audio, playAudioOnHost,
+        case resolution, aspect, frameRate, customBitrateKbps, usesRecommendedBitrate, codec, hdr, audio, playAudioOnHost,
              optimizeGameSettings, framePacing, quitAppOnDisconnect, showStatistics, touchMode, packetSize, trackpadSensitivity
     }
 
@@ -134,6 +162,13 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = MoonlightStreamSettings()
         resolution = try values.decodeIfPresent(Resolution.self, forKey: .resolution) ?? defaults.resolution
+        if let saved = try? values.decodeIfPresent(AspectMode.self, forKey: .aspect) {
+            aspect = saved
+        } else {
+            // Saved before the Picture option existed (or by a newer build with a shape this one does not know).
+            // Native used to mean every pixel of the screen, so it keeps doing that.
+            aspect = resolution == .native ? .native : defaults.aspect
+        }
         frameRate = try values.decodeIfPresent(Int.self, forKey: .frameRate) ?? defaults.frameRate
         customBitrateKbps = try values.decodeIfPresent(Int.self, forKey: .customBitrateKbps) ?? defaults.customBitrateKbps
         usesRecommendedBitrate = try values.decodeIfPresent(Bool.self, forKey: .usesRecommendedBitrate) ?? defaults.usesRecommendedBitrate
@@ -150,8 +185,34 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
         trackpadSensitivity = try values.decodeIfPresent(Double.self, forKey: .trackpadSensitivity) ?? defaults.trackpadSensitivity
     }
 
-    /// Stream dimensions for this device.
-    public var pixelSize: (width: Int, height: Int) { resolution.pixelSize(native: MoonlightDeviceCapabilities.nativePixelSize) }
+    /// The shape actually streamed: Apple TV only offers 16:9.
+    public var effectiveAspect: AspectMode { MoonlightDeviceCapabilities.offersAspectChoice ? aspect : .widescreen }
+
+    /// The frame to request for `resolution` and `aspect` on a screen of `native` pixels, within the codec's limits.
+    /// `limitToH264` caps both sides at 4096 (keeping the shape) because the stream may end up H.264.
+    public static func streamSize(resolution: Resolution, aspect: AspectMode, native: CGSize, limitToH264: Bool) -> MoonlightStreamSize {
+        resolution.pixelSize(aspect: aspect, native: native).limited(to: limitToH264 ? h264MaxDimension : maxDimension)
+    }
+
+    /// True when the stream could end up H.264: chosen explicitly, no HEVC decoder on this device, or a host
+    /// whose encoder has no HEVC (`nil`, not known yet, counts as "could").
+    public func mayUseH264(hostSupportsHEVC: Bool?, deviceSupportsHEVC: Bool = MoonlightDeviceCapabilities.supportsHEVC) -> Bool {
+        codec == .h264 || !deviceSupportsHEVC || hostSupportsHEVC != true
+    }
+
+    /// The frame to request on a screen of `native` pixels.
+    public func streamSize(native: CGSize, hostSupportsHEVC: Bool?) -> MoonlightStreamSize {
+        Self.streamSize(resolution: resolution, aspect: effectiveAspect, native: native, limitToH264: mayUseH264(hostSupportsHEVC: hostSupportsHEVC))
+    }
+
+    /// Stream dimensions on this device's main screen (the Mac: the full-screen area of the screen in front).
+    /// A stream decides its size once when it starts; this is the estimate for settings and summaries.
+    public func pixelSize(hostSupportsHEVC: Bool?) -> MoonlightStreamSize {
+        streamSize(native: MoonlightDeviceCapabilities.nativePixelSize, hostSupportsHEVC: hostSupportsHEVC)
+    }
+
+    /// `pixelSize(hostSupportsHEVC:)` for a host whose codecs are not known.
+    public var pixelSize: MoonlightStreamSize { pixelSize(hostSupportsHEVC: nil) }
 
     /// Moonlight's default bitrate curve (moonlight-qt `getDefaultBitrate`): linear in pixels
     /// between the well-known resolutions, scaled by frame rate with a square-root taper above 60.
@@ -175,14 +236,18 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
         return Int((resolutionFactor * frameRateFactor).rounded()) * 1000
     }
 
-    public var recommendedBitrateKbps: Int {
-        let size = pixelSize
-        return Self.recommendedBitrateKbps(width: size.width, height: size.height, fps: frameRate)
+    public func recommendedBitrateKbps(for size: MoonlightStreamSize) -> Int {
+        Self.recommendedBitrateKbps(width: size.width, height: size.height, fps: frameRate)
     }
 
-    public var bitrateKbps: Int {
-        usesRecommendedBitrate ? recommendedBitrateKbps : min(max(customBitrateKbps, Self.bitrateRangeKbps.lowerBound), Self.bitrateRangeKbps.upperBound)
+    /// The bitrate a stream of `size` uses: Moonlight's recommendation for it, or the manual value.
+    public func bitrateKbps(for size: MoonlightStreamSize) -> Int {
+        usesRecommendedBitrate ? recommendedBitrateKbps(for: size) : min(max(customBitrateKbps, Self.bitrateRangeKbps.lowerBound), Self.bitrateRangeKbps.upperBound)
     }
+
+    public var recommendedBitrateKbps: Int { recommendedBitrateKbps(for: pixelSize) }
+
+    public var bitrateKbps: Int { bitrateKbps(for: pixelSize) }
 
     /// VIDEO_FORMAT_* mask handed to the library. H.264 is always a fallback.
     public var supportedVideoFormats: Int32 {
@@ -200,6 +265,75 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
     }
 
     public var requestsHDR: Bool { supportedVideoFormats & 0x0200 != 0 }
+}
+
+/// Width × height of a stream in pixels, landscape (width ≥ height) and even on both sides.
+public struct MoonlightStreamSize: Equatable, Hashable, Sendable, CustomStringConvertible {
+    public var width: Int
+    public var height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    /// The frame used when a screen reports no usable size.
+    public static let fallback = MoonlightStreamSize(width: 1920, height: 1080)
+
+    /// `size` in landscape order, rounded down to even numbers (encoders need even sides).
+    public static func landscape(_ size: CGSize) -> MoonlightStreamSize {
+        let width = evenDown(Double(max(size.width, size.height)))
+        let height = evenDown(Double(min(size.width, size.height)))
+        return width >= 2 && height >= 2 ? MoonlightStreamSize(width: width, height: height) : fallback
+    }
+
+    /// Long side over short side of a screen, or nil when it reports no usable size.
+    static func aspectRatio(of size: CGSize) -> Double? {
+        let long = Double(max(size.width, size.height)), short = Double(min(size.width, size.height))
+        guard long.isFinite, short.isFinite, short >= 1 else { return nil }
+        return long / short
+    }
+
+    static func evenDown(_ value: Double) -> Int {
+        guard value.isFinite, value > 0 else { return 0 }
+        let whole = Int(min(value, 1_000_000).rounded(.down))
+        return whole - whole % 2
+    }
+
+    static func nearestEven(_ value: Double) -> Int {
+        guard value.isFinite, value > 0 else { return 2 }
+        return max(2, Int((min(value, 1_000_000) / 2).rounded()) * 2)
+    }
+
+    /// The largest 16:9 frame that fits inside this one.
+    public var largestWidescreenFit: MoonlightStreamSize {
+        if width * 9 >= height * 16 {
+            return MoonlightStreamSize(width: max(2, Self.evenDown(Double(height) * 16 / 9)), height: height)
+        }
+        return MoonlightStreamSize(width: width, height: max(2, Self.evenDown(Double(width) * 9 / 16)))
+    }
+
+    /// Scaled down, keeping the shape, so neither side exceeds `maximum`.
+    public func limited(to maximum: Int) -> MoonlightStreamSize {
+        let longest = max(width, height)
+        guard longest > maximum, longest > 0 else { return self }
+        // Multiply before dividing so exact ratios (6016 × 3384 → 4096 × 2304) stay exact.
+        func scaled(_ side: Int) -> Int { min(maximum, max(2, Self.evenDown(Double(side) * Double(maximum) / Double(longest)))) }
+        return MoonlightStreamSize(width: scaled(width), height: scaled(height))
+    }
+
+    /// 16:9 within the rounding to even pixels.
+    public var isWidescreen: Bool {
+        guard width > 0, height > 0 else { return false }
+        return abs(Double(width) / Double(height) - 16.0 / 9.0) < 0.005
+    }
+
+    /// Short label for summaries: "1080p" for the usual 16:9 sizes, otherwise both sides ("2556 × 1178").
+    public var shortTitle: String {
+        isWidescreen && [720, 1080, 1440, 2160].contains(height) ? "\(height)p" : description
+    }
+
+    public var description: String { "\(width) × \(height)" }
 }
 
 /// What this device can decode and display.
@@ -224,17 +358,73 @@ public enum MoonlightDeviceCapabilities {
         #endif
     }
 
-    /// Physical pixels of the main screen in landscape.
+    /// Apple TV always streams 16:9 (its output mode has a TV's shape), so it does not offer the Picture choice.
+    public static var offersAspectChoice: Bool {
+        #if os(tvOS)
+        return false
+        #else
+        return true
+        #endif
+    }
+
+    /// Physical pixels of the main screen in landscape. On the Mac: what a full-screen window covers on the
+    /// screen in front (see `nativePixelSize(of:)`).
     public static var nativePixelSize: CGSize {
         #if os(macOS)
-        guard let screen = NSScreen.main else { return CGSize(width: 1920, height: 1080) }
-        let size = screen.frame.size
-        return CGSize(width: size.width * screen.backingScaleFactor, height: size.height * screen.backingScaleFactor)
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return CGSize(width: 1920, height: 1080) }
+        return nativePixelSize(of: screen)
         #else
         let bounds = UIScreen.main.nativeBounds.size
         return CGSize(width: max(bounds.width, bounds.height), height: min(bounds.width, bounds.height))
         #endif
     }
+
+    #if os(macOS)
+    /// What a full-screen window covers on `screen`, in the panel's physical pixels: the whole display
+    /// minus the camera housing strip (full-screen windows sit below the notch on MacBooks that have one).
+    public static func nativePixelSize(of screen: NSScreen) -> CGSize {
+        let frame = screen.frame.size
+        let notch = max(0, screen.safeAreaInsets.top)
+        let scale = pixelsPerPoint(of: screen)
+        return CGSize(width: (frame.width * scale).rounded(), height: (max(0, frame.height - notch) * scale).rounded())
+    }
+
+    /// Pixels the eye actually gets per point. Scaled ("More Space") modes draw a backing store larger than
+    /// the panel and shrink it, so the panel's native mode is the limit; low-resolution modes are limited by
+    /// the backing store instead.
+    public static func pixelsPerPoint(of screen: NSScreen) -> CGFloat {
+        let backing = screen.backingScaleFactor
+        let points = screen.frame.size
+        guard let displayID = displayID(of: screen), points.width > 0, points.height > 0,
+              let panel = panelPixelSize(displayID: displayID) else { return backing }
+        return pixelsPerPoint(points: points, panel: panel, backingScale: backing)
+    }
+
+    /// `pixelsPerPoint(of:)` without the screen lookups, for tests.
+    static func pixelsPerPoint(points: CGSize, panel: (width: Int, height: Int), backingScale: CGFloat) -> CGFloat {
+        var panelWidth = CGFloat(panel.width), panelHeight = CGFloat(panel.height)
+        guard points.width > 0, points.height > 0, panelWidth > 0, panelHeight > 0 else { return backingScale }
+        if (panelWidth > panelHeight) != (points.width > points.height) { swap(&panelWidth, &panelHeight) }   // rotated display
+        let physical = min(panelWidth / points.width, panelHeight / points.height)
+        guard physical.isFinite, physical > 0 else { return backingScale }
+        return min(physical, backingScale)
+    }
+
+    /// The Core Graphics display behind `screen`.
+    public static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
+    }
+
+    /// The panel's own resolution: the display mode macOS flags as native (`kDisplayModeNativeFlag`).
+    static func panelPixelSize(displayID: CGDirectDisplayID) -> (width: Int, height: Int)? {
+        let nativeFlag: UInt32 = 0x0200_0000   // kDisplayModeNativeFlag, IOKit/graphics/IOGraphicsTypes.h
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] else { return nil }
+        let native = modes.filter { $0.ioFlags & nativeFlag != 0 && $0.pixelWidth > 0 && $0.pixelHeight > 0 }
+            .max { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }
+        return native.map { ($0.pixelWidth, $0.pixelHeight) }
+    }
+    #endif
 
     public static var frameRateOptions: [Int] {
         MoonlightStreamSettings.frameRateOptions.filter { $0 <= maximumFrameRate || $0 == 60 }

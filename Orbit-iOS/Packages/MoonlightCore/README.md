@@ -31,7 +31,8 @@ work). The rest of the repository stays MIT; the obligation attaches to the ship
 ```bash
 cd Orbit-iOS/Packages/MoonlightCore
 swift build
-swift test            # crypto hooks vs. CommonCrypto/CryptoKit references, bitrate curve, key maps
+swift test            # crypto hooks vs. CommonCrypto/CryptoKit references, bitrate curve, key maps,
+                      # stream sizes (16:9 / Fill Screen, H.264 4096 cap), Mac keep-awake assertion
 xcodebuild -scheme MoonlightCore -destination 'generic/platform=tvOS Simulator' build
 ```
 

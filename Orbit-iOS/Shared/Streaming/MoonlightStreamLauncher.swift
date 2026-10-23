@@ -1,9 +1,44 @@
 import Combine
 import Foundation
 import MoonlightCore
+#if os(macOS)
+import AppKit
+#endif
 
 // Sunshine side of starting a stream: the HTTPS launch/resume request and the parameters the
 // MoonlightCore engine needs afterwards. Pairing and app lists live in MoonlightClient.swift.
+
+/// The frame a stream asks for, decided once when the stream is requested. The `/launch` mode and the
+/// session's video configuration both use it, so they agree even if the screen changes in between (the
+/// launch request can take seconds, and on the Mac the Stream window opens after it was sent).
+struct MoonlightStreamTarget: Equatable {
+    var size: MoonlightStreamSize
+    /// macOS: the display `size` was measured on; the Stream window goes full screen there.
+    var displayID: UInt32?
+
+    /// iPhone and iPad: the whole panel (`UIScreen.nativeBounds`). Apple TV: its 16:9 output mode.
+    /// Mac: the full-screen area of the display in front.
+    @MainActor
+    static func make(settings: MoonlightStreamSettings, hostSupportsHEVC: Bool?) -> MoonlightStreamTarget {
+        #if os(macOS)
+        return make(settings: settings, hostSupportsHEVC: hostSupportsHEVC, screen: NSApp.keyWindow?.screen ?? NSScreen.main)
+        #else
+        return MoonlightStreamTarget(size: settings.streamSize(native: MoonlightDeviceCapabilities.nativePixelSize, hostSupportsHEVC: hostSupportsHEVC))
+        #endif
+    }
+
+    #if os(macOS)
+    /// Sized for what a full-screen window covers on `screen` (below the notch, in physical pixels).
+    @MainActor
+    static func make(settings: MoonlightStreamSettings, hostSupportsHEVC: Bool?, screen: NSScreen?) -> MoonlightStreamTarget {
+        guard let screen = screen ?? NSScreen.main ?? NSScreen.screens.first else {
+            return MoonlightStreamTarget(size: settings.streamSize(native: .zero, hostSupportsHEVC: hostSupportsHEVC))
+        }
+        return MoonlightStreamTarget(size: settings.streamSize(native: MoonlightDeviceCapabilities.nativePixelSize(of: screen), hostSupportsHEVC: hostSupportsHEVC),
+                                     displayID: MoonlightDeviceCapabilities.displayID(of: screen))
+    }
+    #endif
+}
 
 /// Another app is already running on the host.
 struct MoonlightStreamBusyError: LocalizedError {
@@ -19,9 +54,8 @@ extension MoonlightClient {
     }
 
     /// `/launch` or `/resume`. Sunshine blocks until the app has started, so the timeout is long.
-    static func launch(_ transport: MoonlightTransport, appID: Int, settings: MoonlightStreamSettings,
+    static func launch(_ transport: MoonlightTransport, appID: Int, settings: MoonlightStreamSettings, size: MoonlightStreamSize,
                        remoteInputKey: Data, remoteInputKeyID: UInt32, resume: Bool) async throws -> LaunchResult {
-        let size = settings.pixelSize
         let configuration = Int(settings.audio.configuration)
         let surroundInfo = ((configuration >> 16) & 0xFFFF) << 16 | ((configuration >> 8) & 0xFF)
         var query: [(String, String)] = [
@@ -57,18 +91,18 @@ extension MoonlightHostCoordinator {
         apps.first { $0.title.caseInsensitiveCompare("Desktop") == .orderedSame } ?? apps.first
     }
 
-    /// Launches (or resumes) `app` on the host and returns what the engine needs to connect.
-    /// When another app is running, `quitRunningApp` decides whether to end it first.
-    func prepareStream(app: MoonlightApp, settings: MoonlightStreamSettings, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
+    /// Launches (or resumes) `app` on the host at `size` and returns what the engine needs to connect,
+    /// including that size. When another app is running, `quitRunningApp` decides whether to end it first.
+    func prepareStream(app: MoonlightApp, settings: MoonlightStreamSettings, size: MoonlightStreamSize, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
         do {
-            return try await launchForStream(app: app, settings: settings, quitRunningApp: quitRunningApp)
+            return try await launchForStream(app: app, settings: settings, size: size, quitRunningApp: quitRunningApp)
         } catch let error as MoonlightError where error.untrusted {
             pairingWasRefused(error)
             throw error
         }
     }
 
-    private func launchForStream(app: MoonlightApp, settings: MoonlightStreamSettings, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
+    private func launchForStream(app: MoonlightApp, settings: MoonlightStreamSettings, size: MoonlightStreamSize, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
         let transport = try await streamingTransport()
         let info = try await MoonlightClient.serverInfo(transport, secure: true)
         var resume = false
@@ -84,12 +118,12 @@ extension MoonlightHostCoordinator {
         }
         let key = MoonlightCrypto.random(16)
         let keyID = UInt32.random(in: 1..<UInt32(Int32.max))
-        let result = try await MoonlightClient.launch(transport, appID: app.id, settings: settings, remoteInputKey: key, remoteInputKeyID: keyID, resume: resume)
+        let result = try await MoonlightClient.launch(transport, appID: app.id, settings: settings, size: size, remoteInputKey: key, remoteInputKeyID: keyID, resume: resume)
         Task { await refresh() }
         return MoonlightConnectionParameters(
             address: address, appVersion: info.appVersion, gfeVersion: info.gfeVersion, rtspSessionURL: result.rtspSessionURL,
             serverCodecModeSupport: Int32(truncatingIfNeeded: info.serverCodecModeSupport),
-            remoteInputKey: key, remoteInputKeyID: keyID, appName: app.title, hostName: hostDisplayName
+            remoteInputKey: key, remoteInputKeyID: keyID, appName: app.title, hostName: hostDisplayName, streamSize: size
         )
     }
 }
@@ -116,7 +150,8 @@ extension MoonlightHostCoordinator {
         var fast = settings
         fast.hdr = false
         fast.framePacing = false
-        let parameters = try await prepareStream(app: app, settings: fast, quitRunningApp: false)
+        let size = MoonlightStreamTarget.make(settings: fast, hostSupportsHEVC: info?.supportsHEVC).size
+        let parameters = try await prepareStream(app: app, settings: fast, size: size, quitRunningApp: false)
         let session = MoonlightStreamSession(settings: fast)
         session.start(parameters: parameters, settings: fast, headless: true)
         defer { session.stop() }
@@ -152,9 +187,25 @@ final class MoonlightStreamController: ObservableObject {
         let app: MoonlightApp
         let pcName: String
         var settings: MoonlightStreamSettings
+        /// Size (and on the Mac, display) of this stream, decided once here. Retries and "watch it instead"
+        /// keep it, so `/launch` and the session never disagree.
+        let target: MoonlightStreamTarget
         var quitRunningApp = false
         /// Open the sign-in prompt as soon as the stream runs (the PC sits at its lock screen).
         var promptUnlock = false
+
+        /// `target` defaults to this device's screen (the Mac: the display in front).
+        @MainActor
+        init(host: MoonlightHostCoordinator, app: MoonlightApp, pcName: String, settings: MoonlightStreamSettings,
+             target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false) {
+            self.host = host
+            self.app = app
+            self.pcName = pcName
+            self.settings = settings
+            self.target = target ?? MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.info?.supportsHEVC)
+            self.quitRunningApp = quitRunningApp
+            self.promptUnlock = promptUnlock
+        }
     }
 
     @Published var isPresented = false
@@ -199,7 +250,8 @@ final class MoonlightStreamController: ObservableObject {
         launchTask = Task { [weak self] in
             defer { self?.isLaunching = false }
             do {
-                let parameters = try await request.host.prepareStream(app: request.app, settings: request.settings, quitRunningApp: request.quitRunningApp)
+                let parameters = try await request.host.prepareStream(app: request.app, settings: request.settings, size: request.target.size,
+                                                                      quitRunningApp: request.quitRunningApp)
                 guard let self, !Task.isCancelled, self.request?.id == request.id else { return }
                 let session = MoonlightStreamSession(settings: request.settings)
                 self.session = session
@@ -216,7 +268,7 @@ final class MoonlightStreamController: ObservableObject {
     /// Instead of quitting the running app, stream it.
     func streamRunningAppInstead() {
         guard let busyError, let request, let running = request.host.apps.first(where: { $0.id == busyError.runningAppID }) else { return }
-        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, quitRunningApp: false)
+        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target, quitRunningApp: false)
         retry()
     }
 

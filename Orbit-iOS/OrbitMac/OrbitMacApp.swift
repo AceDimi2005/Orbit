@@ -367,8 +367,9 @@ enum MacSunshineSelfTest {
             let seconds = Double(environment["ORBIT_STREAM_SECONDS"] ?? "") ?? 12
             do {
                 let started = Date()
-                let parameters = try await host.prepareStream(app: app, settings: settings, quitRunningApp: false)
-                print("Launch/resume of \(app.title) answered after \(String(format: "%.1f", Date().timeIntervalSince(started))) s; connecting…")
+                let size = MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.info?.supportsHEVC).size
+                let parameters = try await host.prepareStream(app: app, settings: settings, size: size, quitRunningApp: false)
+                print("Launch/resume of \(app.title) at \(size) answered after \(String(format: "%.1f", Date().timeIntervalSince(started))) s; connecting…")
                 let session = MoonlightStreamSession(settings: settings)
                 session.start(parameters: parameters, settings: settings, headless: true)
                 var streamingSince: Date?
