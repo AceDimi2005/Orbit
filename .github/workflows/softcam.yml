@@ -1,0 +1,171 @@
+name: Softcam DLLs
+
+# Builds the DirectShow virtual camera DLL of tshino/softcam (MIT) at a pinned commit for the
+# iPhone webcam feature: Release x64 and Win32 with MSBuild, softcam's own tests, then the
+# "orbit-softcam" artifact with softcam64.dll, softcam32.dll, softcam's LICENSE, LICENSE-BaseClasses
+# (Microsoft's MIT license for the DirectShow BaseClasses linked into the DLLs), UPSTREAM_COMMIT,
+# BUILD-INFO.txt and SHA256SUMS. Nothing is signed, released or committed here: a maintainer
+# downloads the artifact, checks it and commits the DLLs (see tools/softcam/README.md).
+on:
+  workflow_dispatch:
+    inputs:
+      platform_toolset:
+        description: "MSVC platform toolset override, e.g. v145 (empty keeps softcam's own v143)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/softcam.yml"
+      - "tools/softcam/**"
+
+permissions:
+  contents: read
+
+# A newer push to main replaces an older push build. A manual run (maybe with a toolset override)
+# gets a group of its own, so pushes never cancel or replace it and its artifact is not lost.
+concurrency:
+  group: ${{ github.event_name == 'push' && format('softcam-push-{0}', github.ref) || format('softcam-manual-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  # Bump all three together: `gh api repos/tshino/softcam/git/ref/tags/<tag>` gives the commit.
+  SOFTCAM_REPOSITORY: tshino/softcam
+  SOFTCAM_TAG: v1.8.1
+  SOFTCAM_COMMIT: afb424c2415b04da627fa1a7b4706575c2ba3010
+  PLATFORM_TOOLSET: ${{ inputs.platform_toolset }}
+
+jobs:
+  build:
+    name: softcam.dll for x64 and Win32
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out Orbit
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out softcam ${{ env.SOFTCAM_TAG }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SOFTCAM_REPOSITORY }}
+          ref: ${{ env.SOFTCAM_COMMIT }}
+          path: softcam-src
+          persist-credentials: false
+
+      - name: Confirm the pinned commit and the project layout
+        shell: pwsh
+        working-directory: softcam-src
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:SOFTCAM_COMMIT) { throw "Checked out $head, expected $env:SOFTCAM_COMMIT" }
+          # The DirectShow base classes are vendored in src/baseclasses; softcam has no submodules.
+          if (Test-Path .gitmodules) { throw "softcam now uses git submodules; update this workflow" }
+          foreach ($path in 'softcam.sln', 'src/softcam/softcam.vcxproj', 'src/softcam/softcam.def',
+                            'src/softcamcore/softcamcore.vcxproj', 'src/baseclasses/BaseClasses.vcxproj', 'LICENSE') {
+            if (-not (Test-Path $path)) { throw "softcam's layout changed: $path is missing" }
+          }
+          if ($env:PLATFORM_TOOLSET -and $env:PLATFORM_TOOLSET -notmatch '^v[0-9]{3}$') {
+            throw "platform_toolset must look like v143 or v145"
+          }
+          "softcam $env:SOFTCAM_TAG at $head"
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Restore NuGet packages (googletest for softcam's tests)
+        working-directory: softcam-src
+        run: nuget restore softcam.sln -NonInteractive
+
+      - name: Build Release for x64 and Win32
+        shell: pwsh
+        working-directory: softcam-src
+        run: |
+          $toolset = @()
+          if ($env:PLATFORM_TOOLSET) { $toolset = @("/p:PlatformToolset=$env:PLATFORM_TOOLSET") }
+          foreach ($platform in 'x64', 'Win32') {
+            Write-Output "::group::msbuild Release|$platform"
+            msbuild softcam.sln /m /nologo /verbosity:minimal /p:Configuration=Release "/p:Platform=$platform" @toolset
+            $code = $LASTEXITCODE
+            Write-Output "::endgroup::"
+            if ($code -ne 0) { throw "msbuild failed for Release|$platform (exit $code)" }
+          }
+
+      - name: Run softcam's tests
+        shell: pwsh
+        working-directory: softcam-src
+        run: |
+          foreach ($platform in 'x64', 'Win32') {
+            foreach ($test in 'core_tests', 'dll_tests') {
+              Write-Output "::group::$test ($platform)"
+              & ".\$platform\Release\$test.exe"
+              $code = $LASTEXITCODE
+              Write-Output "::endgroup::"
+              if ($code -ne 0) { throw "$test failed for $platform (exit $code)" }
+            }
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Test the packaging script
+        run: python -m unittest discover -s tools/softcam -p 'test_*.py' -v
+
+      - name: Package and verify orbit-softcam
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property catalog_productDisplayVersion | Select-Object -First 1)
+          $msbuild = (msbuild -version -nologo | Select-Object -Last 1)
+          $toolset = if ($env:PLATFORM_TOOLSET) { $env:PLATFORM_TOOLSET } else { 'v143 (softcam default)' }
+          # The exact MSVC tools (VC\Tools\MSVC\<version>) the toolset resolves to, evaluated the way
+          # the build did. The minimum VC++ runtime itself comes from the DLLs' PE headers (package).
+          $toolsetArgs = @()
+          if ($env:PLATFORM_TOOLSET) { $toolsetArgs = @("/p:PlatformToolset=$env:PLATFORM_TOOLSET") }
+          $msvc = (msbuild softcam-src/src/softcam/softcam.vcxproj /nologo /getProperty:VCToolsVersion /p:Configuration=Release /p:Platform=x64 @toolsetArgs | Select-Object -Last 1)
+          $msvc = "$msvc".Trim()
+          if ($msvc -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { $msvc = 'unknown' }
+          $pins = python tools/softcam/softcam_artifact.py package --source softcam-src --out out/orbit-softcam `
+            --repository $env:SOFTCAM_REPOSITORY --tag $env:SOFTCAM_TAG --commit $env:SOFTCAM_COMMIT `
+            --info "Platform toolset: $toolset" `
+            --info "MSVC tools: $msvc" `
+            --info "Visual Studio: $vs; MSBuild $msbuild" `
+            --info "Runner image: $env:ImageOS $env:ImageVersion" `
+            --info "Orbit commit: $env:GITHUB_SHA" `
+            --info "Workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
+          $pins
+          Get-Content out/orbit-softcam/BUILD-INFO.txt
+          $runtime = (Select-String -Path out/orbit-softcam/BUILD-INFO.txt -Pattern 'Visual C\+\+ runtime:' | Select-Object -First 1).Line
+          $summary = @(
+            "### orbit-softcam",
+            "",
+            "softcam $env:SOFTCAM_TAG, commit ``$env:SOFTCAM_COMMIT``, MSVC tools $msvc",
+            "",
+            "$runtime",
+            "",
+            '```'
+          ) + (Get-Content out/orbit-softcam/SHA256SUMS) + @('```')
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload orbit-softcam
+        uses: actions/upload-artifact@v7
+        with:
+          name: orbit-softcam
+          path: out/orbit-softcam/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: orbit-softcam-symbols
+          path: |
+            softcam-src/x64/Release/softcam.pdb
+            softcam-src/Win32/Release/softcam.pdb
+          if-no-files-found: warn
+          retention-days: 90

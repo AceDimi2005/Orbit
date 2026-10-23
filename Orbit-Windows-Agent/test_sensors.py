@@ -105,6 +105,10 @@ class SensorSourceTests(unittest.TestCase):
         self.windows = patch.object(hardware.os, "name", "nt")
         self.windows.start()
         self.addCleanup(self.windows.stop)
+        # The clock label reads platform.system() too; Linux would report a live clock.
+        self.system = patch.object(hardware.platform, "system", return_value="Windows")
+        self.system.start()
+        self.addCleanup(self.system.stop)
         self.clock = patch.object(hardware.psutil, "cpu_freq", return_value=None)
         self.clock.start()
         self.addCleanup(self.clock.stop)

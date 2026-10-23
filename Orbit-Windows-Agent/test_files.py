@@ -1,6 +1,7 @@
 import asyncio
 import ctypes
 import io
+import os
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -339,6 +340,7 @@ class FileAPITests(unittest.TestCase):
             self.assertEqual(ole.CoCreateInstance.restype, ctypes.c_long)
             self.assertEqual(shell.SHCreateItemFromParsingName.argtypes[0], ctypes.c_wchar_p)
 
+    @unittest.skipIf(os.name == "nt", "Windows has the real Recycle Bin; this covers every other platform")
     def test_recycle_has_no_posix_delete_fallback(self):
         path = self.root / "keep.txt"
         path.write_text("keep")
@@ -437,7 +439,7 @@ class FolderArchiveTests(unittest.TestCase):
             self.assertEqual(set(archive.namelist()), {root, root + "poze goale/", root + "subfolder/", root + "subfolder/mâine.txt", root + "empty.txt"})
             self.assertEqual(archive.read(root + "subfolder/mâine.txt").decode(), "Salut 🌍")
             self.assertEqual(archive.read(root + "empty.txt"), b"")
-        self.assertEqual((self.source / "subfolder" / "mâine.txt").read_text(), "Salut 🌍")
+        self.assertEqual((self.source / "subfolder" / "mâine.txt").read_text(encoding="utf-8"), "Salut 🌍")
         response = self.client.get(f"/api/files/archive/{identifier}/download", headers={"Range": "bytes=0-3"})
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response.content, b"PK\x03\x04")
