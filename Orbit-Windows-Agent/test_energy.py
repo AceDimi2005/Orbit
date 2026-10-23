@@ -3,7 +3,9 @@
 Windows APIs are fakes, the network is never used (the Eurostat answer is a saved, trimmed real
 response in test_fixtures/), and every file lives in a temporary folder.
 """
-import copy
+import contextlib
+import email.message
+import io
 import json
 import math
 import os
@@ -14,6 +16,9 @@ import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+import urllib.error
+import urllib.request
+import urllib.response
 
 from fastapi.testclient import TestClient
 
@@ -329,6 +334,70 @@ class PriceTableTests(unittest.TestCase):
             energy.fetch_eurostat_table("http://ec.europa.eu/eurostat", opener=cases["status"])
         with self.assertRaises(ValueError):
             energy.fetch_eurostat_table("https://example.com/prices.json", opener=cases["status"])
+
+    def test_redirects_are_followed_only_to_eurostat_over_https(self):
+        handler = energy._EurostatRedirects()
+        request = urllib.request.Request(energy.EUROSTAT_DATASET_URL)
+        for target in ("http://ec.europa.eu/eurostat/api/data", "https://evil.example/ec.europa.eu/data",
+                       "https://ec.europa.eu.evil.example/data", "ftp://ec.europa.eu/data"):
+            with self.subTest(target=target), self.assertRaises(urllib.error.HTTPError):
+                handler.redirect_request(request, io.BytesIO(), 302, "Found", email.message.Message(), target)
+        allowed = handler.redirect_request(request, io.BytesIO(), 301, "Moved", email.message.Message(),
+                                           "https://EC.europa.eu/eurostat/api/v2/data")
+        self.assertEqual(allowed.full_url, "https://EC.europa.eu/eurostat/api/v2/data")
+
+    def test_the_real_opener_chain_refuses_a_redirect_to_plain_http(self):
+        class FakeHTTPS(urllib.request.HTTPSHandler):
+            def __init__(self, routes):
+                super().__init__()
+                self.routes, self.seen = routes, []
+
+            def https_open(self, req):
+                self.seen.append(req.full_url)
+                status, location, body = self.routes[req.full_url.split("?")[0]]
+                headers = email.message.Message()
+                if location:
+                    headers["Location"] = location
+                response = urllib.response.addinfourl(io.BytesIO(body), headers, req.full_url, status)
+                response.msg = "OK" if status == 200 else "Found"
+                return response
+
+        base = energy.EUROSTAT_DATASET_URL
+        moved = "https://ec.europa.eu/eurostat/api/moved"
+        fake = FakeHTTPS({base: (302, moved, b""), moved: (200, None, FIXTURE.read_bytes())})
+        with patch.object(energy, "_eurostat_opener", lambda context: urllib.request.build_opener(fake, energy._EurostatRedirects())), \
+             patch.object(energy, "PRICE_TABLE_MIN_ROWS", 5):
+            table = energy.fetch_eurostat_table(now=self.clock.now)
+        self.assertEqual(table["rows"]["RO"]["price"], 1.4573)
+        self.assertEqual(fake.seen[-1], moved)
+        for location in ("http://ec.europa.eu/eurostat/api/moved", "https://prices.example.com/nrg_pc_204"):
+            fake = FakeHTTPS({base: (302, location, b"")})
+            with self.subTest(location=location), \
+                 patch.object(energy, "_eurostat_opener", lambda context: urllib.request.build_opener(fake, energy._EurostatRedirects())), \
+                 self.assertRaises(urllib.error.HTTPError):
+                energy.fetch_eurostat_table(now=self.clock.now)
+            self.assertEqual(len(fake.seen), 1)  # the other address was never opened
+
+    def test_the_default_opener_verifies_tls_and_uses_the_strict_redirects(self):
+        context = ssl.create_default_context()
+        opener = energy._eurostat_opener(context)
+        redirects = [handler for handler in opener.handlers if isinstance(handler, urllib.request.HTTPRedirectHandler)]
+        self.assertEqual([type(handler) for handler in redirects], [energy._EurostatRedirects])
+        https = [handler for handler in opener.handlers if isinstance(handler, urllib.request.HTTPSHandler)]
+        self.assertEqual(len(https), 1)
+        self.assertIs(https[0]._context, context)
+        seen = {}
+
+        class Opener:
+            def open(self, request, timeout):
+                seen.update(url=request.full_url, timeout=timeout)
+                return FakeResponse(FIXTURE.read_bytes())
+        with patch.object(energy, "_eurostat_opener", lambda ctx: seen.update(context=ctx) or Opener()), \
+             patch.object(energy, "PRICE_TABLE_MIN_ROWS", 5):
+            energy.fetch_eurostat_table(now=self.clock.now)
+        self.assertEqual(seen["context"].verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(seen["context"].check_hostname)
+        self.assertEqual(seen["timeout"], 20.0)
 
     def test_refresh_saves_atomically_and_a_new_table_loads_it(self):
         table = energy.PriceTable(self.path, clock=self.clock)
@@ -894,9 +963,88 @@ class RuntimeLifecycleTests(unittest.TestCase):
 
     def test_a_ledger_that_cannot_open_pauses_tracking_but_never_raises(self):
         with patch.object(energy, "Ledger", side_effect=sqlite3.OperationalError("disk I/O error")), \
-             self.assertLogs("orbit.energy", "ERROR"):
-            self.assertIsNone(energy.start(refresh=False))
+             patch.object(energy, "LEDGER_RETRY_SECONDS", 3600), self.assertLogs("orbit.energy", "ERROR"):
+            self.assertIsNone(energy.start(path=self.folder / "ledger.sqlite3", refresh=False))
         energy.record_tick({"telemetryAvailable": True})
+        self.assertIsNotNone(energy._RETRY)
+        energy.stop()
+        self.assertIsNone(energy._RETRY)
+
+    def test_a_ledger_that_fails_at_start_is_opened_again_later(self):
+        real, attempts = energy.Ledger, []
+
+        def flaky(path=None):
+            attempts.append(path)
+            if len(attempts) <= 2:
+                raise sqlite3.OperationalError("unable to open database file")
+            return real(path)
+        path = self.folder / "ledger.sqlite3"
+        with patch.object(energy, "Ledger", side_effect=flaky), patch.object(energy, "LEDGER_RETRY_SECONDS", 3600):
+            with self.assertLogs("orbit.energy", "ERROR"):
+                self.assertIsNone(energy.start(path=path, refresh=False))
+            retry = energy._RETRY
+            with self.assertLogs("orbit.energy", "WARNING"):
+                self.assertFalse(retry.attempt())  # still locked
+            self.assertIsNone(energy.current_runtime())
+            with self.assertLogs("orbit.energy", "INFO") as logs:
+                self.assertTrue(retry.attempt())
+        self.assertIn("open again", "\n".join(logs.output))
+        runtime = energy.current_runtime()
+        self.assertIsNotNone(runtime)
+        self.assertIsNone(energy._RETRY)
+        self.assertEqual(attempts, [path, path, path])
+        energy.record_tick({"telemetryAvailable": True, "cpuPowerWatts": 100})
+        energy.record_tick({"telemetryAvailable": True, "cpuPowerWatts": 100})
+        energy.stop()
+        self.assertTrue(runtime.ledger.closed)
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM energy_daily").fetchone()[0], 1)
+
+    def test_the_retry_thread_opens_the_ledger_by_itself(self):
+        real, attempts = energy.Ledger, []
+
+        def flaky(path=None):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real(path)
+        with patch.object(energy, "Ledger", side_effect=flaky), patch.object(energy, "LEDGER_RETRY_SECONDS", 0.01), \
+             self.assertLogs("orbit.energy", "INFO"):
+            energy.start(path=self.folder / "ledger.sqlite3", refresh=False)
+            deadline = time.monotonic() + 5
+            while energy.current_runtime() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertIsNotNone(energy.current_runtime())
+
+    def test_stop_while_retrying_leaves_nothing_open(self):
+        with patch.object(energy, "Ledger", side_effect=sqlite3.OperationalError("locked")), \
+             patch.object(energy, "LEDGER_RETRY_SECONDS", 3600), self.assertLogs("orbit.energy", "ERROR"):
+            energy.start(path=self.folder / "ledger.sqlite3", refresh=False)
+        retry = energy._RETRY
+        energy.stop()
+        self.assertFalse(retry.thread.is_alive())
+        with patch.object(energy, "Ledger") as ledger:
+            self.assertTrue(retry.attempt())  # stopped: does not even try
+        ledger.assert_not_called()
+        # A try that finishes after stop() closes what it opened.
+        retry = energy.LedgerRetry(path=self.folder / "ledger.sqlite3", interval=3600)
+        self.assertTrue(retry.attempt())
+        self.assertIsNone(energy.current_runtime())
+
+    def test_a_tracker_that_fails_to_build_closes_the_ledger(self):
+        opened = []
+        real = energy.Ledger
+
+        def spy(path=None):
+            opened.append(real(path))
+            return opened[-1]
+
+        def broken(ledger):
+            raise RuntimeError("tracker failed")
+        with patch.object(energy, "Ledger", side_effect=spy), patch.object(energy, "LEDGER_RETRY_SECONDS", 3600), \
+             self.assertLogs("orbit.energy", "ERROR"):
+            self.assertIsNone(energy.start(extra_trackers=(broken,), path=self.folder / "ledger.sqlite3", refresh=False))
+        self.assertTrue(opened[0].closed)
 
     def test_boot_mode_reaches_the_country_resolver(self):
         energy.start(path=self.folder / "ledger.sqlite3", refresh=False, boot_mode=True)

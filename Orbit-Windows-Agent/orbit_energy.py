@@ -51,6 +51,8 @@ import ssl
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -67,6 +69,7 @@ PSU_EFFICIENCY_RANGE = (0.5, 1.0)
 MAX_PRICE_PER_KWH = 100000.0  # Covers currencies such as IDR or VND; the floor is 0 (free power).
 MAX_TICK_SECONDS = 5.0
 FLUSH_SECONDS = 60.0
+LEDGER_RETRY_SECONDS = 60.0
 RETENTION_DAYS = 400
 MAX_COMPONENT_WATTS = 3000.0
 SESSION_GAP_SECONDS = 15.0  # orbit_history.GAP_SECONDS: longer pauses start a new segment.
@@ -522,15 +525,49 @@ def parse_eurostat_prices(payload):
     return rows
 
 
+def _is_eurostat_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        return parts.scheme == "https" and (parts.hostname or "").lower() == EUROSTAT_HOST
+    except ValueError:
+        return False
+
+
+class _EurostatRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to another HTTPS address on ec.europa.eu (urllib's own handler
+    would follow one to any host, and to plain HTTP)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_eurostat_url(newurl):
+            raise urllib.error.HTTPError(req.full_url, code, "Eurostat redirected outside https://ec.europa.eu",
+                                         headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _eurostat_opener(context):
+    """An opener that verifies TLS with `context` and refuses redirects away from Eurostat."""
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), _EurostatRedirects())
+
+
 def fetch_eurostat_table(url=None, *, opener=None, timeout=20.0, now=None):
-    """Downloads and parses the public table; raises on any problem (the caller stays silent)."""
+    """Downloads and parses the public table; raises on any problem (the caller stays silent).
+
+    `opener(request, timeout=, context=)` replaces the network in tests."""
     url = url or eurostat_url(now)
-    if not url.startswith(f"https://{EUROSTAT_HOST}/"):
+    if not url.startswith(f"https://{EUROSTAT_HOST}/") or not _is_eurostat_url(url):
         raise ValueError("Electricity prices are only downloaded from Eurostat over HTTPS")
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "OrbitPCCompanion"})
     context = ssl.create_default_context()  # Verified certificates and host name.
-    open_url = opener or urllib.request.urlopen
+    if opener is None:
+        def open_url(request, timeout, context):
+            return _eurostat_opener(context).open(request, timeout=timeout)
+    else:
+        open_url = opener
     with open_url(request, timeout=timeout, context=context) as response:
+        if not _is_eurostat_url(getattr(response, "url", None) or url):
+            raise ValueError("The Eurostat answer came from another address")
         status = getattr(response, "status", 200)
         if status != 200:
             raise ValueError(f"Eurostat answered HTTP {status}")
@@ -1280,6 +1317,7 @@ def session_energy(samples, settings, price, *, day_of=local_day, unit_prices=No
 _RUNTIME_LOCK = threading.Lock()
 _RUNTIME = None
 _REFRESHER = None
+_RETRY = None
 COUNTRY = CountryResolver()
 PRICE_TABLE = PriceTable()
 
@@ -1304,41 +1342,106 @@ def price_changed():
         runtime.invalidate()
 
 
-def start(extra_trackers=(), *, boot_mode=False, path=None, refresh=True):
-    """Opens the ledger and starts recording (call from the agent's lifespan). Never raises:
-    without a ledger the price routes still work and the summaries answer 503."""
-    global _RUNTIME, _REFRESHER
-    COUNTRY.boot_mode = bool(boot_mode)
-    COUNTRY.reset()
-    runtime = None
+def _open_runtime(extra_trackers=(), path=None):
+    """Opens the ledger and builds the runtime; raises when the ledger cannot be opened."""
+    ledger = Ledger(path)
     try:
-        ledger = Ledger(path)
         trackers = [EnergyTracker(ledger)]
         for factory in extra_trackers:
             trackers.append(factory(ledger))
         runtime = LedgerRuntime(ledger, trackers, price_provider=current_price, settings_provider=energy_settings)
+    except BaseException:
+        ledger.close()
+        raise
+    try:
+        ledger.prune(time.time())
+    except (sqlite3.Error, RuntimeError):
+        LOGGER.warning("Could not remove old energy ledger rows", exc_info=True)
+    return runtime
+
+
+class LedgerRetry:
+    """Tries to open the ledger again every `LEDGER_RETRY_SECONDS` after it failed at start (a
+    backup or antivirus holding the file, the boot-time instance still handing over), so one bad
+    moment does not pause electricity cost and summaries until the agent restarts."""
+
+    def __init__(self, extra_trackers=(), path=None, *, interval=None):
+        self.extra_trackers = tuple(extra_trackers)
+        self.path = path
+        self.interval = LEDGER_RETRY_SECONDS if interval is None else interval
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="orbit-energy-ledger", daemon=True)
+        self._failures = 0
+
+    def attempt(self):
+        """One try. True once the ledger is open and installed (or retrying is no longer wanted)."""
+        global _RUNTIME, _RETRY
+        if self.stop_event.is_set():
+            return True
         try:
-            ledger.prune(time.time())
-        except (sqlite3.Error, RuntimeError):
-            LOGGER.warning("Could not remove old energy ledger rows", exc_info=True)
+            runtime = _open_runtime(self.extra_trackers, self.path)
+        except Exception as error:
+            self._failures += 1
+            if self._failures == 1:
+                LOGGER.warning("The energy ledger still cannot be opened (%s); trying again every minute", error)
+            return False
+        with _RUNTIME_LOCK:
+            installed = _RETRY is self and _RUNTIME is None and not self.stop_event.is_set()
+            if installed:
+                _RUNTIME, _RETRY = runtime, None
+        if not installed:  # stop() ran meanwhile: leave nothing open.
+            runtime.close()
+            return True
+        LOGGER.info("The energy ledger is open again; electricity cost and monthly summaries resumed")
+        return True
+
+    def _run(self):
+        while not self.stop_event.wait(self.interval):
+            if self.attempt():
+                return
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self, timeout=7.0):
+        self.stop_event.set()
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(timeout)
+
+
+def start(extra_trackers=(), *, boot_mode=False, path=None, refresh=True):
+    """Opens the ledger and starts recording (call from the agent's lifespan). Never raises:
+    without a ledger the price routes still work, the summaries answer 503 and the ledger is
+    tried again every minute."""
+    global _RUNTIME, _REFRESHER, _RETRY
+    COUNTRY.boot_mode = bool(boot_mode)
+    COUNTRY.reset()
+    runtime = retry = None
+    try:
+        runtime = _open_runtime(extra_trackers, path)
     except Exception:
-        LOGGER.exception("The energy ledger could not be opened; electricity cost and monthly summaries are paused")
-        runtime = None
+        LOGGER.exception("The energy ledger could not be opened; electricity cost and monthly summaries are paused "
+                         "until it can be (trying again every minute)")
+        retry = LedgerRetry(extra_trackers, path)
     refresher = None
     if refresh and os.getenv("ORBIT_ENERGY_PRICE_REFRESH", "1") != "0":
         refresher = PriceRefresher(PRICE_TABLE, on_refresh=price_changed)
         refresher.start()
     with _RUNTIME_LOCK:
-        _RUNTIME, _REFRESHER = runtime, refresher
+        _RUNTIME, _REFRESHER, _RETRY = runtime, refresher, retry
+    if retry is not None:
+        retry.start()
     return runtime
 
 
 def stop():
     """Writes what is still in memory and closes the ledger (call at shutdown)."""
-    global _RUNTIME, _REFRESHER
+    global _RUNTIME, _REFRESHER, _RETRY
     with _RUNTIME_LOCK:
-        runtime, refresher = _RUNTIME, _REFRESHER
-        _RUNTIME = _REFRESHER = None
+        runtime, refresher, retry = _RUNTIME, _REFRESHER, _RETRY
+        _RUNTIME = _REFRESHER = _RETRY = None
+    if retry is not None:
+        retry.stop()
     if refresher is not None:
         refresher.stop()
     if runtime is not None:
@@ -1459,7 +1562,8 @@ def create_energy_router(verify_control, require_encrypted, store_provider=None)
     def get_summary(month: str | None = Query(default=None, max_length=16)):
         runtime = current_runtime()
         if runtime is None:
-            raise HTTPException(503, "Electricity tracking is not running on the PC. Restart Orbit PC Companion.")
+            raise HTTPException(503, ("Electricity tracking is not running on the PC yet. Try again in a minute; "
+                                     "if this keeps happening, restart Orbit PC Companion."))
         today = runtime.today()
         try:
             year, number = parse_month(month) if month else parse_month(today[:7])

@@ -199,17 +199,24 @@ class TrackerCase(unittest.TestCase):
         self.mono = Clock(100)
         self.events = []
         self.allow = True
+        self.log_open = True
+        self.store_events = True
         self.runtime, self.tracker = self.make_runtime()
 
     def emit(self, kind, title, body, level="active", data=None, toast=True):
-        event = {"kind": kind, "title": title, "body": body, "level": level, "data": data, "toast": toast}
+        # Like orbit_events.emit: an event that could not be stored comes back with id None.
+        event = {"id": len(self.events) + 1 if self.store_events else None, "kind": kind, "title": title,
+                 "body": body, "level": level, "data": data, "toast": toast}
         self.events.append(event)
         return event
 
+    def make_tracker(self, ledger, names=None):
+        return summary.GameTracker(ledger, names=names or FakeNames({"eldenring": "ELDEN RING"}), emit=self.emit,
+                                   alerts_allow=lambda: self.allow, day_of=utc_day, log_ready=lambda: self.log_open)
+
     def make_runtime(self):
         ledger = energy.Ledger(self.folder / "ledger.sqlite3")
-        tracker = summary.GameTracker(ledger, names=FakeNames({"eldenring": "ELDEN RING"}), emit=self.emit,
-                                      alerts_allow=lambda: self.allow, day_of=utc_day)
+        tracker = self.make_tracker(ledger)
         runtime = energy.LedgerRuntime(ledger, [energy.EnergyTracker(ledger), tracker],
                                        price_provider=lambda: {"pricePerKWh": 1.0, "currency": "RON"},
                                        settings_provider=lambda: {"baseWatts": 60.0, "psuEfficiency": 1.0},
@@ -267,11 +274,38 @@ class GameTrackerTests(TrackerCase):
         self.assertEqual((spans[0]["started_at"], spans[0]["ended_at"]), (start, start + 360))
         self.assertEqual(spans[1]["ended_at"] - spans[1]["started_at"], 29)
 
-    def test_switching_games_starts_a_new_span(self):
+    def test_a_brief_switch_to_another_game_does_not_cut_the_span(self):
+        # RTSS can name another (foreground) game for a few ticks: each game keeps its own span.
+        start = self.wall.now
+        self.tick(0)
+        self.play(60)
+        self.play(3, game="bg3.exe")
+        self.play(60)
+        spans = self.spans()
+        self.assertEqual([span["game"] for span in spans], ["eldenring", "bg3"])
+        self.assertEqual((spans[0]["started_at"], spans[0]["ended_at"]), (start, start + 123))
+        self.assertEqual((spans[1]["started_at"], spans[1]["ended_at"]), (start + 61, start + 63))
+        self.play(30)  # later flushes extend the same rows
+        self.assertEqual([(span["id"], span["ended_at"]) for span in self.spans()],
+                         [(spans[0]["id"], start + 153), (spans[1]["id"], start + 63)])
+
+    def test_another_game_for_more_than_five_minutes_ends_the_first_span(self):
+        self.tick(0)
+        self.play(10)
+        self.play(301, game="bg3.exe")
+        self.play(10)
+        spans = self.spans()
+        self.assertEqual([span["game"] for span in spans], ["eldenring", "bg3", "eldenring"])
+        self.assertEqual([span["ended_at"] - span["started_at"] for span in spans], [10, 300, 9])
+
+    def test_idle_spans_are_closed_and_written_once(self):
         self.tick(0)
         self.play(10)
         self.play(10, game="bg3.exe")
-        self.play(10)
+        self.play(400, game=None)
+        self.assertEqual(self.tracker._spans, {})
+        self.assertEqual([span["game"] for span in self.spans()], ["eldenring", "bg3"])
+        self.play(5)
         self.assertEqual([span["game"] for span in self.spans()], ["eldenring", "bg3", "eldenring"])
 
     def test_a_restart_within_five_minutes_continues_the_span(self):
@@ -293,6 +327,22 @@ class GameTrackerTests(TrackerCase):
         self.tick(0, runtime=runtime)
         self.play(5, runtime=runtime)
         self.assertEqual(len(self.spans(runtime)), 2)
+
+    def test_after_a_restart_each_game_continues_its_own_span(self):
+        self.tick(0)
+        self.play(100)
+        self.play(10, game="bg3.exe")  # the newest stored span is bg3's
+        first = self.spans()
+        self.runtime.close()
+        self.wall.now += 60
+        runtime, _ = self.make_runtime()
+        self.tick(0, runtime=runtime)
+        self.play(20, runtime=runtime)
+        spans = self.spans(runtime)
+        self.assertEqual([(span["id"], span["game"]) for span in spans], [(first[0]["id"], "eldenring"), (first[1]["id"], "bg3")])
+        self.assertEqual(spans[0]["ended_at"] - spans[0]["started_at"], 100 + 10 + 60 + 20)
+        self.assertEqual(spans[1], first[1])
+        runtime.close()
 
     def test_a_span_crossing_midnight_stays_one_session_and_days_split(self):
         self.wall.now = utc("2026-10-10 23:59:00")
@@ -353,6 +403,8 @@ class MonthSummaryTests(TrackerCase):
         bg3 = report["games"][1]
         self.assertEqual((bg3["playSeconds"], bg3["averageFPS"], bg3["peakCPUTemp"], bg3["kWh"], bg3["cost"]),
                          (5430, 90.0, 91, 2.0, 2.0))  # EUR row restated at the current RON price
+        # Like the month's daysPlayed, a game's days need a minute of play (bg3's 30 s on Oct 5 do not count).
+        self.assertEqual((top["daysPlayed"], bg3["daysPlayed"]), (2, 1))
         self.assertEqual(report["longestSession"], {"game": "eldenring", "name": "ELDEN RING", "seconds": 7200, "date": "2026-10-01"})
         self.assertEqual(report["busiestDay"], {"day": "2026-10-02", "playSeconds": 9000})
         self.assertEqual((report["peakCPUTemp"], report["peakGPUTemp"]), (91, 86))
@@ -400,7 +452,7 @@ class SummaryReadyTests(TrackerCase):
         self.assertEqual(event["body"], "You played 2 h 10 min in October, most of it ELDEN RING. Open Orbit to see your month.")
         self.assertIsNone(self.tracker.check_summary_ready(utc("2026-11-01 10:00:00")))
         self.assertEqual(self.runtime.ledger.meta(summary.SUMMARY_READY_META), "2026-10")
-        restarted = summary.GameTracker(self.runtime.ledger, names=FakeNames(), emit=self.emit, day_of=utc_day)
+        restarted = self.make_tracker(self.runtime.ledger, FakeNames())
         self.assertIsNone(restarted.check_summary_ready(utc("2026-11-02 09:00:00")))
         self.assertEqual(len(self.events), 1)
 
@@ -416,6 +468,57 @@ class SummaryReadyTests(TrackerCase):
         self.assertIsNone(self.tracker.check_summary_ready(utc("2026-11-01 09:00:00")))
         self.assertEqual(self.events, [])
         self.assertIsNone(self.runtime.ledger.meta(summary.SUMMARY_READY_META))
+
+    def test_a_failed_mark_is_retried_on_the_next_run(self):
+        self.seed_october()
+        with patch.object(self.runtime.ledger, "set_meta", side_effect=energy.sqlite3.OperationalError("locked")):
+            with self.assertRaises(energy.sqlite3.OperationalError):
+                self.tracker.check_summary_ready(utc("2026-11-01 09:00:00"))
+        self.assertEqual(self.events, [])
+        self.assertIsNone(self.runtime.ledger.meta(summary.SUMMARY_READY_META))
+        event = self.tracker.check_summary_ready(utc("2026-11-01 09:01:00"))
+        self.assertEqual(event["data"], {"month": "2026-10"})
+        self.assertEqual(self.runtime.ledger.meta(summary.SUMMARY_READY_META), "2026-10")
+
+    def test_without_an_open_event_log_nothing_is_marked_until_it_opens(self):
+        self.seed_october()
+        self.log_open = False
+        self.assertIsNone(self.tracker.check_summary_ready(utc("2026-11-01 09:00:00")))
+        self.assertEqual(self.events, [])
+        self.assertIsNone(self.runtime.ledger.meta(summary.SUMMARY_READY_META))
+        self.log_open = True
+        self.assertIsNotNone(self.tracker.check_summary_ready(utc("2026-11-01 09:01:00")))
+        self.assertEqual(len(self.events), 1)
+
+    def test_an_event_that_could_not_be_stored_is_announced_after_a_restart(self):
+        self.seed_october()
+        self.store_events = False
+        self.assertIsNone(self.tracker.check_summary_ready(utc("2026-11-01 09:00:00")))
+        self.assertIsNone(self.runtime.ledger.meta(summary.SUMMARY_READY_META))
+        # Not retried every minute in the same run...
+        self.assertIsNone(self.tracker.check_summary_ready(utc("2026-11-01 09:01:00")))
+        self.assertEqual(len(self.events), 1)
+        # ...but the next start announces it.
+        self.store_events = True
+        restarted = self.make_tracker(self.runtime.ledger)
+        self.assertEqual(restarted.check_summary_ready(utc("2026-11-01 10:00:00"))["data"], {"month": "2026-10"})
+        self.assertEqual(self.runtime.ledger.meta(summary.SUMMARY_READY_META), "2026-10")
+
+    def test_an_emit_error_also_leaves_the_month_unannounced(self):
+        self.seed_october()
+        tracker = summary.GameTracker(self.runtime.ledger, names=FakeNames(), emit=MagicMock(side_effect=ValueError("bad")),
+                                      alerts_allow=lambda: True, day_of=utc_day, log_ready=lambda: True)
+        with self.assertLogs("orbit.summary", "ERROR"):
+            self.assertIsNone(tracker.check_summary_ready(utc("2026-11-01 09:00:00")))
+        self.assertIsNone(self.runtime.ledger.meta(summary.SUMMARY_READY_META))
+
+    def test_the_default_log_check_follows_orbit_events(self):
+        import orbit_events
+        self.addCleanup(orbit_events.set_event_log, orbit_events.current_log())
+        orbit_events.set_event_log(None)
+        self.assertFalse(summary._event_log_ready())
+        orbit_events.set_event_log(object())
+        self.assertTrue(summary._event_log_ready())
 
     def test_turned_off_in_alerts_is_marked_without_an_event(self):
         self.seed_october()

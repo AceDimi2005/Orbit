@@ -1,9 +1,10 @@
 """Monthly gaming summary, "Wrapped" (feature `summary`), from the energy ledger's game tables.
 
 Every telemetry tick while a game runs adds to `game_daily` (play time, FPS and temperature sums,
-peaks) for the PC's local day, and extends the game's current span in `game_spans`. A span ends
-when the game has not been seen for 5 minutes, so a crash and relaunch stays one session. Both
-tables live in `ledger.sqlite3` (see orbit_energy) and are written with it every 60 s.
+peaks) for the PC's local day, and extends that game's span in `game_spans`. A span ends only
+when its game has not been seen for 5 minutes, so a crash and relaunch, or a few seconds of
+another game in between, stays one session. Both tables live in `ledger.sqlite3` (see
+orbit_energy) and are written with it every 60 s.
 
 Game names: the running exe's folder is looked up in Steam's `appmanifest_*.acf` files
 (`installdir` → `name`) and Epic's `.item` manifests (`InstallLocation` → `DisplayName`); without
@@ -16,8 +17,9 @@ the registry and default folders.
 "busiestDay", "peakCPUTemp", "peakGPUTemp", "energy": {"kWh", "cost", "currency"},
 "previous": {"month", "playSeconds", "kWh"}, "available": ["2026-09", "2026-10"]}`.
 
-On the first days of a month (the 1st, or the first time the agent runs within the first 7
-days) a passive `summary.ready` event announces the previous month once, when it has play time.
+On the 1st of a month (or, when the PC was off then, on the first agent run within the first 7
+days) a passive `summary.ready` event announces the previous month once, when it has at least a
+minute of play. `alerts.summary.enabled: false` turns it off.
 """
 import calendar
 import json
@@ -343,6 +345,10 @@ def format_duration(seconds):
     return f"{hours} h" if hours else f"{minutes} min"
 
 
+def _event_log_ready():
+    return orbit_events.current_log() is not None
+
+
 def _alerts_allow_summary():
     try:
         alerts = orbit_settings.shared_store().get("alerts", {})
@@ -356,20 +362,22 @@ class GameTracker:
     """Per-day game totals and play spans, kept in memory between ledger flushes."""
 
     def __init__(self, ledger, *, names=None, emit=None, alerts_allow=_alerts_allow_summary,
-                 day_of=orbit_energy.local_day):
+                 day_of=orbit_energy.local_day, log_ready=None):
         self.ledger = ledger
         self.names = names or GameNames()
         self._emit = emit or orbit_events.emit
+        self._log_ready = log_ready or _event_log_ready
         self._alerts_allow = alerts_allow
         self.day_of = day_of
         self._pending = {}
-        self._span = None
+        self._spans = {}  # game -> its open span (seen within the last SPAN_GAP_SECONDS)
         self._ended = []
         self._assigned = []
-        self._resumed = False
+        self._resumed = set()
         self._ready_checked = None
 
     def add(self, snapshot, dt, now, day, context=None):
+        self._close_idle_spans(now)
         if snapshot.get("telemetryAvailable") is False:
             return
         process = snapshot.get("activeGameProcess") or snapshot.get("activeGame")
@@ -400,15 +408,19 @@ class GameTracker:
         self._extend_span(game, name, now)
 
     def _extend_span(self, game, name, now):
-        span = self._span
-        if span is None and not self._resumed:
+        """Each game keeps its own span, so a brief switch to another game (or RTSS naming the
+        foreground app for a moment) does not cut it: a span ends only after its game has not
+        been seen for SPAN_GAP_SECONDS."""
+        span = self._spans.get(game)
+        if span is None and game not in self._resumed:
             # After a restart (or the boot instance's hand-over) the same game continues its span.
-            self._resumed = True
-            rows = self.ledger.query("SELECT * FROM game_spans ORDER BY ended_at DESC, id DESC LIMIT 1")
-            if rows and rows[0]["game"] == game and -SPAN_GAP_SECONDS <= now - rows[0]["ended_at"] <= SPAN_GAP_SECONDS:
+            self._resumed.add(game)
+            rows = self.ledger.query("SELECT * FROM game_spans WHERE game = ? ORDER BY ended_at DESC, id DESC LIMIT 1",
+                                     (game,))
+            if rows and -SPAN_GAP_SECONDS <= now - rows[0]["ended_at"] <= SPAN_GAP_SECONDS:
                 row = rows[0]
                 span = _Span(row["id"], row["game"], row["display_name"], row["started_at"], row["ended_at"], dirty=False)
-        if span is not None and span.game == game and now - span.ended_at <= SPAN_GAP_SECONDS:
+        if span is not None and now - span.ended_at <= SPAN_GAP_SECONDS:
             span.ended_at = max(span.ended_at, now)
             span.name = name
             span.dirty = True
@@ -416,7 +428,14 @@ class GameTracker:
             if span is not None and span.dirty:
                 self._ended.append(span)
             span = _Span(None, game, name, now, now)
-        self._span = span
+        self._spans[game] = span
+
+    def _close_idle_spans(self, now):
+        for game, span in list(self._spans.items()):
+            if now - span.ended_at > SPAN_GAP_SECONDS:
+                del self._spans[game]
+                if span.dirty:
+                    self._ended.append(span)
 
     def flush(self, db):
         self._assigned = []
@@ -437,7 +456,7 @@ class GameTracker:
                        (bucket.name, bucket.play_seconds, bucket.fps_sum, bucket.fps_count, bucket.cpu_sum,
                         bucket.cpu_count, _peak(row["cpu_temp_peak"], bucket.cpu_peak), bucket.gpu_sum,
                         bucket.gpu_count, _peak(row["gpu_temp_peak"], bucket.gpu_peak), day, game))
-        for span in self._ended + ([self._span] if self._span is not None else []):
+        for span in self._ended + list(self._spans.values()):
             if not span.dirty:
                 continue
             if span.id is None:
@@ -462,7 +481,8 @@ class GameTracker:
         self.check_summary_ready(now)
 
     def check_summary_ready(self, now):
-        """Emits `summary.ready` for last month once, in the first days of a month. Returns the event."""
+        """Emits `summary.ready` for last month once, in the first days of a month (the 1st, or the
+        first agent run within the first SUMMARY_READY_DAYS days). Returns the event."""
         today = self.day_of(now)
         year, month, day = int(today[:4]), int(today[5:7]), int(today[8:10])
         if day > SUMMARY_READY_DAYS:
@@ -478,12 +498,17 @@ class GameTracker:
         rows = self.ledger.query("""SELECT game, MAX(display_name) AS name, SUM(play_seconds) AS seconds FROM game_daily
                                     WHERE day >= ? AND day < ? GROUP BY game ORDER BY seconds DESC""", (first, after))
         total = sum(row["seconds"] or 0.0 for row in rows)
-        self._ready_checked = previous
         if total < MIN_DAY_PLAY_SECONDS:
+            self._ready_checked = previous
             return None
-        # Remember first: a crash right after must not announce the month twice.
+        allowed = self._alerts_allow()
+        if allowed and not self._log_ready():
+            return None  # Nowhere to store the event yet: try again on a later run (or after a restart).
+        # Remember first: a crash right after must not announce the month twice. A failed write
+        # raises here, before anything is marked, so the next periodic run tries again.
         self.ledger.set_meta(SUMMARY_READY_META, previous)
-        if not self._alerts_allow():
+        self._ready_checked = previous
+        if not allowed:
             return None
         month_name = MONTH_NAMES[int(previous[5:7]) - 1]
         top = rows[0]["name"] or prettify_game_name(rows[0]["game"])
@@ -491,11 +516,20 @@ class GameTracker:
         body += f", most of it {top}." if len(rows) > 1 else f", all of it {top}."
         body += " Open Orbit to see your month."
         try:
-            return self._emit("summary.ready", f"Your {month_name} summary is ready", body, level="passive",
-                              data={"month": previous}, toast=False)
+            event = self._emit("summary.ready", f"Your {month_name} summary is ready", body, level="passive",
+                               data={"month": previous}, toast=False)
         except Exception:
             LOGGER.exception("Could not announce the monthly summary")
+            event = None
+        if not isinstance(event, dict) or event.get("id") is None:
+            # Not stored, so no phone saw it: forget the mark so the next start announces it.
+            # (Not retried in this run, which would repeat the same failure every minute.)
+            try:
+                self.ledger.set_meta(SUMMARY_READY_META, sent)
+            except (sqlite3.Error, RuntimeError):
+                LOGGER.warning("Could not undo the monthly summary mark", exc_info=True)
             return None
+        return event
 
 
 # Report -----------------------------------------------------------------------------------------
@@ -528,7 +562,7 @@ def month_summary(ledger, year, month, price, *, day_of=orbit_energy.local_day):
         game["gpu_sum"] += row["gpu_temp_sum"]
         game["gpu_count"] += row["gpu_temp_count"]
         game["gpu_peak"] = _peak(game["gpu_peak"], row["gpu_temp_peak"])
-        if row["play_seconds"] > 0:
+        if row["play_seconds"] >= MIN_DAY_PLAY_SECONDS:
             game["days"].add(row["day"])
         per_day[row["day"]] = per_day.get(row["day"], 0.0) + row["play_seconds"]
 
@@ -619,7 +653,8 @@ def create_summary_router(verify_control, require_encrypted, store_provider=None
     def get_summary(month: str | None = Query(default=None, max_length=16)):
         runtime = orbit_energy.current_runtime()
         if runtime is None:
-            raise HTTPException(503, "Monthly summaries are not running on the PC. Restart Orbit PC Companion.")
+            raise HTTPException(503, ("Monthly summaries are not running on the PC yet. Try again in a minute; "
+                                     "if this keeps happening, restart Orbit PC Companion."))
         try:
             year, number = parse_month(month) if month else parse_month(runtime.today()[:7])
         except ValueError as error:
