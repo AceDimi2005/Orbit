@@ -27,6 +27,9 @@ struct CompanionToolsView: View {
 
                         OrbitSectionHeader("PC Control", icon: "slider.horizontal.3")
                         LazyVGrid(columns: columns, spacing: 12) {
+                            NavigationLink { DeckView(vm: vm) } label: {
+                                toolTile("Buttons", subtitle: "One-tap shortcuts, OBS & media", icon: "square.grid.3x2.fill", tint: .pink)
+                            }
                             NavigationLink { ClipboardView(vm: vm) } label: {
                                 toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
                             }

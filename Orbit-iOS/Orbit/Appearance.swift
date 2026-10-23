@@ -676,6 +676,12 @@ struct OrbitProPaywallView: View {
                                 title: "Multi-PC Profiles & Session Graphs",
                                 subtitle: "Save unlimited PCs and inspect historical FPS, temperature, and power telemetry graphs."
                             )
+                            proFeatureRow(
+                                icon: "square.grid.3x2.fill",
+                                tint: .pink,
+                                title: "Unlimited Buttons",
+                                subtitle: "Go past the 6 free buttons: up to 64 one-tap shortcuts, OBS controls and app launchers per PC."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

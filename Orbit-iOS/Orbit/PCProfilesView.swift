@@ -368,6 +368,9 @@ extension OrbitViewModel {
     func removePC(_ profile: SavedPC) {
         OrbitPushRegistrar.shared.forget(profile)
         try? OrbitWidgetConnectionStore.remove(id: profile.id)
+        // Its cached buttons (titles, links, typed text) go too; the Buttons widget and control redraw.
+        OrbitDeckCache.remove(pcID: profile.id)
+        OrbitDeckSurfaces.reload()
         PCProfileStore.removeToken(profile.id)
         savedPCs.removeAll { $0.id == profile.id }; PCProfileStore.save(savedPCs)
         OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles(removing: [profile.syncIdentity])

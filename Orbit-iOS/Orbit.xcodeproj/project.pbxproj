@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000106 /* OrbitDeckIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000117 /* OrbitDeckIntents.swift */; };
+		A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000117 /* OrbitDeckIntents.swift */; };
+		A10000000000000000000105 /* OrbitDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000116 /* OrbitDeck.swift */; };
+		A2000000000000000000010E /* OrbitDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000116 /* OrbitDeck.swift */; };
+		A10000000000000000000104 /* OrbitDeckWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000115 /* OrbitDeckWidgets.swift */; };
+		A2000000000000000000010D /* DeckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000114 /* DeckView.swift */; };
+		A2000000000000000000010C /* DeckEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000113 /* DeckEditorView.swift */; };
 		A80000000000000000000102 /* OrbitPushStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000112 /* OrbitPushStore.swift */; };
 		A2000000000000000000010B /* OrbitPushStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000112 /* OrbitPushStore.swift */; };
 		A80000000000000000000101 /* OrbitPushCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000111 /* OrbitPushCrypto.swift */; };
@@ -233,6 +240,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000117 /* OrbitDeckIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDeckIntents.swift; sourceTree = "<group>"; };
+		B20000000000000000000116 /* OrbitDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDeck.swift; sourceTree = "<group>"; };
+		B20000000000000000000115 /* OrbitDeckWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDeckWidgets.swift; sourceTree = "<group>"; };
+		B20000000000000000000114 /* DeckView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckView.swift; sourceTree = "<group>"; };
+		B20000000000000000000113 /* DeckEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckEditorView.swift; sourceTree = "<group>"; };
 		B20000000000000000000112 /* OrbitPushStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPushStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000111 /* OrbitPushCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPushCrypto.swift; sourceTree = "<group>"; };
 		B20000000000000000000110 /* OrbitEventFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitEventFeed.swift; sourceTree = "<group>"; };
@@ -456,6 +468,8 @@
 				B2000000000000000000010C /* NotificationsSettingsView.swift */,
 				B2000000000000000000010D /* OrbitNotifications.swift */,
 				B2000000000000000000010E /* OrbitNotifySelfTest.swift */,
+				B20000000000000000000113 /* DeckEditorView.swift */,
+				B20000000000000000000114 /* DeckView.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -483,6 +497,7 @@
 				B20000000000000000000005 /* Info.plist */,
 				B20000000000000000000016 /* PrivacyInfo.xcprivacy */,
 				B20000000000000000000106 /* OrbitWidgetPowerIntents.swift */,
+				B20000000000000000000115 /* OrbitDeckWidgets.swift */,
 			);
 			path = OrbitWidgets;
 			sourceTree = "<group>";
@@ -511,6 +526,8 @@
 				B20000000000000000000110 /* OrbitEventFeed.swift */,
 				B20000000000000000000111 /* OrbitPushCrypto.swift */,
 				B20000000000000000000112 /* OrbitPushStore.swift */,
+				B20000000000000000000116 /* OrbitDeck.swift */,
+				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -891,6 +908,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
+				A2000000000000000000010E /* OrbitDeck.swift in Sources */,
+				A2000000000000000000010D /* DeckView.swift in Sources */,
+				A2000000000000000000010C /* DeckEditorView.swift in Sources */,
 				A2000000000000000000010B /* OrbitPushStore.swift in Sources */,
 				A2000000000000000000010A /* OrbitPushCrypto.swift in Sources */,
 				A20000000000000000000109 /* OrbitEventFeed.swift in Sources */,
@@ -942,6 +963,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000106 /* OrbitDeckIntents.swift in Sources */,
+				A10000000000000000000105 /* OrbitDeck.swift in Sources */,
+				A10000000000000000000104 /* OrbitDeckWidgets.swift in Sources */,
 				A10000000000000000000103 /* OrbitPCEntity.swift in Sources */,
 				A10000000000000000000102 /* OrbitIntentModels.swift in Sources */,
 				A10000000000000000000101 /* OrbitIntentClient.swift in Sources */,
