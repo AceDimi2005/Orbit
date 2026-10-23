@@ -206,6 +206,13 @@ python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 
 Comanda include regresii pentru asocierea SRP și credențialele criptate, arhive ZIP/anulare, fișiere și transferuri, clipboard, sesiuni audio, istoric SQLite și identitate TLS, alături de Afterburner/RTSS, senzori HTTP/WMI, formatele CSV FPS și contoarele de trafic. Configurarea Windows este descrisă în ghidul agentului. Acțiunile fizice Windows, senzorii reali, Wake-on-LAN și semnarea pe iPhone necesită validare pe dispozitivele respective.
 
+#### GitHub Actions
+
+Două workflow-uri rulează pe GitHub. Le poți porni și manual din tabul **Actions**, cu **Run workflow**.
+
+- **Companion tests** (`.github/workflows/companion-tests.yml`) rulează testele unitare ale agentului cu Python 3.12 și dependențele din `Orbit-Windows-Agent/requirements-dev.txt`, pe `windows-latest` și pe `ubuntu-latest` (aceeași comandă ca mai sus). Pornește la fiecare push pe `main` care modifică `Orbit-Windows-Agent/`.
+- **Softcam DLLs** (`.github/workflows/softcam.yml`) compilează [Softcam](https://github.com/tshino/softcam) (MIT) de la un commit fixat (tag `v1.8.1`): Release pentru x64 și Win32 cu MSBuild, apoi testele proiectului. Publică artefactul `orbit-softcam` cu `softcam64.dll`, `softcam32.dll`, licența Softcam, commitul exact (`UPSTREAM_COMMIT`), `BUILD-INFO.txt` și `SHA256SUMS`. Pornește la cerere și la push-uri pe `main` care modifică workflow-ul sau `tools/softcam/`. Înainte să pui DLL-urile în `Orbit-Windows-Agent/webcam/`, verifică artefactul descărcat cu `python3 tools/softcam/softcam_artifact.py verify <folder>` (detalii în `tools/softcam/README.md`).
+
 ---
 
 ## English
@@ -409,6 +416,13 @@ python -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py' -v
 ```
 
 This includes SRP pairing and encrypted credentials, ZIP archives/cancellation, files/transfers, clipboard, audio sessions, SQLite history, and TLS identity, alongside Afterburner/RTSS shared memory, HTTP/WMI sensors, FPS CSV formats, and traffic counter regressions. Windows setup is described in the agent guide. Native Windows controls, real sensors, Wake-on-LAN, and iPhone signing must be validated on the respective devices.
+
+#### GitHub Actions
+
+Two workflows run on GitHub. You can also start them by hand from the **Actions** tab with **Run workflow**.
+
+- **Companion tests** (`.github/workflows/companion-tests.yml`) runs the agent's unit tests with Python 3.12 and `Orbit-Windows-Agent/requirements-dev.txt` on `windows-latest` and `ubuntu-latest` (the same command as above). It runs on every push to `main` that changes `Orbit-Windows-Agent/`.
+- **Softcam DLLs** (`.github/workflows/softcam.yml`) builds [Softcam](https://github.com/tshino/softcam) (MIT) at a pinned commit (tag `v1.8.1`): Release for x64 and Win32 with MSBuild, then the project's own tests. It uploads the `orbit-softcam` artifact with `softcam64.dll`, `softcam32.dll`, Softcam's license, the exact commit (`UPSTREAM_COMMIT`), `BUILD-INFO.txt` and `SHA256SUMS`. It runs on demand and on pushes to `main` that change the workflow or `tools/softcam/`. Before the DLLs go into `Orbit-Windows-Agent/webcam/`, check the downloaded artifact with `python3 tools/softcam/softcam_artifact.py verify <folder>` (details in `tools/softcam/README.md`).
 
 ## Licență / License
 
