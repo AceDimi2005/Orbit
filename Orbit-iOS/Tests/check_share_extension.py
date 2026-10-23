@@ -6,10 +6,11 @@ served by uvicorn on loopback TLS. Windows-only steps are replaced by recorders:
 `orbit_links.open_url` (the agent's real link validation still runs) and the Files roots (Downloads is
 a temporary folder). Nothing is opened, copied or written outside the temporary folder.
 
-Covers: item loading (files, text, links, text that is a lone link, other URL schemes, folders,
+Covers: item loading (files, text, links, text that is a lone link, other URL schemes, folders, load progress, text summaries,
 JPEG preferred over HEIC, file names), capabilities and the older-agent 404, Open on PC, PC
 clipboard (limits, null characters), Save to Downloads with conflict-free names, per-file and overall
-progress, the PC's upload limit (413), Cancel without leftovers, and plain-words errors for a
+progress, names and folders with "+", "&" and "#", the PC's upload limit (413), Cancel without leftovers and a retry that
+sends only the remaining files, and plain-words errors for a
 sleeping PC, a closed port, a rejected token, a missing token and a PC without HTTPS.
 
 Requires macOS Swift and the agent's dev dependencies (run with the venv python).
@@ -100,11 +101,11 @@ final class TaskBox: @unchecked Sendable {
     }
 }
 
-final class ProgressLog: @unchecked Sendable {
+final class ProgressLog<Value>: @unchecked Sendable {
     private let lock = NSLock()
-    private var items: [SendToPCUploadProgress] = []
-    func add(_ value: SendToPCUploadProgress) { lock.lock(); items.append(value); lock.unlock() }
-    var all: [SendToPCUploadProgress] { lock.lock(); defer { lock.unlock() }; return items }
+    private var items: [Value] = []
+    func add(_ value: Value) { lock.lock(); items.append(value); lock.unlock() }
+    var all: [Value] { lock.lock(); defer { lock.unlock() }; return items }
 }
 
 @main struct Check {
@@ -135,8 +136,15 @@ final class ProgressLog: @unchecked Sendable {
 
         // Files from the Files app: a file URL provider; the name is made Windows-safe.
         var loader = ShareItemLoader(base: work)
-        var shared = try await loader.load(providers: [NSItemProvider(contentsOf: pdf)!, NSItemProvider(contentsOf: photo)!])
+        let loading = ProgressLog<SharedLoadProgress>()
+        var shared = try await loader.load(providers: [NSItemProvider(contentsOf: pdf)!, NSItemProvider(contentsOf: photo)!],
+                                           progress: { loading.add($0) })
         guard case .files(let files) = shared.content else { fatalError("files expected") }
+        // "Preparing 1 of 2…", "Preparing 2 of 2…": every item is announced, fractions stay in range.
+        check(Set(loading.all.map(\.index)) == [0, 1] && loading.all.allSatisfy { $0.count == 2 }, "load progress \(loading.all)")
+        check(loading.all.allSatisfy { (0...1).contains($0.overallFraction) && (0...1).contains($0.itemFraction) }, "load fractions in range")
+        check(SharedLoadProgress(index: 1, count: 4, itemFraction: 0.5).overallFraction == 0.375, "overall load fraction")
+        check(shared.textSummary == nil, "no text summary for files")
         check(files.count == 2, "two files")
         check(files[0].name == "Report_ Q3_.pdf", "windows-safe name, got \(files[0].name)")
         check(files[0].kind == .pdf && files[1].kind == .image, "kinds \(files.map(\.kind))")
@@ -179,6 +187,18 @@ final class ProgressLog: @unchecked Sendable {
         shared = try await loader.load(providers: [NSItemProvider(object: "Buy milk\nand bread" as NSString)])
         guard case .text(let text) = shared.content else { fatalError("text expected") }
         check(text == "Buy milk\nand bread", "text")
+        check(shared.textSummary == SharedTextSummary("Buy milk\nand bread") && shared.textSummary?.words == 4, "text summary while loading")
+
+        // Text summary: one pass for words and characters; the excerpt drops blank space around it
+        // and marks text that goes on.
+        let small = SharedTextSummary("  Hello   big\n\nworld  \n")
+        check(small.words == 3 && small.characters == 23 && small.excerpt == "Hello   big\n\nworld", "small summary \(small)")
+        let long = SharedTextSummary(String(repeating: "word ", count: 1000))
+        check(long.words == 1000 && long.characters == 5000, "long counts \(long.words) \(long.characters)")
+        check(long.excerpt.count == 700 && long.excerpt.hasSuffix("word…"), "long excerpt ends with … (\(long.excerpt.suffix(8)))")
+        let emoji = SharedTextSummary("👍🏽 ok")
+        check(emoji.characters == 4 && emoji.words == 2 && emoji.excerpt == "👍🏽 ok", "graphemes \(emoji)")
+        check(SharedTextSummary(" \n\t ").words == 0 && SharedTextSummary(" \n\t ").excerpt.isEmpty, "blank text")
         shared = try await loader.load(providers: [NSItemProvider(object: "  https://example.org/a  \n" as NSString)])
         guard case .link(let lone) = shared.content else { fatalError("lone link expected") }
         check(lone.url.absoluteString == "https://example.org/a", "lone link")
@@ -245,7 +265,7 @@ final class ProgressLog: @unchecked Sendable {
             SendToPCService.UploadItem(url: big, name: "clip.mov", size: 3 * 1024 * 1024),
             SendToPCService.UploadItem(url: existing, name: "photo.jpg", size: 9),
         ]
-        let log = ProgressLog()
+        let log = ProgressLog<SendToPCUploadProgress>()
         let saved = try await service.save(items, into: downloads) { log.add($0) }
         check(saved.map(\.savedName) == ["notes.txt", "notes (2).txt", "clip.mov", "photo (2).jpg"], "saved names \(saved.map(\.savedName))")
         check(saved.filter(\.wasRenamed).count == 2, "two renamed")
@@ -258,6 +278,28 @@ final class ProgressLog: @unchecked Sendable {
             check(update.fileFraction >= 0 && update.fileFraction <= 1, "file in range")
             check(update.overallFraction + 1e-9 >= previous, "overall progress never goes back: \(previous) → \(update.overallFraction)")
             previous = update.overallFraction
+        }
+
+        // Names and folders with "+", "&", "=" and "#" arrive exactly as written: in a query the
+        // agent reads a bare "+" as a space ("C++" became "C  ", "notes+" became "notes " and a 422).
+        let plus = source.appendingPathComponent("plus.txt")
+        try Data("plus".utf8).write(to: plus)
+        let plusNames = try await service.save([SendToPCService.UploadItem(url: plus, name: "C++ notes+1.txt", size: 4),
+                                                SendToPCService.UploadItem(url: plus, name: "plus+", size: 4)], into: downloads) { _ in }
+        check(plusNames.map(\.savedName) == ["C++ notes+1.txt", "plus+"] && !plusNames.contains(where: \.wasRenamed),
+              "plus signs kept, got \(plusNames.map(\.savedName))")
+        let inFolder = try await service.save([SendToPCService.UploadItem(url: plus, name: "a+b.txt", size: 4)],
+                                              into: downloads + "/Q&A C++ a=b #1") { _ in }
+        check(inFolder.map(\.savedName) == ["a+b.txt"], "plus signs in the folder path, got \(inFolder.map(\.savedName))")
+
+        // Cancel before the Downloads folder is known: a cancellation, not an error.
+        let lookup = Task { try await service.downloadsFolder() }
+        lookup.cancel()
+        do {
+            _ = try await lookup.value
+            check(false, "a cancelled Downloads lookup must stop")
+        } catch {
+            check(SendToPCService.isCancellation(error), "cancelled Downloads lookup: \(error)")
         }
 
         // The PC's upload limit (the test agent allows 4 MB): the plain message, and what arrived.
@@ -286,6 +328,8 @@ final class ProgressLog: @unchecked Sendable {
             if update.index >= 1 && update.fileFraction > 0 { box.cancel() }
         } }
         box.set(task)
+        let slowIDs = slow.map { _ in UUID() }
+        var deliveries = SendToPCDeliveries()
         do {
             _ = try await task.value
             check(false, "cancellation expected")
@@ -293,7 +337,19 @@ final class ProgressLog: @unchecked Sendable {
             check(error.isCancellation, "cancelled, got \(error.underlying)")
             check(error.saved.count >= 1 && error.saved.count < 6, "some files saved before Cancel: \(error.saved.count)")
             check(SendToPCService.message(for: error, pcName: "Test-PC").contains("cancelled"), "cancel message")
+            deliveries.record(error.saved, forFirstOf: slowIDs, on: target.id)
         }
+        // Saving again sends only what the PC does not have: no "large-0 (2).bin" copies.
+        let savedBefore = deliveries.saved(on: target.id).count
+        let rest = deliveries.remaining(slowIDs, on: target.id)
+        check(rest.count == 6 - savedBefore && rest == Array(slowIDs.dropFirst(savedBefore)), "remaining after Cancel")
+        check(deliveries.remaining(slowIDs, on: "other-pc") == slowIDs && deliveries.saved(on: "other-pc").isEmpty, "other PCs have nothing yet")
+        let retry = rest.compactMap { id in slowIDs.firstIndex(of: id).map { slow[$0] } }
+        let resumed = try await service.save(retry, into: downloads) { _ in }
+        deliveries.record(resumed, forFirstOf: rest, on: target.id)
+        check(resumed.allSatisfy { !$0.wasRenamed }, "the retry renamed nothing: \(resumed.map(\.savedName))")
+        check(deliveries.remaining(slowIDs, on: target.id).isEmpty, "everything delivered after the retry")
+        check(slowIDs.compactMap { deliveries.saved(on: target.id)[$0]?.savedName } == (0..<6).map { "large-\($0).bin" }, "each file once, in order")
     }
 
     static func oldAgent(_ target: SendToPCTarget) async throws {
@@ -334,6 +390,15 @@ final class ProgressLog: @unchecked Sendable {
         check(SendToPCService.message(for: URLError(.timedOut), pcName: "Desk") == SendToPCText.unreachable, "timeout")
         check(SendToPCService.message(for: OrbitError(message: "x", statusCode: 401), pcName: "Desk") == SendToPCText.tokenRejected("Desk"), "401")
         check(SendToPCService.message(for: OrbitError(message: "There is not enough space on this drive.", statusCode: 507), pcName: "Desk").contains("not enough space"), "507 detail")
+        // Cancel in every shape it arrives in; connection loss (what a send paused in the background
+        // ends with) versus an answer from the PC.
+        check(SendToPCService.isCancellation(URLError(.cancelled)) && SendToPCService.isCancellation(CancellationError()), "cancel shapes")
+        check(SendToPCService.isCancellation(SendToPCBatchError(saved: [], failedName: "a", underlying: CancellationError())), "batch cancel")
+        check(!SendToPCService.isCancellation(URLError(.timedOut)) && !SendToPCService.isCancellation(OrbitError(message: "x", statusCode: 409)), "not cancel")
+        check(SendToPCService.isConnectionLoss(URLError(.networkConnectionLost)) && SendToPCService.isConnectionLoss(SendToPCTimeout())
+              && SendToPCService.isConnectionLoss(SendToPCBatchError(saved: [], failedName: "a", underlying: URLError(.timedOut))), "connection loss")
+        check(!SendToPCService.isConnectionLoss(OrbitError(message: "x", statusCode: 413)) && !SendToPCService.isConnectionLoss(URLError(.cancelled)),
+              "answers and Cancel are not connection loss")
     }
 }
 '''
@@ -360,6 +425,7 @@ def main():
         downloads = root / "pc" / "Downloads"
         downloads.mkdir(parents=True)
         (downloads / "photo.jpg").write_bytes(b"already on the PC")
+        (downloads / "Q&A C++ a=b #1").mkdir()  # a folder whose path needs "+", "&", "=" and "#" encoded
         work = root / "work"
         work.mkdir()
         with patch("orbit_tls.local_names", return_value=[x509.DNSName("share-test.invalid")]):
@@ -427,16 +493,21 @@ def main():
         names = sorted(path.name for path in downloads.iterdir())
         assert not any(name.startswith(".orbit-upload-") for name in names), f"partial upload left behind: {names}"
         expected = {"notes.txt": b"first", "notes (2).txt": b"second", "photo.jpg": b"already on the PC",
-                    "photo (2).jpg": b"new photo", "notes (3).txt": b"first"}
+                    "photo (2).jpg": b"new photo", "notes (3).txt": b"first",
+                    "C++ notes+1.txt": b"plus", "plus+": b"plus", "Q&A C++ a=b #1/a+b.txt": b"plus"}
         for name, content in expected.items():
             assert (downloads / name).read_bytes() == content, name
+        assert not any(name.startswith(("C   notes", "plus ", "Q&A C   ")) for name in names), f"a '+' arrived as a space: {names}"
         assert hashlib.sha256((downloads / "clip.mov").read_bytes()).hexdigest() == hashlib.sha256(bytes([7]) * 3 * 1024 * 1024).hexdigest()
         assert "movie.mp4" not in names, names
         large = [name for name in names if name.startswith("large-")]
-        assert 1 <= len(large) < 6, large
+        # Cancel, then "Save Remaining Files": every file exactly once, none twice.
+        assert sorted(large) == [f"large-{index}.bin" for index in range(6)], large
         for name in large:
             assert (downloads / name).stat().st_size == 3_900_000, f"{name} is incomplete"
-        assert any(title in ("File received", "Files received") and "Downloads" in message for title, message in toasts), toasts
+        # Uploads close together share one toast; with the "+" folder it names two folders instead of Downloads.
+        assert any(title in ("File received", "Files received") and ("Downloads" in message or "folders" in message)
+                   for title, message in toasts), toasts
         print("PASS: Send to PC loads shared files, text and links; opens links, fills the PC clipboard and saves files to "
               "Downloads over pinned TLS with conflict-free names, progress, the PC's size limit, Cancel without leftovers, "
               "older agents and plain-words errors")

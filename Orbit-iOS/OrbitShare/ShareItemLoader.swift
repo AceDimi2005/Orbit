@@ -36,6 +36,62 @@ struct SharedItems: Sendable {
     let content: SharedContent
     /// Folders and items that could not be read, already explained in plain words.
     let skippedNote: String?
+    /// For `.text` content: excerpt and counts, worked out once while loading (off the main thread).
+    let textSummary: SharedTextSummary?
+
+    init(content: SharedContent, skippedNote: String?) {
+        self.content = content
+        self.skippedNote = skippedNote
+        if case .text(let text) = content { textSummary = SharedTextSummary(text) } else { textSummary = nil }
+    }
+}
+
+/// What the sheet shows of shared text. Shared text can be up to 4 MB, so this is computed once,
+/// in a single pass, instead of on every redraw.
+struct SharedTextSummary: Equatable, Sendable {
+    static let excerptLength = 700
+
+    let excerpt: String
+    let words: Int
+    let characters: Int
+
+    init(_ text: String, excerptLength: Int = SharedTextSummary.excerptLength) {
+        var characters = 0
+        var words = 0
+        var inWord = false
+        for character in text {
+            characters += 1
+            if character.isWhitespace {
+                inWord = false
+            } else if !inWord {
+                inWord = true
+                words += 1
+            }
+        }
+        self.characters = characters
+        self.words = words
+        // The excerpt skips leading and trailing blank space; "…" marks text that goes on.
+        let start = text.firstIndex { !$0.isWhitespace } ?? text.endIndex
+        let rest = text[start...]
+        let head = rest.prefix(max(0, excerptLength))
+        let continues = rest[head.endIndex...].contains { !$0.isWhitespace }
+        var excerpt = String(head)
+        while let last = excerpt.last, last.isWhitespace { excerpt.removeLast() }
+        self.excerpt = continues ? excerpt + "…" : excerpt
+    }
+}
+
+/// How far loading the shared items got: item `index` (0-based) of `count`, and that item's own
+/// progress (Photos exports and iCloud downloads report it; quick items jump from 0 to done).
+struct SharedLoadProgress: Equatable, Sendable {
+    let index: Int
+    let count: Int
+    let itemFraction: Double
+
+    var overallFraction: Double {
+        guard count > 0 else { return 0 }
+        return min(1, (Double(index) + min(1, max(0, itemFraction))) / Double(count))
+    }
 }
 
 enum ShareItemLoaderError: LocalizedError {
@@ -77,14 +133,15 @@ final class ShareItemLoader: @unchecked Sendable {
 
     // MARK: Loading
 
-    func load(_ items: [NSExtensionItem]) async throws -> SharedItems {
+    /// `progress` is called from background queues while the items are read.
+    func load(_ items: [NSExtensionItem], progress: (@Sendable (SharedLoadProgress) -> Void)? = nil) async throws -> SharedItems {
         let providers = items.flatMap { $0.attachments ?? [] }
         let titles = items.compactMap { item -> String? in
             let text = (item.attributedTitle?.string ?? item.attributedContentText?.string ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         }
-        return try await load(providers: providers, titles: titles)
+        return try await load(providers: providers, titles: titles, progress: progress)
     }
 
     private enum Piece {
@@ -94,7 +151,8 @@ final class ShareItemLoader: @unchecked Sendable {
         case skipped
     }
 
-    func load(providers: [NSItemProvider], titles: [String] = []) async throws -> SharedItems {
+    func load(providers: [NSItemProvider], titles: [String] = [],
+              progress: (@Sendable (SharedLoadProgress) -> Void)? = nil) async throws -> SharedItems {
         var files: [SharedFile] = []
         var links: [URL] = []
         var texts: [String] = []
@@ -102,7 +160,13 @@ final class ShareItemLoader: @unchecked Sendable {
         // One at a time: Photos exports each item on demand, and parallel exports of large
         // videos would only compete for the same disk and memory.
         for (index, provider) in providers.enumerated() {
-            switch await piece(from: provider, index: index) {
+            try Task.checkCancellation()
+            let count = providers.count
+            progress?(SharedLoadProgress(index: index, count: count, itemFraction: 0))
+            let report: (@Sendable (Double) -> Void)? = progress.map { progress in
+                { @Sendable fraction in progress(SharedLoadProgress(index: index, count: count, itemFraction: fraction)) }
+            }
+            switch await piece(from: provider, index: index, report: report) {
             case .file(let file): files.append(file)
             case .link(let url): links.append(url)
             case .text(let text): texts.append(text)
@@ -141,18 +205,18 @@ final class ShareItemLoader: @unchecked Sendable {
         return url
     }
 
-    private func piece(from provider: NSItemProvider, index: Int) async -> Piece {
+    private func piece(from provider: NSItemProvider, index: Int, report: (@Sendable (Double) -> Void)?) async -> Piece {
         let identifiers = provider.registeredTypeIdentifiers
         let types = identifiers.compactMap { UTType($0) }
         let hasFileURL = identifiers.contains(UTType.fileURL.identifier)
         let isMedia = types.contains { $0.conforms(to: .image) || $0.conforms(to: .audiovisualContent) }
         do {
             if hasFileURL || isMedia {
-                return try await fileOrSkip(provider, index: index)
+                return try await fileOrSkip(provider, index: index, report: report)
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                 if let url = try await loadURL(provider) {
-                    if url.isFileURL { return try await fileOrSkip(provider, index: index, fileURL: url) }
+                    if url.isFileURL { return try await fileOrSkip(provider, index: index, fileURL: url, report: report) }
                     if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https", !(url.host ?? "").isEmpty {
                         return .link(url)
                     }
@@ -165,7 +229,7 @@ final class ShareItemLoader: @unchecked Sendable {
                 return .text(text)
             }
             if Self.preferredFileType(identifiers) != nil {
-                return try await fileOrSkip(provider, index: index)
+                return try await fileOrSkip(provider, index: index, report: report)
             }
         } catch {
             return .skipped
@@ -173,8 +237,9 @@ final class ShareItemLoader: @unchecked Sendable {
         return .skipped
     }
 
-    private func fileOrSkip(_ provider: NSItemProvider, index: Int, fileURL: URL? = nil) async throws -> Piece {
-        if let file = try await loadFile(provider, index: index, knownURL: fileURL) { return .file(file) }
+    private func fileOrSkip(_ provider: NSItemProvider, index: Int, fileURL: URL? = nil,
+                            report: (@Sendable (Double) -> Void)?) async throws -> Piece {
+        if let file = try await loadFile(provider, index: index, knownURL: fileURL, report: report) { return .file(file) }
         return .skipped
     }
 
@@ -215,7 +280,8 @@ final class ShareItemLoader: @unchecked Sendable {
 
     // MARK: Files
 
-    private func loadFile(_ provider: NSItemProvider, index: Int, knownURL: URL?) async throws -> SharedFile? {
+    private func loadFile(_ provider: NSItemProvider, index: Int, knownURL: URL?,
+                          report: (@Sendable (Double) -> Void)?) async throws -> SharedFile? {
         let identifiers = provider.registeredTypeIdentifiers
         // Items from Files carry their file URL: it holds the real name, while the temporary copy
         // from loadFileRepresentation may only be called "PDF document.pdf".
@@ -227,10 +293,10 @@ final class ShareItemLoader: @unchecked Sendable {
         let suggested = provider.suggestedName ?? original?.lastPathComponent
         if let type = Self.preferredFileType(identifiers) {
             do {
-                return try await copyRepresentation(provider, type: type, suggested: suggested, index: index)
+                return try await copyRepresentation(provider, type: type, suggested: suggested, index: index, report: report)
             } catch {
                 // Some providers only work through their file URL; try that before giving up.
-                guard original != nil else { throw error }
+                guard original != nil, !Task.isCancelled else { throw error }
             }
         }
         guard let url = original else { return nil }
@@ -240,20 +306,29 @@ final class ShareItemLoader: @unchecked Sendable {
         return try adopt(url, suggestedName: suggested, type: type, index: index)
     }
 
-    private func copyRepresentation(_ provider: NSItemProvider, type identifier: String, suggested: String?, index: Int) async throws -> SharedFile? {
-        try await withCheckedThrowingContinuation { continuation in
-            _ = provider.loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
-                // `url` is deleted when this handler returns, so the copy happens right here.
-                guard let url else {
-                    continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown))
-                    return
+    private func copyRepresentation(_ provider: NSItemProvider, type identifier: String, suggested: String?, index: Int,
+                                    report: (@Sendable (Double) -> Void)?) async throws -> SharedFile? {
+        let watch = RepresentationWatch()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let progress = provider.loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
+                    watch.stop()
+                    // `url` is deleted when this handler returns, so the copy happens right here.
+                    guard let url else {
+                        continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown))
+                        return
+                    }
+                    do {
+                        continuation.resume(returning: try self.adopt(url, suggestedName: suggested, type: UTType(identifier), index: index))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
-                do {
-                    continuation.resume(returning: try self.adopt(url, suggestedName: suggested, type: UTType(identifier), index: index))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                watch.start(progress, report: report)
             }
+        } onCancel: {
+            // Cancelling the Progress ends the export; its handler then runs with an error.
+            watch.cancel()
         }
     }
 
@@ -335,5 +410,53 @@ final class ShareItemLoader: @unchecked Sendable {
                 if let error { continuation.resume(throwing: error) } else { continuation.resume(returning: item) }
             }
         }
+    }
+}
+
+/// Follows the `Progress` of one `loadFileRepresentation` (a Photos export or an iCloud download can
+/// take a while) and cancels it when the share is cancelled. The export's handler may run before or
+/// after `start`, on any queue.
+private final class RepresentationWatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var progress: Progress?
+    private var observation: NSKeyValueObservation?
+    private var stopped = false
+    private var cancelled = false
+
+    func start(_ progress: Progress, report: (@Sendable (Double) -> Void)?) {
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        self.progress = progress
+        let cancelNow = cancelled
+        lock.unlock()
+        // Outside the lock: cancelling can run the export's handler (and `stop`) right away.
+        if cancelNow { progress.cancel(); return }
+        guard let report else { return }
+        let observation = progress.observe(\.fractionCompleted, options: [.new]) { progress, _ in
+            report(progress.fractionCompleted)
+        }
+        lock.lock()
+        let late = stopped
+        if !late { self.observation = observation }
+        lock.unlock()
+        if late { observation.invalidate() }
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        let observation = self.observation
+        self.observation = nil
+        progress = nil
+        lock.unlock()
+        observation?.invalidate()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let progress = self.progress
+        lock.unlock()
+        progress?.cancel()
     }
 }

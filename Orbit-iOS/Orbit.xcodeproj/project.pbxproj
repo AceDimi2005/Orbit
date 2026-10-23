@@ -12,7 +12,6 @@
 		A70000000000000000000105 /* SendToPCModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000102 /* SendToPCModel.swift */; };
 		A70000000000000000000104 /* ShareItemLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000101 /* ShareItemLoader.swift */; };
 		A70000000000000000000103 /* SendToPCService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000100 /* SendToPCService.swift */; };
-		A70000000000000000000102 /* OrbitProEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000087 /* OrbitProEntitlement.swift */; };
 		A70000000000000000000101 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
 		A70000000000000000000100 /* OrbitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* OrbitAPIClient.swift */; };
 		A10000000000000000000001 /* OrbitApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* OrbitApp.swift */; };
@@ -978,7 +977,6 @@
 				A70000000000000000000105 /* SendToPCModel.swift in Sources */,
 				A70000000000000000000104 /* ShareItemLoader.swift in Sources */,
 				A70000000000000000000103 /* SendToPCService.swift in Sources */,
-				A70000000000000000000102 /* OrbitProEntitlement.swift in Sources */,
 				A70000000000000000000101 /* OrbitWidgetConnectionStore.swift in Sources */,
 				A70000000000000000000100 /* OrbitAPIClient.swift in Sources */,
 				A70000000000000000000001 /* ShareViewController.swift in Sources */,
@@ -1497,6 +1495,7 @@
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ORBIT_SHARE_EXTENSION";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1528,6 +1527,7 @@
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ORBIT_SHARE_EXTENSION";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

@@ -52,6 +52,30 @@ struct SendToPCBatchError: Error {
     var isCancellation: Bool { underlying is CancellationError }
 }
 
+/// What each PC already received from this share (PC id → file id → saved file). After a batch stops
+/// early (an error, Cancel, a PC that fell asleep), saving again sends only the other files, so
+/// nothing lands on the PC twice.
+struct SendToPCDeliveries: Equatable, Sendable {
+    private var byPC: [String: [UUID: SendToPCSavedFile]] = [:]
+
+    /// `SendToPCService.save` goes in order and stops at the first problem, so `saved` belongs to
+    /// the first entries of `ids` (the batch that was sent, in order).
+    mutating func record(_ saved: [SendToPCSavedFile], forFirstOf ids: [UUID], on pc: String) {
+        guard !saved.isEmpty else { return }
+        var map = byPC[pc] ?? [:]
+        for (id, file) in zip(ids, saved) { map[id] = file }
+        byPC[pc] = map
+    }
+
+    func saved(on pc: String) -> [UUID: SendToPCSavedFile] { byPC[pc] ?? [:] }
+
+    /// The ids of `ids` that `pc` does not have yet, in order.
+    func remaining(_ ids: [UUID], on pc: String) -> [UUID] {
+        let saved = byPC[pc] ?? [:]
+        return ids.filter { saved[$0] == nil }
+    }
+}
+
 /// A request that took longer than the share sheet waits.
 struct SendToPCTimeout: Error {}
 
@@ -78,6 +102,9 @@ enum SendToPCText {
     static func secureConnectionFailed(_ pc: String) -> String {
         "Orbit couldn't open an encrypted connection to \(pc). Open Orbit and check the PC in My PCs."
     }
+    /// iOS pauses the share sheet soon after the app it was opened from goes to the background.
+    static let uploadStoppedLeftApp = "The upload stopped because you left the app. Keep this sheet open until it finishes."
+    static let sendStoppedLeftApp = "Sending stopped because you left the app. Keep this sheet open and try again."
     static let textTooLong = "This text is too long for the PC clipboard. It can hold about 500,000 characters."
     static let linkTooLong = "This link is longer than 4,096 characters, so it can't be opened on the PC."
     static let notWindows = "This needs Orbit Companion running on a Windows PC."
@@ -231,7 +258,8 @@ struct SendToPCService: Sendable {
                     progress(SendToPCUploadProgress(index: index, fileFraction: clamped, overallFraction: min(1, Double(sent) / Double(total)),
                                                     bytesSent: sent, bytesTotal: total))
                 }
-                try Task.checkCancellation()
+                // The PC confirmed this file, so it counts as saved even if Cancel comes right now
+                // (cancellation is checked before the next file starts).
                 saved.append(SendToPCSavedFile(originalName: item.name, savedName: name))
                 sentBefore += size
             } catch {
@@ -295,6 +323,29 @@ struct SendToPCService: Sendable {
         if error is CancellationError { return "The transfer was cancelled." }
         let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         return text.isEmpty ? "Something went wrong. Try again." : text
+    }
+
+    /// Whether `error` means the send was stopped on purpose (Cancel), in any shape it arrives in:
+    /// a cancelled batch, a cancelled task, or a request URLSession cancelled.
+    static func isCancellation(_ error: Error) -> Bool {
+        if let batch = error as? SendToPCBatchError { return batch.isCancellation }
+        return error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    /// Whether `error` is the connection going away rather than an answer from the PC. A send that
+    /// iOS paused in the background (the user left the app) ends like this.
+    static func isConnectionLoss(_ error: Error) -> Bool {
+        if let batch = error as? SendToPCBatchError { return isConnectionLoss(batch.underlying) }
+        if error is SendToPCTimeout { return true }
+        guard let url = error as? URLError else { return false }
+        switch url.code {
+        case .timedOut, .networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet, .cannotFindHost,
+             .dnsLookupFailed, .secureConnectionFailed, .cannotLoadFromNetwork, .resourceUnavailable, .dataNotAllowed,
+             .backgroundSessionWasDisconnected, .unknown:
+            return true
+        default:
+            return false
+        }
     }
 
     /// iOS reports a Local Network denial as "offline", with the reason only in the path details.

@@ -284,6 +284,10 @@ enum OrbitWidgetConnectionStore {
     }
 }
 
+// The Send to PC share extension compiles this file for the store above only
+// (SWIFT_ACTIVE_COMPILATION_CONDITIONS ORBIT_SHARE_EXTENSION): no power service and no App Intents there.
+#if !ORBIT_SHARE_EXTENSION
+
 // MARK: - Background Power Service for Widgets, Control Center & Siri
 
 enum OrbitWidgetPowerService {
@@ -527,3 +531,5 @@ struct OrbitRestartPCIntent: AppIntent {
         return .result(dialog: IntentDialog(stringLiteral: result))
     }
 }
+
+#endif // !ORBIT_SHARE_EXTENSION

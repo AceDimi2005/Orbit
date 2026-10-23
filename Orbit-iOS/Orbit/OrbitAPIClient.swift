@@ -49,6 +49,9 @@ final class OrbitAPIClient: @unchecked Sendable {
         components.scheme = isWebSocket ? "wss" : "https"
         components.host = host; components.port = port; components.path = path
         components.queryItems = query.isEmpty ? nil : query
+        // URLComponents leaves "+" as it is, but the agent reads "+" in a query as a space, so
+        // "C++ notes.txt" would arrive as "C   notes.txt". Send it as %2B.
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = components.url else { throw OrbitError(message: "Invalid PC address.") }
         var request = URLRequest(url: url); request.httpMethod = method
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -190,15 +193,17 @@ private final class OrbitTransferDelegate: OrbitPinnedDelegate, URLSessionDownlo
 extension OrbitAPIClient {
     /// Uploads `file` into `directory` on the PC. When the name is already taken (HTTP 409) the
     /// next free "name (2).ext", "name (3).ext"… is used, so a batch never stops halfway on a
-    /// duplicate and nothing on the PC is overwritten. Returns the name the file was saved under.
+    /// duplicate and nothing on the PC is overwritten. Returns the name the file was saved under
+    /// (as the PC reports it).
     func uploadAvoidingConflicts(directory: String, name: String, file: URL,
                                  progress: @escaping @Sendable (Double) -> Void) async throws -> String {
         var attempt = 1
         while true {
             let candidate = OrbitFileNames.numbered(name, attempt: attempt)
             do {
-                _ = try await upload(path: "/api/files/upload", query: ["directory": directory, "name": candidate], file: file, progress: progress)
-                return candidate
+                let receipt = try await upload(path: "/api/files/upload", query: ["directory": directory, "name": candidate], file: file, progress: progress)
+                let saved = (try? JSONSerialization.jsonObject(with: receipt) as? [String: Any])?["name"] as? String
+                return saved.flatMap { $0.isEmpty ? nil : $0 } ?? candidate
             } catch let error as OrbitError where error.statusCode == 409 && attempt < 200 {
                 attempt += 1
             }

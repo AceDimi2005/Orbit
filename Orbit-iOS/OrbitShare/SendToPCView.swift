@@ -13,7 +13,7 @@ struct SendToPCView: View {
                 ShareTheme.background.ignoresSafeArea()
                 switch model.stage {
                 case .loading:
-                    SendToPCLoadingView()
+                    SendToPCLoadingView(progress: model.preparing)
                 case .unavailable(let title, let message):
                     SendToPCUnavailableView(title: title, message: message, showsPairingSteps: model.targets.isEmpty) {
                         model.cancel()
@@ -60,7 +60,8 @@ private struct SendToPCMainView: View {
             VStack(alignment: .leading, spacing: 20) {
                 destination
                 if let content = model.content {
-                    SendToPCPreview(content: content, transfer: model.transfer)
+                    SendToPCPreview(content: content, textSummary: model.textSummary, transfer: model.transfer,
+                                    alreadySaved: model.alreadySavedIDs)
                 }
                 if let transfer = model.transfer {
                     SendToPCTransferCard(transfer: transfer, pcName: model.selectedName)
@@ -238,9 +239,11 @@ private struct SendToPCActionBar: View {
                 primary("Copy to PC Clipboard", icon: "doc.on.clipboard", action: .copyText) { model.copyText() }
                     .accessibilityHint("Puts the text on the clipboard of \(model.selectedName).")
             case .files(let files)?:
-                primary(files.count == 1 ? "Save to PC Downloads" : "Save \(files.count) Files to PC Downloads",
+                primary(saveTitle(total: files.count, remaining: model.remainingFiles.count),
                         icon: "square.and.arrow.down", action: .saveFiles) { model.saveFiles() }
-                    .accessibilityHint("Saves to the Downloads folder on \(model.selectedName).")
+                    .accessibilityHint(model.alreadySavedIDs.isEmpty
+                                       ? "Saves to the Downloads folder on \(model.selectedName)."
+                                       : "Saves the files that aren't on \(model.selectedName) yet to its Downloads folder.")
             case nil:
                 EmptyView()
             }
@@ -251,6 +254,14 @@ private struct SendToPCActionBar: View {
                 .buttonStyle(ShareSecondaryButtonStyle())
             }
         }
+    }
+
+    /// After an interrupted upload, the button names only the files the PC does not have yet.
+    private func saveTitle(total: Int, remaining: Int) -> String {
+        if remaining < total {
+            return remaining == 1 ? "Save Remaining File to PC Downloads" : "Save \(remaining) Remaining Files to PC Downloads"
+        }
+        return total == 1 ? "Save to PC Downloads" : "Save \(total) Files to PC Downloads"
     }
 
     private func primary(_ title: String, icon: String, action: SendToPCModel.Action, perform: @escaping () -> Void) -> some View {
@@ -287,7 +298,10 @@ private struct SendToPCActionBar: View {
 
 private struct SendToPCPreview: View {
     let content: SharedContent
+    let textSummary: SharedTextSummary?
     let transfer: SendToPCModel.Transfer?
+    /// Files the selected PC already received in an earlier, interrupted attempt.
+    let alreadySaved: Set<UUID>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -295,9 +309,11 @@ private struct SendToPCPreview: View {
             case .link(let link):
                 ShareSectionHeader(title: "Link", icon: "link")
                 SendToPCLinkCard(link: link)
-            case .text(let text):
+            case .text:
                 ShareSectionHeader(title: "Text", icon: "text.alignleft")
-                SendToPCTextCard(text: text)
+                if let textSummary {
+                    SendToPCTextCard(summary: textSummary)
+                }
             case .files(let files):
                 ShareSectionHeader(title: Self.filesHeader(files), icon: "doc.on.doc")
                 VStack(spacing: 0) {
@@ -305,7 +321,7 @@ private struct SendToPCPreview: View {
                         if index > 0 {
                             Divider().overlay(Color.white.opacity(0.08)).padding(.leading, 72)
                         }
-                        SendToPCFileRow(file: file, state: state(for: file, at: index))
+                        SendToPCFileRow(file: file, state: state(for: file))
                     }
                 }
                 .shareCard()
@@ -318,11 +334,12 @@ private struct SendToPCPreview: View {
         return "\(files.count) \(files.count == 1 ? "item" : "items") · \(total)"
     }
 
-    private func state(for file: SharedFile, at index: Int) -> SendToPCFileRow.State {
+    private func state(for file: SharedFile) -> SendToPCFileRow.State {
+        if alreadySaved.contains(file.id) { return .saved }
         guard let transfer else { return .idle }
         if transfer.savedIDs.contains(file.id) { return .saved }
-        if index == transfer.index { return transfer.fileFraction >= 0.999 ? .finishing : .sending(transfer.fileFraction) }
-        return index < transfer.index ? .saved : .waiting
+        if file.id == transfer.currentID { return transfer.fileFraction >= 0.999 ? .finishing : .sending(transfer.fileFraction) }
+        return .waiting
     }
 }
 
@@ -371,28 +388,19 @@ private struct SendToPCLinkCard: View {
     }
 }
 
+/// Shared text: excerpt and counts come precomputed (`SharedTextSummary`), since the text can be
+/// megabytes long and this view is redrawn whenever the sheet's state changes.
 private struct SendToPCTextCard: View {
-    let text: String
-    private static let excerptLength = 700
-
-    private var excerpt: String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.count > Self.excerptLength ? String(trimmed.prefix(Self.excerptLength)) + "…" : trimmed
-    }
+    let summary: SharedTextSummary
 
     private var countText: String {
-        let count = text.count
-        let words = text.split { $0.isWhitespace || $0.isNewline }.count
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        let characters = formatter.string(from: NSNumber(value: count)) ?? "\(count)"
-        let wordText = formatter.string(from: NSNumber(value: words)) ?? "\(words)"
-        return "\(wordText) \(words == 1 ? "word" : "words") · \(characters) \(count == 1 ? "character" : "characters")"
+        let words = summary.words, characters = summary.characters
+        return "\(words.formatted()) \(words == 1 ? "word" : "words") · \(characters.formatted()) \(characters == 1 ? "character" : "characters")"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(excerpt)
+            Text(summary.excerpt)
                 .font(.body)
                 .foregroundStyle(.white.opacity(0.92))
                 .lineLimit(10)
@@ -408,7 +416,7 @@ private struct SendToPCTextCard: View {
         .shareCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Text, \(countText)")
-        .accessibilityValue(excerpt)
+        .accessibilityValue(summary.excerpt)
     }
 }
 
@@ -560,10 +568,15 @@ private struct SendToPCTransferCard: View {
     private var percent: Int { Int((fraction * 100).rounded(.down)) }
     private var finishing: Bool { transfer.fileFraction >= 0.999 }
 
+    private var title: String {
+        if transfer.count == 1 { return transfer.resuming ? "Saving the last file" : "Saving to Downloads" }
+        return "Saving \(transfer.index + 1) of \(transfer.count)" + (transfer.resuming ? " remaining" : "")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(transfer.count == 1 ? "Saving to Downloads" : "Saving \(transfer.index + 1) of \(transfer.count)")
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                 Spacer(minLength: 8)
@@ -584,30 +597,63 @@ private struct SendToPCTransferCard: View {
             }
             .font(.caption)
             .foregroundStyle(ShareTheme.secondaryText)
+            // iOS pauses the share sheet soon after you leave the app it came from.
+            Label("Keep this sheet open until it finishes.", systemImage: "hand.raised")
+                .font(.caption)
+                .foregroundStyle(ShareTheme.secondaryText)
         }
         .padding(14)
         .shareCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(transfer.count == 1 ? "Saving \(transfer.name) to Downloads" : "Saving file \(transfer.index + 1) of \(transfer.count), \(transfer.name)")
         .accessibilityValue("\(percent) percent")
+        .accessibilityHint("Keep this sheet open until it finishes.")
         .accessibilityAddTraits(.updatesFrequently)
     }
 }
 
 // MARK: - Other states
 
+/// Shown while the shared items are copied (Photos exports videos and may first download them from
+/// iCloud, which can take a while): which item, and how far, so the sheet never looks frozen.
 private struct SendToPCLoadingView: View {
+    let progress: SharedLoadProgress?
+
+    private var title: String {
+        guard let progress, progress.count > 1 else { return "Getting your items ready…" }
+        return "Preparing \(progress.index + 1) of \(progress.count)…"
+    }
+
+    /// A bar once there is something to show: several items, or one item that reports progress.
+    private var fraction: Double? {
+        guard let progress else { return nil }
+        if progress.count > 1 || progress.itemFraction > 0 { return progress.overallFraction }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 14) {
             ProgressView()
                 .controlSize(.large)
                 .tint(ShareTheme.accent)
-            Text("Getting your items ready…")
+            Text(title)
                 .font(.subheadline)
                 .foregroundStyle(ShareTheme.secondaryText)
+                .monospacedDigit()
+                .multilineTextAlignment(.center)
+            if let fraction {
+                ProgressView(value: fraction)
+                    .tint(ShareTheme.accent)
+                    .frame(maxWidth: 240)
+                    .animation(.linear(duration: 0.2), value: fraction)
+            }
         }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(fraction.map { "\(Int(($0 * 100).rounded())) percent" } ?? "")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

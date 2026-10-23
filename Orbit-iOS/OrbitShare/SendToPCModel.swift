@@ -30,25 +30,36 @@ final class SendToPCModel: ObservableObject {
     }
 
     struct Transfer: Equatable {
+        /// Position of the current file in this batch, and the batch size.
         var index: Int
         var count: Int
+        /// True when an earlier attempt already saved some files; this batch sends only the rest.
+        var resuming: Bool
+        var currentID: UUID
         var name: String
         var fileFraction: Double
         var overallFraction: Double
         var bytesSent: Int64
         var bytesTotal: Int64
+        /// Files of this batch the PC confirmed.
         var savedIDs: Set<UUID>
     }
 
     @Published private(set) var stage: Stage = .loading
     @Published private(set) var content: SharedContent?
+    @Published private(set) var textSummary: SharedTextSummary?
     @Published private(set) var skippedNote: String?
+    /// How far reading the shared items got (shown while `stage == .loading`).
+    @Published private(set) var preparing: SharedLoadProgress?
     @Published private(set) var targets: [SendToPCTarget] = []
     @Published private(set) var selectedID: String?
     @Published private(set) var pcState: PCState = .checking
     @Published private(set) var notice: Notice?
     @Published private(set) var busyAction: Action?
     @Published private(set) var transfer: Transfer?
+    /// Files each PC already received from an interrupted "Save to PC Downloads". Saving again sends
+    /// only the other files, so nothing lands twice.
+    @Published private(set) var deliveries = SendToPCDeliveries()
 
     private let items: [NSExtensionItem]
     private let loader = ShareItemLoader()
@@ -59,6 +70,11 @@ final class SendToPCModel: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var finishTask: Task<Void, Never>?
     private var ended = false
+    private var hostObservers: [NSObjectProtocol] = []
+    private var hostInBackground = false
+    /// The app the sheet was opened from went to the background while something was being sent.
+    private var leftHostWhileSending = false
+    private var grace: SendGrace?
 
     init(items: [NSExtensionItem], finish: @escaping () -> Void, cancel: @escaping () -> Void) {
         self.items = items
@@ -74,10 +90,24 @@ final class SendToPCModel: ObservableObject {
         return nil
     }
 
+    /// Files the selected PC already has from an earlier attempt in this share.
+    var alreadySavedIDs: Set<UUID> {
+        guard let id = selectedTarget?.id else { return [] }
+        return Set(deliveries.saved(on: id).keys)
+    }
+
+    /// Shared files the selected PC does not have yet.
+    var remainingFiles: [SharedFile] {
+        guard case .files(let files)? = content else { return [] }
+        let saved = alreadySavedIDs
+        return files.filter { !saved.contains($0.id) }
+    }
+
     // MARK: Lifecycle
 
     func start() {
         guard loadTask == nil else { return }
+        observeHost()
         ShareItemLoader.removeStaleFolders()
         targets = Self.savedTargets()
         guard let first = targets.first else {
@@ -86,15 +116,24 @@ final class SendToPCModel: ObservableObject {
         }
         selectedID = first.id
         checkSelectedPC()
+        let relay = ProgressRelay<SharedLoadProgress>(perSecond: 10, isImportant: { update, previous in
+            update.index != previous?.index || update.itemFraction >= 1
+        }) { [weak self] update in
+            guard let self, self.stage == .loading else { return }
+            self.preparing = update
+        }
         loadTask = Task { [weak self, loader, items] in
             do {
-                let shared = try await loader.load(items)
+                let shared = try await loader.load(items) { relay.send($0) }
                 guard let self, !Task.isCancelled else { return }
+                self.preparing = nil
                 self.content = shared.content
+                self.textSummary = shared.textSummary
                 self.skippedNote = shared.skippedNote
                 if self.stage == .loading { self.stage = .ready }
             } catch {
                 guard let self, !Task.isCancelled else { return }
+                self.preparing = nil
                 self.stage = .unavailable(title: "Nothing to send", message: error.localizedDescription)
             }
         }
@@ -114,6 +153,7 @@ final class SendToPCModel: ObservableObject {
         }
     }
 
+    /// Switching PCs keeps what each PC already received, so switching back never sends twice.
     func select(_ id: String) {
         guard id != selectedID, !isBusy, targets.contains(where: { $0.id == id }) else { return }
         selectedID = id
@@ -173,7 +213,47 @@ final class SendToPCModel: ObservableObject {
 
     private func stopAll() {
         loadTask?.cancel(); checkTask?.cancel(); sendTask?.cancel(); finishTask?.cancel()
+        grace?.end(); grace = nil
+        hostObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        hostObservers = []
         loader.cleanUp()
+    }
+
+    // MARK: Host app in the background
+
+    /// iOS pauses an extension soon after its host app goes to the background, which stops a running
+    /// upload. Knowing that happened turns a vague "isn't reachable" into the real reason.
+    private func observeHost() {
+        guard hostObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        hostObservers.append(center.addObserver(forName: .NSExtensionHostDidEnterBackground, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hostMoved(toBackground: true) }
+        })
+        hostObservers.append(center.addObserver(forName: .NSExtensionHostWillEnterForeground, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hostMoved(toBackground: false) }
+        })
+    }
+
+    private func hostMoved(toBackground: Bool) {
+        hostInBackground = toBackground
+        if toBackground && isBusy { leftHostWhileSending = true }
+    }
+
+    /// Asks iOS for extra time while sending, in case the user leaves the app for a moment.
+    private func beginSending(_ reason: String) {
+        leftHostWhileSending = hostInBackground
+        grace?.end()
+        grace = SendGrace(reason: reason)
+    }
+
+    /// Returns whether the host app went to the background while sending.
+    @discardableResult
+    private func endSending() -> Bool {
+        grace?.end()
+        grace = nil
+        let left = leftHostWhileSending
+        leftHostWhileSending = false
+        return left
     }
 
     // MARK: Actions
@@ -207,23 +287,32 @@ final class SendToPCModel: ObservableObject {
         guard !isBusy, let target = selectedTarget else { return }
         notice = nil
         busyAction = action
+        beginSending("Sending to \(target.name)")
         sendTask = Task { [weak self] in
             do {
                 let service = try SendToPCService(target: target)
                 let (title, message) = try await operation(service)
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !self.ended else { return }
+                self.endSending()
                 self.busyAction = nil
                 self.succeed(title: title, message: message)
             } catch {
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !self.ended else { return }
+                let leftHost = self.endSending()
                 self.busyAction = nil
-                self.showError(SendToPCService.message(for: error, pcName: target.name))
+                self.showError(leftHost && SendToPCService.isConnectionLoss(error)
+                               ? SendToPCText.sendStoppedLeftApp
+                               : SendToPCService.message(for: error, pcName: target.name))
             }
         }
     }
 
     func saveFiles() {
-        guard !isBusy, case .files(let files)? = content, !files.isEmpty, let target = selectedTarget else { return }
+        guard !isBusy, case .files(let all)? = content, let target = selectedTarget else { return }
+        // After an interrupted attempt, only the files this PC does not have yet.
+        let earlier = deliveries.saved(on: target.id)
+        let files = all.filter { earlier[$0.id] == nil }
+        guard let first = files.first else { return }
         let uploads = files.map { SendToPCService.UploadItem(url: $0.url, name: $0.name, size: $0.size) }
         if let big = SendToPCService.oversized(uploads) {
             showError("\(big.name) is \(SendToPCService.format(big.size)). Orbit Companion accepts files up to 2 GB each.")
@@ -232,33 +321,40 @@ final class SendToPCModel: ObservableObject {
         notice = nil
         busyAction = .saveFiles
         stage = .sending
+        beginSending("Saving files to \(target.name)")
         let total = uploads.reduce(Int64(0)) { $0 + $1.size }
-        transfer = Transfer(index: 0, count: files.count, name: files[0].name, fileFraction: 0, overallFraction: 0,
-                            bytesSent: 0, bytesTotal: total, savedIDs: [])
+        transfer = Transfer(index: 0, count: files.count, resuming: !earlier.isEmpty, currentID: first.id, name: first.name,
+                            fileFraction: 0, overallFraction: 0, bytesSent: 0, bytesTotal: total, savedIDs: [])
         let ids = files.map(\.id)
-        let progressBox = ProgressRelay { [weak self] update in self?.apply(update, ids: ids, names: files.map(\.name)) }
+        let names = files.map(\.name)
+        let relay = ProgressRelay<SendToPCUploadProgress>(perSecond: 15, isImportant: { update, previous in
+            update.index != previous?.index || update.fileFraction >= 1 || update.overallFraction >= 1
+        }) { [weak self] update in
+            self?.apply(update, ids: ids, names: names)
+        }
         sendTask = Task { [weak self] in
             do {
                 let service = try SendToPCService(target: target)
                 let folder = try await service.downloadsFolder()
-                let saved = try await service.save(uploads, into: folder) { update in progressBox.send(update) }
-                guard let self, !Task.isCancelled else { return }
+                let saved = try await service.save(uploads, into: folder) { relay.send($0) }
+                // Every file arrived; a Cancel tapped in the last moment does not change that.
+                guard let self, !self.ended else { return }
+                self.endSending()
                 self.busyAction = nil
-                let renamed = saved.filter(\.wasRenamed).count
-                let count = saved.count == 1 ? "\(saved[0].savedName) is" : "\(saved.count) files are"
-                var message = "\(count) in Downloads on \(target.name)."
-                if renamed == 1 && saved.count == 1 {
-                    message = "\(saved[0].savedName) is in Downloads on \(target.name), because \(saved[0].originalName) was already there."
-                } else if renamed > 0 {
-                    message += " \(renamed) got a number in their name because a file with the same name was already there."
-                }
-                self.succeed(title: saved.count == 1 ? "Saved to Downloads" : "Saved \(saved.count) files", message: message)
+                self.deliveries.record(saved, forFirstOf: ids, on: target.id)
+                let delivered = self.deliveries.saved(on: target.id)
+                let everything = all.compactMap { delivered[$0.id] }
+                self.succeed(title: everything.count == 1 ? "Saved to Downloads" : "Saved \(everything.count) files",
+                             message: Self.savedMessage(everything, pcName: target.name))
             } catch {
-                guard let self else { return }
+                let cancelled = Task.isCancelled
+                guard let self, !self.ended else { return }
+                let leftHost = self.endSending()
                 self.busyAction = nil
                 self.stage = .ready
                 self.transfer = nil
-                self.reportBatchFailure(error, total: files.count, pcName: target.name)
+                if let batch = error as? SendToPCBatchError { self.deliveries.record(batch.saved, forFirstOf: ids, on: target.id) }
+                self.reportBatchFailure(error, cancelled: cancelled, leftHost: leftHost, total: all.count, target: target)
             }
         }
     }
@@ -269,18 +365,42 @@ final class SendToPCModel: ObservableObject {
         sendTask?.cancel()
     }
 
-    private func reportBatchFailure(_ error: Error, total: Int, pcName: String) {
+    static func savedMessage(_ saved: [SendToPCSavedFile], pcName: String) -> String {
+        guard let only = saved.first, saved.count == 1 else {
+            var message = "\(saved.count) files are in Downloads on \(pcName)."
+            let renamed = saved.filter(\.wasRenamed).count
+            if renamed > 0 {
+                message += " \(renamed) got a number in their name because a file with the same name was already there."
+            }
+            return message
+        }
+        if only.wasRenamed {
+            return "\(only.savedName) is in Downloads on \(pcName), because \(only.originalName) was already there."
+        }
+        return "\(only.savedName) is in Downloads on \(pcName)."
+    }
+
+    private func reportBatchFailure(_ error: Error, cancelled: Bool, leftHost: Bool, total: Int, target: SendToPCTarget) {
         let batch = error as? SendToPCBatchError
-        let savedCount = batch?.saved.count ?? 0
-        let savedText = savedCount == 0 ? nil
-            : "\(savedCount) of \(total) file\(total == 1 ? "" : "s") \(savedCount == 1 ? "was" : "were") already saved to Downloads."
-        if batch?.isCancellation == true || error is CancellationError {
-            notice = Notice(title: "Upload cancelled", message: savedText ?? "Nothing was saved on \(pcName).", tone: .info)
+        let savedCount = deliveries.saved(on: target.id).count
+        let rest = total - savedCount
+        let savedText: String? = savedCount == 0 ? nil
+            : "\(savedCount) of \(total) files \(savedCount == 1 ? "is" : "are") already in Downloads. "
+              + (rest == 1 ? "Saving again sends only the last one." : "Saving again sends only the other \(rest).")
+        if cancelled || SendToPCService.isCancellation(error) {
+            let message = savedText ?? "Nothing was saved on \(target.name)."
+            notice = Notice(title: "Upload cancelled", message: message, tone: .info)
+            UIAccessibility.post(notification: .announcement, argument: "Upload cancelled. \(message)")
             return
         }
-        var message = SendToPCService.message(for: error, pcName: pcName)
-        if let name = batch?.failedName, total > 1, !message.contains(name) {
-            message = "\(name) wasn't saved. " + message
+        var message: String
+        if leftHost && SendToPCService.isConnectionLoss(error) {
+            message = SendToPCText.uploadStoppedLeftApp
+        } else {
+            message = SendToPCService.message(for: error, pcName: target.name)
+            if let name = batch?.failedName, total > 1, !message.contains(name) {
+                message = "\(name) wasn't saved. " + message
+            }
         }
         if let savedText { message += " " + savedText }
         showError(message)
@@ -289,6 +409,7 @@ final class SendToPCModel: ObservableObject {
     private func apply(_ update: SendToPCUploadProgress, ids: [UUID], names: [String]) {
         guard stage == .sending, var current = transfer, ids.indices.contains(update.index) else { return }
         current.index = update.index
+        current.currentID = ids[update.index]
         current.name = names[update.index]
         current.fileFraction = update.fileFraction
         current.overallFraction = update.overallFraction
@@ -322,24 +443,57 @@ final class SendToPCModel: ObservableObject {
     }
 }
 
-/// Forwards upload progress from URLSession's queue to the main actor, at most ~15 times a second
-/// (always passing the first update of each file and the final one).
-private final class ProgressRelay: @unchecked Sendable {
+/// Forwards progress from background queues to the main actor, at most `perSecond` times a second,
+/// always passing the updates `isImportant` picks (a new file starting, the last update).
+private final class ProgressRelay<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var lastSent = Date.distantPast
-    private var lastIndex = -1
-    private let deliver: @MainActor (SendToPCUploadProgress) -> Void
+    private var previous: Value?
+    private let minimumGap: TimeInterval
+    private let isImportant: (Value, Value?) -> Bool
+    private let deliver: @MainActor (Value) -> Void
 
-    init(deliver: @escaping @MainActor (SendToPCUploadProgress) -> Void) { self.deliver = deliver }
+    init(perSecond: Double, isImportant: @escaping (Value, Value?) -> Bool, deliver: @escaping @MainActor (Value) -> Void) {
+        minimumGap = 1 / max(1, perSecond)
+        self.isImportant = isImportant
+        self.deliver = deliver
+    }
 
-    func send(_ update: SendToPCUploadProgress) {
+    func send(_ update: Value) {
         lock.lock()
         let now = Date()
-        let important = update.index != lastIndex || update.fileFraction >= 1 || update.overallFraction >= 1
-        guard important || now.timeIntervalSince(lastSent) >= 1.0 / 15 else { lock.unlock(); return }
+        guard isImportant(update, previous) || now.timeIntervalSince(lastSent) >= minimumGap else { lock.unlock(); return }
         lastSent = now
-        lastIndex = update.index
+        previous = update
         lock.unlock()
         Task { @MainActor [deliver] in deliver(update) }
+    }
+}
+
+/// Asks iOS for extra time while something is being sent, so leaving the app the share sheet came
+/// from does not pause the upload at once. iOS decides how long the extra time lasts.
+private final class SendGrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let release = DispatchSemaphore(value: 0)
+    private var ended = false
+
+    init(reason: String) {
+        ProcessInfo.processInfo.performExpiringActivity(withReason: reason) { [self] expired in
+            if expired {
+                // The extra time is over: let the call that holds the activity open return.
+                end()
+            } else {
+                // Holding this call open (on a background queue) keeps the activity running.
+                release.wait()
+            }
+        }
+    }
+
+    func end() {
+        lock.lock()
+        let first = !ended
+        ended = true
+        lock.unlock()
+        if first { release.signal() }
     }
 }
