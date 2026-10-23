@@ -10,7 +10,7 @@ import orbit_agent as agent
 
 class FeatureWiringTests(unittest.TestCase):
     def test_new_routes_require_main_token_and_https(self):
-        paths = ("/api/files/roots", "/api/clipboard", "/api/audio/sessions", "/api/history/sessions")
+        paths = ("/api/files/roots", "/api/clipboard", "/api/audio/sessions", "/api/history/sessions", "/api/events")
         token = "test-control-token-at-least-24-chars"
         client = TestClient(agent.app)
         self.addCleanup(client.close)
@@ -20,6 +20,46 @@ class FeatureWiringTests(unittest.TestCase):
                     self.assertEqual(client.get(path).status_code, 401)
                     self.assertEqual(client.get(path, headers={"Authorization": "Bearer widget-only-token"}).status_code, 401)
                     self.assertEqual(client.get(path, headers={"Authorization": f"Bearer {token}"}).status_code, 426)
+
+    def test_new_actions_require_main_token_and_https_before_doing_anything(self):
+        posts = (("/api/input/hotkey", {"keys": ["alt", "f10"]}), ("/api/open-url", {"url": "https://example.com"}))
+        token = "test-control-token-at-least-24-chars"
+        client = TestClient(agent.app)
+        self.addCleanup(client.close)
+        with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"), \
+             patch.object(agent.orbit_input, "press_chord") as press, patch.object(agent.orbit_links, "open_url") as opened:
+            for path, body in posts:
+                with self.subTest(path=path):
+                    self.assertEqual(client.post(path, json=body).status_code, 401)
+                    # Authentication is checked before the body, so a missing body is still 401.
+                    self.assertEqual(client.post(path).status_code, 401)
+                    self.assertEqual(client.post(path, json=body, headers={"Authorization": "Bearer widget-only-token"}).status_code, 401)
+                    self.assertEqual(client.post(path, json=body, headers={"Authorization": f"Bearer {token}"}).status_code, 426)
+            press.assert_not_called()
+            opened.assert_not_called()
+
+    def test_capabilities_need_the_main_token_on_both_ports_and_list_these_features(self):
+        token = "test-control-token-at-least-24-chars"
+        with patch.object(agent, "API_TOKEN", token), patch.object(agent, "WIDGET_TOKEN", "widget-only-token"):
+            for base_url in ("http://testserver", "https://testserver"):
+                client = TestClient(agent.app, base_url=base_url)
+                self.addCleanup(client.close)
+                with self.subTest(base_url=base_url):
+                    self.assertEqual(client.get("/api/capabilities").status_code, 401)
+                    self.assertEqual(client.get("/api/capabilities", headers={"Authorization": "Bearer widget-only-token"}).status_code, 401)
+                    response = client.get("/api/capabilities", headers={"Authorization": f"Bearer {token}"})
+                    self.assertEqual(response.status_code, 200)
+                    body = response.json()
+                    self.assertEqual(body["agentVersion"], agent.AGENT_VERSION)
+                    self.assertTrue({"events", "hotkeys", "openUrl"} <= set(body["features"]))
+                    self.assertEqual(len(body["features"]), len(set(body["features"])))
+
+    def test_every_new_module_is_bundled_into_the_standalone_exe(self):
+        from pathlib import Path
+        script = (Path(agent.__file__).resolve().parent / "build_exe.bat").read_text(encoding="utf-8")
+        for module in ("orbit_capabilities", "orbit_settings", "orbit_notify", "orbit_input", "orbit_events", "orbit_links"):
+            with self.subTest(module=module):
+                self.assertIn(f'--hidden-import "{module}"', script)
 
     def test_recorded_sample_includes_sensor_cache_not_just_cpu_usage_update(self):
         state = copy.deepcopy(agent.STATE)
