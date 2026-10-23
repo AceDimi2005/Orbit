@@ -498,6 +498,7 @@ class APITests(unittest.TestCase):
              patch.object(agent, "telemetry_worker") as telemetry, \
              patch.object(agent, "SessionRecorder"), \
              patch.object(agent, "EventLog"), \
+             patch.object(agent, "start_notification_features", return_value=lambda: None), \
              patch.object(agent, "sensor_worker") as sensors:
             with TestClient(agent.app) as client:
                 self.assertEqual(client.get("/api/status", headers=AUTH).status_code, 200)
@@ -520,6 +521,7 @@ class APITests(unittest.TestCase):
                  patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
                  patch.object(agent, "inventory_worker"), patch.object(agent, "telemetry_worker"), \
                  patch.object(agent, "sensor_worker"), patch.object(agent, "SessionRecorder"), \
+                 patch.object(agent, "start_notification_features", return_value=lambda: None), \
                  patch.object(agent, "EventLog", side_effect=event_log), \
                  patch.object(orbit_events.orbit_notify, "notify"):
                 with TestClient(agent.app, base_url="https://testserver") as client:
@@ -537,6 +539,7 @@ class APITests(unittest.TestCase):
              patch.object(agent, "load_widget_token", return_value=WIDGET_TOKEN), \
              patch.object(agent, "inventory_worker"), patch.object(agent, "telemetry_worker"), \
              patch.object(agent, "sensor_worker"), patch.object(agent, "SessionRecorder"), \
+             patch.object(agent, "start_notification_features", return_value=lambda: None), \
              patch.object(agent, "EventLog", side_effect=OSError("disk full")):
             with self.assertLogs("orbit", "ERROR"):
                 with TestClient(agent.app, base_url="https://testserver") as client:
