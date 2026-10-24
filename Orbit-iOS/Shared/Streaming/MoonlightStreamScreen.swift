@@ -16,6 +16,7 @@ struct MoonlightStreamScreen: View {
             Color.black.ignoresSafeArea()
             if let session = controller.session, let request = controller.request {
                 MoonlightSessionLayer(session: session, request: request, handle: handle, accent: accent, pcLocked: controller.pcLocked,
+                                      signInState: controller.signInState,
                                       overlayVisible: $overlayVisible, statsVisible: $statsVisible,
                                       onEnd: { quit in controller.end(quitApp: quit) }, onReconnect: { controller.retry() })
             } else {
@@ -52,10 +53,16 @@ private struct MoonlightLaunchStateView: View {
                     Button("Cancel") { controller.end(quitApp: false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
                 }
             } else if let error = controller.launchError {
-                MoonlightStreamCard(icon: "xmark.octagon", tint: .orange, title: "Could not start the stream", message: error) {
+                MoonlightStreamCard(icon: "xmark.octagon", tint: .orange, title: "Could not start the stream",
+                                    message: error + (controller.signInState == .dropped ? "\n\(MoonlightSignInCopy.notSent)" : "")) {
                     Button { controller.retry() } label: { Label("Try again", systemImage: "arrow.clockwise") }
                         .buttonStyle(MoonlightOverlayButtonStyle(tint: accent, prominent: true))
                     Button("Close") { controller.end(quitApp: false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
+                }
+            } else if controller.signInState == .waiting {
+                MoonlightStreamCard(icon: nil, tint: accent, title: "Unlocking \(controller.request?.pcName ?? "the PC")",
+                                    message: "Starting the stream. Orbit types your password as soon as the sign-in screen appears.", spinning: true) {
+                    Button("Cancel") { controller.end(quitApp: false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
                 }
             } else {
                 MoonlightStreamCard(icon: nil, tint: accent, title: "Starting \(controller.request?.app.title ?? "stream")",
@@ -76,6 +83,7 @@ private struct MoonlightSessionLayer: View {
     @ObservedObject var handle: MoonlightSurfaceHandle
     let accent: Color
     let pcLocked: Bool
+    let signInState: MoonlightStreamController.SignInState
     @Binding var overlayVisible: Bool
     @Binding var statsVisible: Bool
     let onEnd: (Bool) -> Void
@@ -97,23 +105,44 @@ private struct MoonlightSessionLayer: View {
 
             switch session.phase {
             case .connecting(let stage):
-                MoonlightStreamCard(icon: nil, tint: accent, title: "Connecting to \(request.pcName)", message: stage, spinning: true) {
+                MoonlightStreamCard(icon: nil, tint: accent, title: "Connecting to \(request.pcName)",
+                                    message: signInState == .waiting ? "\(stage)\nOrbit types your password as soon as the sign-in screen appears." : stage,
+                                    spinning: true) {
                     Button("Cancel") { onEnd(false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
                 }
             case .failed(let message):
-                MoonlightStreamCard(icon: "xmark.octagon", tint: .orange, title: "Stream failed", message: message) {
+                MoonlightStreamCard(icon: "xmark.octagon", tint: .orange, title: "Stream failed",
+                                    message: message + (signInState == .dropped ? "\n\(MoonlightSignInCopy.notSent)" : "")) {
                     Button { onReconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
                         .buttonStyle(MoonlightOverlayButtonStyle(tint: accent, prominent: true))
                     Button("Close") { onEnd(false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
                 }
             case .ended(let message):
-                MoonlightStreamCard(icon: "checkmark.circle", tint: accent, title: "Stream ended", message: message ?? "\(request.app.title) is no longer streaming.") {
+                MoonlightStreamCard(icon: "checkmark.circle", tint: accent, title: "Stream ended",
+                                    message: (message ?? "\(request.app.title) is no longer streaming.") + (signInState == .dropped ? "\n\(MoonlightSignInCopy.notSent)" : "")) {
                     Button { onReconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
                         .buttonStyle(MoonlightOverlayButtonStyle(tint: accent, prominent: true))
                     Button("Close") { onEnd(false) }.buttonStyle(MoonlightOverlayButtonStyle(tint: .white))
                 }
             case .streaming, .idle:
                 EmptyView()
+            }
+
+            if isStreaming, signInState == .typing || signInState == .waiting {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small).tint(accent)
+                        Text("Signing in to \(request.pcName)…").font(.callout.weight(.semibold))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
+                    .padding(.bottom, 96)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .allowsHitTesting(false)
+                .accessibilityElement(children: .combine)
             }
 
             if isStreaming {
@@ -151,9 +180,12 @@ private struct MoonlightSessionLayer: View {
             #endif
         }
         .animation(.spring(response: 0.3, dampingFraction: 1), value: captureHintVisible)
+        .animation(.spring(response: 0.3, dampingFraction: 1), value: signInState)
         .onChange(of: session.phase) { _, phase in
             if phase == .streaming { overlayVisible = true; scheduleHide() } else { hideTask?.cancel(); overlayVisible = true }
-            if phase == .streaming, request.promptUnlock, !unlockPrompted {
+            // Ask here only when no password came with the stream, or it was dropped before it could be typed
+            // (the stream failed and was reconnected). A password that is waiting or was typed needs no prompt.
+            if phase == .streaming, request.promptUnlock, !unlockPrompted, signInState == .none || signInState == .dropped {
                 unlockPrompted = true
                 Task {
                     try? await Task.sleep(nanoseconds: 800_000_000)
@@ -273,16 +305,21 @@ private struct MoonlightSessionLayer: View {
 
 // MARK: - Unlock
 
-/// Sign-in helper for a PC sitting at its lock screen: what is typed here goes to the PC as
-/// keystrokes over the encrypted stream (Sunshine accepts input on the sign-in screen), framed by
-/// two Enter presses. Nothing is stored anywhere.
-private struct MoonlightUnlockSheet: View {
-    let session: MoonlightStreamSession
+enum MoonlightSignInCopy {
+    static let notSent = "Your password was not sent, and Orbit has forgotten it."
+}
+
+/// The secure field, explanation and button that both unlock sheets show.
+private struct MoonlightUnlockForm<Status: View>: View {
     let pcName: String
     let accent: Color
-    @Environment(\.dismiss) private var dismiss
-    @State private var password = ""
-    @State private var sending = false
+    let footer: String
+    let actionTitle: String
+    var busy = false
+    @Binding var password: String
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+    @ViewBuilder let status: Status
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -294,22 +331,22 @@ private struct MoonlightUnlockSheet: View {
                         #if os(iOS) || os(tvOS)
                         .textContentType(.password)
                         #endif
-                        .onSubmit { Task { await unlock() } }
+                        .onSubmit(onSubmit)
                 } header: {
                     Text("Sign in to \(pcName)")
                 } footer: {
-                    Text("Orbit presses Enter to reach the sign-in field, sends what you type here as keystrokes over the encrypted stream, then presses Enter again. The password is not saved on any device.")
+                    Text(footer)
                 }
                 Section {
-                    Button {
-                        Task { await unlock() }
-                    } label: {
+                    Button(action: onSubmit) {
                         HStack(spacing: 8) {
-                            if sending { ProgressView().controlSize(.small) }
-                            Text(sending ? "Signing in…" : "Unlock")
+                            if busy { ProgressView().controlSize(.small) }
+                            Text(busy ? "Signing in…" : actionTitle)
                         }
                     }
-                    .disabled(password.isEmpty || sending)
+                    .disabled(password.isEmpty || busy)
+                } footer: {
+                    status
                 }
             }
             #if os(macOS)
@@ -317,14 +354,33 @@ private struct MoonlightUnlockSheet: View {
             #endif
             .navigationTitle("Unlock PC")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { password = ""; dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
             }
         }
         .tint(accent)
         #if os(macOS)
-        .frame(width: 440, height: 280)
+        .frame(width: 440, height: 300)
         #endif
         .onAppear { focused = true }
+    }
+}
+
+/// Sign-in helper for a PC that locked during the stream: what is typed here goes to the PC as
+/// keystrokes over the encrypted stream (Sunshine accepts input on the sign-in screen), framed by
+/// two Enter presses. Nothing is stored anywhere.
+private struct MoonlightUnlockSheet: View {
+    let session: MoonlightStreamSession
+    let pcName: String
+    let accent: Color
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var sending = false
+
+    var body: some View {
+        MoonlightUnlockForm(pcName: pcName, accent: accent,
+                            footer: "Orbit presses Enter to reach the sign-in field, sends what you type here as keystrokes over the encrypted stream, then presses Enter again. The password is not saved on any device.",
+                            actionTitle: "Unlock", busy: sending, password: $password,
+                            onSubmit: { Task { await unlock() } }, onCancel: { password = ""; dismiss() }) { EmptyView() }
     }
 
     @MainActor
@@ -332,13 +388,53 @@ private struct MoonlightUnlockSheet: View {
         guard !password.isEmpty, !sending else { return }
         sending = true
         let text = password
-        session.tapKey(virtualKey: MoonlightVirtualKey.enter)   // dismiss the lock screen's clock
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-        session.sendText(text)
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        session.tapKey(virtualKey: MoonlightVirtualKey.enter)
         password = ""
+        try? await MoonlightHostCoordinator.typeSignIn(text, into: session)
         sending = false
+        dismiss()
+    }
+}
+
+/// "Unlock PC" before any stream: the Windows password is asked for right away, with no network
+/// work in front of it. While it is typed the Sunshine host is checked in the background, so the
+/// stream that follows starts without waiting; `onUnlock` then starts that stream, which types the
+/// password as soon as the sign-in screen is up. The password only ever lives in memory.
+struct MoonlightUnlockPromptSheet: View {
+    @ObservedObject var host: MoonlightHostCoordinator
+    let pcName: String
+    let accent: Color
+    let onUnlock: (MoonlightSignInSecret) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+
+    var body: some View {
+        MoonlightUnlockForm(pcName: pcName, accent: accent,
+                            footer: "Orbit opens the stream, presses Enter to reach the sign-in field, types this as keystrokes over the encrypted stream and presses Enter again. The password stays in memory only until then and is never saved.",
+                            actionTitle: "Unlock", password: $password, onSubmit: submit,
+                            onCancel: { password = ""; dismiss() }) {
+            hostStatus
+        }
+        // Warm up after the prompt is on screen: server info and app list, the client identity, and
+        // which of the PC's addresses answers.
+        .task { await host.refresh() }
+    }
+
+    @ViewBuilder
+    private var hostStatus: some View {
+        if host.isRefreshing {
+            Label("Checking Sunshine on \(pcName)…", systemImage: "antenna.radiowaves.left.and.right")
+        } else if host.reachable {
+            Label("Sunshine is ready", systemImage: "checkmark.circle")
+        } else if let error = host.lastError {
+            Label("Sunshine is not answering: \(error)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+        }
+    }
+
+    private func submit() {
+        guard !password.isEmpty else { return }
+        let secret = MoonlightSignInSecret(password: password)
+        password = ""
+        onUnlock(secret)
         dismiss()
     }
 }

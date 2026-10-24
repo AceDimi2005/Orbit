@@ -170,14 +170,37 @@ extension MoonlightHostCoordinator {
         try await Task.sleep(nanoseconds: 800_000_000)
     }
 
+    /// Enter (leaves the lock screen's clock), the password as keystrokes, Enter. Used by the headless
+    /// unlock above, the "Unlock PC" stream (`MoonlightStreamController`) and the in-stream unlock sheet.
     @MainActor
-    private static func typeSignIn(_ password: String, into session: MoonlightStreamSession) async throws {
+    static func typeSignIn(_ password: String, into session: MoonlightStreamSession) async throws {
         session.tapKey(virtualKey: MoonlightVirtualKey.enter)   // leave the lock screen's clock
         try await Task.sleep(nanoseconds: 1_200_000_000)
         session.sendText(password)
         try await Task.sleep(nanoseconds: 400_000_000)
         session.tapKey(virtualKey: MoonlightVirtualKey.enter)
     }
+}
+
+/// The Windows password of an "Unlock PC" stream, on its way to the sign-in screen. It lives only in
+/// memory, in this one object that every copy of the stream request shares: `take()` hands it out once
+/// and forgets it, and the controller discards it as soon as the stream fails or ends. It is never
+/// stored, logged or sent anywhere but as keystrokes through the stream (Windows' secure desktop
+/// accepts nothing else, so never through the agent's keyboard API).
+@MainActor
+final class MoonlightSignInSecret {
+    private var password: String?
+
+    init(password: String) { self.password = password.isEmpty ? nil : password }
+
+    var isPending: Bool { password != nil }
+
+    func take() -> String? {
+        defer { password = nil }
+        return password
+    }
+
+    func discard() { password = nil }
 }
 
 /// App-wide stream state: one request at a time, presented full screen by the root view.
@@ -195,21 +218,41 @@ final class MoonlightStreamController: ObservableObject {
         /// keep it, so `/launch` and the session never disagree.
         let target: MoonlightStreamTarget
         var quitRunningApp = false
-        /// Open the sign-in prompt as soon as the stream runs (the PC sits at its lock screen).
+        /// The PC sits at its lock screen: the overlay offers "Unlock PC", and without `signIn` the
+        /// sign-in prompt opens as soon as the stream runs.
         var promptUnlock = false
+        /// "Unlock PC": the password asked for before the stream started, typed automatically once it
+        /// runs. Shared by every copy of the request and cleared after typing or when the stream fails.
+        let signIn: MoonlightSignInSecret?
 
         /// `target` defaults to this device's screen (the Mac: the display in front).
         @MainActor
         init(host: MoonlightHostCoordinator, app: MoonlightApp, pcName: String, settings: MoonlightStreamSettings,
-             target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false) {
+             target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false,
+             signIn: MoonlightSignInSecret? = nil) {
             self.host = host
             self.app = app
             self.pcName = pcName
             self.settings = settings
             self.target = target ?? MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.hostSupportsHEVC)
             self.quitRunningApp = quitRunningApp
-            self.promptUnlock = promptUnlock
+            self.promptUnlock = promptUnlock || signIn != nil
+            self.signIn = signIn
         }
+    }
+
+    /// Automatic sign-in of an "Unlock PC" stream.
+    enum SignInState: Equatable {
+        /// Nothing to type for this stream.
+        case none
+        /// The password waits in memory until the stream runs.
+        case waiting
+        /// Enter · password · Enter are on their way.
+        case typing
+        /// Typed; the password is gone.
+        case sent
+        /// The stream failed or ended before the password could be typed. It was not sent and is gone.
+        case dropped
     }
 
     @Published var isPresented = false
@@ -220,24 +263,53 @@ final class MoonlightStreamController: ObservableObject {
     @Published private(set) var launchError: String?
     @Published private(set) var busyError: MoonlightStreamBusyError?
     @Published private(set) var isLaunching = false
+    /// Where the automatic sign-in of an "Unlock PC" stream stands.
+    @Published private(set) var signInState: SignInState = .none
 
     private var launchTask: Task<Void, Never>?
+    private var signInTask: Task<Void, Never>?
 
-    /// Starts the launch request and presents the stream screen.
-    func begin(_ request: Request) {
+    /// Starts the launch request and presents the stream screen. With `present: false` the screen
+    /// waits for `presentPendingStream()`: a sheet that started the stream (the "Unlock PC" prompt)
+    /// calls it once it has closed, so the launch runs while the sheet animates away.
+    func begin(_ request: Request, present: Bool = true) {
         if let session, session.isActive { session.stop() }
+        signInTask?.cancel()
+        signInTask = nil
+        if let previous = self.request?.signIn, previous !== request.signIn { previous.discard() }
         self.request = request
         session = nil
         launchError = nil
         busyError = nil
-        isPresented = true
+        signInState = request.signIn?.isPending == true ? .waiting : .none
+        if present {
+            isPresented = true
+        } else {
+            // Never leave a requested stream unseen, whatever happens to the sheet.
+            let id = request.id
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, self.request?.id == id else { return }
+                self.presentPendingStream()
+            }
+        }
         launch()
+    }
+
+    /// Presents a stream that `begin(_:present: false)` started.
+    func presentPendingStream() {
+        guard request != nil, !isPresented else { return }
+        isPresented = true
     }
 
     func retry() {
         launchError = nil
         busyError = nil
+        signInTask?.cancel()
+        signInTask = nil
         session = nil
+        // "Quit it and stream" after a busy host keeps the password; after a failure it is gone.
+        if request?.signIn?.isPending == true { signInState = .waiting }
         launch()
     }
 
@@ -259,20 +331,66 @@ final class MoonlightStreamController: ObservableObject {
                 guard let self, !Task.isCancelled, self.request?.id == request.id else { return }
                 let session = MoonlightStreamSession(settings: request.settings)
                 self.session = session
+                if let secret = request.signIn, secret.isPending { self.typeSignInWhenStreaming(secret, session: session, requestID: request.id) }
                 session.start(parameters: parameters, settings: request.settings)
             } catch let error as MoonlightStreamBusyError {
+                // The user decides next ("Quit it and stream", "Watch it instead", Cancel); the password waits.
                 self?.busyError = error
             } catch {
                 guard !Task.isCancelled else { return }
+                self?.dropSignIn()
                 self?.launchError = (error as? MoonlightError)?.message ?? error.localizedDescription
             }
         }
     }
 
+    /// Types the password once `session` streams (Windows then shows its sign-in screen), or drops it
+    /// when the session fails or ends first.
+    private func typeSignInWhenStreaming(_ secret: MoonlightSignInSecret, session: MoonlightStreamSession, requestID: UUID) {
+        signInTask?.cancel()
+        signInState = .waiting
+        signInTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.request?.id == requestID, self.session === session else { secret.discard(); return }
+                switch session.phase {
+                case .streaming:
+                    self.signInState = .typing
+                    // Let the first frames arrive and the input channel settle before the first key.
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled, session.phase == .streaming, let password = secret.take() else {
+                        if !Task.isCancelled { self.dropSignIn() }
+                        return
+                    }
+                    do {
+                        try await MoonlightHostCoordinator.typeSignIn(password, into: session)
+                        self.signInState = .sent
+                    } catch {
+                        // Cancelled while typing: the stream ended or was closed.
+                        if self.signInState == .typing { self.signInState = .dropped }
+                    }
+                    return
+                case .failed, .ended:
+                    self.dropSignIn()
+                    return
+                default:
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
+        }
+    }
+
+    /// The stream failed before the password was typed: forget it, and say so.
+    private func dropSignIn() {
+        guard let secret = request?.signIn else { return }
+        secret.discard()
+        if signInState == .waiting || signInState == .typing { signInState = .dropped }
+    }
+
     /// Instead of quitting the running app, stream it.
     func streamRunningAppInstead() {
         guard let busyError, let request, let running = request.host.apps.first(where: { $0.id == busyError.runningAppID }) else { return }
-        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target, quitRunningApp: false)
+        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target,
+                               quitRunningApp: false, promptUnlock: request.promptUnlock, signIn: request.signIn)
         retry()
     }
 
@@ -280,6 +398,10 @@ final class MoonlightStreamController: ObservableObject {
     func end(quitApp: Bool) {
         launchTask?.cancel()
         launchTask = nil
+        signInTask?.cancel()
+        signInTask = nil
+        request?.signIn?.discard()
+        signInState = .none
         let host = request?.host
         let shouldQuit = quitApp || (request?.settings.quitAppOnDisconnect ?? false)
         session?.stop()

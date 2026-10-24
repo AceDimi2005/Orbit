@@ -1023,6 +1023,7 @@ struct GameLibraryView: View {
     @ObservedObject private var stream = MoonlightStreamController.shared
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
+    @State private var showsUnlockPrompt = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.orbitTheme) private var theme
 
@@ -1114,6 +1115,16 @@ struct GameLibraryView: View {
         .sheet(isPresented: $showsStreamSettings) {
             MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
                 .presentationBackground(theme.background)
+        }
+        // "Unlock PC": the password first, then the stream. The stream is launched as soon as the password
+        // is in, and shown once this sheet has closed (one presentation at a time).
+        .sheet(isPresented: $showsUnlockPrompt, onDismiss: { stream.presentPendingStream() }) {
+            MoonlightUnlockPromptSheet(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent) { secret in
+                guard let app = sunshine.desktopApp else { secret.discard(); return }
+                startStream(app, signIn: secret, present: false)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationBackground(theme.background)
         }
     }
 
@@ -1245,7 +1256,7 @@ struct GameLibraryView: View {
                     if vm.metrics.sessionLocked == true {
                         Button {
                             OrbitHaptics.press()
-                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
+                            showsUnlockPrompt = true
                         } label: {
                             Image(systemName: "lock.open.fill")
                                 .font(.subheadline.weight(.bold))
@@ -1254,7 +1265,8 @@ struct GameLibraryView: View {
                         }
                         .buttonStyle(OrbitGlassButtonStyle(tint: .yellow, cornerRadius: 16))
                         .disabled(!canStream || sunshine.desktopApp == nil)
-                        .accessibilityLabel("Unlock the PC through the stream")
+                        .accessibilityLabel("Unlock the PC")
+                        .accessibilityHint("Asks for the Windows password, then opens the stream and signs in")
                     }
 
                     if sunshine.isBusy {
@@ -1302,8 +1314,8 @@ struct GameLibraryView: View {
         }
     }
 
-    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, promptUnlock: promptUnlock))
+    private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil, present: Bool = true) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, signIn: signIn), present: present)
     }
 }
 

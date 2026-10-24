@@ -864,11 +864,12 @@ struct TVControlsAndGamesTab: View {
     @ObservedObject private var stream = MoonlightStreamController.shared
     @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @State private var showsStreamSettings = false
+    @State private var showsUnlockPrompt = false
 
     private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
 
-    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings, promptUnlock: promptUnlock))
+    private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil, present: Bool = true) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings, signIn: signIn), present: present)
     }
 
     /// Generates the PIN and has the Orbit agent type it into Sunshine (login saved from iPhone or Mac).
@@ -1148,9 +1149,7 @@ struct TVControlsAndGamesTab: View {
                     .disabled(!canStream || sunshine.desktopApp == nil)
 
                     if vm.metrics.sessionLocked == true {
-                        Button {
-                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
-                        } label: { Label("Unlock PC", systemImage: "lock.open.fill") }
+                        Button { showsUnlockPrompt = true } label: { Label("Unlock PC", systemImage: "lock.open.fill") }
                             .buttonStyle(TVActionPillStyle(tint: TVPalette.amber))
                             .disabled(!canStream || sunshine.desktopApp == nil)
                     }
@@ -1164,6 +1163,13 @@ struct TVControlsAndGamesTab: View {
             }
             .sheet(isPresented: $showsStreamSettings) {
                 MoonlightStreamSettingsView(store: streamSettings, accent: TVPalette.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
+            }
+            // "Unlock PC": the password first; the stream launches right away and shows once this sheet has closed.
+            .sheet(isPresented: $showsUnlockPrompt, onDismiss: { stream.presentPendingStream() }) {
+                MoonlightUnlockPromptSheet(host: sunshine, pcName: vm.metrics.hostname, accent: TVPalette.accent) { secret in
+                    guard let app = sunshine.desktopApp else { secret.discard(); return }
+                    startStream(app, signIn: secret, present: false)
+                }
             }
             .onAppear {
                 #if DEBUG
