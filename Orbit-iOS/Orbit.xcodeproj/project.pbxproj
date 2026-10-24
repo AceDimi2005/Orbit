@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A60000000000000000000106 /* OrbitMacEnergyViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitMacEnergyViews.swift */; };
+		A20000000000000000000114 /* MonthlySummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* MonthlySummaryView.swift */; };
+		A20000000000000000000113 /* EnergyCostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* EnergyCostView.swift */; };
+		A60000000000000000000105 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitSummaryShareCard.swift */; };
+		A20000000000000000000112 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitSummaryShareCard.swift */; };
+		A60000000000000000000104 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitEnergy.swift */; };
+		A20000000000000000000111 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitEnergy.swift */; };
 		A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
@@ -247,6 +254,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000121 /* OrbitMacEnergyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacEnergyViews.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* MonthlySummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonthlySummaryView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* EnergyCostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyCostView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011E /* OrbitSummaryShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSummaryShareCard.swift; sourceTree = "<group>"; };
+		B2000000000000000000011D /* OrbitEnergy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitEnergy.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitTVDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVDeck.swift; sourceTree = "<group>"; };
@@ -483,6 +495,8 @@
 				B20000000000000000000113 /* DeckEditorView.swift */,
 				B20000000000000000000114 /* DeckView.swift */,
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
+				B2000000000000000000011F /* EnergyCostView.swift */,
+				B20000000000000000000120 /* MonthlySummaryView.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -542,6 +556,8 @@
 				B20000000000000000000116 /* OrbitDeck.swift */,
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
+				B2000000000000000000011D /* OrbitEnergy.swift */,
+				B2000000000000000000011E /* OrbitSummaryShareCard.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -620,6 +636,7 @@
 				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000010F /* OrbitMacPCAlerts.swift */,
 				B20000000000000000000119 /* OrbitMacDeckView.swift */,
+				B20000000000000000000121 /* OrbitMacEnergyViews.swift */,
 			);
 			path = OrbitMac;
 			sourceTree = "<group>";
@@ -925,6 +942,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000114 /* MonthlySummaryView.swift in Sources */,
+				A20000000000000000000113 /* EnergyCostView.swift in Sources */,
+				A20000000000000000000112 /* OrbitSummaryShareCard.swift in Sources */,
+				A20000000000000000000111 /* OrbitEnergy.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
 				A2000000000000000000010E /* OrbitDeck.swift in Sources */,
@@ -1051,6 +1072,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000106 /* OrbitMacEnergyViews.swift in Sources */,
+				A60000000000000000000105 /* OrbitSummaryShareCard.swift in Sources */,
+				A60000000000000000000104 /* OrbitEnergy.swift in Sources */,
 				A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */,
 				A60000000000000000000102 /* OrbitMacDeckView.swift in Sources */,
 				A60000000000000000000101 /* OrbitEventFeed.swift in Sources */,

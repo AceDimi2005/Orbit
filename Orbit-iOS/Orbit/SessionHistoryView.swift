@@ -80,6 +80,8 @@ private struct OrbitHistoryDetail: Decodable {
     let samples: [OrbitHistorySample]
     let downsampled: Bool
     let sampleIntervalSeconds: Double
+    /// Estimated energy and cost (agents with electricity cost; left out by older ones).
+    let energy: OrbitSessionEnergy?
 }
 
 private enum OrbitHistoryMetric: String, CaseIterable, Identifiable {
@@ -450,6 +452,13 @@ private struct OrbitHistoryDetailView: View {
                     }
                     LabeledContent("Started", value: currentSession.startedDate.formatted(date: .abbreviated, time: .shortened))
                     LabeledContent("Duration", value: currentSession.durationLabel)
+                    if let energy = detail?.energy {
+                        VStack(alignment: .leading, spacing: 4) {
+                            LabeledContent("Estimated energy", value: OrbitEnergyFormat.energyAndCost(energy))
+                            Text(OrbitEnergyFormat.sessionEnergyNote(energy))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if let game = currentSession.gameProcess { LabeledContent("Game process", value: game).font(.caption) }
                     if currentSession.status == "interrupted" {
                         Text("The agent stopped before this session was completed. Its duration ends at the last saved reading.")

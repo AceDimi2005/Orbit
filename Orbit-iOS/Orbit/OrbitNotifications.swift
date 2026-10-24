@@ -882,10 +882,19 @@ enum OrbitLocalAlerts {
 final class OrbitNotificationRouter: ObservableObject {
     static let shared = OrbitNotificationRouter()
     @Published var showsNotifications = false
+    /// A monthly summary to open (`orbit://summary?month=YYYY-MM&pc=<id>`, or a tapped `summary.ready` alert).
+    @Published var summaryRequest: OrbitSummaryRequest?
+    /// `orbit://energy`: the Electricity Cost screen.
+    @Published var showsEnergyCost = false
 
     func open(link: String?) {
         guard let link, let url = URL(string: link), url.scheme?.lowercased() == "orbit" else { return }
-        if url.host?.lowercased() == "notifications" { showsNotifications = true }
+        switch url.host?.lowercased() {
+        case "notifications": showsNotifications = true
+        case "summary": summaryRequest = OrbitSummaryRequest(url: url)
+        case "energy": showsEnergyCost = true
+        default: break
+        }
     }
 }
 
@@ -949,7 +958,9 @@ final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         let pcID = info["pcID"] as? String
-        let link = info["link"] as? String
+        // A "summary is ready" alert opens that month's summary; every other alert keeps its own link.
+        let link = OrbitSummaryRequest.link(forKind: info["kind"] as? String, pcID: pcID, deliveredAt: response.notification.date)
+            ?? info["link"] as? String
         let action = response.actionIdentifier
         Task { @MainActor in
             switch action {

@@ -55,6 +55,20 @@ struct CompanionToolsView: View {
                             } label: {
                                 toolTile("Session Graphs", subtitle: "History, averages & peaks", icon: "chart.xyaxis.line", tint: .mint)
                             }
+                            NavigationLink {
+                                OrbitProGate(title: "Electricity Cost", message: EnergyCostView.proMessage) {
+                                    EnergyCostView(vm: vm)
+                                }
+                            } label: {
+                                toolTile("Electricity Cost", subtitle: "Monthly estimate & price", icon: "bolt.fill", tint: .yellow)
+                            }
+                            NavigationLink {
+                                OrbitProGate(title: "Monthly Summary", message: MonthlySummaryView.proMessage) {
+                                    MonthlySummaryView(vm: vm)
+                                }
+                            } label: {
+                                toolTile("Monthly Summary", subtitle: "Your month in games", icon: "calendar", tint: .orange)
+                            }
                             NavigationLink { FullSpecsView(vm: vm) } label: {
                                 toolTile("Hardware Specs", subtitle: "Detected components", icon: "cpu.fill", tint: .indigo)
                             }
