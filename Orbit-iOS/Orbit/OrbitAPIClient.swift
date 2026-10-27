@@ -41,8 +41,13 @@ final class OrbitAPIClient: @unchecked Sendable {
     }
     deinit { session.invalidateAndCancel() }
 
+    /// Why the last connection was refused by the certificate pin, in plain words (nil when it wasn't).
+    /// WebSocket tasks report a refused pin only as a cancelled task, so their callers read this.
+    var pinFailureMessage: String? { authentication.failureMessage }
+
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
-        let isWebSocket = (path == "/ws/stream" || path == "/ws/input")
+        // Exact WebSocket paths only: the desktop preview, the cursor and the phone's camera (wss, token in the header).
+        let isWebSocket = (path == "/ws/stream" || path == "/ws/input" || path == "/ws/camera")
         guard path.hasPrefix("/api/") || isWebSocket else { throw OrbitError(message: "Invalid PC request.") }
         guard !pairingOnly || path.hasPrefix("/api/pair/") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
         var components = URLComponents()
@@ -70,9 +75,13 @@ final class OrbitAPIClient: @unchecked Sendable {
         if !Task.isCancelled, let message = transfer?.failureMessage ?? authentication.failureMessage { return OrbitError(message: message) }
         return error
     }
-    func data(_ path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
+    /// `timeout` replaces the 20 s idle limit for one request, for PC work that answers late (a setup
+    /// that waits for the person at the PC to approve a Windows prompt).
+    func data(_ path: String, method: String = "GET", query: [URLQueryItem] = [], timeout: TimeInterval? = nil) async throws -> Data {
+        var request = try request(path, method: method, query: query)
+        if let timeout { request.timeoutInterval = timeout }
         let result: (Data, URLResponse)
-        do { result = try await session.data(for: request(path, method: method, query: query)) }
+        do { result = try await session.data(for: request) }
         catch { throw transportError(error) }
         let (data, response) = result
         try validate(response, data: data)
@@ -133,6 +142,8 @@ final class OrbitAPIClient: @unchecked Sendable {
     }
     func webSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/stream")) }
     func inputWebSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/input")) }
+    /// `WS /ws/camera` on the encrypted port: the token travels only in the Authorization header.
+    func cameraWebSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/camera")) }
 }
 
 private class OrbitPinnedDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {

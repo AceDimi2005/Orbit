@@ -89,7 +89,25 @@ private struct Result: Decodable { var ok: Bool }
             let _: Status = try await wrong.get("/api/status")
             fatalError("Wrong certificate fingerprint was accepted")
         } catch { }
-        print("PASS: native Swift pinned HTTPS, 5 MiB streamed upload/download and SHA256 match, duplicate names renamed instead of overwritten, Windows-safe names, mutation, refused redirect, rejected certificate")
+        precondition(wrong.pinFailureMessage != nil, "a refused pin must explain itself")
+        // The phone's camera socket: wss on the pinned port, token only in the Authorization header. The
+        // agent accepts it, then (this Mac is not Windows) says why in JSON before closing.
+        let camera = try client.cameraWebSocket()
+        precondition(camera.originalRequest?.url?.absoluteString == "wss://127.0.0.1:\(args[1])/ws/camera", "camera socket URL \(String(describing: camera.originalRequest?.url))")
+        precondition(camera.originalRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer \(args[2])")
+        camera.resume()
+        try? await camera.send(.string("{\"width\":1280,\"height\":720,\"fps\":30}"))
+        guard case .string(let reply) = try await camera.receive(),
+              let object = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
+              object["code"] as? String == "unsupported", object["error"] is String else { fatalError("camera socket did not answer with its JSON reason") }
+        do { _ = try await camera.receive(); fatalError("camera socket stayed open after its error") } catch { }
+        // A wrong token is refused before the handshake completes.
+        let stranger = try OrbitAPIClient(host: "127.0.0.1", port: Int(args[1])!, token: "not-the-token", fingerprint: args[3])
+        let refused = try stranger.cameraWebSocket()
+        refused.resume()
+        do { _ = try await refused.receive(); fatalError("camera socket accepted a wrong token") } catch { }
+        precondition((refused.response as? HTTPURLResponse)?.statusCode == 403, "wrong token: \(String(describing: refused.response))")
+        print("PASS: native Swift pinned HTTPS, 5 MiB streamed upload/download and SHA256 match, duplicate names renamed instead of overwritten, Windows-safe names, mutation, refused redirect, rejected certificate, camera WebSocket (header token, JSON reason, wrong token refused)")
     }
 }
 '''

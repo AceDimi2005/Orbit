@@ -682,6 +682,12 @@ struct OrbitProPaywallView: View {
                                 title: "Unlimited Buttons",
                                 subtitle: "Go past the 6 free buttons: up to 64 one-tap shortcuts, OBS controls and app launchers per PC."
                             )
+                            proFeatureRow(
+                                icon: "web.camera.fill",
+                                tint: .green,
+                                title: "iPhone as a Webcam (Beta)",
+                                subtitle: "Use your iPhone or iPad camera in Zoom, Teams, Discord, OBS and browsers on your PC."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

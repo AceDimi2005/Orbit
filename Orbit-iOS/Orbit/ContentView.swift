@@ -5,6 +5,7 @@ import UIKit
 struct ContentView: View {
     @State private var isShowingProFromURL = false
     @State private var deckLink: OrbitDeckLink?
+    @State private var showsWebcamFromURL = false
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @ObservedObject private var notificationRouter = OrbitNotificationRouter.shared
@@ -64,6 +65,10 @@ struct ContentView: View {
         .sheet(item: $deckLink) { link in
             NavigationStack { DeckView(vm: vm, focusButtonID: link.buttonID, showsDoneButton: true) }
         }
+        // Full screen like a camera app: no swipe-down while streaming, and the dimmed screen covers everything.
+        .fullScreenCover(isPresented: $showsWebcamFromURL) {
+            NavigationStack { WebcamScreen(vm: vm, showsDoneButton: true) }
+        }
         .onAppear {
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
@@ -84,6 +89,7 @@ struct ContentView: View {
             switch url.host?.lowercased() {
             case "pro": isShowingProFromURL = true
             case "deck": deckLink = OrbitDeckLink(url: url, vm: vm)
+            case "webcam": showsWebcamFromURL = true
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3

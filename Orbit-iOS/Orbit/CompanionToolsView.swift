@@ -44,6 +44,10 @@ struct CompanionToolsView: View {
                             } label: {
                                 toolTile("Stream Settings", subtitle: "Resolution, bitrate, codec & HDR", icon: "play.rectangle.fill", tint: theme.accent)
                             }
+                            // iPhone as a PC webcam (Orbit Pro, Labs): WebcamView.swift.
+                            NavigationLink { WebcamScreen(vm: vm) } label: {
+                                toolTile("Webcam", subtitle: "Use this \(OrbitWebcamDevice.word) as a PC camera", icon: "web.camera.fill", tint: .green, badge: "BETA")
+                            }
                         }
 
                         OrbitSectionHeader("Diagnostics & History", icon: "waveform.path.ecg")
