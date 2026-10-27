@@ -129,7 +129,12 @@ struct MacRootView: View {
             if vm.metrics.isOnline && !vm.isDemoMode {
                 HStack(spacing: 6) {
                     MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                    MacStatChip(label: "Up", value: vm.metrics.formattedUptime)
+                    if vm.usingSecondaryAddress {
+                        MacStatChip(label: "Via", value: "Remote", icon: "point.3.connected.trianglepath.dotted")
+                            .help("The PC's local address does not answer; Orbit uses its secondary IP")
+                    } else {
+                        MacStatChip(label: "Up", value: vm.metrics.formattedUptime)
+                    }
                 }
             }
         }

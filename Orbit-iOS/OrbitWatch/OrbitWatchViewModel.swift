@@ -86,6 +86,10 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var subnetMask: String = "255.255.255.0"
     @Published var wolPort: Int = 9
     @Published var lastKnownIPv4: String = ""
+    /// The selected PC's secondary address from the iPhone (for example its Tailscale address).
+    @Published var secondaryHost: String = ""
+    /// The Watch's own requests go to `secondaryHost` because the PC's LAN address (`host`) did not answer.
+    @Published private(set) var directUsesSecondary = false
 
     @Published private(set) var lastTelemetryAt: Date?
     @Published var isOnline: Bool = false
@@ -312,7 +316,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 isMuted = summary.isMuted ?? isMuted
                 uptimeSeconds = summary.uptimeSeconds ?? uptimeSeconds
                 pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
-                statusMessage = "Live · \(pingMs) ms"
+                statusMessage = directUsesSecondary ? "Live · Remote · \(pingMs) ms" : "Live · \(pingMs) ms"
                 checkThermalHapticAlert()
                 saveSnapshotForComplications()
                 return
@@ -342,10 +346,14 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                     isMuted = (json["isMuted"] as? Bool) ?? isMuted
                     uptimeSeconds = (json["uptimeSeconds"] as? Int) ?? uptimeSeconds
                     pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
-                    statusMessage = "Live · \(pingMs) ms"
+                    statusMessage = directUsesSecondary ? "Live · Remote · \(pingMs) ms" : "Live · \(pingMs) ms"
                     checkThermalHapticAlert()
                     saveSnapshotForComplications()
                     return
+                }
+                // Nothing answered on this address: the next poll tries the PC's other one (LAN ↔ secondary).
+                if requestedTarget == target, canUseSecondaryAddress, (error as? URLError).map({ $0.code != .cancelled }) == true {
+                    directUsesSecondary.toggle()
                 }
             }
         }
@@ -848,11 +856,23 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     // MARK: - Supported watchOS HTTP networking
 
     func client(for destination: OrbitWatchControlTarget) throws -> OrbitWatchHTTPClient {
-        if httpTarget != destination || httpClient == nil {
-            httpClient = try OrbitWatchHTTPClient(target: destination)
-            httpTarget = destination
+        let routed = routedTarget(destination)
+        if httpTarget != routed || httpClient == nil {
+            httpClient = try OrbitWatchHTTPClient(target: routed)
+            httpTarget = routed
         }
         return httpClient!
+    }
+
+    /// Only with certificate pinning: the token never crosses another network in clear.
+    private var canUseSecondaryAddress: Bool { hasSecureTLS && !secondaryHost.isEmpty && secondaryHost.caseInsensitiveCompare(host) != .orderedSame }
+
+    /// `destination` on the address the Watch's own requests use now: the PC's secondary address while its LAN
+    /// address does not answer. Relays through the iPhone keep naming the PC by its LAN address.
+    private func routedTarget(_ destination: OrbitWatchControlTarget) -> OrbitWatchControlTarget {
+        guard directUsesSecondary, canUseSecondaryAddress, destination == target else { return destination }
+        return OrbitWatchControlTarget(id: destination.id, host: secondaryHost, agentPort: destination.agentPort,
+                                       securePort: destination.securePort, fingerprint: destination.fingerprint, token: destination.token)
     }
 
     private func performPCRequest(path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
@@ -921,6 +941,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         if let sm = payload["subnetMask"] as? String { subnetMask = sm }
         if let wp = payload["wolPort"] as? Int { wolPort = wp }
         if let ip = payload["lastKnownIPv4"] as? String { lastKnownIPv4 = ip }
+        if let secondary = payload["secondaryHost"] as? String {
+            secondaryHost = secondary.trimmingCharacters(in: .whitespacesAndNewlines)
+            // The iPhone keeps checking the LAN address; follow the path it found.
+            directUsesSecondary = (payload["usingSecondary"] as? Bool ?? false) && canUseSecondaryAddress
+        }
         if let la = payload["isLiveActivityActive"] as? Bool { isLiveActivityActive = la }
 
         // Context delivery time does not make a cached PC sample fresh. Older phone
@@ -995,7 +1020,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 broadcastAddress: broadcastAddress,
                 subnetMask: subnetMask,
                 wolPort: wolPort,
-                lastKnownIPv4: lastKnownIPv4
+                lastKnownIPv4: lastKnownIPv4,
+                secondaryHost: canUseSecondaryAddress ? secondaryHost : ""
             )
             try? OrbitWidgetConnectionStore.setDefault(id: selectedPCID)
         }
@@ -1027,7 +1053,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             "broadcastAddress": broadcastAddress,
             "subnetMask": subnetMask,
             "wolPort": wolPort,
-            "lastKnownIPv4": lastKnownIPv4
+            "lastKnownIPv4": lastKnownIPv4,
+            "secondaryHost": secondaryHost
         ]
         store.set(snapshot, forKey: Self.snapshotKey)
         UserDefaults.standard.set(snapshot, forKey: Self.snapshotKey)
@@ -1065,6 +1092,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         subnetMask = snapshot["subnetMask"] as? String ?? "255.255.255.0"
         wolPort = snapshot["wolPort"] as? Int ?? 9
         lastKnownIPv4 = snapshot["lastKnownIPv4"] as? String ?? ""
+        secondaryHost = snapshot["secondaryHost"] as? String ?? ""
         if !selectedPCID.isEmpty { apiToken = (try? OrbitWidgetConnectionStore.controlToken(for: selectedPCID)) ?? "" }
     }
 }

@@ -70,9 +70,12 @@ final class OrbitAPIClient: @unchecked Sendable {
         if !Task.isCancelled, let message = transfer?.failureMessage ?? authentication.failureMessage { return OrbitError(message: message) }
         return error
     }
-    func data(_ path: String, method: String = "GET", query: [URLQueryItem] = []) async throws -> Data {
+    /// `timeout` shortens how long the PC may stay silent (for example when probing which of its addresses answers).
+    func data(_ path: String, method: String = "GET", query: [URLQueryItem] = [], timeout: TimeInterval? = nil) async throws -> Data {
+        var urlRequest = try request(path, method: method, query: query)
+        if let timeout { urlRequest.timeoutInterval = timeout }
         let result: (Data, URLResponse)
-        do { result = try await session.data(for: request(path, method: method, query: query)) }
+        do { result = try await session.data(for: urlRequest) }
         catch { throw transportError(error) }
         let (data, response) = result
         try validate(response, data: data)

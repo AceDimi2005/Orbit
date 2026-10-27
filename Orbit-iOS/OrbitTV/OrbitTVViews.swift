@@ -890,11 +890,15 @@ struct TVControlsAndGamesTab: View {
     private let desktopColumns = Array(repeating: GridItem(.flexible(), spacing: 20), count: 4)
     private let gameColumns = Array(repeating: GridItem(.flexible(), spacing: 22), count: 3)
 
-    private var sunshineKey: String { "\(vm.currentPC?.id ?? "")|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+    private var sunshineKey: String {
+        "\(vm.currentPC?.id ?? "")|\(vm.currentPC?.address ?? "")|\(vm.currentPC?.secondaryHost ?? "")|\(vm.usingSecondaryAddress)|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)"
+    }
 
     private func syncSunshine() async {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return }
-        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        // Sunshine runs on the same PC: try its secondary address too, first while the agent only answers there.
+        sunshine.configure(pcID: pc.id, address: pc.address, secondaryAddress: pc.secondaryHost, preferSecondary: vm.usingSecondaryAddress,
+                           httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
     }
 
@@ -935,6 +939,10 @@ struct TVControlsAndGamesTab: View {
                             .foregroundStyle(.white)
                             .lineLimit(1)
                         TVStatusPill(text: sunshine.statusText, tint: sunshineTint)
+                        if sunshine.reachable, sunshine.isUsingSecondary {
+                            // The LAN address did not answer; Sunshine and the stream use the PC's secondary address.
+                            TVStatusPill(text: "Remote", tint: TVPalette.accent)
+                        }
                     }
                     Text(sunshine.summary(pcName: vm.metrics.hostname))
                         .font(.system(size: 15, weight: .medium))
@@ -1184,6 +1192,77 @@ struct TVControlsAndGamesTab: View {
         .onAppear {
             Task { await vm.refreshGames() }
         }
+    }
+}
+
+/// The PC's Secondary IP on Apple TV: its Tailscale or other remote address, used for everything except
+/// Wake-on-LAN while the main address doesn't answer. Saved like any edit, so it syncs to iPhone and Mac.
+private struct TVSecondaryIPEditor: View {
+    @EnvironmentObject var vm: OrbitTVViewModel
+    let pc: TVSavedPC
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var valid: Bool { trimmed.isEmpty || OrbitAddressRoute.isBareHost(trimmed) }
+    /// A Tailscale address the PC reported, offered with one click while nothing is entered.
+    private var suggestion: String? {
+        guard vm.currentPC?.id == pc.id, trimmed.isEmpty else { return nil }
+        return vm.reportedTailscaleAddresses.first { $0 != pc.address }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Secondary IP")
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundStyle(.white)
+                Text("\(pc.name) · main address \(pc.address)")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            TextField("100.101.102.103 or gaming-pc.tail1234.ts.net", text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.system(size: 26, weight: .medium, design: .monospaced))
+            Text("Your PC's Tailscale or other remote address. Orbit uses it when the main address doesn't answer, for everything including streaming. Wake-on-LAN always uses the local network.")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !valid {
+                Text("Enter only a host name or an IPv4 address, without https:// or a port.")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(TVPalette.amber)
+            }
+            if vm.currentPC?.id == pc.id, vm.usingSecondaryAddress {
+                TVStatusPill(text: "IN USE NOW", tint: TVPalette.accent, icon: "point.3.connected.trianglepath.dotted")
+            }
+            HStack(spacing: 20) {
+                if let suggestion {
+                    Button { text = suggestion } label: { Label("Use \(suggestion) (Tailscale)", systemImage: "point.3.connected.trianglepath.dotted") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
+                }
+                Button {
+                    vm.setSecondaryAddress(trimmed, for: pc.id)
+                    dismiss()
+                } label: { Label("Save", systemImage: "checkmark") }
+                    .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: true))
+                    .disabled(!valid)
+                if !(pc.secondaryAddress ?? "").isEmpty {
+                    Button {
+                        vm.setSecondaryAddress("", for: pc.id)
+                        dismiss()
+                    } label: { Label("Remove", systemImage: "xmark") }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.coral, isDestructive: true))
+                }
+                Button { dismiss() } label: { Text("Cancel") }
+                    .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
+            }
+            .focusSection()
+        }
+        .padding(70)
+        .frame(maxWidth: 1300, alignment: .leading)
+        .onAppear { text = pc.secondaryAddress ?? "" }
     }
 }
 
@@ -1736,6 +1815,7 @@ struct TVPCsAndPairingTab: View {
     @State private var showPINAlert: Bool = false
     @State private var showsAcknowledgements: Bool = false
     @State private var showsProPaywall: Bool = false
+    @State private var editingSecondary: TVSavedPC?
 
     var body: some View {
         ScrollView {
@@ -1761,6 +1841,9 @@ struct TVPCsAndPairingTab: View {
         }
         .sheet(isPresented: $showsProPaywall) {
             OrbitProUnlockView(accent: TVPalette.accent) { showsProPaywall = false }
+        }
+        .sheet(item: $editingSecondary) { pc in
+            TVSecondaryIPEditor(pc: pc).environmentObject(vm)
         }
         .alert("Enter PC IPv4 Address", isPresented: $showIPAlert) {
             TextField("e.g. 192.168.1.50", text: $manualHost)
@@ -1902,8 +1985,11 @@ struct TVPCsAndPairingTab: View {
                                 if selected {
                                     TVStatusPill(text: live ? "ONLINE" : "ACTIVE", tint: live ? TVPalette.mint : TVPalette.accent)
                                 }
+                                if live, vm.usingSecondaryAddress {
+                                    TVStatusPill(text: "REMOTE", tint: TVPalette.accent, icon: "point.3.connected.trianglepath.dotted")
+                                }
                             }
-                            Text("\(pc.address):\(pc.securePort) • MAC \(pc.macAddress.isEmpty ? "not saved" : pc.macAddress) • \(pc.certificateFingerprint.isEmpty ? "no certificate" : "TLS pinned")")
+                            Text("\(pc.address):\(pc.securePort)\(pc.secondaryHost.isEmpty ? "" : " • secondary IP \(pc.secondaryHost)") • MAC \(pc.macAddress.isEmpty ? "not saved" : pc.macAddress) • \(pc.certificateFingerprint.isEmpty ? "no certificate" : "TLS pinned")")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -1925,6 +2011,13 @@ struct TVPCsAndPairingTab: View {
                             Label("Wake", systemImage: "power")
                         }
                         .buttonStyle(TVActionPillStyle(tint: TVPalette.mint))
+
+                        Button {
+                            editingSecondary = pc
+                        } label: {
+                            Label("Secondary IP", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.accent))
 
                         Button {
                             vm.deletePC(pc)

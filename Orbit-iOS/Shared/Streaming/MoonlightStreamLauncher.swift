@@ -104,8 +104,8 @@ extension MoonlightHostCoordinator {
     }
 
     private func launchForStream(app: MoonlightApp, settings: MoonlightStreamSettings, size: MoonlightStreamSize, quitRunningApp: Bool) async throws -> MoonlightConnectionParameters {
-        let transport = try await streamingTransport()
-        let info = try await MoonlightClient.serverInfo(transport, secure: true)
+        // The PC's LAN address, or its secondary address (for example Tailscale) when only that answers; the stream uses it too.
+        let (transport, info, hostAddress) = try await streamingConnection()
         // `size` was chosen from what the host reported earlier. One that has stopped offering HEVC since then
         // streams H.264, which ends at 4096 pixels per side; `/launch` and the session both get the result.
         let streamSize = MoonlightStreamSettings.size(size, forHostSupportingHEVC: info.supportsHEVC)
@@ -125,7 +125,7 @@ extension MoonlightHostCoordinator {
         let result = try await MoonlightClient.launch(transport, appID: app.id, settings: settings, size: streamSize, remoteInputKey: key, remoteInputKeyID: keyID, resume: resume)
         Task { await refresh() }
         return MoonlightConnectionParameters(
-            address: address, appVersion: info.appVersion, gfeVersion: info.gfeVersion, rtspSessionURL: result.rtspSessionURL,
+            address: hostAddress, appVersion: info.appVersion, gfeVersion: info.gfeVersion, rtspSessionURL: result.rtspSessionURL,
             serverCodecModeSupport: Int32(truncatingIfNeeded: info.serverCodecModeSupport),
             remoteInputKey: key, remoteInputKeyID: keyID, appName: app.title, hostName: hostDisplayName, streamSize: streamSize
         )

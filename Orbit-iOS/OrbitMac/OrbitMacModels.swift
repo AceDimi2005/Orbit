@@ -142,6 +142,8 @@ struct MacPCSpecs: Codable {
 struct MacNetworkConfig: Codable {
     var hostname: String; var ipAddress: String; var subnetMask: String
     var broadcastAddress: String; var macAddress: String; var agentPort: Int
+    /// The PC's Tailscale IPv4 addresses (newer agents), offered as its secondary address.
+    var tailscaleAddresses: [String]? = nil
 }
 
 // MARK: - Rolling history for sparklines
@@ -614,16 +616,22 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
     var updatedAt: Double? = nil
     /// Extra Wake-on-LAN target (`host` or `host:port`), for example a router reachable over Tailscale.
     var wolRelay: String = ""
+    /// Second address of the PC (its Tailscale IPv4 or MagicDNS name), used while `address` does not answer.
+    /// Optional so PCs saved before it existed still decode. Never a Wake-on-LAN target.
+    var secondaryAddress: String? = nil
 
     var isSecure: Bool { OrbitAPIClient.validFingerprint(certificateFingerprint) }
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
+    /// `secondaryAddress` when it is usable: a bare host different from `address`, on a pinned (encrypted) connection.
+    var secondaryHost: String { isSecure ? OrbitAddressRoute.cleanedSecondary(secondaryAddress ?? "", primary: address) : "" }
 
     func syncedItem(token: String, selected: Bool) -> OrbitSyncedPCItem {
         OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4, apiToken: token,
                           isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast, updatedAt: updatedAt, origin: "Mac",
-                          wolRelay: wolRelay.isEmpty ? nil : wolRelay)
+                          wolRelay: wolRelay.isEmpty ? nil : wolRelay,
+                          secondaryAddress: secondaryAddress?.isEmpty == false ? secondaryAddress : nil)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -632,6 +640,7 @@ struct MacSavedPC: Codable, Identifiable, Equatable, Hashable {
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
         lastKnownIPv4 = item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
         wolRelay = item.wolRelay ?? ""
+        secondaryAddress = item.secondaryAddress?.isEmpty == false ? item.secondaryAddress : nil
     }
 
     init(id: String = UUID().uuidString, name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "",

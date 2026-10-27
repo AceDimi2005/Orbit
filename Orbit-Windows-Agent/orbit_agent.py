@@ -424,10 +424,38 @@ def pairing_payload(host):
             "apiToken": API_TOKEN, "widgetToken": WIDGET_TOKEN, "agentVersion": AGENT_VERSION}
 
 
+# Tailscale gives every device an address in the CGNAT range 100.64.0.0/10.
+TAILSCALE_NETWORK = ipaddress.IPv4Network("100.64.0.0/10")
+
+
+def tailscale_addresses():
+    """IPv4 addresses this PC has on Tailscale, so the apps can offer one as the PC's "Secondary IP"
+    (used when its LAN address does not answer). Adapters named Tailscale come first; empty without it."""
+    found = []
+    try:
+        stats = psutil.net_if_stats()
+        for interface, addresses in psutil.net_if_addrs().items():
+            if interface in stats and not stats[interface].isup:
+                continue
+            for address in addresses:
+                if address.family != socket.AF_INET:
+                    continue
+                try:
+                    ip = ipaddress.IPv4Address(address.address)
+                except ValueError:
+                    continue
+                if ip in TAILSCALE_NETWORK and str(ip) not in (entry for _, entry in found):
+                    found.append(("tailscale" not in str(interface).lower(), str(ip)))
+    except Exception:
+        return []
+    return [address for _, address in sorted(found, key=lambda entry: entry[0])]
+
+
 @app.get("/api/network-info")
 def api_network_info(request: Request, authorization: str = Header(None)):
     verify_token(authorization)
-    return get_local_network_details((request.scope.get("server") or (None,))[0])
+    return {**get_local_network_details((request.scope.get("server") or (None,))[0]),
+            "tailscaleAddresses": tailscale_addresses()}
 
 
 @app.get("/api/specs")

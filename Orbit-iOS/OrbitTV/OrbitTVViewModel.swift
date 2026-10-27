@@ -125,15 +125,24 @@ struct TVSavedPC: Codable, Identifiable, Equatable {
     var updatedAt: Double? = nil
     /// Extra Wake-on-LAN target (`host` or `host:port`), synced from the iPhone or Mac.
     var wolRelay: String = ""
+    /// Second address of the PC (its Tailscale IPv4 or MagicDNS name), synced from the iPhone or Mac and used
+    /// while `address` does not answer. Optional so PCs saved before it existed still decode. Never a wake target.
+    var secondaryAddress: String? = nil
 
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
+    /// `secondaryAddress` when it is usable: a bare host different from `address`, on a pinned (encrypted) connection.
+    var secondaryHost: String {
+        guard OrbitAPIClient.validFingerprint(certificateFingerprint) else { return "" }
+        return OrbitAddressRoute.cleanedSecondary(secondaryAddress ?? "", primary: address)
+    }
 
     func syncedItem(token: String, selected: Bool) -> OrbitSyncedPCItem {
         OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4, apiToken: token,
                           isSelected: selected, bonjourHost: bonjourHost, updatedAt: updatedAt, origin: "Apple TV",
-                          wolRelay: wolRelay.isEmpty ? nil : wolRelay)
+                          wolRelay: wolRelay.isEmpty ? nil : wolRelay,
+                          secondaryAddress: secondaryAddress?.isEmpty == false ? secondaryAddress : nil)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -142,6 +151,7 @@ struct TVSavedPC: Codable, Identifiable, Equatable {
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; lastKnownIPv4 = item.lastKnownIPv4
         bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
         wolRelay = item.wolRelay ?? ""
+        secondaryAddress = item.secondaryAddress?.isEmpty == false ? item.secondaryAddress : nil
     }
 
     init(name: String, address: String) {
@@ -318,6 +328,15 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var isPairingInProgress: Bool = false
     @Published var pairingErrorMessage: String?
 
+    // Secondary IP (for example Tailscale): requests go there while the PC's LAN address does not answer.
+    @Published private(set) var usingSecondaryAddress: Bool = false
+    /// Tailscale addresses the agent reported for the current PC, offered as its Secondary IP.
+    @Published private(set) var reportedTailscaleAddresses: [String] = []
+    private var addressRoute = OrbitAddressRoute()
+    private var addressRoutePCID = ""
+    private var lanProbeRunning = false
+    private let pathMonitor = NWPathMonitor()
+
     private var activeHandshake: OrbitPairingHandshake?
     private var pollTask: Task<Void, Never>?
     private var browser: NWBrowser?
@@ -352,6 +371,11 @@ final class OrbitTVViewModel: ObservableObject {
         Task {
             await syncFromiPhone(silent: true)
         }
+        // Wi-Fi, Ethernet or a VPN came or went: on the secondary path, try the LAN address again right away.
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in self?.addressRoute.networkChanged() }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.dimitrie.orbit.tv.network-path"))
         startPollingLoop()
     }
 
@@ -468,11 +492,100 @@ final class OrbitTVViewModel: ObservableObject {
         }
         let token = readToken(for: target.id)
         return try OrbitAPIClient(
-            host: target.address,
+            host: connectionHost(for: target),
             port: target.securePort,
             token: token,
             fingerprint: target.certificateFingerprint
         )
+    }
+
+    // MARK: - Secondary address
+
+    /// Where requests to `pc` go: its LAN address, or (for the current PC) its secondary address while the LAN address does not answer.
+    func connectionHost(for pc: TVSavedPC) -> String {
+        guard pc.id == addressRoutePCID, addressRoute.usesSecondary, addressRoute.primary == pc.address,
+              addressRoute.secondary == pc.secondaryHost else { return pc.address }
+        return addressRoute.secondary
+    }
+
+    private static func secondaryPathKey(_ pcID: String) -> String { "tv.secondaryPath.\(pcID)" }
+
+    /// Points the route at the current PC's addresses; a PC whose addresses changed starts on the path it used last.
+    private func syncAddressRoute() {
+        let pc = isDemoMode ? nil : currentPC
+        let primary = pc?.address ?? "", secondary = pc?.secondaryHost ?? ""
+        if addressRoutePCID != (pc?.id ?? "") || addressRoute.primary != primary || addressRoute.secondary != secondary {
+            if addressRoutePCID != (pc?.id ?? "") { reportedTailscaleAddresses = [] }
+            addressRoutePCID = pc?.id ?? ""
+            lanProbeRunning = false
+            let lastSecondary = UserDefaults.standard.string(forKey: Self.secondaryPathKey(addressRoutePCID)) ?? ""
+            addressRoute = OrbitAddressRoute(primary: primary, secondary: secondary, usesSecondary: !secondary.isEmpty && lastSecondary == secondary)
+        }
+        if usingSecondaryAddress != addressRoute.usesSecondary { usingSecondaryAddress = addressRoute.usesSecondary }
+    }
+
+    /// `/api/status` over the route in use: an address that does not answer hands over to the other one, which is
+    /// then kept; while on the secondary address the LAN address is retried in the background (every 30 s and after network
+    /// changes) and wins as soon as it answers.
+    private func fetchStatus(for pc: TVSavedPC) async throws -> TVPCMetrics {
+        syncAddressRoute()
+        guard addressRoute.hasSecondary, addressRoutePCID == pc.id else { return try await client(for: pc).get("/api/status") }
+        retryLANAddressIfDue(for: pc)
+        let current = addressRoute.current
+        do {
+            return try await status(of: pc, at: current, timeout: 6)
+        } catch where OrbitAddressRoute.mayAnswerElsewhere(error) {
+            guard let other = addressRoute.alternate, other != current,
+                  let fetched = try? await status(of: pc, at: other, timeout: 6) else { throw error }
+            useAddress(other, for: pc.id)
+            return fetched
+        }
+    }
+
+    private func status(of pc: TVSavedPC, at host: String, timeout: TimeInterval) async throws -> TVPCMetrics {
+        let api = try OrbitAPIClient(host: host, port: pc.securePort, token: readToken(for: pc.id), fingerprint: pc.certificateFingerprint)
+        return try JSONDecoder().decode(TVPCMetrics.self, from: await api.data("/api/status", timeout: timeout))
+    }
+
+    private func retryLANAddressIfDue(for pc: TVSavedPC) {
+        guard !lanProbeRunning, addressRoute.shouldRetryPrimary() else { return }
+        lanProbeRunning = true
+        let lan = addressRoute.primary
+        Task { [weak self] in
+            let answered = (try? await self?.status(of: pc, at: lan, timeout: 3)) != nil
+            guard let self, self.addressRoutePCID == pc.id else { return }
+            self.lanProbeRunning = false
+            if answered, self.addressRoute.usesSecondary, self.addressRoute.primary == lan { self.useAddress(lan, for: pc.id) }
+        }
+    }
+
+    /// Reads the Tailscale addresses the agent reports (`/api/network-info`), offered in the Secondary IP editor.
+    /// Only that list is used: the rest describes the adapter the request came in on, and Wake-on-LAN details
+    /// are synced from the iPhone or Mac.
+    private func refreshTailscaleAddresses(for pc: TVSavedPC) async {
+        struct NetworkInfo: Decodable { let tailscaleAddresses: [String]? }
+        guard let info: NetworkInfo = try? await client(for: pc).get("/api/network-info"), currentPC?.id == pc.id else { return }
+        reportedTailscaleAddresses = (info.tailscaleAddresses ?? []).filter { OrbitAddressRoute.isBareHost($0) }
+    }
+
+    /// Saves a PC's Secondary IP ("" clears it); like any edit it syncs to the iPhone and Mac through iCloud.
+    func setSecondaryAddress(_ value: String, for pcID: String) {
+        guard let index = savedPCs.firstIndex(where: { $0.id == pcID }) else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secondary = trimmed.isEmpty ? nil : trimmed
+        guard savedPCs[index].secondaryAddress != secondary else { return }
+        savedPCs[index].secondaryAddress = secondary
+        savedPCs[index].updatedAt = Date().timeIntervalSince1970
+        persistSavedPCs()
+        syncAddressRoute()
+        if currentPC?.id == pcID { Task { await refreshMetrics() } }
+    }
+
+    /// `host` answered: send the current PC's requests there from now on.
+    private func useAddress(_ host: String, for pcID: String) {
+        guard addressRoutePCID == pcID, addressRoute.answered(host) else { return }
+        usingSecondaryAddress = addressRoute.usesSecondary
+        UserDefaults.standard.set(addressRoute.usesSecondary ? addressRoute.secondary : "", forKey: Self.secondaryPathKey(pcID))
     }
 
     func refreshMetrics() async {
@@ -498,17 +611,18 @@ final class OrbitTVViewModel: ObservableObject {
         }
         let start = Date()
         do {
-            let apiClient = try client(for: pc)
-            let fetched: TVPCMetrics = try await apiClient.get("/api/status")
+            let fetched = try await fetchStatus(for: pc)
             metrics = fetched
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
-            statusBanner = "Connected to \(pc.name) · \(pc.address) · \(pingMs) ms"
+            statusBanner = usingSecondaryAddress ? "Connected to \(pc.name) · Remote via \(connectionHost(for: pc)) · \(pingMs) ms"
+                                                : "Connected to \(pc.name) · \(pc.address) · \(pingMs) ms"
             appendHistorySample()
             if !hasSyncedExtras {
                 hasSyncedExtras = true
                 await refreshGames()
                 await refreshAudioMixer()
                 await refreshProcesses()
+                await refreshTailscaleAddresses(for: pc)
             }
         } catch {
             metrics.isOnline = false

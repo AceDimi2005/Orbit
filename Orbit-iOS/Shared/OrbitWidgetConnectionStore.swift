@@ -16,6 +16,25 @@ struct OrbitWidgetConnection: Codable, Identifiable, Hashable {
     var subnetMask: String? = nil
     var wolPort: Int? = nil
     var lastKnownIPv4: String? = nil
+    /// The PC's "Secondary IP" (for example its Tailscale address), tried when `host` does not answer.
+    /// Same port and certificate pin as `host`. Never used for Wake-on-LAN. Nil for entries saved before it existed.
+    var secondaryHost: String? = nil
+
+    /// `host`, then `secondaryHost` when it is a usable, different host: the order background requests try them in.
+    var hosts: [String] {
+        let secondary = (secondaryHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let bare = !secondary.isEmpty && secondary.unicodeScalars.allSatisfy {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "-")
+        }
+        return bare && secondary.caseInsensitiveCompare(host) != .orderedSame ? [host, secondary] : [host]
+    }
+
+    /// Whether a request that failed with `error` may work on the next host: nothing answered (timeout,
+    /// refused, unreachable, TLS failure), as opposed to a reply from the PC or a cancellation.
+    static func reachedNobody(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        return urlError.code != .cancelled
+    }
 }
 
 /// Shared connection and credential store backed by the App Group container and Keychain.
@@ -85,7 +104,8 @@ enum OrbitWidgetConnectionStore {
         broadcastAddress: String? = nil,
         subnetMask: String? = nil,
         wolPort: Int? = nil,
-        lastKnownIPv4: String? = nil
+        lastKnownIPv4: String? = nil,
+        secondaryHost: String? = nil
     ) throws {
         let fingerprint = certificateSHA256.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
         guard !id.isEmpty, !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port),
@@ -107,7 +127,8 @@ enum OrbitWidgetConnectionStore {
             broadcastAddress: broadcastAddress ?? existing?.broadcastAddress,
             subnetMask: subnetMask ?? existing?.subnetMask,
             wolPort: wolPort ?? existing?.wolPort ?? 9,
-            lastKnownIPv4: lastKnownIPv4 ?? existing?.lastKnownIPv4
+            lastKnownIPv4: lastKnownIPv4 ?? existing?.lastKnownIPv4,
+            secondaryHost: Self.secondary(secondaryHost, existing: existing)
         )
         var entries = connections()
         entries.removeAll { $0.id == id }
@@ -134,7 +155,8 @@ enum OrbitWidgetConnectionStore {
         broadcastAddress: String,
         subnetMask: String,
         wolPort: Int,
-        lastKnownIPv4: String?
+        lastKnownIPv4: String?,
+        secondaryHost: String? = nil
     ) {
         let fingerprint = certificateSHA256.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: " ", with: "").lowercased()
         guard !id.isEmpty, !host.isEmpty else { return }
@@ -153,7 +175,8 @@ enum OrbitWidgetConnectionStore {
             broadcastAddress: broadcastAddress.isEmpty ? existing?.broadcastAddress : broadcastAddress,
             subnetMask: subnetMask.isEmpty ? (existing?.subnetMask ?? "255.255.255.0") : subnetMask,
             wolPort: (1...65535).contains(wolPort) ? wolPort : (existing?.wolPort ?? 9),
-            lastKnownIPv4: (lastKnownIPv4?.isEmpty == false) ? lastKnownIPv4 : existing?.lastKnownIPv4
+            lastKnownIPv4: (lastKnownIPv4?.isEmpty == false) ? lastKnownIPv4 : existing?.lastKnownIPv4,
+            secondaryHost: Self.secondary(secondaryHost, existing: existing)
         )
         entries.removeAll { $0.id == id }
         entries.append(entry)
@@ -162,6 +185,13 @@ enum OrbitWidgetConnectionStore {
             UserDefaults.standard.set(encoded, forKey: profilesKey)
         }
         connectionsDidChange?()
+    }
+
+    /// `nil` keeps the stored secondary host, "" clears it, anything else (trimmed) replaces it.
+    private static func secondary(_ value: String?, existing: OrbitWidgetConnection?) -> String? {
+        guard let value else { return existing?.secondaryHost }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func setDefault(id: String) throws {
@@ -406,18 +436,6 @@ enum OrbitWidgetPowerService {
             return "Open Orbit once to authorize widget power control for \(connection.name)."
         }
 
-        var parts = URLComponents()
-        parts.scheme = "https"
-        parts.host = connection.host
-        parts.port = connection.port
-        parts.path = "/api/action/\(action)"
-        guard let url = parts.url else { return "Invalid PC address." }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 5
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 5
         config.timeoutIntervalForResource = 6
@@ -425,7 +443,29 @@ enum OrbitWidgetPowerService {
         defer { session.invalidateAndCancel() }
 
         do {
-            let (_, response) = try await session.data(for: request)
+            // The PC's address first, then its Secondary IP (for example Tailscale) when nothing answered there.
+            // Wake-on-LAN above never uses the Secondary IP.
+            var reply: URLResponse?
+            var lastError: Error?
+            for host in connection.hosts {
+                var parts = URLComponents()
+                parts.scheme = "https"
+                parts.host = host
+                parts.port = connection.port
+                parts.path = "/api/action/\(action)"
+                guard let url = parts.url else { continue }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 5
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                do {
+                    reply = try await session.data(for: request).1
+                    break
+                } catch where OrbitWidgetConnection.reachedNobody(error) {
+                    lastError = error
+                }
+            }
+            guard let response = reply else { throw lastError ?? URLError(.badURL) }
             if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
                 let label = switch action {
                 case "shutdown": "Shutting down"

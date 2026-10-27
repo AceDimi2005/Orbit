@@ -901,25 +901,35 @@ final class MoonlightHostCoordinator: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var reachable = false
     @Published private(set) var lastRefreshed: Date?
+    /// The address that answered last, `address` or `secondaryAddress`; requests and streams go there.
+    @Published private(set) var activeAddress = ""
 
+    /// The PC's LAN address, which its pairing is saved under.
     private(set) var address = ""
+    /// The PC's optional second address (its Tailscale IPv4 or MagicDNS name), tried when `address` does not
+    /// answer. Pairings are never stored under it, so switching paths needs no new pairing.
+    private(set) var secondaryAddress = ""
     private var pcID = ""
     private var httpPort = 47989
     private var httpsPort = 47984
     private var generation = 0
     private var pairingTask: Task<Void, Never>?
     private var artworkTasks: Set<Int> = []
+    /// The paired client identity, read from the Keychain once per pairing instead of before every request.
+    private var cachedIdentity: (id: String, identity: MoonlightClientIdentity)?
 
     var isConfigured: Bool { !pcID.isEmpty && !address.isEmpty }
     var isPaired: Bool { record?.isPaired == true }
     var isBusy: Bool { info?.isBusy == true }
+    /// Sunshine answers on the secondary IP, not on the LAN address.
+    var isUsingSecondary: Bool { !secondaryAddress.isEmpty && activeAddress == secondaryAddress }
     /// Title of the app Sunshine reports as running, when known.
     var runningAppTitle: String? {
         guard let info, info.currentGame > 0 else { return nil }
         return apps.first { $0.id == info.currentGame }?.title ?? "App #\(info.currentGame)"
     }
     /// Sunshine's web UI pairing page on the PC, where the PIN is typed.
-    var pairingPageURL: URL? { URL(string: "https://\(address):\(httpPort + 1)/pin") }
+    var pairingPageURL: URL? { URL(string: "https://\(activeAddress):\(httpPort + 1)/pin") }
     var hostDisplayName: String { info?.hostname ?? record?.hostname ?? address }
     /// Whether the host's encoder offers HEVC: the live server info, else what the host reported last time,
     /// else nil (unknown). Stream sizes use it to decide whether H.264's 4096-pixel limit applies.
@@ -934,15 +944,28 @@ final class MoonlightHostCoordinator: ObservableObject {
         return isBusy ? "Streaming" : "Ready"
     }
 
-    func configure(pcID: String, address: String, httpPort: Int = 47989, httpsPort: Int = 47984) {
+    /// `address` is the PC's LAN address (its pairing is saved under it). `secondaryAddress`, when set, is tried
+    /// whenever `address` does not answer; `preferSecondary` (the Orbit agent is only reachable there) tries it first.
+    func configure(pcID: String, address: String, secondaryAddress: String = "", preferSecondary: Bool = false,
+                   httpPort: Int = 47989, httpsPort: Int = 47984) {
         let cleanAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard pcID != self.pcID || cleanAddress != self.address || httpPort != self.httpPort || httpsPort != self.httpsPort else { return }
+        let cleanSecondary = Self.cleanedSecondary(secondaryAddress, primary: cleanAddress)
+        guard pcID != self.pcID || cleanAddress != self.address || httpPort != self.httpPort || httpsPort != self.httpsPort else {
+            // Same host: only its secondary address, or which of its addresses to try first, may have changed.
+            self.secondaryAddress = cleanSecondary
+            preferAddress(secondary: preferSecondary)
+            return
+        }
         generation += 1
         cancelPairing()
         self.pcID = pcID
         self.address = cleanAddress
+        self.secondaryAddress = cleanSecondary
         self.httpPort = httpPort
         self.httpsPort = httpsPort
+        activeAddress = cleanAddress
+        preferAddress(secondary: preferSecondary)
+        cachedIdentity = nil
         info = nil; apps = []; artwork = [:]; lastError = nil; reachable = false; lastRefreshed = nil
         record = pcID.isEmpty ? nil : (MoonlightHostStore.record(for: pcID) ?? MoonlightHostStore.adopt(pcID: pcID, address: cleanAddress))
         if var stored = record, stored.address != cleanAddress, !cleanAddress.isEmpty {
@@ -953,6 +976,19 @@ final class MoonlightHostCoordinator: ObservableObject {
         apps = record?.apps ?? []
     }
 
+    /// The address to try first next time: the secondary address while the agent is only reachable there, else the LAN address.
+    private func preferAddress(secondary: Bool) {
+        let wanted = secondary && !secondaryAddress.isEmpty ? secondaryAddress : address
+        if activeAddress != wanted { activeAddress = wanted }
+    }
+
+    /// A secondary host as the API clients accept it (letters, digits, dots, hyphens), different from `primary`; else "".
+    nonisolated static func cleanedSecondary(_ value: String, primary: String) -> String {
+        let host = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bare = !host.isEmpty && host.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "-") }
+        return bare && host.caseInsensitiveCompare(primary) != .orderedSame ? host : ""
+    }
+
     /// Updates the ports reported by the Orbit agent (`/api/sunshine/info`) without dropping state.
     func updatePorts(http: Int, https: Int) {
         guard (1...65535).contains(http), (1...65535).contains(https), http != httpPort || https != httpsPort else { return }
@@ -960,16 +996,61 @@ final class MoonlightHostCoordinator: ObservableObject {
         if var stored = record { stored.httpPort = http; stored.httpsPort = https; MoonlightHostStore.save(stored); record = stored }
     }
 
-    /// Transport with the stored pairing, for launching and controlling streams.
-    func streamingTransport() async throws -> MoonlightTransport {
+    /// For launching a stream: the paired transport on whichever of the PC's addresses answers, with the fresh
+    /// server info it returned and that address (the stream itself connects there too).
+    func streamingConnection() async throws -> (transport: MoonlightTransport, info: MoonlightServerInfo, address: String) {
         guard isPaired else { throw MoonlightError(message: "Pair Orbit with Sunshine on this PC first.") }
-        return try makeTransport(identity: try await Self.loadIdentity(for: record?.clientIdentity))
+        return try await answeringHost(identity: try await pairedIdentity(), secure: true, version: generation)
     }
 
-    private func makeTransport(identity: MoonlightClientIdentity?, uniqueID: String = MoonlightHostStore.uniqueID()) throws -> MoonlightTransport {
-        let endpoints = try MoonlightEndpoints.standard(host: address, httpPort: httpPort, httpsPort: httpsPort)
+    private func makeTransport(identity: MoonlightClientIdentity?, uniqueID: String = MoonlightHostStore.uniqueID(),
+                               host: String? = nil) throws -> MoonlightTransport {
+        let endpoints = try MoonlightEndpoints.standard(host: host ?? activeAddress, httpPort: httpPort, httpsPort: httpsPort)
         return MoonlightTransport(endpoints: endpoints, uniqueID: uniqueID, deviceName: Self.deviceName,
                                   serverCertificate: record?.serverCertificateDER, identity: identity?.secIdentity)
+    }
+
+    /// The addresses to ask, the one that answered last (or the preferred one) first.
+    private var candidateAddresses: [String] {
+        var list = activeAddress.isEmpty ? [] : [activeAddress]
+        for other in [address, secondaryAddress] where !other.isEmpty && !list.contains(other) { list.append(other) }
+        return list
+    }
+
+    /// Server info from the first of the PC's addresses that answers; that address becomes `activeAddress`.
+    /// An address that does not answer at all hands over to the next one; an answer from Sunshine (an error,
+    /// a refused certificate) is final, since both addresses reach the same Sunshine.
+    private func answeringHost(identity: MoonlightClientIdentity?, secure: Bool, version: Int,
+                               uniqueID: String = MoonlightHostStore.uniqueID()) async throws
+        -> (transport: MoonlightTransport, info: MoonlightServerInfo, address: String) {
+        var firstError: Error?
+        for candidate in candidateAddresses {
+            do {
+                let transport = try makeTransport(identity: identity, uniqueID: uniqueID, host: candidate)
+                let info = try await MoonlightClient.serverInfo(transport, secure: secure)
+                if version == generation, activeAddress != candidate { activeAddress = candidate }
+                return (transport, info, candidate)
+            } catch {
+                guard Self.mayAnswerElsewhere(error) else { throw error }
+                if firstError == nil { firstError = error }
+            }
+        }
+        throw firstError ?? MoonlightError(message: "Sunshine did not answer.")
+    }
+
+    /// The request reached nobody (timeout, refused, unreachable, TLS failure): another address may work.
+    nonisolated static func mayAnswerElsewhere(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        return urlError.code != .cancelled
+    }
+
+    private func pairedIdentity() async throws -> MoonlightClientIdentity {
+        let reference = record?.clientIdentity
+        let key = reference?.id ?? "shared"
+        if let cachedIdentity, cachedIdentity.id == key { return cachedIdentity.identity }
+        let identity = try await Self.loadIdentity(for: reference)
+        cachedIdentity = (key, identity)
+        return identity
     }
 
     private static func loadIdentity(for reference: MoonlightIdentityReference?) async throws -> MoonlightClientIdentity {
@@ -1003,12 +1084,11 @@ final class MoonlightHostCoordinator: ObservableObject {
     /// One server info (+ app list) pass. Returns true when it adopted a pairing and should run again.
     private func refreshOnce(version: Int) async -> Bool {
         do {
-            let identity = isPaired ? try await Self.loadIdentity(for: record?.clientIdentity) : nil
+            let identity = isPaired ? try await pairedIdentity() : nil
             guard version == generation else { return false }
-            let transport = try makeTransport(identity: identity)
             if isPaired {
                 do {
-                    let secure = try await MoonlightClient.serverInfo(transport, secure: true)
+                    let (transport, secure, _) = try await answeringHost(identity: identity, secure: true, version: version)
                     guard version == generation else { return false }
                     info = secure
                     reachable = true
@@ -1028,7 +1108,7 @@ final class MoonlightHostCoordinator: ObservableObject {
                     reachable = true
                 }
             } else {
-                let plain = try await MoonlightClient.serverInfo(transport, secure: false)
+                let (_, plain, _) = try await answeringHost(identity: nil, secure: false, version: version)
                 guard version == generation else { return false }
                 info = plain
                 reachable = true
@@ -1073,8 +1153,8 @@ final class MoonlightHostCoordinator: ObservableObject {
                 let created = try await Task.detached(priority: .userInitiated) { try MoonlightIdentityStore.createForPairing() }.value
                 fresh = created.reference
                 guard !Task.isCancelled, version == self.generation else { MoonlightIdentityStore.remove(created.reference); return }
-                let transport = try self.makeTransport(identity: created.identity, uniqueID: MoonlightHostStore.pairingUniqueID())
-                let probe = try await MoonlightClient.serverInfo(transport, secure: false)
+                let (transport, probe, _) = try await self.answeringHost(identity: created.identity, secure: false, version: version,
+                                                                         uniqueID: MoonlightHostStore.pairingUniqueID())
                 guard !Task.isCancelled, version == self.generation else { MoonlightIdentityStore.remove(created.reference); return }
                 let certificate = try await MoonlightClient.pair(transport, identity: created.identity, pin: pin, serverMajorVersion: probe.majorVersion) { [weak self] stage in
                     Task { @MainActor in self?.pairingStage = stage }
@@ -1129,6 +1209,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         }
         MoonlightHostStore.remove(pcID: pcID)
         record = nil
+        cachedIdentity = nil
         apps = []
         artwork = [:]
         info = nil
@@ -1139,7 +1220,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         guard isPaired else { return }
         let version = generation
         do {
-            let transport = try makeTransport(identity: try await Self.loadIdentity(for: record?.clientIdentity))
+            let transport = try makeTransport(identity: try await pairedIdentity())
             try await MoonlightClient.quit(transport)
             guard version == generation else { return }
             lastError = nil
@@ -1158,7 +1239,7 @@ final class MoonlightHostCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             defer { self.artworkTasks.remove(app.id) }
-            guard let identity = try? await Self.loadIdentity(for: self.record?.clientIdentity), let transport = try? self.makeTransport(identity: identity),
+            guard let identity = try? await self.pairedIdentity(), let transport = try? self.makeTransport(identity: identity),
                   let data = try? await MoonlightClient.appAsset(transport, appID: app.id), data.count > 64, version == self.generation else { return }
             self.artwork[app.id] = data
         }

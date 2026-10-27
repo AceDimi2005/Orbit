@@ -185,6 +185,8 @@ struct PCProcessList: Decodable {
 struct PCNetworkConfigResponse: Codable {
     var hostname: String; var ipAddress: String; var subnetMask: String
     var broadcastAddress: String; var macAddress: String; var agentPort: Int
+    /// The PC's Tailscale IPv4 addresses (newer agents), offered as its secondary address.
+    var tailscaleAddresses: [String]? = nil
 }
 struct SunshineGame: Identifiable, Codable, Hashable {
     let id: String; let title: String; let genre: String; let iconSymbol: String; let accentHex: String
@@ -426,6 +428,15 @@ final class OrbitViewModel: ObservableObject {
     @Published var agentUpdateAvailable = false
     @Published var agentLatestVersion: String?
     @Published var agentUpdateMessage: String?
+    /// Requests go to the selected PC's secondary address (for example its Tailscale address) because its
+    /// LAN address does not answer. Shown as "Remote"; Wake-on-LAN never follows it.
+    @Published private(set) var usingSecondaryAddress = false
+    /// Tailscale addresses the agent reported for the selected PC, offered in its profile as the secondary address.
+    @Published private(set) var reportedTailscaleAddresses: [String] = []
+    /// LAN address or secondary address for the selected PC; `connectionHost()` reads it, `fetchStatus` moves it.
+    private var addressRoute = OrbitAddressRoute()
+    private var lanProbeRunning = false
+    private let pathMonitor = NWPathMonitor()
     private let activity = OrbitLiveActivityCoordinator()
     private var activitySubscription: AnyCancellable?
     private var monitoringTask: Task<Void, Never>?
@@ -484,6 +495,12 @@ final class OrbitViewModel: ObservableObject {
         importCloudProfiles()
         OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
         OrbitBackgroundRefresh.handler = { [weak self] in await self?.backgroundRefresh() ?? false }
+        syncAddressRoute()
+        // Wi-Fi, cellular or a VPN came or went: on the secondary path, try the LAN address again right away.
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in self?.addressRoute.networkChanged() }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.dimitrie.orbit.network-path"))
         startMonitoringLoop()
     }
     private static var demoGames: [SunshineGame] {
@@ -500,10 +517,88 @@ final class OrbitViewModel: ObservableObject {
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
         statusLog = "Connection settings changed — ready to connect"
         stopScreenFeed(); isShowingStreamView = false; activeStreamingGame = nil; loadOverrides(); loadDashboardConfiguration()
+        reportedTailscaleAddresses = []; lanProbeRunning = false
+        syncAddressRoute()
         Task { await activity.stop() }
     }
+    /// The selected PC's address as saved (its LAN address). It identifies the PC and is where Wake-on-LAN
+    /// goes; requests use `connectionHost()`, which can be the secondary address instead.
     func cleanHost() -> String {
         pcIP.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "http://", with: "").replacingOccurrences(of: "https://", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    // MARK: Secondary address
+
+    /// The selected PC's secondary address (for example its Tailscale IPv4 or MagicDNS name), or "". Only used
+    /// with the certificate-pinned connection: a plain-HTTP token must never cross another network.
+    var secondaryHost: String {
+        guard hasSecureConnection, !isDemoMode, let profile = savedPCs.first(where: { $0.id == selectedPCID }) else { return "" }
+        return OrbitAddressRoute.cleanedSecondary(profile.secondaryAddress ?? "", primary: cleanHost())
+    }
+
+    /// Where requests to the selected PC go: its LAN address, or its secondary address while the LAN address does not answer.
+    func connectionHost() -> String {
+        let primary = cleanHost()
+        guard addressRoute.usesSecondary, addressRoute.primary == primary, addressRoute.secondary == secondaryHost else { return primary }
+        return addressRoute.secondary
+    }
+
+    private static func secondaryPathKey(_ pcID: String) -> String { "orbit.secondaryPath.\(pcID)" }
+
+    /// Points the route at the selected PC's addresses. A PC whose addresses changed starts on the path it used
+    /// last (remembered per PC), so opening Orbit away from home does not wait for the LAN address first.
+    private func syncAddressRoute() {
+        let primary = cleanHost(), secondary = secondaryHost
+        if addressRoute.primary != primary || addressRoute.secondary != secondary {
+            let lastSecondary = UserDefaults.standard.string(forKey: Self.secondaryPathKey(selectedPCID)) ?? ""
+            addressRoute = OrbitAddressRoute(primary: primary, secondary: secondary, usesSecondary: !secondary.isEmpty && lastSecondary == secondary)
+        }
+        if usingSecondaryAddress != addressRoute.usesSecondary { usingSecondaryAddress = addressRoute.usesSecondary }
+    }
+
+    /// `/api/status` over the route in use. Without a secondary address this is the plain request. With one, an
+    /// address that does not answer hands over to the other, which is then kept; while on the secondary address the LAN
+    /// address is retried in the background every 30 s and after network changes, and wins as soon as it answers.
+    private func fetchStatus(version: Int) async throws -> Data {
+        syncAddressRoute()
+        guard addressRoute.hasSecondary else { return try await request("/api/status") }
+        retryLANAddressIfDue(version: version)
+        let current = addressRoute.current
+        do {
+            return try await statusData(from: current, timeout: 6)
+        } catch where OrbitAddressRoute.mayAnswerElsewhere(error) {
+            guard let other = addressRoute.alternate, other != current, generation == version,
+                  let data = try? await statusData(from: other, timeout: 6), generation == version else { throw error }
+            useAddress(other)
+            return data
+        }
+    }
+
+    private func statusData(from host: String, timeout: TimeInterval) async throws -> Data {
+        try await OrbitAPIClient(host: host, port: securePort, token: apiToken, fingerprint: certificateFingerprint)
+            .data("/api/status", timeout: timeout)
+    }
+
+    private func retryLANAddressIfDue(version: Int) {
+        guard !lanProbeRunning, addressRoute.shouldRetryPrimary() else { return }
+        lanProbeRunning = true
+        let lan = addressRoute.primary
+        Task { [weak self] in
+            let answered = (try? await self?.statusData(from: lan, timeout: 3)) != nil
+            guard let self, self.generation == version else { return }
+            self.lanProbeRunning = false
+            if answered, self.addressRoute.usesSecondary, self.addressRoute.primary == lan { self.useAddress(lan) }
+        }
+    }
+
+    /// `host` answered: send requests there from now on.
+    private func useAddress(_ host: String) {
+        guard addressRoute.answered(host) else { return }
+        usingSecondaryAddress = addressRoute.usesSecondary
+        UserDefaults.standard.set(addressRoute.usesSecondary ? addressRoute.secondary : "", forKey: Self.secondaryPathKey(selectedPCID))
+        // The desktop preview socket was opened on the other address.
+        if isShowingStreamView { startLiveScreenFeed() }
+        OrbitWatchBridge.shared.pushStateToWatch(force: true)
     }
     private func url(_ path: String, query: [URLQueryItem] = [], scheme: String = "http") throws -> URL {
         guard isConfigured, !cleanHost().contains("/"), !cleanHost().contains(":") else { throw OrbitError(message: "Enter the PC IPv4 address or hostname, agent port and pairing token.") }
@@ -633,7 +728,7 @@ final class OrbitViewModel: ObservableObject {
         let version = generation
         let start = Date()
         do {
-            let data = try await request("/api/status")
+            let data = try await fetchStatus(version: version)
             let decoded = try JSONDecoder().decode(PCMetrics.self, from: data)
             guard generation == version, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
@@ -642,7 +737,7 @@ final class OrbitViewModel: ObservableObject {
             if savedPCs.isEmpty || selectedPCID.isEmpty { saveCurrentConnection() }
             if isDraggingVolume || volumeCommands.isSending || start <= lastVolumeChangeTime || Date().timeIntervalSince(lastVolumeChangeTime) < 2 { metrics.volume = sliderVolume }
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000)); lastUpdated = Date()
-            statusLog = "Connected • \(cleanHost())"
+            statusLog = usingSecondaryAddress ? "Connected • \(connectionHost()) · remote (secondary IP)" : "Connected • \(cleanHost())"
             await updateLiveActivity()
             publishWidgetSnapshot(decoded)
             OrbitWatchBridge.shared.pushStateToWatch()
@@ -693,14 +788,20 @@ final class OrbitViewModel: ObservableObject {
         do {
             let info = try JSONDecoder().decode(PCNetworkConfigResponse.self, from: await request("/api/network-info"))
             guard generation == version else { return }
-            if IPv4Address(info.ipAddress) != nil { lastKnownPCIPv4 = info.ipAddress }
-            if !info.macAddress.isEmpty { pcMAC = info.macAddress }
-            if !info.subnetMask.isEmpty { subnetMask = info.subnetMask }
-            if autoCalcBroadcast && !info.broadcastAddress.isEmpty { wolTargetIP = info.broadcastAddress }
-            persistSelectedPC()
-            if migrateBonjourAddressIfNeeded(to: info.ipAddress) { return }
+            reportedTailscaleAddresses = (info.tailscaleAddresses ?? []).filter { OrbitAddressRoute.isBareHost($0) }
+            // Through the secondary address the agent describes the adapter that request arrived on (Tailscale),
+            // not the LAN adapter Wake-on-LAN needs: keep the saved LAN address, MAC, mask and broadcast.
+            if !usingSecondaryAddress {
+                if IPv4Address(info.ipAddress) != nil { lastKnownPCIPv4 = info.ipAddress }
+                if !info.macAddress.isEmpty { pcMAC = info.macAddress }
+                if !info.subnetMask.isEmpty { subnetMask = info.subnetMask }
+                if autoCalcBroadcast && !info.broadcastAddress.isEmpty { wolTargetIP = info.broadcastAddress }
+                persistSelectedPC()
+                if migrateBonjourAddressIfNeeded(to: info.ipAddress) { return }
+            }
             let previouslyEnteredNames = componentOverrides
-            currentIdentity = info.macAddress.isEmpty ? info.hostname : info.macAddress
+            let macAddress = usingSecondaryAddress ? pcMAC : info.macAddress
+            currentIdentity = macAddress.isEmpty ? info.hostname : macAddress
             let hasSavedNames = UserDefaults.standard.object(forKey: overrideKey) != nil
             loadOverrides()
             loadDashboardConfiguration()
@@ -835,7 +936,8 @@ final class OrbitViewModel: ObservableObject {
                 broadcastAddress: wolTargetIP,
                 subnetMask: subnetMask,
                 wolPort: wolPort,
-                lastKnownIPv4: lastKnownPCIPv4
+                lastKnownIPv4: lastKnownPCIPv4,
+                secondaryHost: profile.secondaryHost
             )
             try OrbitWidgetConnectionStore.setDefault(id: profile.id)
         } catch {

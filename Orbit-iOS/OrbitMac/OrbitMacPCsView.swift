@@ -360,6 +360,8 @@ private struct MacPcsSavedCard: View {
     @State private var wolPortDraft = ""
     @State private var wolRelayDraft = ""
     @State private var wolExpanded = false
+    @State private var secondaryDraft = ""
+    @State private var remoteExpanded = false
     @State private var hovered = false
 
     private var isSelected: Bool { vm.currentPC?.id == pc.id }
@@ -391,6 +393,14 @@ private struct MacPcsSavedCard: View {
             || wolPortDraft.trimmingCharacters(in: .whitespaces) != "\(pc.wolPort)"
             || wolRelayDraft.trimmingCharacters(in: .whitespacesAndNewlines) != pc.wolRelay
     }
+    private var secondaryTrimmed: String { secondaryDraft.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var secondaryValid: Bool { secondaryTrimmed.isEmpty || OrbitAddressRoute.isBareHost(secondaryTrimmed) }
+    private var secondaryDirty: Bool { secondaryTrimmed != (pc.secondaryAddress ?? "") }
+    /// A Tailscale address the agent reported for this PC, offered with one click while no secondary address is set.
+    private var tailscaleSuggestion: String? {
+        guard isSelected, secondaryTrimmed.isEmpty else { return nil }
+        return vm.reportedTailscaleAddresses.first { $0 != pc.address }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -398,6 +408,7 @@ private struct MacPcsSavedCard: View {
             chips
             fingerprintRow
             wakeOnLan
+            remoteAccess
             actions
         }
         .padding(16)
@@ -411,8 +422,11 @@ private struct MacPcsSavedCard: View {
         }
         .onHover { hovered = $0 }
         .macHoverLift()
-        .onAppear { loadDrafts() }
-        .onChange(of: pc) { _, _ in if !wolExpanded { loadDrafts() } }
+        .onAppear { loadDrafts(); secondaryDraft = pc.secondaryAddress ?? "" }
+        .onChange(of: pc) { _, _ in
+            if !wolExpanded { loadDrafts() }
+            if !remoteExpanded { secondaryDraft = pc.secondaryAddress ?? "" }
+        }
     }
 
     private var header: some View {
@@ -440,6 +454,10 @@ private struct MacPcsSavedCard: View {
                     MacStatusPill(text: pc.isSecure ? "Encrypted" : "Legacy", tint: pc.isSecure ? Color.mint : Color.orange, icon: pc.isSecure ? "lock.fill" : "lock.open")
                     MacStatChip(label: "Agent port", value: "\(pc.agentPort)")
                     if isLive { MacStatChip(label: "Ping", value: "\(vm.pingMs) ms") }
+                    if isLive, vm.usingSecondaryAddress {
+                        MacStatChip(label: "Via", value: vm.connectionHost(for: pc), icon: "point.3.connected.trianglepath.dotted", tint: theme.accent)
+                            .help("\(pc.address) does not answer, so Orbit uses the secondary IP")
+                    }
                 }
             }
         }
@@ -508,6 +526,57 @@ private struct MacPcsSavedCard: View {
             Label("Wake-on-LAN", systemImage: "power")
                 .font(.subheadline.weight(.semibold))
         }
+    }
+
+    private var remoteAccess: some View {
+        DisclosureGroup(isExpanded: $remoteExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                MacPcsField(title: "Secondary IP (optional)", placeholder: "100.101.102.103 or gaming-pc.tail1234.ts.net", text: $secondaryDraft, monospaced: true)
+                if let suggestion = tailscaleSuggestion {
+                    Button { secondaryDraft = suggestion } label: { Label("Use \(suggestion) (Tailscale)", systemImage: "point.3.connected.trianglepath.dotted") }
+                        .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
+                        .help("The PC reported this Tailscale address")
+                }
+                Text(secondaryValid
+                     ? "Your PC's Tailscale or other remote address (or its MagicDNS name). Orbit uses it for everything, streaming included, when \(pc.address.isEmpty ? "the main address" : pc.address) doesn't answer, and goes back to the main address as soon as it answers. Wake-on-LAN always uses the local network."
+                     : "Enter only a host name or an IPv4 address, without https:// or a port.")
+                    .font(.caption)
+                    .foregroundStyle(secondaryValid ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !pc.isSecure {
+                    Text("Pair again to enable the encrypted connection; the Secondary IP is only used with it.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                HStack(spacing: 8) {
+                    Button("Save") { saveSecondary() }
+                        .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
+                        .disabled(!secondaryDirty || !secondaryValid)
+                    if isLive, vm.usingSecondaryAddress {
+                        MacStatusPill(text: "In use now", tint: theme.accent, icon: "point.3.connected.trianglepath.dotted")
+                    }
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Label("Secondary IP", systemImage: "point.3.connected.trianglepath.dotted")
+                    .font(.subheadline.weight(.semibold))
+                if !remoteExpanded {
+                    Text(pc.secondaryAddress?.isEmpty == false ? (pc.secondaryAddress ?? "") : "Not set")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func saveSecondary() {
+        guard var updated = vm.savedPCs.first(where: { $0.id == pc.id }) else { return }
+        updated.secondaryAddress = secondaryTrimmed.isEmpty ? nil : secondaryTrimmed
+        vm.savePC(updated, token: nil, select: false)
+        secondaryDraft = updated.secondaryAddress ?? ""
     }
 
     private var wakeHint: String {

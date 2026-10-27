@@ -29,11 +29,15 @@ struct MacLibraryView: View {
     private static let moonlightSite = "https://moonlight-stream.org"
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)]
 
-    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+    private var sunshineKey: String {
+        "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.currentPC?.secondaryHost ?? "")|\(vm.usingSecondaryAddress)|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)"
+    }
 
     private func syncSunshine() async {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return }
-        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        // Sunshine runs on the same PC: try its secondary address too, first while the agent only answers there.
+        sunshine.configure(pcID: pc.id, address: pc.address, secondaryAddress: pc.secondaryHost, preferSecondary: vm.usingSecondaryAddress,
+                           httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
     }
 
@@ -122,7 +126,7 @@ struct MacLibraryView: View {
     /// Sunshine's Web UI on the paired PC (its documented default port is 47990).
     private var sunshineWebURL: URL? {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return nil }
-        let host = pc.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = vm.connectionHost(for: pc).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty, !host.contains(":"), !host.contains("/") else { return nil }
         return URL(string: "https://\(host):47990/")
     }
@@ -279,6 +283,10 @@ struct MacLibraryView: View {
                                 MacStatChip(label: "Apps", value: "\(sunshine.apps.count)")
                             } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
                                 MacStatChip(label: "Host", value: info.hostname)
+                            }
+                            if sunshine.reachable, sunshine.isUsingSecondary {
+                                MacStatChip(label: "Via", value: "Remote", icon: "point.3.connected.trianglepath.dotted")
+                                    .help("Sunshine answers on the secondary IP \(sunshine.activeAddress); streams use it too")
                             }
                         }
                     }

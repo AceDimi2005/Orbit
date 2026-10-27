@@ -57,6 +57,37 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/sunshine/credentials", json={"username": "a", "password": "b"}).status_code, 401)
         self.assertEqual(self.client.delete("/api/sunshine/credentials").status_code, 401)
 
+    def test_network_info_offers_tailscale_addresses_next_to_the_lan_adapter(self):
+        def ipv4(address, mask="255.255.255.0"):
+            return SimpleNamespace(family=agent.socket.AF_INET, address=address, netmask=mask)
+        interfaces = {
+            "Ethernet": [ipv4("10.0.0.42"), SimpleNamespace(family=agent.psutil.AF_LINK, address="AA-BB-CC-DD-EE-FF", netmask=None)],
+            "ZeroTier One": [ipv4("100.90.0.5", "255.192.0.0")],
+            "Tailscale": [ipv4("100.101.102.103", "255.255.255.255")],
+            "Old VPN": [ipv4("100.70.0.1", "255.255.255.255")],          # adapter is down
+            "Modem": [ipv4("100.128.0.1"), ipv4("100.63.255.254")],       # just outside 100.64.0.0/10
+            "Loopback Pseudo-Interface 1": [ipv4("127.0.0.1", "255.0.0.0")],
+        }
+        stats = {name: SimpleNamespace(isup=name != "Old VPN") for name in interfaces}
+        with patch.object(agent.psutil, "net_if_addrs", return_value=interfaces), \
+             patch.object(agent.psutil, "net_if_stats", return_value=stats):
+            self.assertEqual(self.client.get("/api/network-info").status_code, 401)
+            self.assertEqual(self.client.get("/api/network-info", headers={"Authorization": "Bearer wrong"}).status_code, 401)
+            info = self.client.get("/api/network-info", headers=AUTH).json()
+        # The adapter named Tailscale first, then any other address in Tailscale's range; never a down adapter.
+        self.assertEqual(info["tailscaleAddresses"], ["100.101.102.103", "100.90.0.5"])
+        # Wake-on-LAN details still describe the LAN adapter.
+        self.assertEqual((info["ipAddress"], info["macAddress"], info["broadcastAddress"]), ("10.0.0.42", "AA:BB:CC:DD:EE:FF", "10.0.0.255"))
+        self.assertNotIn(TOKEN, str(info))
+
+    def test_tailscale_addresses_are_empty_without_tailscale_or_when_psutil_fails(self):
+        lan = {"Wi-Fi": [SimpleNamespace(family=agent.socket.AF_INET, address="192.168.1.20", netmask="255.255.255.0")]}
+        with patch.object(agent.psutil, "net_if_addrs", return_value=lan), \
+             patch.object(agent.psutil, "net_if_stats", return_value={"Wi-Fi": SimpleNamespace(isup=True)}):
+            self.assertEqual(agent.tailscale_addresses(), [])
+        with patch.object(agent.psutil, "net_if_stats", side_effect=OSError("no adapters")):
+            self.assertEqual(agent.tailscale_addresses(), [])
+
     def test_stale_status_clears_sensitive_measurements(self):
         state = copy.deepcopy(agent.STATE)
         state.update(cpuTemp=74, fps=120, telemetryAvailable=True)

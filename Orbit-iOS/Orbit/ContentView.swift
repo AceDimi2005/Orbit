@@ -401,7 +401,9 @@ struct DashboardView: View {
 
             if vm.metrics.isOnline && !vm.isDemoMode {
                 HStack(spacing: 8) {
-                    OrbitStatChip(label: "Link", value: vm.hasSecureConnection ? "Encrypted" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open")
+                    // "Remote": the LAN address did not answer and Orbit uses the PC's secondary address (still encrypted).
+                    OrbitStatChip(label: "Link", value: vm.usingSecondaryAddress ? "Remote" : (vm.hasSecureConnection ? "Encrypted" : "HTTP"),
+                                  icon: vm.usingSecondaryAddress ? "point.3.connected.trianglepath.dotted" : (vm.hasSecureConnection ? "lock.fill" : "lock.open"))
                     if let version = vm.metrics.agentVersion {
                         OrbitStatChip(label: "Agent", value: version)
                     }
@@ -1035,7 +1037,9 @@ struct GameLibraryView: View {
     private var filteredGames: [SunshineGame] {
         searchText.isEmpty ? libraryGames : libraryGames.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
-    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)" }
+    private var sunshineKey: String {
+        "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.secondaryHost)|\(vm.usingSecondaryAddress)|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)"
+    }
     private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
 
     /// The agent on the PC can type the pairing PIN and start Sunshine (agent 4.3+).
@@ -1047,7 +1051,9 @@ struct GameLibraryView: View {
 
     private func syncSunshine() async {
         guard !vm.isDemoMode else { return }
-        sunshine.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+        // Sunshine runs on the same PC: try its secondary address too, first while the agent only answers there.
+        sunshine.configure(pcID: vm.selectedPCID, address: vm.cleanHost(), secondaryAddress: vm.secondaryHost,
+                           preferSecondary: vm.usingSecondaryAddress,
                            httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
     }
@@ -1212,6 +1218,10 @@ struct GameLibraryView: View {
                             OrbitStatChip(label: "Apps", value: "\(sunshine.apps.count)")
                         } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
                             OrbitStatChip(label: "Host", value: info.hostname)
+                        }
+                        if sunshine.reachable, sunshine.isUsingSecondary {
+                            OrbitStatChip(label: "Via", value: "Remote", icon: "point.3.connected.trianglepath.dotted")
+                                .accessibilityLabel("Streaming through the secondary IP \(sunshine.activeAddress)")
                         }
                     }
                 }
@@ -2134,6 +2144,7 @@ struct SettingsView: View {
     @State private var isShowingProPaywall = false
     @State private var isShowingPrivacy = false
     @State private var isShowingAcknowledgements = false
+    @State private var editingConnection: SavedPC?
     @FocusState private var focusedField: Bool
 
     var body: some View {
@@ -2167,6 +2178,14 @@ struct SettingsView: View {
 
                     NavigationLink { PCProfilesView(vm: vm) } label: {
                         settingsRow("Saved PCs & Profiles", icon: "desktopcomputer", tint: theme.accent, detail: "\(vm.savedPCs.count)")
+                    }
+                    // The selected PC's Secondary IP (Tailscale…), one tap away: it opens that PC's connection settings.
+                    if !vm.isDemoMode, let profile = vm.savedPCs.first(where: { $0.id == vm.selectedPCID }) {
+                        Button { editingConnection = profile } label: {
+                            settingsRow("Secondary IP", icon: "point.3.connected.trianglepath.dotted", tint: theme.accent,
+                                        detail: profile.secondaryHost.isEmpty ? "Not set" : (vm.usingSecondaryAddress ? "\(profile.secondaryHost) · in use" : profile.secondaryHost))
+                        }
+                        .accessibilityHint("Your PC's Tailscale or other remote address, used when the main address doesn't answer")
                     }
                 }
                 .orbitRow(tint: theme.accent)
@@ -2275,6 +2294,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $isShowingAcknowledgements) {
                 OrbitAcknowledgementsView(accent: theme.accent)
+            }
+            .sheet(item: $editingConnection) { profile in
+                PCProfileEditor(vm: vm, profile: profile)
             }
             .alert("Live Activity unavailable", isPresented: Binding(get: { vm.liveActivityError != nil }, set: { if !$0 { vm.liveActivityError = nil } })) {
                 Button("OK") { vm.liveActivityError = nil }

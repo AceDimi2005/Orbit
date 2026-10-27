@@ -79,7 +79,10 @@ struct MacOverviewView: View {
                     HStack(spacing: 8) {
                         if vm.metrics.isOnline && !vm.isDemoMode {
                             MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                            MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
+                            // "Remote": the LAN address did not answer, so Orbit uses the PC's secondary address (still encrypted).
+                            MacStatChip(label: "Link", value: vm.usingSecondaryAddress ? "Remote" : (vm.currentPC?.isSecure == true ? "Encrypted" : "—"),
+                                        icon: vm.usingSecondaryAddress ? "point.3.connected.trianglepath.dotted" : "lock.fill")
+                                .help(vm.usingSecondaryAddress ? "Connected through the secondary IP \(vm.currentPC.map { vm.connectionHost(for: $0) } ?? "")" : "Certificate-pinned connection")
                         }
                         if vm.metrics.hasTelemetry {
                             MacStatChip(label: "Up", value: vm.metrics.formattedUptime)

@@ -149,7 +149,8 @@ final class SendToPCModel: ObservableObject {
             return SendToPCTarget(id: connection.id, name: name.isEmpty ? connection.host : name,
                                   host: connection.host, port: connection.port,
                                   fingerprint: connection.certificateSHA256,
-                                  token: try? OrbitWidgetConnectionStore.controlToken(for: connection.id))
+                                  token: try? OrbitWidgetConnectionStore.controlToken(for: connection.id),
+                                  secondaryHost: connection.hosts.dropFirst().first ?? "")
         }
     }
 
@@ -184,13 +185,22 @@ final class SendToPCModel: ObservableObject {
         pcState = .checking
         checkTask = Task { [weak self] in
             let result: PCState
+            var answeredOn: SendToPCTarget?
             do {
                 let service = try SendToPCService(target: target)
-                result = .ready(try await service.readiness())
+                do {
+                    result = .ready(try await service.readiness())
+                } catch where SendToPCService.reachedNobody(error) {
+                    // Nothing answered on the PC's address: check (and then send through) its Secondary IP.
+                    guard let secondary = target.onSecondaryHost else { throw error }
+                    result = .ready(try await SendToPCService(target: secondary).readiness())
+                    answeredOn = secondary
+                }
             } catch {
                 result = .problem(SendToPCService.message(for: error, pcName: target.name))
             }
             guard let self, !Task.isCancelled, self.selectedID == target.id else { return }
+            if let answeredOn, let index = self.targets.firstIndex(where: { $0.id == target.id }) { self.targets[index] = answeredOn }
             self.pcState = result
         }
     }

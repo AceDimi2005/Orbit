@@ -165,6 +165,39 @@ struct MoonlightClientTests {
         precondition(MoonlightHostStore.record(for: "old-copy", defaults: defaults) != nil, "a pairing with a different identity is kept")
         precondition(MoonlightHostStore.identityInUse(reference, excluding: "second-pc", defaults: defaults) == false, "no other user of the identity")
 
-        print("PASS: Moonlight client certificate, 5-step Sunshine pairing, app list, box art, cancel, refused certificates and host records")
+        await checkSecondaryAddress(port: port)
+
+        print("PASS: Moonlight client certificate, 5-step Sunshine pairing, app list, box art, cancel, refused certificates, host records and the secondary address")
+    }
+
+    /// A Sunshine host that only answers on its secondary address (for example Tailscale) is reached there; the
+    /// preferred address follows the Orbit agent's path without dropping state; nothing is stored per address.
+    @MainActor
+    static func checkSecondaryAddress(port: Int) async {
+        let processDefaults = ProcessInfo.processInfo.processName
+        defer { UserDefaults.standard.removePersistentDomain(forName: processDefaults) }
+        let host = MoonlightHostCoordinator()
+        // Nothing answers on 127.0.0.2 (not configured on the loopback): the LAN address times out.
+        host.configure(pcID: "secondary-test", address: "127.0.0.2", secondaryAddress: " 127.0.0.1 ", httpPort: port, httpsPort: port)
+        precondition(host.activeAddress == "127.0.0.2" && host.secondaryAddress == "127.0.0.1" && !host.isUsingSecondary, "starts on the LAN address")
+        await host.refresh()
+        precondition(host.reachable && host.isUsingSecondary && host.activeAddress == "127.0.0.1", "reached through the secondary address: \(host.lastError ?? "-")")
+        precondition(host.info?.hostname == "MockSunshine" && host.pairingPageURL?.host == "127.0.0.1", "server info and pairing page from the secondary address")
+
+        host.configure(pcID: "secondary-test", address: "127.0.0.2", secondaryAddress: "127.0.0.1", preferSecondary: false, httpPort: port, httpsPort: port)
+        precondition(host.activeAddress == "127.0.0.2" && host.info != nil && host.reachable, "same host: only the address to try first changes")
+        host.configure(pcID: "secondary-test", address: "127.0.0.2", secondaryAddress: "127.0.0.1", preferSecondary: true, httpPort: port, httpsPort: port)
+        precondition(host.activeAddress == "127.0.0.1", "the secondary address goes first while the agent only answers there")
+        host.configure(pcID: "secondary-test", address: "127.0.0.2", secondaryAddress: "", preferSecondary: true, httpPort: port, httpsPort: port)
+        precondition(host.activeAddress == "127.0.0.2" && !host.isUsingSecondary, "without a secondary address only the LAN address is used")
+
+        precondition(MoonlightHostCoordinator.cleanedSecondary("127.0.0.2", primary: "127.0.0.2").isEmpty, "the LAN address is no secondary address")
+        for bad in ["https://100.64.0.1", "100.64.0.1:47989", "100.64.0.1/x", "fe80::1"] {
+            precondition(MoonlightHostCoordinator.cleanedSecondary(bad, primary: "10.0.0.1").isEmpty, "\(bad) is not a bare host")
+        }
+        precondition(MoonlightHostCoordinator.cleanedSecondary("gaming-pc.tail1234.ts.net", primary: "10.0.0.1") == "gaming-pc.tail1234.ts.net", "MagicDNS names work")
+        precondition(MoonlightHostCoordinator.mayAnswerElsewhere(URLError(.timedOut)) && !MoonlightHostCoordinator.mayAnswerElsewhere(URLError(.cancelled))
+                     && !MoonlightHostCoordinator.mayAnswerElsewhere(MoonlightError.untrustedClient), "only unanswered requests move to the other address")
+        precondition(MoonlightHostStore.record(for: "secondary-test") == nil, "nothing stored for an unpaired host on either address")
     }
 }

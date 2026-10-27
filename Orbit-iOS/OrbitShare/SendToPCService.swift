@@ -17,6 +17,15 @@ struct SendToPCTarget: Identifiable, Hashable, Sendable {
     let fingerprint: String
     /// The PC's control token; nil when the app has not shared it yet.
     let token: String?
+    /// The PC's Secondary IP (for example Tailscale), tried when `host` does not answer; "" when it has none.
+    var secondaryHost: String = ""
+
+    /// This PC on its Secondary IP, for when nothing answers on `host`; nil without one.
+    var onSecondaryHost: SendToPCTarget? {
+        let secondary = secondaryHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !secondary.isEmpty, secondary.caseInsensitiveCompare(host) != .orderedSame else { return nil }
+        return SendToPCTarget(id: id, name: name, host: secondary, port: port, fingerprint: fingerprint, token: token)
+    }
 }
 
 /// What the PC can do, learned from `GET /api/capabilities` (404 there means an older agent).
@@ -290,6 +299,18 @@ struct SendToPCService: Sendable {
 
     static func format(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+    }
+
+    /// Nothing answered at the address (timeout, refused, unreachable): the PC's Secondary IP may work.
+    static func reachedNobody(_ error: Error) -> Bool {
+        if error is SendToPCTimeout { return true }
+        guard let url = error as? URLError else { return false }
+        switch url.code {
+        case .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Turns any error from the calls above into one sentence for the share sheet.

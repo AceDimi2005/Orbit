@@ -212,6 +212,17 @@ final class OrbitMacViewModel: ObservableObject {
     var wasOnline = false
     var lastSpecsAttempt: Date = .distantPast
 
+    // MARK: Secondary address
+    /// Requests go to the current PC's secondary address (for example Tailscale) because its LAN address does
+    /// not answer. Shown as "Remote"; Wake-on-LAN never follows it.
+    @Published private(set) var usingSecondaryAddress = false
+    /// Tailscale addresses the agent reported for the current PC, offered as its secondary address.
+    @Published private(set) var reportedTailscaleAddresses: [String] = []
+    private var addressRoute = OrbitAddressRoute()
+    private var addressRoutePCID = ""
+    private var lanProbeRunning = false
+    private let pathMonitor = NWPathMonitor()
+
     private static let savedPCsKey = "mac.savedPCs.v1"
 
     init() {
@@ -224,6 +235,12 @@ final class OrbitMacViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in await self?.syncFromiPhone(silent: true) }
         }
+        syncAddressRoute()
+        // Wi-Fi, Ethernet or a VPN came or went: on the secondary path, try the LAN address again right away.
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in self?.addressRoute.networkChanged() }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.dimitrie.orbit.mac.network-path"))
         startPolling()
         MacPCAlertPoller.shared.start(with: self)
         Task { await syncFromiPhone(silent: true) }
@@ -269,6 +286,8 @@ final class OrbitMacViewModel: ObservableObject {
         cleaned.name = cleaned.name.trimmingCharacters(in: .whitespacesAndNewlines)
         cleaned.address = cleaned.address.trimmingCharacters(in: .whitespacesAndNewlines)
         cleaned.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(cleaned.certificateFingerprint)
+        let secondary = cleaned.secondaryAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        cleaned.secondaryAddress = secondary.isEmpty ? nil : secondary
         if let token, !token.isEmpty { MacTokenStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines), for: cleaned.id) }
         if let previous = savedPCs.first(where: { $0.id == cleaned.id }), previous != cleaned { cleaned.updatedAt = Date().timeIntervalSince1970 }
         if cleaned.updatedAt == nil { cleaned.updatedAt = Date().timeIntervalSince1970 }
@@ -304,7 +323,73 @@ final class OrbitMacViewModel: ObservableObject {
         guard !isDemoMode else { throw OrbitError(message: "Pair a real PC to use this feature. Demo mode only simulates telemetry.") }
         guard let target = pc ?? currentPC else { throw OrbitError(message: "Pair your PC first in My PCs.") }
         let token = MacTokenStore.token(for: target.id)
-        return try OrbitAPIClient(host: target.address, port: target.securePort, token: token, fingerprint: target.certificateFingerprint)
+        return try OrbitAPIClient(host: connectionHost(for: target), port: target.securePort, token: token, fingerprint: target.certificateFingerprint)
+    }
+
+    /// Where requests to `pc` go: its LAN address, or (for the current PC) its secondary address while the LAN address does not answer.
+    func connectionHost(for pc: MacSavedPC) -> String {
+        guard pc.id == addressRoutePCID, addressRoute.usesSecondary, addressRoute.primary == pc.address,
+              addressRoute.secondary == pc.secondaryHost else { return pc.address }
+        return addressRoute.secondary
+    }
+
+    private static func secondaryPathKey(_ pcID: String) -> String { "mac.secondaryPath.\(pcID)" }
+
+    /// Points the route at the current PC's addresses; a PC whose addresses changed starts on the path it used last.
+    private func syncAddressRoute() {
+        let pc = isDemoMode ? nil : currentPC
+        let primary = pc?.address ?? "", secondary = pc?.secondaryHost ?? ""
+        if addressRoutePCID != (pc?.id ?? "") || addressRoute.primary != primary || addressRoute.secondary != secondary {
+            addressRoutePCID = pc?.id ?? ""
+            let lastSecondary = UserDefaults.standard.string(forKey: Self.secondaryPathKey(addressRoutePCID)) ?? ""
+            addressRoute = OrbitAddressRoute(primary: primary, secondary: secondary, usesSecondary: !secondary.isEmpty && lastSecondary == secondary)
+        }
+        if usingSecondaryAddress != addressRoute.usesSecondary { usingSecondaryAddress = addressRoute.usesSecondary }
+    }
+
+    /// `/api/status` from the current PC over the route in use. An address that does not answer hands over to the
+    /// other one, which is then kept; while on the secondary address the LAN address is retried in the background (every
+    /// 30 s and after network changes) and wins as soon as it answers.
+    private func fetchStatus(for pc: MacSavedPC, version: Int) async throws -> MacPCMetrics {
+        syncAddressRoute()
+        guard addressRoute.hasSecondary, addressRoutePCID == pc.id else { return try await client(for: pc).get("/api/status") }
+        retryLANAddressIfDue(for: pc, version: version)
+        let current = addressRoute.current
+        do {
+            return try await status(of: pc, at: current, timeout: 6)
+        } catch where OrbitAddressRoute.mayAnswerElsewhere(error) {
+            guard let other = addressRoute.alternate, other != current, version == generation,
+                  let fetched = try? await status(of: pc, at: other, timeout: 6), version == generation else { throw error }
+            useAddress(other)
+            return fetched
+        }
+    }
+
+    private func status(of pc: MacSavedPC, at host: String, timeout: TimeInterval) async throws -> MacPCMetrics {
+        let api = try OrbitAPIClient(host: host, port: pc.securePort, token: MacTokenStore.token(for: pc.id), fingerprint: pc.certificateFingerprint)
+        return try JSONDecoder().decode(MacPCMetrics.self, from: await api.data("/api/status", timeout: timeout))
+    }
+
+    private func retryLANAddressIfDue(for pc: MacSavedPC, version: Int) {
+        guard !lanProbeRunning, addressRoute.shouldRetryPrimary() else { return }
+        lanProbeRunning = true
+        let lan = addressRoute.primary
+        Task { [weak self] in
+            let answered = (try? await self?.status(of: pc, at: lan, timeout: 3)) != nil
+            guard let self, self.generation == version else { return }
+            self.lanProbeRunning = false
+            if answered, self.addressRoute.usesSecondary, self.addressRoute.primary == lan { self.useAddress(lan) }
+        }
+    }
+
+    /// `host` answered: send the current PC's requests there from now on.
+    private func useAddress(_ host: String) {
+        guard addressRoute.answered(host) else { return }
+        usingSecondaryAddress = addressRoute.usesSecondary
+        UserDefaults.standard.set(addressRoute.usesSecondary ? addressRoute.secondary : "", forKey: Self.secondaryPathKey(addressRoutePCID))
+        // Sockets opened on the previous address (cursor input, desktop preview) reconnect on the new one.
+        closeInputSocket()
+        if isStreaming { startPreview() }
     }
 
     /// Points the shared icon store at the current PC (process table and audio mixer rows).
@@ -350,6 +435,8 @@ final class OrbitMacViewModel: ObservableObject {
         agentUpdateAvailable = false; agentLatestVersion = nil; agentUpdateMessage = nil
         deck.reset()
         wasOnline = false
+        reportedTailscaleAddresses = []; lanProbeRunning = false
+        syncAddressRoute()
     }
 
     // MARK: - Demo mode
@@ -448,8 +535,7 @@ final class OrbitMacViewModel: ObservableObject {
         let version = generation
         let start = Date()
         do {
-            let apiClient = try client(for: pc)
-            let fetched: MacPCMetrics = try await apiClient.get("/api/status")
+            let fetched = try await fetchStatus(for: pc, version: version)
             guard version == generation, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
             metrics = fetched
@@ -459,7 +545,8 @@ final class OrbitMacViewModel: ObservableObject {
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
             lastUpdated = Date()
             connectionError = nil
-            statusBanner = "Connected to \(pc.name) · \(pingMs) ms"
+            statusBanner = usingSecondaryAddress ? "Connected to \(pc.name) · remote via \(connectionHost(for: pc)) · \(pingMs) ms"
+                                                : "Connected to \(pc.name) · \(pingMs) ms"
             if !wasOnline {
                 wasOnline = true
                 notifyIfNeeded(title: "\(pc.name) is online", body: "Orbit reconnected to your PC.")
@@ -491,6 +578,10 @@ final class OrbitMacViewModel: ObservableObject {
         do {
             let info: MacNetworkConfig = try await client(for: pc).get("/api/network-info")
             guard version == generation, let index = savedPCs.firstIndex(where: { $0.id == pc.id }) else { return }
+            reportedTailscaleAddresses = (info.tailscaleAddresses ?? []).filter { OrbitAddressRoute.isBareHost($0) }
+            // Through the secondary address the agent describes that adapter (Tailscale), not the LAN one
+            // Wake-on-LAN needs: keep the saved LAN address, MAC, mask and broadcast.
+            guard !usingSecondaryAddress else { return }
             if !info.macAddress.isEmpty { savedPCs[index].macAddress = info.macAddress }
             if !info.subnetMask.isEmpty { savedPCs[index].subnetMask = info.subnetMask }
             if savedPCs[index].autoCalcBroadcast && !info.broadcastAddress.isEmpty { savedPCs[index].broadcastAddress = info.broadcastAddress }
@@ -661,7 +752,7 @@ final class OrbitMacViewModel: ObservableObject {
     /// Low-latency cursor path: a persistent `/ws/input` socket with HTTP fallback.
     func sendCursor(dx: Int = 0, dy: Int = 0, click: String = "", scroll: Int = 0, hscroll: Int = 0, normX: Double? = nil, normY: Double? = nil, drag: String = "") async {
         guard !isDemoMode, metrics.isOnline, let pc = currentPC else { return }
-        let key = "\(pc.id):\(pc.address):\(pc.securePort)"
+        let key = "\(pc.id):\(connectionHost(for: pc)):\(pc.securePort)"
         if inputSocket == nil || inputHostKey != key {
             closeInputSocket()
             inputHostKey = key

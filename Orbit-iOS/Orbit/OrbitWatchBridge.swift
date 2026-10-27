@@ -77,6 +77,9 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
             "selectedPCID": vm.selectedPCID,
             "pcName": vm.selectedPCName,
             "host": vm.cleanHost(),
+            // The Watch's own requests try it when `host` (the LAN address) does not answer.
+            "secondaryHost": vm.secondaryHost,
+            "usingSecondary": vm.usingSecondaryAddress,
             "agentPort": vm.agentPort,
             "securePort": vm.securePort,
             "certificateFingerprint": vm.certificateFingerprint,
@@ -174,7 +177,8 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
 
             let identity: CursorRelayIdentity
             if isCurrentPC {
-                identity = CursorRelayIdentity(pcID: pcID, host: vm.cleanHost(), agentPort: vm.agentPort,
+                // The address in use (LAN or secondary), so a cached client follows a change of path.
+                identity = CursorRelayIdentity(pcID: pcID, host: vm.connectionHost(), agentPort: vm.agentPort,
                                                securePort: vm.securePort, token: vm.apiToken,
                                                fingerprint: OrbitAPIClient.normalizedFingerprint(vm.certificateFingerprint))
             } else {
@@ -342,7 +346,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
         #endif
         let host = MoonlightHostCoordinator()
-        host.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+        host.configure(pcID: vm.selectedPCID, address: vm.cleanHost(), secondaryAddress: vm.secondaryHost, preferSecondary: vm.usingSecondaryAddress,
                        httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         guard host.isPaired else {
             return ["status": "failed", "message": "Pair Orbit with Sunshine on the iPhone first; the sign-in goes through the stream."]

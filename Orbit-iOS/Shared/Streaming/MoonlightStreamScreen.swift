@@ -424,7 +424,7 @@ struct MoonlightUnlockPromptSheet: View {
         if host.isRefreshing {
             Label("Checking Sunshine on \(pcName)…", systemImage: "antenna.radiowaves.left.and.right")
         } else if host.reachable {
-            Label("Sunshine is ready", systemImage: "checkmark.circle")
+            Label(host.isUsingSecondary ? "Sunshine is ready · Remote" : "Sunshine is ready", systemImage: "checkmark.circle")
         } else if let error = host.lastError {
             Label("Sunshine is not answering: \(error)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
         }
