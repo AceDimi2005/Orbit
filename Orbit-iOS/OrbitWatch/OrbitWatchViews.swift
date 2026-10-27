@@ -217,6 +217,81 @@ struct WatchOfflineHint: View {
     }
 }
 
+/// Windows' 30-second warning after Shut Down or Restart: the time left, and Cancel while it runs.
+struct WatchPowerCountdownCard: View {
+    @ObservedObject var vm: OrbitWatchViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let countdown = vm.powerCountdown.visible(at: context.date) {
+                let running = countdown.isRunning(at: context.date)
+                VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(running ? (countdown.isRestart ? "Restarting in" : "Shutting down in") : countdown.summary(at: context.date),
+                              systemImage: countdown.symbol)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(OrbitWatchPalette.amber)
+                        if running {
+                            Text(countdown.clock(at: context.date))
+                                .font(.system(.title2, design: .rounded).weight(.semibold).monospacedDigit())
+                                .contentTransition(reduceMotion ? .identity : .numericText(countsDown: true))
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(countdown.spokenSummary(at: context.date))
+                    if running {
+                        WatchActionButton(title: vm.isCancellingPower ? "Cancelling…" : countdown.cancelTitle, symbol: "xmark",
+                                          tint: OrbitWatchPalette.accent, prominent: true, enabled: !vm.isCancellingPower) {
+                            Task { await vm.cancelPowerCountdown() }
+                        }
+                    }
+                    Text(countdown.detail(at: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+    }
+}
+
+/// One line on the overview while Windows counts down; it opens the System page with Cancel.
+struct WatchPowerCountdownLine: View {
+    @ObservedObject var vm: OrbitWatchViewModel
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let countdown = vm.powerCountdown.visible(at: context.date) {
+                Button { vm.selectedTab = 1 } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: countdown.symbol)
+                            .foregroundStyle(OrbitWatchPalette.amber)
+                        Text(countdown.summary(at: context.date))
+                            .font(.footnote.weight(.semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .background(OrbitWatchPalette.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(countdown.spokenSummary(at: context.date))
+                .accessibilityHint(countdown.isRunning(at: context.date) ? "Opens System, where you can cancel it." : "")
+            }
+        }
+    }
+}
+
 // MARK: - Overview
 
 private struct WatchCockpitPage: View {
@@ -235,6 +310,9 @@ private struct WatchCockpitPage: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
                 WatchConnectionLine(vm: vm, compact: true)
+                if vm.isOnline && vm.powerCountdown.visible() != nil {
+                    WatchPowerCountdownLine(vm: vm)
+                }
 
                 if !vm.hasDirectCredentials && vm.savedPCs.isEmpty {
                     pairingCard
@@ -476,6 +554,7 @@ private struct WatchPowerDeckPage: View {
     @ObservedObject var vm: OrbitWatchViewModel
     @State private var confirmAction: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var controlsEnabled: Bool { vm.canControlPC }
     private var columns: [GridItem] {
@@ -483,37 +562,52 @@ private struct WatchPowerDeckPage: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 9) {
-                WatchPageHeading(title: "System", symbol: "power", tint: OrbitWatchPalette.mint)
-                WatchConnectionLine(vm: vm)
-                WatchOfflineHint(vm: vm)
-                WatchActionButton(title: vm.isWaking ? "Waking PC…" : "Wake PC", symbol: "power", tint: OrbitWatchPalette.mint, prominent: true, enabled: !vm.isWaking && (!vm.macAddress.isEmpty || vm.isPhoneReachable)) {
-                    Task { await vm.wakePC() }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    WatchPageHeading(title: "System", symbol: "power", tint: OrbitWatchPalette.mint)
+                    WatchConnectionLine(vm: vm)
+                    WatchOfflineHint(vm: vm)
+                    if vm.isOnline && vm.powerCountdown.visible() != nil {
+                        // Windows' 30-second warning: Cancel takes the prominent spot while it runs.
+                        WatchPowerCountdownCard(vm: vm)
+                            .id(OrbitPowerCountdown.scrollID)
+                    } else {
+                        WatchActionButton(title: vm.isWaking ? "Waking PC…" : "Wake PC", symbol: "power", tint: OrbitWatchPalette.mint, prominent: true, enabled: !vm.isWaking && (!vm.macAddress.isEmpty || vm.isPhoneReachable)) {
+                            Task { await vm.wakePC() }
+                        }
+                    }
+                    LazyVGrid(columns: columns, spacing: 7) {
+                        systemTile("Lock", symbol: "lock.fill", tint: OrbitWatchPalette.accent) { send("lock") }
+                        systemTile("Sleep", symbol: "moon.fill", tint: OrbitWatchPalette.purple) { confirmAction = "sleep" }
+                    }
+
+                    WatchSectionLabel(title: "Desktop")
+                    WatchActionButton(title: "Show desktop", symbol: "menubar.dock.rectangle", enabled: controlsEnabled) { send("show_desktop") }
+                    WatchActionButton(title: "Switch app", symbol: "macwindow.on.rectangle", enabled: controlsEnabled) { send("alt_tab") }
+                    WatchActionButton(title: "Task View", symbol: "rectangle.3.group", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("task_view") }
+                    WatchActionButton(title: "Take screenshot", symbol: "camera.viewfinder", tint: OrbitWatchPalette.mint, enabled: controlsEnabled) { send("screenshot") }
+
+                    WatchSectionLabel(title: "Display")
+                    WatchActionButton(title: "Toggle HDR", symbol: "sun.max.fill", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { send("toggle_hdr") }
+                    WatchActionButton(title: "Extend displays", symbol: "display.2", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("restore_display") }
+
+                    WatchSectionLabel(title: "Power controls")
+                    WatchActionButton(title: "Quit current game", symbol: "xmark.app", tint: OrbitWatchPalette.coral, enabled: controlsEnabled && vm.activeGame != nil) { confirmAction = "kill_game" }
+                    WatchActionButton(title: "Restart PC", symbol: "arrow.clockwise", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { confirmAction = "restart" }
+                    WatchActionButton(title: "Shut down PC", symbol: "power.circle.fill", tint: OrbitWatchPalette.coral, enabled: controlsEnabled) { confirmAction = "shutdown" }
+                    WatchFeedback(message: vm.statusMessage)
                 }
-                LazyVGrid(columns: columns, spacing: 7) {
-                    systemTile("Lock", symbol: "lock.fill", tint: OrbitWatchPalette.accent) { send("lock") }
-                    systemTile("Sleep", symbol: "moon.fill", tint: OrbitWatchPalette.purple) { confirmAction = "sleep" }
-                }
-
-                WatchSectionLabel(title: "Desktop")
-                WatchActionButton(title: "Show desktop", symbol: "menubar.dock.rectangle", enabled: controlsEnabled) { send("show_desktop") }
-                WatchActionButton(title: "Switch app", symbol: "macwindow.on.rectangle", enabled: controlsEnabled) { send("alt_tab") }
-                WatchActionButton(title: "Task View", symbol: "rectangle.3.group", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("task_view") }
-                WatchActionButton(title: "Take screenshot", symbol: "camera.viewfinder", tint: OrbitWatchPalette.mint, enabled: controlsEnabled) { send("screenshot") }
-
-                WatchSectionLabel(title: "Display")
-                WatchActionButton(title: "Toggle HDR", symbol: "sun.max.fill", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { send("toggle_hdr") }
-                WatchActionButton(title: "Extend displays", symbol: "display.2", tint: OrbitWatchPalette.purple, enabled: controlsEnabled) { send("restore_display") }
-
-                WatchSectionLabel(title: "Power controls")
-                WatchActionButton(title: "Quit current game", symbol: "xmark.app", tint: OrbitWatchPalette.coral, enabled: controlsEnabled && vm.activeGame != nil) { confirmAction = "kill_game" }
-                WatchActionButton(title: "Restart PC", symbol: "arrow.clockwise", tint: OrbitWatchPalette.amber, enabled: controlsEnabled) { confirmAction = "restart" }
-                WatchActionButton(title: "Shut down PC", symbol: "power.circle.fill", tint: OrbitWatchPalette.coral, enabled: controlsEnabled) { confirmAction = "shutdown" }
-                WatchFeedback(message: vm.statusMessage)
+                .padding(.horizontal, 7)
+                .padding(.bottom, 22)
             }
-            .padding(.horizontal, 7)
-            .padding(.bottom, 22)
+            // Restart and Shut Down are at the bottom: bring the countdown with Cancel into view.
+            .onChange(of: vm.powerCountdown.countdown) { old, new in
+                guard old == nil, new != nil else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(OrbitPowerCountdown.scrollID, anchor: .top)
+                }
+            }
         }
         .confirmationDialog(confirmationTitle, isPresented: Binding(get: { confirmAction != nil }, set: { if !$0 { confirmAction = nil } }), titleVisibility: .visible) {
             if let action = confirmAction {

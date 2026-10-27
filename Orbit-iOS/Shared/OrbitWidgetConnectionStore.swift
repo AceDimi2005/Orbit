@@ -425,7 +425,7 @@ enum OrbitWidgetPowerService {
         defer { session.invalidateAndCancel() }
 
         do {
-            let (_, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
                 let label = switch action {
                 case "shutdown": "Shutting down"
@@ -433,7 +433,12 @@ enum OrbitWidgetPowerService {
                 case "lock": "Locked"
                 default: "Restarting"
                 }
-                let message = "\(label) \(connection.name)"
+                // A PC with Windows' 30-second warning says how long it waits; Orbit can still cancel.
+                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let delay = (json?["countdownSeconds"] as? NSNumber)?.intValue ?? 0
+                let message = delay > 0
+                    ? "\(label) \(connection.name) in \(delay) seconds. Open Orbit to cancel."
+                    : "\(label) \(connection.name)"
                 OrbitWidgetConnectionStore.recordPowerFeedback(message)
                 return message
             } else {

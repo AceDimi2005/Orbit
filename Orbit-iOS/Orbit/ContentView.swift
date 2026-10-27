@@ -146,17 +146,26 @@ struct DashboardView: View {
                 let isWideScreen = geo.size.width >= 700 || horizontalSizeClass == .regular
                 ZStack {
                     OrbitAmbientBackground(isOnline: vm.metrics.isOnline)
-                    ScrollView(showsIndicators: false) {
-                        overviewColumn(width: min(geo.size.width - 36, 1400), isWide: isWideScreen)
-                            .frame(maxWidth: 1400)
-                            .padding(.horizontal, 18)
-                            .padding(.top, 8)
-                            .padding(.bottom, 28)
-                            .frame(maxWidth: .infinity)
-                            .animation(.snappy(duration: 0.35), value: vm.metrics.isOnline)
-                            .animation(.snappy(duration: 0.35), value: vm.metrics.activeGame)
+                    ScrollViewReader { proxy in
+                        ScrollView(showsIndicators: false) {
+                            overviewColumn(width: min(geo.size.width - 36, 1400), isWide: isWideScreen)
+                                .frame(maxWidth: 1400)
+                                .padding(.horizontal, 18)
+                                .padding(.top, 8)
+                                .padding(.bottom, 28)
+                                .frame(maxWidth: .infinity)
+                                .animation(.snappy(duration: 0.35), value: vm.metrics.isOnline)
+                                .animation(.snappy(duration: 0.35), value: vm.metrics.activeGame)
+                        }
+                        .refreshable { await vm.refreshMetrics() }
+                        // Shut Down and Restart sit below the readings: bring the countdown with Cancel into view.
+                        .onChange(of: vm.powerCountdown.countdown) { old, new in
+                            guard old == nil, new != nil else { return }
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.35)) {
+                                proxy.scrollTo(OrbitPowerCountdown.scrollID, anchor: .top)
+                            }
+                        }
                     }
-                    .refreshable { await vm.refreshMetrics() }
                 }
             }
             .navigationTitle("Overview")
@@ -265,6 +274,7 @@ struct DashboardView: View {
             if vm.isDemoMode { previewNotice }
             heroCard
             if vm.metrics.isOnline {
+                if vm.powerCountdown.visible() != nil { PowerCountdownCard(vm: vm).id(OrbitPowerCountdown.scrollID) }
                 if vm.dashboardConfiguration.showsGame, let game = vm.metrics.activeGame { activeGameCard(game) }
                 if vm.metrics.telemetryAvailable == false {
                     OrbitNotice(title: "Syncing sensors…", message: "Collecting the first readings from your PC. Cards appear as soon as the agent reports them.", icon: "waveform.path.ecg", tint: theme.accent)
@@ -728,30 +738,15 @@ struct DashboardView: View {
         .disabled(!vm.metrics.isOnline || vm.metrics.volumeAvailable == false)
     }
 
+    /// Lock, display and preview, then every power action one tap away (each asks first).
     private var powerCard: some View {
-        HStack(spacing: 10) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: dynamicTypeSize.isAccessibilitySize ? 2 : 3), spacing: 10) {
             OrbitActionTile(title: "Lock", icon: "lock.fill", tint: theme.accent) { Task { await vm.sendPowerAction("lock") } }
             OrbitActionTile(title: "Display", icon: "display", tint: theme.accent) { Task { await vm.sendPowerAction("restore_display") } }
             OrbitActionTile(title: "Preview", icon: "rectangle.on.rectangle", tint: theme.accent) { vm.openDesktopPreview() }
-            Menu {
-                Button("Sleep", systemImage: "moon.fill") { pendingAction = .sleep }
-                Button("Restart", systemImage: "arrow.clockwise") { pendingAction = .restart }
-                Button("Shut Down", systemImage: "power", role: .destructive) { pendingAction = .shutdown }
-            } label: {
-                VStack(spacing: 7) {
-                    Image(systemName: "power")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.orange)
-                        .frame(height: 20)
-                    Text("Power")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .frame(maxWidth: .infinity, minHeight: 60)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Color.orange.opacity(0.22), lineWidth: 1))
-            }
-            .accessibilityLabel("Power options")
+            OrbitActionTile(title: "Sleep", icon: "moon.fill", tint: theme.accent) { pendingAction = .sleep }
+            OrbitActionTile(title: "Restart", icon: "arrow.clockwise", tint: .orange) { pendingAction = .restart }
+            OrbitActionTile(title: "Shut Down", icon: "power", tint: .orange) { pendingAction = .shutdown }
         }
         .padding(12)
         .liquidGlass(cornerRadius: 20)
@@ -987,6 +982,62 @@ extension DashboardMetric {
         case .memory, .vram: return Color(red: 0.68, green: 0.65, blue: 0.98)
         case .storage, .diskActivity, .cpuPower, .gpuPower: return Color(red: 0.97, green: 0.73, blue: 0.44)
         case .coolantTemperature, .network, .uptime: return Color(red: 0.48, green: 0.72, blue: 1)
+        }
+    }
+}
+
+/// Windows' 30-second warning after Shut Down or Restart, counting down, with Cancel while it runs.
+private struct PowerCountdownCard: View {
+    @ObservedObject var vm: OrbitViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let countdown = vm.powerCountdown.visible(at: context.date) {
+                let running = countdown.isRunning(at: context.date)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 12) {
+                        OrbitIconBadge(systemName: countdown.symbol, tint: .orange, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(countdown.summary(at: context.date))
+                                .font(.headline.monospacedDigit())
+                                .contentTransition(reduceMotion ? .identity : .numericText(countsDown: true))
+                            Text(countdown.detail(at: context.date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(countdown.spokenSummary(at: context.date))
+                        .accessibilityHint(countdown.detail(at: context.date))
+                        Spacer(minLength: 8)
+                        if running {
+                            Button {
+                                OrbitHaptics.press()
+                                Task { if await vm.cancelPowerCountdown() { OrbitHaptics.success() } else { OrbitHaptics.warning() } }
+                            } label: {
+                                if vm.isCancellingPower {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text("Cancel")
+                                }
+                            }
+                            .buttonStyle(OrbitGlassButtonStyle(tint: .orange, cornerRadius: 14))
+                            .disabled(vm.isCancellingPower)
+                            .accessibilityLabel(countdown.cancelTitle)
+                        }
+                    }
+                    if let error = vm.powerCancelError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .liquidGlass(cornerRadius: 18, tint: .orange)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: running)
+            }
         }
     }
 }

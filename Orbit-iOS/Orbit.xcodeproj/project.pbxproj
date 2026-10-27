@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A9000000000000000000C0D1 /* OrbitPowerCountdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C0DE /* OrbitPowerCountdown.swift */; };
+		A9000000000000000000C0D3 /* OrbitPowerCountdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C0DE /* OrbitPowerCountdown.swift */; };
+		A9000000000000000000C0D6 /* OrbitPowerCountdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C0DE /* OrbitPowerCountdown.swift */; };
+		A9000000000000000000C0D5 /* OrbitPowerCountdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C0DE /* OrbitPowerCountdown.swift */; };
 		A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
@@ -247,6 +251,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000C0DE /* OrbitPowerCountdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPowerCountdown.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitTVDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVDeck.swift; sourceTree = "<group>"; };
@@ -542,6 +547,7 @@
 				B20000000000000000000116 /* OrbitDeck.swift */,
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
+				B2000000000000000000C0DE /* OrbitPowerCountdown.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -925,6 +931,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C0D1 /* OrbitPowerCountdown.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
 				A2000000000000000000010E /* OrbitDeck.swift in Sources */,
@@ -1000,6 +1007,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C0D3 /* OrbitPowerCountdown.swift in Sources */,
 				A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */,
 				A30000000000000000000101 /* OrbitWatchDeck.swift in Sources */,
 				A30000000000000000000100 /* OrbitPowerIntents.swift in Sources */,
@@ -1027,6 +1035,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C0D5 /* OrbitPowerCountdown.swift in Sources */,
 				A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */,
 				A50000000000000000000100 /* OrbitTVDeck.swift in Sources */,
 				A50000000000000000000001 /* OrbitTVApp.swift in Sources */,
@@ -1051,6 +1060,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C0D6 /* OrbitPowerCountdown.swift in Sources */,
 				A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */,
 				A60000000000000000000102 /* OrbitMacDeckView.swift in Sources */,
 				A60000000000000000000101 /* OrbitEventFeed.swift in Sources */,

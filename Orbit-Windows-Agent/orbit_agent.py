@@ -42,6 +42,7 @@ import orbit_input
 import orbit_links
 import orbit_notify
 import orbit_power_after
+import orbit_power_countdown
 import orbit_push
 import orbit_tasks
 import orbit_summary
@@ -468,7 +469,8 @@ def status_snapshot():
 @app.get("/api/status")
 def get_status(authorization: str = Header(None)):
     verify_token(authorization)
-    return status_snapshot()
+    # Windows' warning after Shut Down or Restart from Orbit, so every app shows it with Cancel.
+    return {**status_snapshot(), "powerCountdown": POWER_COUNTDOWN.snapshot()}
 
 
 @app.post("/api/widget/pairing")
@@ -698,6 +700,7 @@ def watch_summary(authorization: str = Header(None)):
         "uptimeSeconds": status.get("uptimeSeconds") or 0,
         "sessionLocked": status.get("sessionLocked"),
         "lastUpdated": status.get("lastUpdated"),
+        "powerCountdown": POWER_COUNTDOWN.snapshot(),
     }
 
 
@@ -831,6 +834,20 @@ KEYBOARD_ACTIONS = frozenset({"mute", "volume_up", "volume_down", "media_play_pa
 # goes ahead anyway, and a hook that raises is logged and skipped.
 BEFORE_POWER_HOOKS = []
 BEFORE_POWER_HOOKS_TIMEOUT = 5.0
+# Callables run without arguments when a shutdown or restart the hooks above announced doesn't
+# happen after all: Windows' countdown was cancelled, or refused (orbit_push re-arms its alarm).
+# They must return quickly; one that raises is logged and skipped.
+POWER_CANCELLED_HOOKS = []
+# Windows' 30-second warning after Shut Down or Restart from the apps (orbit_power_countdown).
+POWER_COUNTDOWN = orbit_power_countdown.PowerCountdown()
+
+
+def run_power_cancelled_hooks():
+    for hook in list(POWER_CANCELLED_HOOKS):
+        try:
+            hook()
+        except Exception:
+            LOGGER.exception("A power-cancelled hook failed")
 
 
 def run_before_power_hooks(action_name):
@@ -856,18 +873,24 @@ def run_before_power_hooks(action_name):
 @app.post("/api/action/{action_name}")
 def execute_action(action_name: str, authorization: str = Header(None)):
     verify_token(authorization)
-    return perform_action(action_name)
+    # Shut Down and Restart from the apps give the person at the PC Windows' 30-second warning.
+    return perform_action(action_name, countdown=True)
 
 
-def perform_action(action_name):
+def perform_action(action_name, countdown=False):
     """Runs one PC action by name, for the HTTP route and for automation (power after downloads).
 
-    Returns `{"status": "sent", "executed": name}`. Raises HTTPException: 404 for an unknown name,
-    501 off Windows, 409 when kill_game finds no foreground game, 503 when Windows refuses.
+    Returns `{"status": "sent", "executed": name}`. With `countdown`, restart and shutdown start
+    Windows' 30-second warning instead of the short delay and add `"countdownSeconds"` (see
+    orbit_power_countdown). Raises HTTPException: 404 for an unknown name, 501 off Windows,
+    409 when kill_game finds no foreground game or Windows already counts down, 503 when
+    Windows refuses.
     """
     if action_name not in ACTIONS:
         raise HTTPException(status_code=404, detail="Unknown PC action")
     require_windows()
+    if countdown and action_name in orbit_power_countdown.COUNTDOWN_ACTIONS:
+        return start_power_countdown(action_name)
     u32 = ctypes.windll.user32
     # Key presses must not interleave with a shortcut being held by /api/input/hotkey.
     typing = action_name in KEYBOARD_ACTIONS
@@ -938,6 +961,44 @@ def perform_action(action_name):
     return {"status": "sent", "executed": action_name}
 
 
+def start_power_countdown(action_name):
+    """`shutdown /s|/r /t 30` with the power hooks first. Asking again for the same action keeps the
+    countdown that runs (and its time left); the other action replaces it."""
+    announced = []
+
+    def before_start():
+        announced.append(action_name)
+        run_before_power_hooks(action_name)
+    try:
+        pending, _ = POWER_COUNTDOWN.start(action_name, before_start=before_start)
+    except orbit_power_countdown.CountdownError as error:
+        if announced:
+            run_power_cancelled_hooks()
+        raise HTTPException(status_code=error.status, detail=str(error)) from error
+    return {"status": "sent", "executed": action_name, "countdownSeconds": pending["remainingSeconds"]}
+
+
+@app.post("/api/power/cancel")
+def cancel_power_countdown(authorization: str = Header(None)):
+    """Stops Windows' countdown after Shut Down or Restart (`shutdown /a`), whoever started it.
+
+    Same access as /api/action (the main token, HTTP or HTTPS): whoever may shut the PC down may
+    stop it. `{"status": "cancelled", "action": "shutdown"|"restart"|null}`; 409 when nothing waits.
+    """
+    verify_token(authorization)
+    require_windows()
+    try:
+        action = POWER_COUNTDOWN.cancel()
+    except orbit_power_countdown.CountdownError as error:
+        raise HTTPException(status_code=error.status, detail=str(error)) from error
+    LOGGER.info("Cancelled the pending %s", action or "shutdown or restart")
+    run_power_cancelled_hooks()
+    return {"status": "cancelled", "action": action}
+
+
+register_feature("powerCountdown")
+
+
 # -- Notifications (DESIGN F1): alerts, downloads, watched programs, power after, instant push ----
 app.include_router(orbit_alerts.create_alerts_router(verify_token))
 app.include_router(orbit_downloads.create_downloads_router(verify_token))
@@ -947,6 +1008,7 @@ app.include_router(orbit_push.create_push_router(verify_token))
 for _feature in ("alerts", "downloads", "tasks", "powerAfter", "push"):
     register_feature(_feature)
 BEFORE_POWER_HOOKS.append(orbit_push.planned_offline)
+POWER_CANCELLED_HOOKS.append(orbit_push.planned_offline_cancelled)
 
 
 def start_notification_features():

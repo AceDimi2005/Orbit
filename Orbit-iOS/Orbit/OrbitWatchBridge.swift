@@ -110,6 +110,8 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         if let gpuPower = vm.metrics.gpuPowerWatts { payload["gpuPowerWatts"] = gpuPower }
         if let fps = vm.metrics.fps { payload["fps"] = fps }
         if let game = vm.metrics.activeGame { payload["activeGame"] = game }
+        // Windows' 30-second warning after Shut Down or Restart; absent means none.
+        if let countdown = vm.powerCountdown.visible() { payload["powerCountdown"] = countdown.relayPayload }
         // Button deck for the Watch "Buttons" page (F4); see OrbitWatchDeckSync.
         payload["deck"] = OrbitWatchDeckSync.payload(
             pcID: vm.selectedPCID, isPro: OrbitProStore.shared.isProUnlocked, isDemo: vm.isDemoMode,
@@ -283,6 +285,9 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                     }
                     path = "/api/sunshine/launch"
                     query = [URLQueryItem(name: "app", value: title)]
+                case "cancelPower":
+                    // Stops Windows' countdown after Shut Down or Restart.
+                    path = "/api/power/cancel"
                 case "runDeck":
                     path = try OrbitWatchDeckSync.runPath(buttonID: message["buttonID"] as? String,
                                                           cached: OrbitWatchDeckSync.cachedDeck(pcID: pcID),
@@ -304,14 +309,28 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                 }
                 let timeout = min(4, deadline - Date().timeIntervalSince1970)
                 guard timeout > 0 else { throw OrbitError(message: "The command expired. Try again.") }
-                _ = try await Self.sendCursorRequest(client: client, query: query, timeout: timeout, path: path)
+                let data: Data
+                do {
+                    data = try await Self.sendCursorRequest(client: client, query: query, timeout: timeout, path: path)
+                } catch let error as OrbitError where cmd == "cancelPower" && error.statusCode == 409 {
+                    // Nothing waits on the PC any more (cancelled elsewhere, or at the PC): done either way.
+                    data = Data()
+                }
+                var reply: [String: Any] = ["status": "sent", "pcID": pcID]
+                let action = message["action"] as? String ?? ""
+                if cmd == "powerAction", let countdown = OrbitPowerCountdown(action: action, response: data) {
+                    reply["powerCountdown"] = countdown.relayPayload
+                }
                 if vm.selectedPCID == pcID, Self.normalizedHost(vm.cleanHost()) == Self.normalizedHost(host) {
                     if cmd == "volume", let level = message["level"] as? Double { vm.metrics.volume = min(100, max(0, level.rounded())) }
-                    if cmd == "powerAction", let action = message["action"] as? String {
-                        if ["sleep", "restart", "shutdown"].contains(action) { vm.metrics.isOnline = false }
+                    if cmd == "powerAction" {
+                        // Counts down on a PC with Windows' warning; otherwise sleep, shutdown and restart go offline.
+                        await vm.noteActionSent(action, response: data)
                         if action == "mute" { vm.metrics.isMuted.toggle() }
                     }
+                    if cmd == "cancelPower" { vm.noteCountdownCancelled() }
                 }
+                return reply
             }
             return ["status": "sent", "pcID": pcID]
         } catch { return ["status": "failed", "message": error.localizedDescription] }
@@ -365,7 +384,7 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         case "requestSync":
             let payload = buildSyncPayload()
             replyHandler?(payload)
-        case "wake", "powerAction", "volume", "launchGame", "runDeck":
+        case "wake", "powerAction", "volume", "launchGame", "runDeck", "cancelPower":
             Task {
                 #if canImport(UIKit)
                 // A deck button may take up to 12 s; keep an iPhone that WatchConnectivity woke in the

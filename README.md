@@ -78,6 +78,7 @@ Tema implicită este **Noir**: fundal negru pur, suprafețe plate cu o linie fin
 - Remote cu trackpad nativ multitouch: un deget mută cursorul, două degete derulează (vertical și orizontal), atingere cu două degete = click dreapta, apăsare lungă = drag; viteză reglabilă, taste rapide, gamepad mapat pe tastatură.
 - Pairing cu radar animat, câmp PIN din 6 celule și cronometru de expirare; profiluri PC cu stare TLS și Wake-on-LAN.
 - Task Manager, Audio Mixer, Clipboard, Fișiere și Sesiuni cu același limbaj vizual (carduri glass, bare de utilizare, grafice cu zonă umplută).
+- Shut Down și Restart așteaptă 30 de secunde cu avertismentul Windows (agentul nou): iPhone-ul, iPad-ul, Mac-ul, Apple TV și Apple Watch arată „Shutting down in 0:27” cu **Cancel**, oricine ar fi pornit oprirea. Cu un agent mai vechi, PC-ul se oprește ca înainte. Pe iPhone, Sleep, Restart și Shut Down sunt butoane directe în Overview, fiecare cu confirmare.
 - Apple Watch: pagini Overview, Power, Air Mouse și Audio, butoane mari și comenzi explicite pentru Crown. Gyro Glide, Laser Pointer și Touchpad trimit comenzi serializate prin iPhone sau HTTP(S), cu confirmare de la PC; pauza și schimbarea paginii opresc mișcarea și eliberează dragul. Datele expirate nu sunt afișate ca live. Wake-on-LAN de pe ceas folosește iPhone-ul apropiat.
 - Apple TV: fundal ambient, hero cu gauge, secțiuni unitare și valori reale (fără „0°C” sau etichete inventate când senzorul lipsește); acțiunile media folosesc identificatorii corecți ai agentului.
 
@@ -93,7 +94,7 @@ Tema implicită este **Noir**: fundal negru pur, suprafețe plate cu o linie fin
 - **Processes (⌘5):** Task Manager cu sortare pe coloane, filtrare și **End Task** cu confirmare; auto-refresh configurabil.
 - **Audio (⌘6) și Clipboard (⌘7):** mixer pe aplicații cu rutare pe ieșiri (când agentul o permite) și clipboard bidirecțional (Pull / Push / Copy to Mac / Paste from Mac).
 - **Sessions (⌘8):** înregistrări de telemetrie cu grafice Swift Charts, statistici min/medie/max și export CSV. **Stream (⌘9):** aplicațiile Sunshine cu box art, asociere prin PIN cu Sunshine și **Stream** în fereastra proprie a aplicației (⇧⌘S pentru desktop): clic pe video capturează mouse-ul și tastatura, ⌃⌥⇧Z le eliberează; controllerele sunt redirecționate automat. Aplicația Moonlight separată rămâne opțională (**Open in Moonlight App**).
-- **Bara de meniu:** CPU/GPU/RAM/FPS/temperatură la alegere lângă pictogramă; fereastra rapidă arată gauge-urile, volumul, Lock/Sleep/Screenshot sau **Power On** când PC-ul e oprit.
+- **Bara de meniu:** CPU/GPU/RAM/FPS/temperatură la alegere lângă pictogramă; fereastra rapidă arată gauge-urile, volumul, Lock/Sleep/Screenshot, **Restart…** și **Shut Down…** (confirmate chiar acolo) sau **Power On** când PC-ul e oprit.
 - **Setări (⌘,):** pornire la login, element în bara de meniu, interval de actualizare, notificări când PC-ul revine online, cele 12 teme comune cu iPhone-ul, Wake-on-LAN și verificarea actualizării agentului.
 
 Notă pentru versiunile anterioare: aplicația Mac se bloca (fir principal la 100 %, „nu răspunde”) din cauza legării directe a elementului din bara de meniu la o preferință `@AppStorage`, ceea ce producea o buclă infinită de actualizare SwiftUI; a fost corectată, iar decodarea cadrelor din Desktop Preview nu mai rulează pe firul principal.
@@ -289,6 +290,7 @@ The default theme is **Noir**: a pure black background, flat surfaces with a thi
 - A native multitouch trackpad in Remote: one finger moves, two fingers scroll (vertical and horizontal), two-finger tap right-clicks, long press drags; adjustable speed, quick keys and a keyboard-mapped gamepad.
 - Pairing with an animated radar, a six-cell PIN field and an expiry countdown; PC profiles show TLS and Wake-on-LAN status.
 - Task Manager, Audio Mixer, Clipboard, Files and Sessions share the same visual language (glass cards, usage bars, area charts).
+- Shut Down and Restart wait 30 seconds with Windows' own warning (new agent): iPhone, iPad, Mac, Apple TV and Apple Watch show "Shutting down in 0:27" with **Cancel**, whichever device started it. With an older agent the PC turns off as before. On iPhone, Sleep, Restart and Shut Down are buttons right on the Overview, each asking first.
 - Apple Watch: Overview, Power, Air Mouse and Audio pages, large buttons and explicit Crown controls. Gyro Glide, Laser Pointer and Touchpad serialize input through iPhone or HTTP(S), with PC acknowledgement; pausing or leaving the page stops motion and releases drag. Stale readings are not shown as live. Watch Wake-on-LAN uses the nearby paired iPhone.
 - Apple TV: ambient background, hero with ring gauge, unified sections and honest values (no “0°C” or invented labels when a sensor is missing); media actions use the agent’s real identifiers.
 
@@ -304,7 +306,7 @@ The default theme is **Noir**: a pure black background, flat surfaces with a thi
 - **Processes (⌘5):** Task Manager with column sorting, filtering and **End Task** with confirmation; configurable auto-refresh.
 - **Audio (⌘6) and Clipboard (⌘7):** per-app mixer with output routing (when the agent allows it) and a two-way clipboard (Pull / Push / Copy to Mac / Paste from Mac).
 - **Sessions (⌘8):** telemetry recordings with Swift Charts graphs, min/average/max statistics and CSV export. **Stream (⌘9):** Sunshine apps with box art, PIN pairing with Sunshine and **Stream** in the app's own window (⇧⌘S for the desktop): click the video to capture mouse and keyboard, ⌃⌥⇧Z releases them; controllers are forwarded automatically. The separate Moonlight app stays optional (**Open in Moonlight App**).
-- **Menu bar:** your choice of CPU/GPU/RAM/FPS/temperature next to the icon; the quick panel shows the gauges, volume, Lock/Sleep/Screenshot or **Power On** when the PC is off.
+- **Menu bar:** your choice of CPU/GPU/RAM/FPS/temperature next to the icon; the quick panel shows the gauges, volume, Lock/Sleep/Screenshot, **Restart…** and **Shut Down…** (confirmed right there) or **Power On** when the PC is off.
 - **Settings (⌘,):** launch at login, menu bar item, refresh interval, notifications when the PC comes back online, the same 12 themes as the iPhone app, Wake-on-LAN and agent update checks.
 
 Note for earlier builds: the Mac app used to hang (main thread at 100 %, "not responding") because the menu bar item was bound directly to an `@AppStorage` preference, which produced an endless SwiftUI update loop; this is fixed, and Desktop Preview frames are no longer decoded on the main thread.

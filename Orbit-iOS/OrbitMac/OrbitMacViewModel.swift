@@ -100,6 +100,10 @@ final class OrbitMacViewModel: ObservableObject {
     @Published var isLoadingSpecs = false
     @Published var specsError: String?
     @Published var isDraggingVolume = false
+    /// Windows' 30-second warning after Shut Down or Restart, with Cancel (OrbitPowerCountdown.swift).
+    @Published private(set) var powerCountdown = OrbitPowerCountdownTracker()
+    @Published private(set) var isCancellingPower = false
+    @Published var powerCancelError: String?
 
     // MARK: Library, audio, processes, clipboard
     @Published var games: [MacSunshineGame] = []
@@ -323,6 +327,7 @@ final class OrbitMacViewModel: ObservableObject {
         appIcons.reset()
         hasSyncedExtras = false
         metrics = MacPCMetrics()
+        powerCountdown = OrbitPowerCountdownTracker(); powerCancelError = nil
         if let pc = currentPC { metrics.hostname = pc.name }
         history.reset()
         peaks = MacSessionPeaks()
@@ -453,6 +458,7 @@ final class OrbitMacViewModel: ObservableObject {
             guard version == generation, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
             metrics = fetched
+            powerCountdown.apply(OrbitPowerCountdown(fetched.powerCountdown), requestedAt: start)
             if isDraggingVolume || pendingVolume != nil || Date().timeIntervalSince(lastVolumeChange) < 2 { metrics.volume = sliderVolume }
             history.append(fetched)
             peaks.observe(fetched)
@@ -476,6 +482,7 @@ final class OrbitMacViewModel: ObservableObject {
             guard version == generation, !Task.isCancelled else { return }
             metrics.isOnline = false
             metrics.fps = nil
+            powerCountdown.pcUnreachable()
             pingMs = 0
             wasOnline = false
             hasSyncedExtras = false
@@ -539,10 +546,14 @@ final class OrbitMacViewModel: ObservableObject {
         guard metrics.isOnline else { statusBanner = "Connect to your PC first."; return false }
         let version = generation
         do {
-            _ = try await client().data("/api/action/\(action)", method: "POST")
+            let data = try await client().data("/api/action/\(action)", method: "POST")
             guard version == generation else { return false }
             statusBanner = "Sent \(label) to \(currentPC?.name ?? "PC")"
-            if ["shutdown", "sleep", "restart"].contains(action) {
+            if let countdown = OrbitPowerCountdown(action: action, response: data) {
+                // Windows waits 30 seconds and the PC keeps answering, so Cancel still reaches it.
+                powerCountdown.set(countdown)
+                powerCancelError = nil
+            } else if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false
                 wasOnline = false
                 stopPreview()
@@ -554,6 +565,29 @@ final class OrbitMacViewModel: ObservableObject {
             guard version == generation else { return false }
             statusBanner = "\(label) failed: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// Stops Windows' countdown after Shut Down or Restart (`POST /api/power/cancel`).
+    func cancelPowerCountdown() async {
+        guard !isCancellingPower, !isDemoMode, let pending = powerCountdown.running() else { return }
+        isCancellingPower = true
+        defer { isCancellingPower = false }
+        let version = generation
+        do {
+            _ = try await client().data("/api/power/cancel", method: "POST")
+            guard version == generation else { return }
+            powerCountdown.set(nil)
+            powerCancelError = nil
+            statusBanner = "\(pending.cancelledMessage) on \(currentPC?.name ?? "the PC")"
+        } catch let error as OrbitError where error.statusCode == 409 {
+            // Nothing waits on the PC any more: cancelled from another device, or at the PC.
+            guard version == generation else { return }
+            powerCountdown.set(nil)
+            powerCancelError = nil
+        } catch {
+            guard version == generation else { return }
+            powerCancelError = "Couldn't cancel: \(error.localizedDescription)"
         }
     }
 
