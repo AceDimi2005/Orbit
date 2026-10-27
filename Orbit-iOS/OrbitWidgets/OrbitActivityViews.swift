@@ -604,6 +604,7 @@ private struct OrbitIslandLeading: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 look.subtitle
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(look.subtitleIsGame ? look.accent : .white.opacity(0.6))

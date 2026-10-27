@@ -3,10 +3,29 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
+/// iOS registers at most ten widgets from one bundle block and silently drops the rest: when the
+/// Buttons widget became the tenth entry, the Live Activity (eleventh) lost its descriptor and every
+/// activity was ended right after it started ("Activity had no descriptor"). So the activity comes
+/// first, and the telemetry widgets live in their own nested bundle. Keep every block at ten or fewer.
 @main
 struct OrbitWidgets: WidgetBundle {
     var body: some Widget {
+        OrbitMonitorActivity()
         OrbitShortcutsWidget()
+        OrbitDeckWidget()
+        OrbitTelemetryWidgets().body
+        if #available(iOSApplicationExtension 18.0, *) {
+            OrbitWakeControlCenterWidget()
+            OrbitShutdownControlCenterWidget()
+            OrbitSleepControlCenterWidget()
+            OrbitDeckControl()
+        }
+    }
+}
+
+/// The eight telemetry widgets, nested so the main bundle stays under the ten-widget limit.
+struct OrbitTelemetryWidgets: WidgetBundle {
+    var body: some Widget {
         OrbitOverviewWidget()
         OrbitGamingWidget()
         OrbitPowerWidget()
@@ -15,14 +34,6 @@ struct OrbitWidgets: WidgetBundle {
         OrbitStorageWidget()
         OrbitNetworkWidget()
         OrbitMetricWidget()
-        OrbitDeckWidget()
-        OrbitMonitorActivity()
-        if #available(iOSApplicationExtension 18.0, *) {
-            OrbitWakeControlCenterWidget()
-            OrbitShutdownControlCenterWidget()
-            OrbitSleepControlCenterWidget()
-            OrbitDeckControl()
-        }
     }
 }
 
@@ -209,6 +220,45 @@ struct OrbitPowerTile: View {
     }
 }
 
+/// A full-width power row with a round icon, title and subtitle (small Power & Quick Controls widget,
+/// where two square tiles side by side would cut "Power On" and "Shut Down" short).
+struct OrbitPowerRow: View {
+    var action: OrbitPowerAction
+
+    var body: some View {
+        OrbitPowerGate(action: action) { locked in
+            HStack(spacing: 9) {
+                Image(systemName: locked ? "lock.fill" : action.symbol)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(locked ? Color.white.opacity(0.6) : action.tint)
+                    .frame(width: 28, height: 28)
+                    .background((locked ? Color.white.opacity(0.08) : action.tint.opacity(0.18)), in: Circle())
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(action.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(locked ? "Orbit Pro" : action.subtitle)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder((locked ? Color.white : action.tint).opacity(locked ? 0.08 : 0.24), lineWidth: 0.8)
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(locked ? "\(action.title), needs Orbit Pro" : action.title)
+        }
+    }
+}
+
 /// Runs the power intent with Orbit Pro; without it the same label opens Orbit's upgrade sheet.
 /// Prefer `OrbitPowerGate`, which lets the label draw its own locked state.
 struct OrbitProPowerButton<I: AppIntent, Label: View>: View {
@@ -328,12 +378,10 @@ private struct OrbitShortcutsView: View {
                 }
             }
         default:
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 header
-                HStack(spacing: 8) {
-                    OrbitPowerTile(action: .wake, showsSubtitle: false)
-                    OrbitPowerTile(action: .shutdown, showsSubtitle: false)
-                }
+                OrbitPowerRow(action: .wake)
+                OrbitPowerRow(action: .shutdown)
             }
         }
     }
