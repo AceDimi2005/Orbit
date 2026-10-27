@@ -67,6 +67,7 @@ struct ContentView: View {
             NavigationStack { DeckView(vm: vm, focusButtonID: link.buttonID, showsDoneButton: true) }
         }
         .onAppear {
+            OrbitAfterFirstFrame.rootViewDidAppear()
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
             OrbitProStore.shared.start()

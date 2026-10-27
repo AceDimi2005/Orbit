@@ -90,7 +90,8 @@ enum OrbitShortcutsParameters {
         OrbitWidgetConnectionStore.connectionsDidChange = {
             Task { @MainActor in OrbitShortcutsParameters.scheduleRefresh() }
         }
-        refresh()
+        // Reading the saved PCs from the App Group and handing them to Siri can wait for the first frame.
+        OrbitAfterFirstFrame.run { refresh() }
     }
 
     /// Saving a PC writes the store several times in a row; refresh once afterwards.

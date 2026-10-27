@@ -1,6 +1,7 @@
 import BackgroundTasks
 import Foundation
 import Network
+import QuartzCore
 import SwiftUI
 import Darwin
 import Combine
@@ -246,6 +247,65 @@ enum OrbitBackgroundRefresh {
     }
 }
 
+/// Launch work the first frame doesn't need (iCloud PC sync, Siri's PC names) runs right after the
+/// first frame instead of before it. ContentView reports when it appears, which happens while the
+/// first frame is prepared; queued work runs on the second display refresh after that, once the frame
+/// is on screen, and work queued later on the next refresh. Whatever still waits five seconds after
+/// launch runs then anyway: a background launch has no frame to wait for.
+@MainActor
+enum OrbitAfterFirstFrame {
+    private static var pending: [@MainActor () -> Void] = []
+    private static var rootViewAppeared = false
+    private static var fallbackScheduled = false
+    private static var displayLink: CADisplayLink?
+    private static var refreshesLeft = 0
+
+    static func run(_ work: @escaping @MainActor () -> Void) {
+        pending.append(work)
+        if rootViewAppeared { runAfterRefreshes(1) }
+        guard !fallbackScheduled else { return }
+        fallbackScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            runPending()
+        }
+    }
+
+    /// Called from ContentView's `onAppear`.
+    static func rootViewDidAppear() {
+        guard !rootViewAppeared else { return }
+        rootViewAppeared = true
+        runAfterRefreshes(2)
+    }
+
+    private static func runAfterRefreshes(_ count: Int) {
+        guard displayLink == nil, !pending.isEmpty else { return }
+        refreshesLeft = count
+        let link = CADisplayLink(target: DisplayRefresh.shared, selector: #selector(DisplayRefresh.tick))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    fileprivate static func displayRefreshed() {
+        refreshesLeft -= 1
+        if refreshesLeft <= 0 { runPending() }
+    }
+
+    private static func runPending() {
+        guard !pending.isEmpty else { return }
+        displayLink?.invalidate()
+        displayLink = nil
+        let work = pending
+        pending = []
+        work.forEach { $0() }
+    }
+
+    private final class DisplayRefresh: NSObject {
+        static let shared = DisplayRefresh()
+        @objc func tick() { MainActor.assumeIsolated { OrbitAfterFirstFrame.displayRefreshed() } }
+    }
+}
+
 final class WakeOnLANService {
     static func ipv4ForWake(host: String, knownAddress: String) -> String {
         // Bonjour names can disappear when the PC sleeps. Keep the last
@@ -456,7 +516,8 @@ final class OrbitViewModel: ObservableObject {
     private var appActive = true
     private var generation = 0
     private var currentIdentity = ""
-    private let session: URLSession = {
+    /// Plain-HTTP requests only (PCs paired before encryption); created on first use, not at launch.
+    private lazy var session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         c.timeoutIntervalForRequest = 3; c.timeoutIntervalForResource = 5
@@ -487,13 +548,9 @@ final class OrbitViewModel: ObservableObject {
                 selectedPCID = match.id; UserDefaults.standard.set(match.id, forKey: "selectedPCID")
             }
         }
-        NSUbiquitousKeyValueStore.default.synchronize()
-        cloudObserver = NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-                                                               object: NSUbiquitousKeyValueStore.default, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.importCloudProfiles() }
-        }
-        importCloudProfiles()
-        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+        // iCloud and the relay to the Apple TV and Mac wait for the first frame: opening iCloud's
+        // key-value store and reading the PC tokens from the Keychain are round trips to the system.
+        OrbitAfterFirstFrame.run { [weak self] in self?.startProfileSync() }
         OrbitBackgroundRefresh.handler = { [weak self] in await self?.backgroundRefresh() ?? false }
         syncAddressRoute()
         // Wi-Fi, cellular or a VPN came or went: on the secondary path, try the LAN address again right away.
@@ -502,6 +559,18 @@ final class OrbitViewModel: ObservableObject {
         }
         pathMonitor.start(queue: DispatchQueue(label: "com.dimitrie.orbit.network-path"))
         startMonitoringLoop()
+    }
+    /// Imports the PCs the Mac and Apple TV published to iCloud, keeps listening for their changes, and
+    /// publishes this iPhone's PCs to iCloud, the App Group and the local network.
+    private func startProfileSync() {
+        NSUbiquitousKeyValueStore.default.synchronize()
+        cloudObserver = NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+                                                               object: NSUbiquitousKeyValueStore.default, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.importCloudProfiles() }
+        }
+        // The Watch may already have this iPhone's list from before the import.
+        if importCloudProfiles() > 0 { OrbitWatchBridge.shared.pushStateToWatch(force: true) }
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
     }
     private static var demoGames: [SunshineGame] {
         [SunshineGame(id: "demo", title: "Example game", genre: "Simulated preview", iconSymbol: "gamecontroller.fill", accentHex: "5EDBD5")]
