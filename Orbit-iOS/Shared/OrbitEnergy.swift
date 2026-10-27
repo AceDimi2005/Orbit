@@ -55,6 +55,13 @@ enum OrbitEnergyAPI {
     static func summaryMonth(forAlertDeliveredAt date: Date, calendar: Calendar = OrbitEnergyFormat.gregorian()) -> OrbitMonthID {
         OrbitMonthID.containing(date.addingTimeInterval(26 * 3600), calendar: calendar).shifted(by: -1)
     }
+
+    /// The link a tapped PC alert opens instead of its own: that month's summary for `summary.ready`, nil for
+    /// every other kind.
+    static func alertLink(kind: String?, pcID: String?, deliveredAt date: Date, calendar: Calendar = OrbitEnergyFormat.gregorian()) -> String? {
+        guard kind == summaryReadyKind else { return nil }
+        return summaryLink(month: summaryMonth(forAlertDeliveredAt: date, calendar: calendar), pcID: pcID)
+    }
 }
 
 // MARK: - Months
@@ -212,8 +219,38 @@ struct OrbitEnergyPriceChange: Encodable, Equatable, Sendable {
 
     /// What the PC accepts (`orbit_energy.validate_price_update`): 0–100000 and a three-letter code.
     static let priceRange: ClosedRange<Double> = 0...100_000
+    /// Codes Apple still lists that ISO 4217 dropped (the PC refuses them): the Cuban convertible peso and
+    /// the old Venezuelan bolívar.
+    static let withdrawnCurrencies: Set<String> = ["CUC", "VEF"]
+    /// The currencies the price editor offers: Apple's common ISO 4217 codes that the PC accepts.
+    static var offeredCurrencies: [String] {
+        Locale.commonISOCurrencyCodes.filter { $0.count == 3 && !withdrawnCurrencies.contains($0.uppercased()) }
+    }
+
     static func isValid(price: Double, currency: String) -> Bool {
         price.isFinite && priceRange.contains(price) && currency.count == 3 && currency.allSatisfy { $0.isASCII && $0.isLetter }
+            && !withdrawnCurrencies.contains(currency.uppercased())
+    }
+
+    /// A typed or pasted price: "1.07", "1,07", "1 444,70", "1,234.56" or "1.234,56". With both marks the
+    /// last one is the decimal separator; one mark used once is the decimal separator; a mark used several
+    /// times groups thousands. Nil for anything else.
+    static func parse(_ text: String) -> Double? {
+        let ignored: Set<Character> = [" ", "\u{00A0}", "\u{202F}", "'", "’"]
+        var cleaned = String(text.trimmingCharacters(in: .whitespacesAndNewlines).filter { !ignored.contains($0) })
+        guard !cleaned.isEmpty, cleaned.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == "." || $0 == ",") }) else { return nil }
+        let dots = cleaned.filter { $0 == "." }.count, commas = cleaned.filter { $0 == "," }.count
+        if dots > 0 && commas > 0 {
+            let decimal: Character = cleaned.lastIndex(of: ".")! > cleaned.lastIndex(of: ",")! ? "." : ","
+            cleaned = String(cleaned.filter { $0 != (decimal == "." ? "," : ".") })
+            cleaned = cleaned.replacingOccurrences(of: String(decimal), with: ".")
+        } else if commas == 1 {
+            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
+        } else if commas > 1 || dots > 1 {
+            cleaned = String(cleaned.filter { $0 != "," && $0 != "." })
+        }
+        guard let value = Double(cleaned), value.isFinite else { return nil }
+        return value
     }
 }
 

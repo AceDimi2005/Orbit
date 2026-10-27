@@ -8,6 +8,22 @@ private struct MacEnergyCapabilities: Decodable {
     var features: [String]?
 }
 
+/// An error in plain words: the PC's own sentence, or what to check when it didn't answer.
+private func macEnergyErrorText(_ error: Error, pcName: String) -> String {
+    if let orbit = error as? OrbitError { return orbit.message }
+    if let url = error as? URLError {
+        switch url.code {
+        case .timedOut, .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed:
+            return "\(pcName) didn't answer. Check that it's awake, on the same network, and that Orbit PC Companion is running."
+        case .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .secureConnectionFailed:
+            return "\(pcName)'s identity didn't match. Pair it again in My PCs."
+        default: break
+        }
+    }
+    if error is DecodingError { return "\(pcName) sent a reply Orbit doesn't understand. Update Orbit PC Companion and Orbit." }
+    return error.localizedDescription
+}
+
 /// This month's estimate and summary for the selected PC.
 @MainActor
 final class MacThisMonthModel: ObservableObject {
@@ -76,7 +92,7 @@ final class MacThisMonthModel: ObservableObject {
             phase = .ready
         } catch {
             guard key == loadedKey else { return }
-            if energy == nil && summary == nil { phase = .failed(error.localizedDescription) }
+            if energy == nil && summary == nil { phase = .failed(macEnergyErrorText(error, pcName: vm.selectedPCName)) }
         }
     }
 
@@ -212,15 +228,11 @@ struct MacMonthlySummarySheet: View {
         .task {
             guard !loadedInitial else { return }
             loadedInitial = true
-            if let initial {
-                summary = initial
-                // Early in a month there's little to show: open the newest month with play instead.
-                if !initial.hasPlay, let current = initial.monthID,
-                   let previous = initial.available.compactMap(OrbitMonthID.init).filter({ $0 < current }).max() {
-                    await load(previous)
-                }
-            } else {
-                await load(nil)
+            if let initial { summary = initial } else { await load(nil) }
+            // Early in a month there's little to show: open the newest month with play instead.
+            if let shown = summary, !shown.hasPlay, let current = shown.monthID,
+               let previous = shown.available.compactMap(OrbitMonthID.init).filter({ $0 < current }).max() {
+                await load(previous)
             }
         }
         .task(id: pictureKey) {
@@ -275,7 +287,7 @@ struct MacMonthlySummarySheet: View {
             summary = reply
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = macEnergyErrorText(error, pcName: vm.selectedPCName)
         }
     }
 

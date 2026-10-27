@@ -10,8 +10,8 @@
    reset, settings) and a session detail with and without `"energy"`.
 3. The Swift check decodes every reply, re-encodes it and compares it key by key with the PC's JSON (so a
    renamed, dropped or unread key fails), checks the numbers that tie the two summaries together, the
-   formatting helpers, the `summary.ready` link, the demo data, and renders the share picture
-   (1080 × 1350 PNG).
+   formatting helpers and price parsing, the `summary.ready` link, the demo data, and renders the share
+   picture (1080 × 1350 PNG). The agent must also accept every currency the price editor offers.
 
 Run with the agent's Python environment (FastAPI): no PC, network or device is touched, and nothing is
 written outside temporary folders (pass `--png DIR` to keep the rendered share pictures).
@@ -127,6 +127,10 @@ if arguments[1] == "--bodies" {
     writeJSON(OrbitEnergyPriceChange.set(0.30, currency: "EUR"), directory.appendingPathComponent("put-price-eur.json"))
     writeJSON(OrbitEnergyPriceChange.resetToDetected, directory.appendingPathComponent("put-price-reset.json"))
     writeJSON(OrbitEnergySettingsChange(baseWatts: 75, psuEfficiency: 0.9), directory.appendingPathComponent("put-settings.json"))
+    // Every currency the price editor offers; the PC must accept each one.
+    let offered = OrbitEnergyPriceChange.offeredCurrencies
+    check(offered.count > 100 && offered.contains("RON") && offered.contains("EUR") && !offered.contains("VEF"), "offered currencies: \(offered.count)")
+    writeJSON(offered, directory.appendingPathComponent("currencies.json"))
     let own = String(decoding: try! Data(contentsOf: directory.appendingPathComponent("put-price-own.json")), as: UTF8.self)
     check(own == #"{"currency":"RON","pricePerKWh":1.07}"#, "own price body is \(own)")
     let reset = String(decoding: try! Data(contentsOf: directory.appendingPathComponent("put-price-reset.json")), as: UTF8.self)
@@ -280,6 +284,11 @@ check(OrbitChange(current: 120, previous: 100)?.percentText(locale: us) == "+20%
 check(OrbitChange(current: 120, previous: 100)?.sentence(versus: "September", locale: us) == "20% more than September", "change sentence")
 check(OrbitChange(current: 100.2, previous: 100)?.isSame == true && OrbitChange(current: 5, previous: 0) == nil, "same and nothing to compare")
 check(OrbitEnergyPriceChange.isValid(price: 1.07, currency: "RON") && !OrbitEnergyPriceChange.isValid(price: -1, currency: "RON") && !OrbitEnergyPriceChange.isValid(price: 1, currency: "LE1"), "price validation")
+check(!OrbitEnergyPriceChange.isValid(price: 1, currency: "VEF") && !OrbitEnergyPriceChange.isValid(price: 1, currency: "cuc"), "withdrawn currencies are refused, as the PC does")
+check(OrbitEnergyPriceChange.parse("1.07") == 1.07 && OrbitEnergyPriceChange.parse("1,07") == 1.07 && OrbitEnergyPriceChange.parse(" 0,2632 ") == 0.2632, "typed prices")
+check(OrbitEnergyPriceChange.parse("1,234.56") == 1234.56 && OrbitEnergyPriceChange.parse("1.234,56") == 1234.56 && OrbitEnergyPriceChange.parse("1 444,70") == 1444.7, "pasted prices with thousands")
+check(OrbitEnergyPriceChange.parse("1,234,567") == 1_234_567 && OrbitEnergyPriceChange.parse("1444") == 1444 && OrbitEnergyPriceChange.parse(".5") == 0.5, "more prices")
+check(OrbitEnergyPriceChange.parse("") == nil && OrbitEnergyPriceChange.parse("abc") == nil && OrbitEnergyPriceChange.parse("1.2.3,4,5") == nil && OrbitEnergyPriceChange.parse("-1") == nil, "not prices")
 
 let alertDate = utc.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 9))!
 let link = OrbitEnergyAPI.summaryLink(month: OrbitEnergyAPI.summaryMonth(forAlertDeliveredAt: alertDate, calendar: utc), pcID: "pc-1")
@@ -287,6 +296,11 @@ check(link == "orbit://summary?month=2026-10&pc=pc-1", "summary link: \(link)")
 let parts = OrbitEnergyAPI.summaryLinkParts(URL(string: link)!)
 check(parts?.pcID == "pc-1" && parts?.month?.text == "2026-10", "summary link parts")
 check(OrbitEnergyAPI.summaryLinkParts(URL(string: "orbit://notifications")!) == nil, "other links are not summaries")
+// A tapped alert: summary.ready opens that month's summary for the PC that sent it; other kinds keep their link.
+check(OrbitEnergyAPI.alertLink(kind: "summary.ready", pcID: "pc-1", deliveredAt: alertDate, calendar: utc) == link, "summary.ready alert link")
+check(OrbitEnergyAPI.alertLink(kind: "download.finished", pcID: "pc-1", deliveredAt: alertDate, calendar: utc) == nil
+      && OrbitEnergyAPI.alertLink(kind: nil, pcID: nil, deliveredAt: alertDate, calendar: utc) == nil, "other alerts keep their own link")
+check(OrbitEnergyAPI.alertLink(kind: "summary.ready", pcID: nil, deliveredAt: alertDate, calendar: utc) == "orbit://summary?month=2026-10", "alert without a PC id")
 check(OrbitEnergyAPI.summaryMonth(forAlertDeliveredAt: utc.date(from: DateComponents(year: 2027, month: 1, day: 3))!, calendar: utc).text == "2026-12", "January alert is about December")
 // A phone in a time zone behind the PC's still shows October 31 when the PC announces October.
 check(OrbitEnergyAPI.summaryMonth(forAlertDeliveredAt: utc.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 20))!, calendar: utc).text == "2026-10", "alert on the phone's October 31 is about October")
@@ -329,7 +343,7 @@ for (name, value) in [("agent", s), ("demo", demoSummary)] {
     }
 }
 
-print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy decode into the app's models key for key; the app's own price/settings bodies are accepted; the two summaries agree; formatting, month links, demo data and the 1080 × 1350 share picture check out")
+print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy decode into the app's models key for key; the app's own price/settings bodies and every currency its editor offers are accepted; the two summaries agree; price parsing, formatting, month links, demo data and the 1080 × 1350 share picture check out")
 '''
 
 
@@ -479,6 +493,10 @@ def write_agent_payloads(out, bodies, agent, energy, TestClient):
     refused = client.put("/api/energy/price", json={"pricePerKWh": 1.0, "currency": "LEI"}, headers=headers)
     if refused.status_code != 422 or "three-letter" not in refused.json().get("detail", ""):
         fail(f"an unknown currency answered {refused.status_code} {refused.text}")
+    offered = json.loads(body("currencies.json"))
+    rejected = [code for code in offered if not energy.is_currency_code(code)]
+    if rejected:
+        fail(f"the price editor offers currencies the PC refuses: {rejected}")
     plain = TestClient(agent.app, base_url="http://testserver").get("/api/energy/summary", headers=headers)
     if plain.status_code != 426:
         fail(f"/api/energy/summary over http answered {plain.status_code}")

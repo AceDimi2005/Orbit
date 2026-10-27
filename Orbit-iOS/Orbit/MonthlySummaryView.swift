@@ -22,8 +22,7 @@ struct OrbitSummaryRequest: Identifiable, Equatable {
 
     /// The link a tapped alert opens: that month's summary for `summary.ready`, nil for every other kind.
     static func link(forKind kind: String?, pcID: String?, deliveredAt date: Date) -> String? {
-        guard kind == OrbitEnergyAPI.summaryReadyKind else { return nil }
-        return OrbitEnergyAPI.summaryLink(month: OrbitEnergyAPI.summaryMonth(forAlertDeliveredAt: date), pcID: pcID)
+        OrbitEnergyAPI.alertLink(kind: kind, pcID: pcID, deliveredAt: date)
     }
 }
 
@@ -65,13 +64,18 @@ final class OrbitSummaryModel: ObservableObject {
     @Published private(set) var pcName = ""
     @Published private(set) var isConfigured = false
     @Published private(set) var isLoading = false
+    /// The months the PC has play for, from the last summary (kept while another month loads or fails, so the
+    /// picker stays).
+    @Published private(set) var knownMonths: [String] = []
     private(set) var link: OrbitPCLink?
     private(set) var isDemo = false
     private var requestedMonth: OrbitMonthID?
     private var generation = 0
     private var configuredFor: String?
 
-    var pickerMonths: [OrbitMonthID] { OrbitMonthID.pickerMonths(available: summary?.available ?? [], including: summary?.monthID) }
+    var pickerMonths: [OrbitMonthID] {
+        OrbitMonthID.pickerMonths(available: summary?.available ?? knownMonths, including: summary?.monthID ?? requestedMonth)
+    }
 
     /// `pcID`: the PC an alert came from; when it isn't the selected one, its own saved connection is used.
     func configure(_ vm: OrbitViewModel, pcID: String?, initialMonth: OrbitMonthID?) {
@@ -84,6 +88,7 @@ final class OrbitSummaryModel: ObservableObject {
         requestedMonth = initialMonth
         summary = nil
         currentMonth = nil
+        knownMonths = []
         isLoading = false
         phase = .idle
         if isDemo {
@@ -105,6 +110,7 @@ final class OrbitSummaryModel: ObservableObject {
             var month = requestedMonth ?? summary?.monthID
             if month == nil, !OrbitEnergyDemo.summary(current).hasPlay { month = current.shifted(by: -1) }
             summary = OrbitEnergyDemo.summary(month ?? current)
+            knownMonths = summary?.available ?? []
             phase = .ready
             return
         }
@@ -130,6 +136,7 @@ final class OrbitSummaryModel: ObservableObject {
                 }
             }
             summary = result
+            knownMonths = result.available
             requestedMonth = result.monthID
             phase = .ready
         } catch {
@@ -143,6 +150,7 @@ final class OrbitSummaryModel: ObservableObject {
         requestedMonth = month
         if isDemo {
             summary = OrbitEnergyDemo.summary(month)
+            knownMonths = summary?.available ?? knownMonths
             return
         }
         generation += 1
@@ -624,11 +632,12 @@ struct MonthlySummaryView: View {
 
     private func comparisonBars(title: String, current: Double, previous: Double, currentText: String, previousText: String,
                                 currentLabel: String, previousLabel: String, tint: Color) -> some View {
-        let maximum = max(current, previous, 1)
+        // The longer bar fills the row (kWh can be well under 1 in a short month).
+        let maximum = max(current, previous)
         return VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.headline)
-            comparisonBar(label: previousLabel, value: previousText, fraction: previous / maximum, color: .white.opacity(0.35))
-            comparisonBar(label: currentLabel, value: currentText, fraction: current / maximum, color: tint)
+            comparisonBar(label: previousLabel, value: previousText, fraction: maximum > 0 ? previous / maximum : 0, color: .white.opacity(0.35))
+            comparisonBar(label: currentLabel, value: currentText, fraction: maximum > 0 ? current / maximum : 0, color: tint)
         }
     }
 

@@ -29,6 +29,9 @@ final class OrbitEnergyModel: ObservableObject {
     @Published private(set) var currentMonth: OrbitMonthID?
     /// The month on screen; nil follows the PC's current month.
     @Published private(set) var selectedMonth: OrbitMonthID?
+    /// The months the PC has readings for, from the last report (kept while another month loads or fails,
+    /// so the picker stays).
+    @Published private(set) var knownMonths: [String] = []
     @Published var notice: String?
     @Published private(set) var isConfigured = false
     private(set) var link: OrbitPCLink?
@@ -40,7 +43,7 @@ final class OrbitEnergyModel: ObservableObject {
 
     var shownMonth: OrbitMonthID? { selectedMonth ?? report?.monthID ?? currentMonth }
     var isCurrentMonth: Bool { shownMonth != nil && shownMonth == currentMonth }
-    var pickerMonths: [OrbitMonthID] { OrbitMonthID.pickerMonths(available: report?.available ?? [], including: shownMonth) }
+    var pickerMonths: [OrbitMonthID] { OrbitMonthID.pickerMonths(available: report?.available ?? knownMonths, including: shownMonth) }
 
     func configure(_ vm: OrbitViewModel) {
         let newLink = OrbitPCLink.current(vm)
@@ -56,7 +59,7 @@ final class OrbitEnergyModel: ObservableObject {
         phase = .idle
         report = nil; reportError = nil
         price = nil; settings = nil; settingsError = nil
-        currentMonth = nil; selectedMonth = nil
+        currentMonth = nil; selectedMonth = nil; knownMonths = []
         notice = nil; isLoading = false; isSavingSettings = false
         if isDemo { loadDemo() }
     }
@@ -64,6 +67,7 @@ final class OrbitEnergyModel: ObservableObject {
     private func loadDemo() {
         let month = OrbitEnergyDemo.energyMonth(selectedMonth)
         report = month
+        knownMonths = month.available
         currentMonth = OrbitMonthID.containing(Date())
         if price == nil { price = OrbitEnergyDemo.price }
         if settings == nil { settings = OrbitEnergyDemo.settings }
@@ -101,6 +105,7 @@ final class OrbitEnergyModel: ObservableObject {
         case .success(let value):
             report = value
             reportError = nil
+            knownMonths = value.available
             if month == nil { currentMonth = value.monthID }
             if let embedded = value.price, case .failure = newPrice { price = embedded }
         case .failure(let error):
@@ -245,7 +250,14 @@ struct EnergyCostView: View {
                         chartCard(report).id("chart")
                     }
                 } else if let error = model.reportError, model.phase == .ready {
-                    OrbitNotice(title: "Can't show this month", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
+                    OrbitNotice(title: "Can't show \(model.shownMonth?.title() ?? "this month")", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)
+                    if model.pickerMonths.count > 1 {
+                        HStack {
+                            Text("Pick another month").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            monthMenu
+                        }
+                    }
                 } else if model.isLoading || (model.phase == .idle && model.link != nil && vm.metrics.isOnline) {
                     loadingCard
                 }
@@ -792,13 +804,8 @@ struct EnergyPriceEditorView: View {
         _currency = State(initialValue: (price.currency ?? price.defaultPrice?.currency ?? fallback).uppercased())
     }
 
-    /// Accepts "1.07" and "1,07" whatever the region's decimal separator is.
-    private var parsedPrice: Double? {
-        let cleaned = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "")
-        guard !cleaned.isEmpty else { return nil }
-        if let value = Double(cleaned.replacingOccurrences(of: ",", with: ".")) { return value }
-        return Double(cleaned.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: "."))
-    }
+    /// Accepts "1.07" and "1,07" whatever the region's decimal separator is (and a pasted "1,234.56").
+    private var parsedPrice: Double? { OrbitEnergyPriceChange.parse(text) }
     private var isValid: Bool { parsedPrice.map { OrbitEnergyPriceChange.isValid(price: $0, currency: currency) } ?? false }
 
     var body: some View {
@@ -894,8 +901,7 @@ struct OrbitCurrencyPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
-    private static let all: [String] = Locale.commonISOCurrencyCodes
-        .filter { $0.count == 3 }
+    private static let all: [String] = OrbitEnergyPriceChange.offeredCurrencies
         .sorted { OrbitEnergyFormat.currencyName($0) < OrbitEnergyFormat.currencyName($1) }
 
     private var filtered: [String] {
