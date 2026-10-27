@@ -149,7 +149,7 @@ Generat cu instrumentul integrat imagegen. Promptul folosit: „Create a finishe
 
 Selectează schema **OrbitTV**, destinația **Any tvOS Device**, apoi **Product → Archive**. Buildul curent este **10**. După actualizarea proiectului creează o arhivă nouă; arhivele vechi din Organizer păstrează configurația veche.
 
-Catalogul `OrbitTV/Assets.xcassets/AppIcon.brandassets` include iconuri pe straturi pentru Home Screen și App Store, plus Top Shelf normal și Wide în variante 1x/2x. Ambele configurații folosesc **AppIcon**. Cheile `CFBundleIcons.CFBundlePrimaryIcon` și `TVTopShelfImage.TVTopShelfPrimaryImageWide` trebuie să existe și în `Info.plist` din aplicația arhivată, împreună cu imaginile compilate. Verificare locală: `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /cale/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Grafica se poate regenera din iconul Orbit existent cu `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
+Catalogul `OrbitTV/Assets.xcassets/AppIcon.brandassets` include iconuri pe straturi pentru Home Screen și App Store, plus Top Shelf normal și Wide în variante 1x/2x. Ambele configurații folosesc **AppIcon**. Cheile `CFBundleIcons.CFBundlePrimaryIcon` și `TVTopShelfImage.TVTopShelfPrimaryImageWide` trebuie să existe și în `Info.plist` din aplicația arhivată, împreună cu imaginile compilate. Verificare locală: `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /cale/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Toate iconurile (iPhone/iPad, Watch, Mac, straturile Apple TV, Top Shelf și logo-ul `OrbitMark`) se regenerează cu `python3 Orbit-iOS/Tools/generate_app_icons.py` (necesită numpy, scipy și Pillow); iconurile Orbit Pro alternative nu sunt atinse.
 
 ### Verificări de dezvoltare
 
@@ -347,7 +347,7 @@ Generated with the built-in imagegen tool. Prompt: “Create a finished square i
 
 Choose **OrbitTV**, destination **Any tvOS Device**, then **Product → Archive**. The current build is **10**. Create a fresh archive after updating the project; existing archives in Organizer retain their old configuration.
 
-`OrbitTV/Assets.xcassets/AppIcon.brandassets` contains layered Home Screen/App Store icons and standard/Wide Top Shelf images at 1x/2x. Both configurations select **AppIcon**. The archived app must contain `CFBundleIcons.CFBundlePrimaryIcon` and `TVTopShelfImage.TVTopShelfPrimaryImageWide` as well as the compiled images. Verify locally with `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /path/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. Regenerate the assets from the existing Orbit artwork with `swift Orbit-iOS/Tools/generate_tv_assets.swift`.
+`OrbitTV/Assets.xcassets/AppIcon.brandassets` contains layered Home Screen/App Store icons and standard/Wide Top Shelf images at 1x/2x. Both configurations select **AppIcon**. The archived app must contain `CFBundleIcons.CFBundlePrimaryIcon` and `TVTopShelfImage.TVTopShelfPrimaryImageWide` as well as the compiled images. Verify locally with `python3 Orbit-iOS/Tests/check_tvos_assets.py --app /path/OrbitTV.xcarchive/Products/Applications/OrbitTV.app`. All icons (iPhone/iPad, Watch, Mac, the Apple TV layers, Top Shelf and the in-app `OrbitMark`) are regenerated with `python3 Orbit-iOS/Tools/generate_app_icons.py` (needs numpy, scipy and Pillow); the Orbit Pro alternate icons are left alone.
 
 ### Development checks
 
