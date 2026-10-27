@@ -33,7 +33,9 @@ final class WatchPresentationStore: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     /// The iPhone is in demo mode: a pretend deck, nothing is sent.
     @Published private(set) var isDemo = false
-    @Published private(set) var timer = OrbitPresentationTimer()
+    @Published private(set) var timer = OrbitPresentationTimer() {
+        didSet { if timer != oldValue { saveTalk() } }
+    }
     @Published var message: String?
     @Published private(set) var pending = 0
     /// "Via iPhone" or "Direct to PC" for the last exchange.
@@ -41,37 +43,85 @@ final class WatchPresentationStore: ObservableObject {
     @Published var remindersOn: Bool {
         didSet {
             UserDefaults.standard.set(remindersOn, forKey: Self.remindersKey)
-            if remindersOn && !oldValue { Task { await requestReminderPermission() } }
+            if remindersOn && !oldValue {
+                resumeStoppedReminders()
+                Task { await requestReminderPermission() }
+            }
             updateReminders()
         }
     }
     @Published var reminderMinutes: Int {
         didSet {
             UserDefaults.standard.set(reminderMinutes, forKey: Self.minutesKey)
+            if reminderMinutes != oldValue { resumeStoppedReminders() }
             updateReminders()
         }
     }
     /// nil until asked; false when notifications are off for Orbit on this Watch (then the page taps you
     /// itself while it is open).
     @Published private(set) var notificationsAllowed: Bool?
+    /// When the talk started whose reminders "Stop Reminders" (on a reminder) ended.
+    @Published private(set) var remindersStoppedFor: Date?
 
     private var demo = OrbitPresentationDemo()
-    private(set) var pcID = ""
+    private(set) var pcID = "" {
+        didSet { if pcID != oldValue { saveTalk() } }
+    }
     private var queue: [(action: OrbitPresentationAction, slide: Int?)] = []
     private var queueGeneration = 0
     private var actionTask: Task<Void, Never>?
     private var messageTask: Task<Void, Never>?
-    private var lastReminderCount = 0
+    /// Reminders counted when the page last checked (nil: not counted yet), for the in-app taps.
+    private var lastReminderCount: Int?
 
     private static let remindersKey = "Orbit.WatchPresentReminders"
     private static let minutesKey = "Orbit.WatchPresentReminderMinutes"
+    /// The running talk timer and its PC. watchOS may end Orbit in the background in the middle of a talk;
+    /// the next launch picks the talk up again, so the page and the planned reminders still agree.
+    private static let talkKey = "Orbit.WatchPresentTalk.v1"
+    /// A talk timer older than this is not picked up again (it was most likely never stopped).
+    private static let maxRestoredTalk: TimeInterval = 6 * 3600
+
+    private struct SavedTalk: Codable {
+        var pcID: String
+        var timer: OrbitPresentationTimer
+    }
 
     init() {
         remindersOn = UserDefaults.standard.bool(forKey: Self.remindersKey)
         let minutes = UserDefaults.standard.integer(forKey: Self.minutesKey)
         reminderMinutes = Self.reminderChoices.contains(minutes) ? minutes : 5
-        WatchPresentationReminders.shared.activate()
+        remindersStoppedFor = WatchPresentationReminders.stoppedTalkStart
+        restoreTalk()
+        let reminders = WatchPresentationReminders.shared
+        reminders.activate()
+        reminders.onStop = { [weak self] talkStart in self?.remindersStopped(forTalkStartedAt: talkStart) }
+        // Plans the reminders of a talk picked up again, or removes the ones an earlier run left behind.
+        updateReminders()
         if remindersOn { Task { await refreshPermission() } }
+    }
+
+    private func restoreTalk() {
+        guard let data = UserDefaults.standard.data(forKey: Self.talkKey),
+              let saved = try? JSONDecoder().decode(SavedTalk.self, from: data),
+              !saved.pcID.isEmpty, saved.timer.isRunning,
+              let elapsed = saved.timer.elapsed(at: Date()), elapsed < Self.maxRestoredTalk else {
+            UserDefaults.standard.removeObject(forKey: Self.talkKey)
+            return
+        }
+        pcID = saved.pcID
+        timer = saved.timer
+    }
+
+    /// Keeps a running timer of a real PC's talk (never the demo deck's).
+    private func saveTalk() {
+        let defaults = UserDefaults.standard
+        guard !isDemo, !pcID.isEmpty, pcID != "demo", timer.isRunning,
+              let data = try? JSONEncoder().encode(SavedTalk(pcID: pcID, timer: timer)) else {
+            defaults.removeObject(forKey: Self.talkKey)
+            return
+        }
+        defaults.set(data, forKey: Self.talkKey)
     }
 
     /// Reads the iPhone's demo flag from its sync payload (older iPhone apps send it too).
@@ -191,31 +241,55 @@ final class WatchPresentationStore: ObservableObject {
 
     func restartTimer() {
         timer.start(now: Date())
-        lastReminderCount = 0
+        lastReminderCount = nil
         updateReminders()
     }
 
     func resetTimer() {
         timer.reset()
-        lastReminderCount = 0
+        lastReminderCount = nil
         updateReminders()
+    }
+
+    /// "Stop Reminders" was chosen on a reminder of this talk. A new start of the timer, another interval
+    /// or turning the switch on again brings them back. (The PC's show time moves the timer's start by at
+    /// most a second or two, see `OrbitPresentationTimer.resyncTolerance`.)
+    var remindersStoppedForThisTalk: Bool {
+        guard let stopped = remindersStoppedFor, let start = timer.startedAt else { return false }
+        return abs(stopped.timeIntervalSince(start)) < 5
+    }
+
+    /// "Stop Reminders" on a reminder; `WatchPresentationReminders` already removed the planned ones.
+    private func remindersStopped(forTalkStartedAt start: Date?) {
+        remindersStoppedFor = start ?? timer.startedAt
+        updateReminders()
+    }
+
+    private func resumeStoppedReminders() {
+        guard remindersStoppedFor != nil else { return }
+        remindersStoppedFor = nil
+        WatchPresentationReminders.clearStopped()
     }
 
     private func updateReminders() {
         WatchPresentationReminders.shared.update(startedAt: timer.startedAt, running: timer.isRunning,
-                                                 minutes: reminderMinutes, enabled: remindersOn)
+                                                 minutes: reminderMinutes, enabled: remindersOn && !remindersStoppedForThisTalk)
     }
 
     /// Called about every second while the page is open. Without notification permission the page taps
     /// the wrist itself at each reminder (only while Orbit is open).
     func checkInAppReminder(now: Date) {
-        guard remindersOn, notificationsAllowed == false, timer.isRunning, let elapsed = timer.elapsed(at: now) else {
-            lastReminderCount = 0
+        guard remindersOn, !remindersStoppedForThisTalk, notificationsAllowed == false, timer.isRunning,
+              let elapsed = timer.elapsed(at: now) else {
+            lastReminderCount = nil
             return
         }
         let count = Int(elapsed / TimeInterval(reminderMinutes * 60))
-        if lastReminderCount == 0 { lastReminderCount = count; return }
-        if count > lastReminderCount {
+        guard let last = lastReminderCount else {
+            lastReminderCount = count
+            return
+        }
+        if count > last {
             lastReminderCount = count
             WKInterfaceDevice.current().play(.notification)
         }
@@ -239,18 +313,50 @@ final class WatchPresentationStore: ObservableObject {
 final class WatchPresentationReminders: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     static let shared = WatchPresentationReminders()
     static let prefix = "orbit.present.reminder."
-    static let slots = 12
-    /// No reminder is scheduled further ahead than this.
+    static let categoryID = "orbit.present.reminder"
+    static let stopActionID = "orbit.present.reminder.stop"
+    /// Reminders planned at a time (watchOS keeps 64 pending per app). While Orbit runs, the window moves
+    /// forward at every reminder; with the wrist down the ones already planned still arrive.
+    static let slots = 48
+    /// No reminder is planned further ahead than this.
     static let horizon: TimeInterval = 3 * 3600
+    static let identifiers = (0..<slots).map { prefix + String($0) }
+    /// When the talk started whose reminders "Stop Reminders" ended (seconds since 1970). Written here, so it
+    /// also works when watchOS starts Orbit in the background just to deliver that answer.
+    private static let stoppedKey = "Orbit.WatchPresentRemindersStoppedFor"
+    /// Each reminder carries the start of its talk.
+    private static let talkStartKey = "talkStart"
 
-    private var signature: String?
-    private var activated = false
+    /// "Stop Reminders" was chosen on a reminder of the talk that started then.
+    @MainActor var onStop: ((Date?) -> Void)?
+    /// What is planned: nil until the first update after launch (an earlier run may have left reminders
+    /// pending), "" when nothing is.
+    @MainActor private var signature: String?
+    @MainActor private var activated = false
 
+    static var stoppedTalkStart: Date? {
+        (UserDefaults.standard.object(forKey: stoppedKey) as? Double).map(Date.init(timeIntervalSince1970:))
+    }
+
+    static func clearStopped() {
+        UserDefaults.standard.removeObject(forKey: stoppedKey)
+    }
+
+    /// Called from `OrbitWatchApp.init` (before launch finishes, as the delegate of a notification answer
+    /// must be) and again by the Present page's store.
     @MainActor
     func activate() {
         guard !activated else { return }
         activated = true
         UNUserNotificationCenter.current().delegate = self
+        Task { @MainActor in
+            // Keeps any other category the Watch app registers.
+            let center = UNUserNotificationCenter.current()
+            let stop = UNNotificationAction(identifier: Self.stopActionID, title: "Stop Reminders", options: [])
+            let category = UNNotificationCategory(identifier: Self.categoryID, actions: [stop], intentIdentifiers: [])
+            let existing = await center.notificationCategories()
+            center.setNotificationCategories(existing.filter { $0.identifier != Self.categoryID }.union([category]))
+        }
     }
 
     func requestAuthorization() async -> Bool {
@@ -262,29 +368,39 @@ final class WatchPresentationReminders: NSObject, UNUserNotificationCenterDelega
         return settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
     }
 
-    /// Replaces the scheduled reminders when the timer, the interval or the switch changed.
+    /// Plans the reminders again when the timer, the interval, the switch or the next reminder changed (it is
+    /// called on every read of the slide show, so the window keeps moving while Orbit runs).
     @MainActor
     func update(startedAt: Date?, running: Bool, minutes: Int, enabled: Bool) {
-        let wanted: String? = if enabled, running, let startedAt { "\(Int(startedAt.timeIntervalSince1970))-\(minutes)" } else { nil }
-        guard wanted != signature else { return }
-        signature = wanted
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: (0..<Self.slots).map { Self.prefix + String($0) })
-        guard let startedAt, wanted != nil, minutes > 0 else { return }
+        guard enabled, running, let startedAt, minutes > 0 else {
+            if signature != "" {
+                // Also right after launch: an earlier run's reminders must not outlive its talk.
+                signature = ""
+                center.removePendingNotificationRequests(withIdentifiers: Self.identifiers)
+                center.removeDeliveredNotifications(withIdentifiers: Self.identifiers)
+            }
+            return
+        }
         let interval = TimeInterval(minutes * 60)
         let now = Date()
-        var index = Int(max(0, now.timeIntervalSince(startedAt)) / interval) + 1
-        for slot in 0..<Self.slots {
+        let next = Int(max(0, now.timeIntervalSince(startedAt)) / interval) + 1
+        let wanted = "\(Int(startedAt.timeIntervalSince1970.rounded()))-\(minutes)-\(next)"
+        guard wanted != signature else { return }
+        signature = wanted
+        center.removePendingNotificationRequests(withIdentifiers: Self.identifiers)
+        for (slot, index) in (next..<(next + Self.slots)).enumerated() {
             let delay = startedAt.addingTimeInterval(TimeInterval(index) * interval).timeIntervalSince(now)
             guard delay <= Self.horizon else { break }
             let content = UNMutableNotificationContent()
             content.title = "Presentation"
-            content.body = "\(index * minutes) minutes since the slide show started."
+            content.body = "\(OrbitPresentationText.spokenDuration(TimeInterval(index * minutes * 60))) since the slide show started."
             content.sound = .default
             content.threadIdentifier = "orbit.present"
+            content.categoryIdentifier = Self.categoryID
+            content.userInfo = [Self.talkStartKey: startedAt.timeIntervalSince1970]
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false)
             center.add(UNNotificationRequest(identifier: Self.prefix + String(slot), content: content, trigger: trigger))
-            index += 1
         }
     }
 
@@ -296,6 +412,27 @@ final class WatchPresentationReminders: NSObject, UNUserNotificationCenterDelega
         }
         DispatchQueue.main.async { WKInterfaceDevice.current().play(.notification) }
         completionHandler([])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let content = response.notification.request.content
+        guard response.actionIdentifier == Self.stopActionID, content.categoryIdentifier == Self.categoryID else {
+            completionHandler()
+            return
+        }
+        // Done right here: the Present page's store may not exist yet (Orbit started just for this answer).
+        let talkStart = content.userInfo[Self.talkStartKey] as? Double
+        if let talkStart { UserDefaults.standard.set(talkStart, forKey: Self.stoppedKey) }
+        center.removePendingNotificationRequests(withIdentifiers: Self.identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: Self.identifiers)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.signature = ""
+                self.onStop?(talkStart.map(Date.init(timeIntervalSince1970:)))
+            }
+        }
+        completionHandler()
     }
 }
 
@@ -833,9 +970,7 @@ private struct WatchPresentMoreSheet: View {
                         }
                     }
                     .pickerStyle(.navigationLink)
-                    Text(store.notificationsAllowed == false
-                         ? "Notifications are off for Orbit, so reminders tap you only while this page is open. Turn them on in the Watch app on iPhone."
-                         : "A tap on your wrist every \(store.reminderMinutes) minute\(store.reminderMinutes == 1 ? "" : "s") of talk time, also with the screen off.")
+                    Text(reminderFooter)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -856,6 +991,17 @@ private struct WatchPresentMoreSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var reminderFooter: String {
+        if store.notificationsAllowed == false {
+            return "Notifications are off for Orbit, so reminders tap you only while this page is open. Turn them on in the Watch app on iPhone."
+        }
+        if store.remindersStoppedForThisTalk {
+            return "Stopped for this talk. Restart the timer or pick another interval to get them again."
+        }
+        let every = store.reminderMinutes == 1 ? "minute" : "\(store.reminderMinutes) minutes"
+        return "A tap on your wrist every \(every) of talk time, also with the screen off. Stop Reminders on a reminder ends them for this talk."
     }
 
     private var howItWorks: String {

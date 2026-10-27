@@ -301,7 +301,8 @@ struct OrbitPresentationActionReply: Decodable, Equatable, Sendable {
 /// The talk timer. While PowerPoint runs the show it follows the PC (`elapsedSeconds`), so every device
 /// shows the same time; with key presses (Google Slides, a PDF) the PC can't tell, so it starts when Orbit
 /// sends Start (or the first slide change) and stops when Orbit sends End. It can also be reset by hand.
-struct OrbitPresentationTimer: Equatable, Sendable {
+/// Codable so the Watch can keep a talk's timer when watchOS ends Orbit in the background.
+struct OrbitPresentationTimer: Codable, Equatable, Sendable {
     private(set) var startedAt: Date?
     private(set) var stoppedAt: Date?
     /// Anchored to the PC's own show time.

@@ -6,6 +6,11 @@ struct OrbitWatchApp: App {
     @StateObject private var viewModel = OrbitWatchViewModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // Before launch finishes: "Stop Reminders" on a presentation reminder can start Orbit in the background.
+        WatchPresentationReminders.shared.activate()
+    }
+
     var body: some Scene {
         WindowGroup {
             OrbitWatchRootView(vm: viewModel)
