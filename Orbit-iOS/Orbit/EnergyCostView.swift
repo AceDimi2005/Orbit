@@ -52,7 +52,9 @@ final class OrbitEnergyModel: ObservableObject {
             return
         }
         generation += 1
+        // Forgotten as well as cancelled: `load()` only takes the PC's settings while no save is pending.
         settingsTask?.cancel()
+        settingsTask = nil
         isConfigured = true
         isDemo = vm.isDemoMode
         link = newLink
@@ -87,7 +89,8 @@ final class OrbitEnergyModel: ObservableObject {
             guard version == generation, token == loadToken else { return }
             guard features.has(OrbitEnergyAPI.energyFeature) else { phase = .olderAgent; return }
         } catch {
-            guard version == generation, token == loadToken else { return }
+            // Cancelled with the screen's task (the app went inactive): the restarted task reads it again.
+            guard version == generation, token == loadToken, !Task.isCancelled else { return }
             // Keep what's on screen after a hiccup; only an empty screen shows the failure.
             if report == nil && price == nil { phase = .failed(OrbitPlainError.describe(error)) }
             return
@@ -100,7 +103,7 @@ final class OrbitEnergyModel: ObservableObject {
         async let priceResult = Self.result { () async throws -> OrbitEnergyPrice in try await client.get(OrbitEnergyAPI.pricePath) }
         async let settingsResult = Self.result { () async throws -> OrbitEnergySettings in try await client.get(OrbitEnergyAPI.settingsPath) }
         let (newReport, newPrice, newSettings) = await (reportResult, priceResult, settingsResult)
-        guard version == generation, token == loadToken, month == selectedMonth else { return }
+        guard version == generation, token == loadToken, month == selectedMonth, !Task.isCancelled else { return }
         switch newReport {
         case .success(let value):
             report = value
@@ -112,8 +115,12 @@ final class OrbitEnergyModel: ObservableObject {
             reportError = OrbitPlainError.describe(error)
         }
         if case .success(let value) = newPrice { price = value }
-        // A settings save on its way would otherwise be read back as the old values.
-        if case .success(let value) = newSettings, settingsTask == nil { settings = value }
+        // A settings save on its way would otherwise be read back as the old values. Once the PC's own values
+        // are back on screen, an earlier "Not saved" no longer describes them.
+        if case .success(let value) = newSettings, settingsTask == nil {
+            settings = value
+            settingsError = nil
+        }
         if case .failure(let error) = newReport, case .failure = newPrice, report == nil {
             phase = .failed(OrbitPlainError.describe(error))
         } else {
@@ -281,11 +288,14 @@ struct EnergyCostView: View {
         .navigationTitle("Electricity Cost")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await model.load() }
-        .task(id: vm.connectionID) {
+        // The scene phase is part of the id: a task only sees the phase it started with, and `orbit://energy`
+        // opened while Orbit launches shows this before the app is active. Restarted once it is, it loads.
+        .task(id: "\(vm.connectionID)|\(scenePhase == .active)") {
             model.configure(vm)
+            guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 // The PC writes its energy ledger every minute.
-                if scenePhase == .active, vm.metrics.isOnline || model.isDemo { await model.load() }
+                if vm.metrics.isOnline || model.isDemo { await model.load() }
                 do { try await Task.sleep(for: .seconds(model.phase == .ready ? 60 : 5)) } catch { break }
             }
         }
@@ -296,8 +306,11 @@ struct EnergyCostView: View {
         .modifier(OrbitSelfTestScroll())
         .task {
             guard ProcessInfo.processInfo.environment["ORBIT_SELFTEST_PRICE_EDITOR"] != nil else { return }
-            try? await Task.sleep(for: .seconds(6))
-            if model.price != nil { showsPriceEditor = true }
+            // Opens once the PC has answered (a busy PC can take a while).
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .seconds(2))
+                if model.price != nil { showsPriceEditor = true; return }
+            }
         }
         #endif
         .sheet(isPresented: $showsPriceEditor) {
@@ -540,6 +553,7 @@ struct EnergyCostView: View {
                     AxisValueLabel(format: .dateTime.day().month(.abbreviated))
                 }
             }
+            .chartYAxisLabel(shownMetric == .cost ? (report.currency ?? "") : "kWh")
             .chartXSelection(value: $selectedDate)
             .frame(height: 210)
             .accessibilityLabel("Daily \(shownMetric == .cost ? "cost" : "energy") for \(report.monthID?.title() ?? report.month)")
@@ -809,6 +823,17 @@ struct EnergyPriceEditorView: View {
     private var parsedPrice: Double? { OrbitEnergyPriceChange.parse(text) }
     private var isValid: Bool { parsedPrice.map { OrbitEnergyPriceChange.isValid(price: $0, currency: currency) } ?? false }
 
+    /// What Save would store, written out with the currency, so a mistyped mark shows before it's saved
+    /// ("1,444" reads as 1.444; "1444" or "1.444,00" as fourteen hundred).
+    private var pricePreview: (text: String, isProblem: Bool)? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let value = parsedPrice else { return ("Enter the price as a number, for example 1.07.", true) }
+        guard OrbitEnergyPriceChange.priceRange.contains(value) else {
+            return ("Orbit accepts prices up to \(OrbitEnergyPriceChange.priceRange.upperBound.formatted(.number.precision(.fractionLength(0)))) per kWh.", true)
+        }
+        return ("Saves as \(OrbitEnergyFormat.unitPrice(value, currency: currency)) per kWh.", false)
+    }
+
     var body: some View {
         Form {
             Section {
@@ -828,7 +853,14 @@ struct EnergyPriceEditorView: View {
             } header: {
                 Text("Your price per kWh")
             } footer: {
-                Text("Use the price on your electricity bill, with taxes and fees included. The new price counts from now on: days already recorded keep their price, unless you pick another currency, which shows the whole history at this price.")
+                VStack(alignment: .leading, spacing: 6) {
+                    if let preview = pricePreview {
+                        Text(preview.text)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(preview.isProblem ? Color.orange : Color.secondary)
+                    }
+                    Text("Use the price on your electricity bill, with taxes and fees included. The new price counts from now on: days already recorded keep their price, unless you pick another currency, which shows the whole history at this price.")
+                }
             }
             .orbitRow()
 

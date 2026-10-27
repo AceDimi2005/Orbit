@@ -77,6 +77,9 @@ final class OrbitSummaryModel: ObservableObject {
         OrbitMonthID.pickerMonths(available: summary?.available ?? knownMonths, including: summary?.monthID ?? requestedMonth)
     }
 
+    /// The PC's own month is on screen: it still grows while games run, so it's read again now and then.
+    var isShowingCurrentMonth: Bool { summary?.monthID != nil && summary?.monthID == currentMonth }
+
     /// `pcID`: the PC an alert came from; when it isn't the selected one, its own saved connection is used.
     func configure(_ vm: OrbitViewModel, pcID: String?, initialMonth: OrbitMonthID?) {
         let key = "\(vm.isDemoMode)|\(pcID ?? vm.selectedPCID)|\(vm.connectionID)"
@@ -140,7 +143,8 @@ final class OrbitSummaryModel: ObservableObject {
             requestedMonth = result.monthID
             phase = .ready
         } catch {
-            guard version == generation else { return }
+            // Cancelled with the screen's task (the app went inactive): the restarted task reads it again.
+            guard version == generation, !Task.isCancelled else { return }
             if summary == nil { phase = .failed(OrbitPlainError.describe(error), replied: (error as? OrbitError)?.statusCode != nil) }
         }
     }
@@ -172,6 +176,8 @@ struct MonthlySummaryView: View {
     @StateObject private var model = OrbitSummaryModel()
     @State private var page: Page = .cover
     @State private var picture: OrbitSummaryPicture?
+    /// One height for every tile's symbol (they differ in shape), so the tiles of a row come out the same size.
+    @ScaledMetric(relativeTo: .subheadline) private var statIconHeight: CGFloat = 20
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbitTheme) private var theme
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -199,10 +205,13 @@ struct MonthlySummaryView: View {
                 }
             }
         }
-        .task(id: "\(vm.connectionID)|\(vm.isDemoMode)|\(pcID ?? "")") {
+        // The scene phase is part of the id: a task only sees the phase it started with, and an alert tapped
+        // while Orbit launches opens this before the app is active. Restarted once it is, it loads.
+        .task(id: "\(vm.connectionID)|\(vm.isDemoMode)|\(pcID ?? "")|\(scenePhase == .active)") {
             model.configure(vm, pcID: pcID, initialMonth: initialMonth)
+            guard scenePhase == .active else { return }
             while !Task.isCancelled {
-                if scenePhase == .active, model.summary == nil || model.phase != .ready { await model.load() }
+                if model.summary == nil || model.phase != .ready || model.isShowingCurrentMonth { await model.load() }
                 do { try await Task.sleep(for: .seconds(model.phase == .ready ? 120 : 5)) } catch { break }
             }
         }
@@ -428,9 +437,11 @@ struct MonthlySummaryView: View {
     private func statTile(_ title: String, _ value: String, icon: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Image(systemName: icon).font(.subheadline.weight(.bold)).foregroundStyle(tint)
+                .frame(height: statIconHeight, alignment: .leading)
                 .accessibilityHidden(true)
             Text(value).font(.title3.weight(.bold)).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
-            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            // Two lines kept for every title, so the tiles of a row line up whatever their titles' length.
+            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -439,7 +450,7 @@ struct MonthlySummaryView: View {
     }
 
     private func statGrid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10)], spacing: 10, content: content)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10, alignment: .top)], spacing: 10, content: content)
     }
 
     // MARK: Pages
