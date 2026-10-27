@@ -234,10 +234,24 @@ struct OrbitEnergyPriceChange: Encodable, Equatable, Sendable {
 
     /// A typed or pasted price: "1.07", "1,07", "1 444,70", "1,234.56" or "1.234,56". With both marks the
     /// last one is the decimal separator; one mark used once is the decimal separator; a mark used several
-    /// times groups thousands. Nil for anything else.
+    /// times groups thousands. Digits of other scripts ("١٫٥" from an Arabic keyboard, "１.５") count like
+    /// 0–9. Nil for anything else.
     static func parse(_ text: String) -> Double? {
-        let ignored: Set<Character> = [" ", "\u{00A0}", "\u{202F}", "'", "’"]
-        var cleaned = String(text.trimmingCharacters(in: .whitespacesAndNewlines).filter { !ignored.contains($0) })
+        var cleaned = ""
+        for scalar in text.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+            switch scalar {
+            case " ", "\u{00A0}", "\u{202F}", "'", "\u{2019}", "\u{066C}":
+                continue  // Spaces, apostrophes and the Arabic thousands mark only group digits.
+            case "\u{066B}":
+                cleaned.append(",")  // The Arabic decimal mark; decided below like a comma.
+            default:
+                if !scalar.isASCII, scalar.properties.numericType == .decimal, let digit = scalar.properties.numericValue {
+                    cleaned.append(String(Int(digit)))
+                } else {
+                    cleaned.unicodeScalars.append(scalar)
+                }
+            }
+        }
         guard !cleaned.isEmpty, cleaned.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == "." || $0 == ",") }) else { return nil }
         let dots = cleaned.filter { $0 == "." }.count, commas = cleaned.filter { $0 == "," }.count
         if dots > 0 && commas > 0 {

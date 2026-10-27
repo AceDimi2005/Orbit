@@ -289,6 +289,8 @@ check(OrbitEnergyPriceChange.parse("1.07") == 1.07 && OrbitEnergyPriceChange.par
 check(OrbitEnergyPriceChange.parse("1,234.56") == 1234.56 && OrbitEnergyPriceChange.parse("1.234,56") == 1234.56 && OrbitEnergyPriceChange.parse("1 444,70") == 1444.7, "pasted prices with thousands")
 check(OrbitEnergyPriceChange.parse("1,234,567") == 1_234_567 && OrbitEnergyPriceChange.parse("1444") == 1444 && OrbitEnergyPriceChange.parse(".5") == 0.5, "more prices")
 check(OrbitEnergyPriceChange.parse("") == nil && OrbitEnergyPriceChange.parse("abc") == nil && OrbitEnergyPriceChange.parse("1.2.3,4,5") == nil && OrbitEnergyPriceChange.parse("-1") == nil, "not prices")
+check(OrbitEnergyPriceChange.parse("١٫٥") == 1.5 && OrbitEnergyPriceChange.parse("١٬٢٣٤٫٥") == 1234.5 && OrbitEnergyPriceChange.parse("۰٫۲۵") == 0.25, "Arabic and Persian digits")
+check(OrbitEnergyPriceChange.parse("１.５") == 1.5 && OrbitEnergyPriceChange.parse("1e5") == nil && OrbitEnergyPriceChange.parse(",") == nil, "full-width digits, no exponents")
 
 let alertDate = utc.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 9))!
 let link = OrbitEnergyAPI.summaryLink(month: OrbitEnergyAPI.summaryMonth(forAlertDeliveredAt: alertDate, calendar: utc), pcID: "pc-1")
