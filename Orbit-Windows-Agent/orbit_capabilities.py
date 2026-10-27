@@ -57,6 +57,6 @@ def set_agent_version(version):
 
 
 def capabilities_payload(agent_version=None):
-    """`{"agentVersion": "4.5.0", "features": ["events", ...]}` in registration order."""
+    """`{"agentVersion": "4.5.1", "features": ["events", ...]}` in registration order."""
     with _LOCK:
         return {"agentVersion": agent_version or _AGENT_VERSION, "features": list(_FEATURES)}

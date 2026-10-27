@@ -74,7 +74,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.5.0"
+AGENT_VERSION = "4.5.1"
 set_agent_version(AGENT_VERSION)
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
