@@ -7,11 +7,12 @@
    from its appmanifest, a five-minute pause inside one session, a 40-second launch. Then it calls the real
    FastAPI routes over https with TestClient: price, settings, both summaries (this month, last month, an
    empty month, a future month, a bad month), the app's own PUT bodies (own price, a currency change,
-   reset, settings) and a session detail with and without `"energy"`.
+   reset, settings) and session details with and without `"energy"` (plus a session with one reading).
 3. The Swift check decodes every reply, re-encodes it and compares it key by key with the PC's JSON (so a
    renamed, dropped or unread key fails), checks the numbers that tie the two summaries together, the
-   formatting helpers and price parsing, the `summary.ready` link, the demo data, and renders the share
-   picture (1080 × 1350 PNG). The agent must also accept every currency the price editor offers.
+   formatting helpers and price parsing, the `summary.ready` link, the demo data, that an odd `"energy"`
+   never breaks a session detail, and renders the share picture (1080 × 1350 PNG). The agent must also
+   accept every currency the price editor offers and every value its two setting steppers can send.
 
 Run with the agent's Python environment (FastAPI): no PC, network or device is touched, and nothing is
 written outside temporary folders (pass `--png DIR` to keep the rendered share pictures).
@@ -131,6 +132,21 @@ if arguments[1] == "--bodies" {
     let offered = OrbitEnergyPriceChange.offeredCurrencies
     check(offered.count > 100 && offered.contains("RON") && offered.contains("EUR") && !offered.contains("VEF"), "offered currencies: \(offered.count)")
     writeJSON(offered, directory.appendingPathComponent("currencies.json"))
+    // Every value the two steppers can reach from the defaults (SwiftUI adds the step and clamps to the
+    // range), as the app sends it; the PC must accept each one.
+    var steps: [OrbitEnergySettingsChange] = []
+    for direction in [1.0, -1.0] {
+        var value = OrbitEnergySettings.defaults
+        for _ in 0..<120 {
+            value.baseWatts = min(500, max(0, value.baseWatts + 5 * direction))
+            value.psuEfficiency = min(1, max(0.5, value.psuEfficiency + 0.01 * direction))
+            let sent = value.normalized
+            steps.append(OrbitEnergySettingsChange(baseWatts: sent.baseWatts, psuEfficiency: sent.psuEfficiency))
+            value = sent
+        }
+    }
+    check(steps.contains { $0.psuEfficiency == 1 && $0.baseWatts == 500 } && steps.contains { $0.psuEfficiency == 0.5 && $0.baseWatts == 0 }, "the steppers reach both ends")
+    writeJSON(steps, directory.appendingPathComponent("settings-steps.json"))
     let own = String(decoding: try! Data(contentsOf: directory.appendingPathComponent("put-price-own.json")), as: UTF8.self)
     check(own == #"{"currency":"RON","pricePerKWh":1.07}"#, "own price body is \(own)")
     let reset = String(decoding: try! Data(contentsOf: directory.appendingPathComponent("put-price-reset.json")), as: UTF8.self)
@@ -175,6 +191,9 @@ check(settings.value == .defaults, "default settings are 60 W / 0.88 like the ag
 let savedSettings = load(OrbitEnergySettings.self, "settings-put", in: directory)
 check(savedSettings.value == OrbitEnergySettings(baseWatts: 75, psuEfficiency: 0.9), "settings PUT reply: \(savedSettings.value)")
 check(OrbitEnergyFormat.efficiencyLabel(0.88, locale: us) == "88%, like 80 PLUS Silver", "efficiency label")
+check(OrbitEnergySettings(baseWatts: 75, psuEfficiency: 0.89 + 0.01 * 3).normalized == OrbitEnergySettings(baseWatts: 75, psuEfficiency: 0.92), "settings lose the stepping noise")
+check(OrbitEnergySettings(baseWatts: 612.34, psuEfficiency: 1.0000000000000002).normalized == OrbitEnergySettings(baseWatts: 500, psuEfficiency: 1), "settings stay in the PC's ranges")
+check(OrbitEnergySettings(baseWatts: .nan, psuEfficiency: 0.2).normalized == OrbitEnergySettings(baseWatts: 60, psuEfficiency: 0.5), "odd settings fall back or clamp")
 
 // MARK: Energy months
 
@@ -252,14 +271,24 @@ check(empty.value.busiestDay == nil && empty.value.peakGPUTemp == nil && empty.v
 
 let detailURL = directory.appendingPathComponent("session-detail.json")
 let detailRaw = try! JSONSerialization.jsonObject(with: Data(contentsOf: detailURL)) as! [String: Any]
-struct SessionDetailEnergy: Decodable { let energy: OrbitSessionEnergy? }
+// Read the way SessionHistoryView reads it: leniently, so an odd "energy" never hides the session itself.
+struct SessionDetailEnergy: Decodable { let energy: OrbitLenient<OrbitSessionEnergy>? }
 let detail = try! JSONDecoder().decode(SessionDetailEnergy.self, from: Data(contentsOf: detailURL))
-guard let sessionEnergy = detail.energy, let rawEnergy = detailRaw["energy"] else { fail("session detail has no energy") }
+guard let sessionEnergy = detail.energy?.value, let rawEnergy = detailRaw["energy"] else { fail("session detail has no energy") }
 roundTrips(sessionEnergy, rawEnergy, "session.energy")
 check(sessionEnergy.kWh > 0 && sessionEnergy.currency == "RON" && sessionEnergy.cost != nil && sessionEnergy.coverage == 1, "session energy: \(sessionEnergy)")
+check(sessionEnergy.hasTrackedTime, "a recorded session shows its energy")
 check(OrbitEnergyFormat.energyAndCost(sessionEnergy, locale: us).contains(" · "), "session energy text")
 let older = try! JSONDecoder().decode(SessionDetailEnergy.self, from: Data(contentsOf: directory.appendingPathComponent("session-detail-older.json")))
 check(older.energy == nil, "older agents' details decode without energy")
+let justStarted = load(SessionDetailEnergy.self, "session-detail-one-sample", in: directory)
+guard let firstEnergy = justStarted.value.energy?.value, let firstRaw = (justStarted.raw as? [String: Any])?["energy"] else { fail("a one-sample session has no energy") }
+roundTrips(firstEnergy, firstRaw, "session-one-sample.energy")
+check(firstEnergy.kWh == 0 && firstEnergy.coverage == nil && !firstEnergy.hasTrackedTime, "a session without two readings shows no energy row: \(firstEnergy)")
+for odd in [#"{"energy":{"kWh":"lots"}}"#, #"{"energy":[1,2]}"#, #"{"energy":null}"#, #"{"energy":{}}"#, #"{"energy":{"kWh":0.2,"cost":"x"}}"#] {
+    guard let decoded = try? JSONDecoder().decode(SessionDetailEnergy.self, from: Data(odd.utf8)) else { fail("an odd energy value broke the session detail: \(odd)") }
+    check(decoded.energy?.value == nil, "odd energy \(odd) should read as nothing")
+}
 check(OrbitEnergyFormat.sessionEnergyNote(OrbitSessionEnergy(kWh: 0.2, cost: nil, currency: nil, coverage: 0.5), locale: us)
         == "From the CPU and GPU power readings plus the rest of the PC. Power sensors answered 50% of the time, so it's on the low side.", "session note")
 
@@ -345,7 +374,7 @@ for (name, value) in [("agent", s), ("demo", demoSummary)] {
     }
 }
 
-print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy decode into the app's models key for key; the app's own price/settings bodies and every currency its editor offers are accepted; the two summaries agree; price parsing, formatting, month links, demo data and the 1080 × 1350 share picture check out")
+print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy (recorded, one reading, odd values) decode into the app's models key for key; the app's own price/settings bodies, every currency its editor offers and every stepper value are accepted; the two summaries agree; price parsing, formatting, month links, demo data and the 1080 × 1350 share picture check out")
 '''
 
 
@@ -499,6 +528,15 @@ def write_agent_payloads(out, bodies, agent, energy, TestClient):
     rejected = [code for code in offered if not energy.is_currency_code(code)]
     if rejected:
         fail(f"the price editor offers currencies the PC refuses: {rejected}")
+    steps = json.loads(body("settings-steps.json"))
+    refused_steps = []
+    for step in steps:
+        try:
+            energy.validate_settings_update(step)
+        except ValueError as error:
+            refused_steps.append((step, str(error)))
+    if refused_steps or len(steps) < 200:
+        fail(f"the PC refuses settings the steppers can send: {refused_steps[:5]}")
     plain = TestClient(agent.app, base_url="http://testserver").get("/api/energy/summary", headers=headers)
     if plain.status_code != 426:
         fail(f"/api/energy/summary over http answered {plain.status_code}")
@@ -537,10 +575,17 @@ def write_session_payloads(out, data, energy, orbit_history, FastAPI, TestClient
             clock.now += 5
             recorder.record_sample({"telemetryAvailable": True, "cpuPowerWatts": 110, "gpuPowerWatts": 280, "fps": 90})
         recorder.stop()
-        for name, extras in (("session-detail", energy.session_energy_extras), ("session-detail-older", None)):
+        clock.now += 60
+        first = recorder.start("Just started")
+        clock.now += 5
+        recorder.record_sample({"telemetryAvailable": True, "cpuPowerWatts": 110, "gpuPowerWatts": 280, "fps": 90})
+        recorder.stop()
+        for name, extras, target in (("session-detail", energy.session_energy_extras, session),
+                                     ("session-detail-older", None, session),
+                                     ("session-detail-one-sample", energy.session_energy_extras, first)):
             app = FastAPI()
             app.include_router(orbit_history.create_history_router(lambda authorization=None: None, lambda: recorder, detail_extras=extras))
-            response = TestClient(app, base_url="https://testserver").get(f"/api/history/sessions/{session['id']}")
+            response = TestClient(app, base_url="https://testserver").get(f"/api/history/sessions/{target['id']}")
             if response.status_code != 200:
                 fail(f"{name}: HTTP {response.status_code} {response.text}")
             if (extras is None) == ("energy" in response.json()):

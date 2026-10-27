@@ -80,8 +80,9 @@ private struct OrbitHistoryDetail: Decodable {
     let samples: [OrbitHistorySample]
     let downsampled: Bool
     let sampleIntervalSeconds: Double
-    /// Estimated energy and cost (agents with electricity cost; left out by older ones).
-    let energy: OrbitSessionEnergy?
+    /// Estimated energy and cost (agents with electricity cost; left out by older ones). Read leniently, so an
+    /// odd value hides that row and never the session.
+    let energy: OrbitLenient<OrbitSessionEnergy>?
 }
 
 private enum OrbitHistoryMetric: String, CaseIterable, Identifiable {
@@ -452,7 +453,7 @@ private struct OrbitHistoryDetailView: View {
                     }
                     LabeledContent("Started", value: currentSession.startedDate.formatted(date: .abbreviated, time: .shortened))
                     LabeledContent("Duration", value: currentSession.durationLabel)
-                    if let energy = detail?.energy {
+                    if let energy = detail?.energy?.value, energy.hasTrackedTime {
                         VStack(alignment: .leading, spacing: 4) {
                             LabeledContent("Estimated energy", value: OrbitEnergyFormat.energyAndCost(energy))
                             Text(OrbitEnergyFormat.sessionEnergyNote(energy))

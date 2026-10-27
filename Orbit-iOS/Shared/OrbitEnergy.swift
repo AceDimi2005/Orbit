@@ -204,6 +204,17 @@ struct OrbitEnergySettings: Codable, Equatable, Sendable {
     static let baseWattsRange: ClosedRange<Double> = 0...500
     static let efficiencyRange: ClosedRange<Double> = 0.5...1
     static let defaults = OrbitEnergySettings(baseWatts: 60, psuEfficiency: 0.88)
+
+    /// Inside the ranges the PC accepts, without the binary noise of stepping by 0.01 (0.89000000000000001):
+    /// whole tenths of a watt and whole tenths of a percent.
+    var normalized: OrbitEnergySettings {
+        func clean(_ value: Double, _ range: ClosedRange<Double>, _ scale: Double, fallback: Double) -> Double {
+            guard value.isFinite else { return fallback }
+            return min(range.upperBound, max(range.lowerBound, (value * scale).rounded() / scale))
+        }
+        return OrbitEnergySettings(baseWatts: clean(baseWatts, Self.baseWattsRange, 10, fallback: Self.defaults.baseWatts),
+                                   psuEfficiency: clean(psuEfficiency, Self.efficiencyRange, 1000, fallback: Self.defaults.psuEfficiency))
+    }
 }
 
 /// Body of `PUT /api/energy/price`: a new price, or `{"reset": true}` for the detected one.
@@ -562,7 +573,26 @@ struct OrbitSessionEnergy: Codable, Equatable, Sendable {
     var cost: Double?
     var currency: String?
     var coverage: Double?
+
+    /// False for a session without two readings in a row yet (just started): the PC then reports 0 kWh and
+    /// no coverage, which isn't worth a row.
+    var hasTrackedTime: Bool { kWh > 0 || coverage != nil }
 }
+
+/// A value that never fails the reply it rides on: when it doesn't decode, it reads as nil. For extras added
+/// to existing replies, so an odd `"energy"` hides one row instead of the whole session detail.
+struct OrbitLenient<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(_ value: Value?) { self.value = value }
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
+extension OrbitLenient: Equatable where Value: Equatable {}
+extension OrbitLenient: Sendable where Value: Sendable {}
 
 /// A month compared with the one before it.
 struct OrbitChange: Equatable, Sendable {

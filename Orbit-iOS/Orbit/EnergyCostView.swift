@@ -171,7 +171,8 @@ final class OrbitEnergyModel: ObservableObject {
     }
 
     /// Changes the estimate settings on screen at once and saves them on the PC 600 ms after the last change.
-    func updateSettings(_ value: OrbitEnergySettings) {
+    func updateSettings(_ newValue: OrbitEnergySettings) {
+        let value = newValue.normalized
         settings = value
         settingsError = nil
         if isDemo {
