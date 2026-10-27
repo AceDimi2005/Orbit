@@ -449,22 +449,36 @@ private enum OrbitWidgetLoader {
         }
     }
 
+    /// The PC's address first, then its Secondary IP (for example Tailscale) when nothing answered there.
     private static func fetch(_ connection: OrbitWidgetConnection) async throws -> (OrbitWidgetSnapshot, Data) {
-        let url = try endpoint(connection)
         let token: String
         do { token = try OrbitWidgetConnectionStore.readOnlyToken(for: connection.id) }
         catch { throw OrbitWidgetRequestError.token }
+        let hosts = connection.hosts
+        var lastError: Error = OrbitWidgetRequestError.unavailable
+        for host in hosts {
+            do {
+                return try await fetch(connection, host: host, token: token, timeout: hosts.count > 1 ? 4 : 6)
+            } catch where OrbitWidgetConnection.reachedNobody(error) {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private static func fetch(_ connection: OrbitWidgetConnection, host: String, token: String, timeout: TimeInterval) async throws -> (OrbitWidgetSnapshot, Data) {
+        let url = try endpoint(connection, host: host)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 6
+        request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.httpCookieStorage = nil
         sessionConfiguration.urlCredentialStorage = nil
-        sessionConfiguration.timeoutIntervalForRequest = 6
-        sessionConfiguration.timeoutIntervalForResource = 8
+        sessionConfiguration.timeoutIntervalForRequest = timeout
+        sessionConfiguration.timeoutIntervalForResource = timeout + 2
         let session = URLSession(configuration: sessionConfiguration, delegate: OrbitWidgetSessionDelegate(fingerprint: connection.certificateSHA256), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (data, response) = try await session.data(for: request)
@@ -478,11 +492,11 @@ private enum OrbitWidgetLoader {
         }
     }
 
-    private static func endpoint(_ connection: OrbitWidgetConnection) throws -> URL {
-        guard !connection.host.isEmpty, !connection.host.contains("/"), !connection.host.contains(":"),
+    private static func endpoint(_ connection: OrbitWidgetConnection, host: String) throws -> URL {
+        guard !host.isEmpty, !host.contains("/"), !host.contains(":"),
               (1...65535).contains(connection.port) else { throw OrbitWidgetRequestError.address }
         var parts = URLComponents()
-        parts.scheme = "https"; parts.host = connection.host; parts.port = connection.port
+        parts.scheme = "https"; parts.host = host; parts.port = connection.port
         parts.path = "/api/widget/status"
         guard let url = parts.url else { throw OrbitWidgetRequestError.address }
         return url
