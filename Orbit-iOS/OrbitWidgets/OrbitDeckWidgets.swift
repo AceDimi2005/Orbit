@@ -82,7 +82,7 @@ struct OrbitDeckWidget: Widget {
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: OrbitDeckSurfaces.widgetKind, intent: OrbitDeckWidgetIntent.self, provider: OrbitDeckProvider()) { entry in
             OrbitDeckWidgetView(entry: entry)
-                .containerBackground(Color.black, for: .widget)
+                .containerBackground(for: .widget) { OrbitWidgetBackdrop() }
         }
         .configurationDisplayName("Buttons")
         .description("Run your Orbit buttons on the PC: Discord mute, clips, OBS, media and more.")

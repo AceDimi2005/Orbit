@@ -5,6 +5,8 @@ import UIKit
 struct ContentView: View {
     @State private var isShowingProFromURL = false
     @State private var deckLink: OrbitDeckLink?
+    /// A power action asked for by an `orbit://shutdown|sleep|restart` link, waiting for the user's OK.
+    @State private var linkedPowerAction: String?
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @ObservedObject private var notificationRouter = OrbitNotificationRouter.shared
@@ -92,21 +94,43 @@ struct ContentView: View {
             case "wake":
                 selectedTab = 0
                 Task { await vm.wakePC() }
-            case "shutdown":
+            case "shutdown", "sleep", "restart":
+                // Any app or web page can open an orbit:// link, so these never run without a confirmation.
                 selectedTab = 0
-                Task { await vm.sendPowerAction("shutdown") }
-            case "sleep":
-                selectedTab = 0
-                Task { await vm.sendPowerAction("sleep") }
-            case "restart":
-                selectedTab = 0
-                Task { await vm.sendPowerAction("restart") }
+                linkedPowerAction = url.host?.lowercased()
             default: selectedTab = 0
             }
+        }
+        .alert(linkedPowerTitle, isPresented: Binding(get: { linkedPowerAction != nil }, set: { if !$0 { linkedPowerAction = nil } })) {
+            Button("Cancel", role: .cancel) { linkedPowerAction = nil }
+            Button(linkedPowerButton, role: .destructive) {
+                if let action = linkedPowerAction { Task { await vm.sendPowerAction(action) } }
+                linkedPowerAction = nil
+            }
+        } message: {
+            Text("A link asked Orbit to do this on \(vm.selectedPCName).")
         }
         // Applied last so presented sheets, covers and overlays inherit the theme environment.
         .orbitAppearance()
         .preferredColorScheme(.dark)
+    }
+}
+
+extension ContentView {
+    fileprivate var linkedPowerTitle: String {
+        switch linkedPowerAction {
+        case "sleep": "Put the PC to sleep?"
+        case "restart": "Restart the PC?"
+        default: "Shut down the PC?"
+        }
+    }
+
+    fileprivate var linkedPowerButton: String {
+        switch linkedPowerAction {
+        case "sleep": "Sleep"
+        case "restart": "Restart"
+        default: "Shut Down"
+        }
     }
 }
 
@@ -367,15 +391,7 @@ struct DashboardView: View {
                     .accessibilityLabel(vm.isConfigured || vm.isDemoMode ? vm.metrics.hostname : "Select PC")
                     .accessibilityHint("Switches the connected PC")
 
-                    HStack(spacing: 6) {
-                        OrbitStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
-                        if vm.metrics.isOnline && !vm.isDemoMode {
-                            OrbitStatChip(label: "Ping", value: "\(vm.pingMs) ms")
-                        }
-                        if vm.metrics.isOnline && vm.metrics.telemetryAvailable != false {
-                            OrbitStatChip(label: "Up", value: vm.metrics.formattedUptime)
-                        }
-                    }
+                    OrbitStatusPill(text: statusText, tint: statusTint, pulsing: vm.metrics.isOnline && !vm.isDemoMode)
                 }
 
                 Spacer(minLength: 4)
@@ -400,22 +416,87 @@ struct DashboardView: View {
             }
 
             if vm.metrics.isOnline && !vm.isDemoMode {
-                HStack(spacing: 8) {
-                    OrbitStatChip(label: "Link", value: vm.hasSecureConnection ? "Encrypted" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open")
-                    if let version = vm.metrics.agentVersion {
-                        OrbitStatChip(label: "Agent", value: version)
-                    }
-                    if let source = vm.metrics.sensorSource, !source.isEmpty {
-                        OrbitStatChip(label: "Sensors", value: source)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                heroStatsStrip
             }
         }
         .padding(16)
         .liquidGlass(cornerRadius: 24, tint: theme.accent, elevated: true)
+    }
+
+    /// Ping, uptime, link and agent in equal columns under the PC name. Each value has its own
+    /// column and shrinks a little if it must, so nothing wraps or gets cut off on any iPhone.
+    private var heroStatsStrip: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                heroStat("Ping", value: pingText)
+                heroStatDivider
+                heroStat("Uptime", value: vm.metrics.telemetryAvailable != false ? vm.metrics.formattedUptime : "—")
+                heroStatDivider
+                heroStat("Link", value: vm.hasSecureConnection ? "Secure" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open.fill")
+                heroStatDivider
+                heroStat("Agent", value: vm.metrics.agentVersion ?? "—")
+            }
+            .padding(.vertical, 9)
+            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(.white.opacity(0.07), lineWidth: 1))
+
+            if let source = vm.metrics.sensorSource, !source.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "thermometer.medium")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(theme.accent.opacity(0.8))
+                    Text("Sensors")
+                        .foregroundStyle(.white.opacity(0.45))
+                    Text(source)
+                        .foregroundStyle(.white.opacity(0.75))
+                        .truncationMode(.middle)
+                }
+                .font(.system(.caption2, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+    }
+
+    private var pingText: String {
+        let ms = vm.pingMs
+        guard ms > 0 else { return "—" }
+        return ms >= 1000 ? String(format: "%.1f s", Double(ms) / 1000) : "\(ms) ms"
+    }
+
+    private func heroStat(_ label: String, value: String, icon: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(.system(size: 9.5, weight: .bold))
+                .tracking(0.8)
+                .foregroundStyle(.white.opacity(0.45))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            HStack(spacing: 3) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(theme.accent.opacity(0.9))
+                }
+                Text(value)
+                    .font(.system(.footnote, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.92))
+                    .contentTransition(.numericText())
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var heroStatDivider: some View {
+        Rectangle()
+            .fill(.white.opacity(0.08))
+            .frame(width: 1, height: 22)
     }
 
     private func heroIconButton(icon: String, tint: Color, active: Bool, label: String, action: @escaping () -> Void) -> some View {

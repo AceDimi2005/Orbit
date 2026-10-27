@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000108 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitActivityViews.swift */; };
 		A60000000000000000000104 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
 		A50000000000000000000102 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
 		A40000000000000000000101 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
@@ -253,6 +254,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000011E /* OrbitActivityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitActivityViews.swift; sourceTree = "<group>"; };
 		B2000000000000000000011D /* OrbitBrandMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitBrandMark.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
@@ -518,6 +520,7 @@
 				B20000000000000000000016 /* PrivacyInfo.xcprivacy */,
 				B20000000000000000000106 /* OrbitWidgetPowerIntents.swift */,
 				B20000000000000000000115 /* OrbitDeckWidgets.swift */,
+				B2000000000000000000011E /* OrbitActivityViews.swift */,
 			);
 			path = OrbitWidgets;
 			sourceTree = "<group>";
@@ -990,6 +993,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000108 /* OrbitActivityViews.swift in Sources */,
 				A10000000000000000000107 /* OrbitBrandMark.swift in Sources */,
 				A10000000000000000000106 /* OrbitDeckIntents.swift in Sources */,
 				A10000000000000000000105 /* OrbitDeck.swift in Sources */,

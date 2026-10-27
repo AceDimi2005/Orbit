@@ -948,55 +948,122 @@ struct LiveActivitySettingsView: View {
     /// visible without starting an activity.
     private var islandPreview: some View {
         let tint = activityTheme.accent
-        let badge: String = {
+        let badge: (value: String, unit: String) = {
             switch primaryMetric {
-            case "gpu": return "GPU 71%"
-            case "ram": return "RAM 46%"
-            case "fps": return "118 FPS"
-            case "cpuPower": return "58 W"
-            case "gpuPower": return "245 W"
-            case "vram": return "4.0 GB"
-            default: return "CPU 24%"
+            case "gpu": return ("71", "%")
+            case "ram": return ("46", "%")
+            case "fps": return ("118", "fps")
+            case "cpuPower": return ("58", "W")
+            case "gpuPower": return ("245", "W")
+            case "vram": return ("4.0", "GB")
+            default: return ("24", "%")
             }
         }()
-        return VStack(spacing: 10) {
+        return VStack(spacing: 12) {
+            // Compact Dynamic Island: the Orbit mark on the left, the chosen reading on the right.
             HStack(spacing: 10) {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(tint)
-                Capsule().fill(.black).frame(width: 70, height: 22)
-                Text(badge)
-                    .font(.system(size: 12, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
+                OrbitBrandMark(tint: tint)
+                    .frame(width: 22, height: 22)
+                Capsule().fill(.black).frame(width: 74, height: 24)
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(badge.value)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    Text(badge.unit)
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .opacity(0.75)
+                }
+                .monospacedDigit()
+                .foregroundStyle(tint)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
             .background(Color.black, in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
 
-            HStack(spacing: 12) {
-                OrbitRingGauge(progress: 0.24, lineWidth: 4, tint: tint).frame(width: 38, height: 38)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Example PC")
-                        .font(.subheadline.weight(.bold))
-                    Text(showGame ? "Playing Example game · \(style.capitalized)" : "Monitoring · \(style.capitalized)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            // Lock Screen banner.
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 10) {
+                    OrbitBrandMark(tint: tint)
+                        .frame(width: 30, height: 30)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Example PC")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text(showGame ? "Example game" : "Live monitor")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(showGame ? tint : .white.opacity(0.6))
+                    }
+                    Spacer(minLength: 6)
+                    HStack(spacing: 5) {
+                        Circle().fill(Color(red: 0.30, green: 0.92, blue: 0.62)).frame(width: 6, height: 6)
+                        Text("LIVE")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .tracking(0.9)
+                    }
+                    .foregroundStyle(Color(red: 0.30, green: 0.92, blue: 0.62))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.30, green: 0.92, blue: 0.62).opacity(0.14), in: Capsule())
                 }
-                Spacer()
-                if showTimestamp {
-                    Text("5s")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
+                if style == "minimal" {
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(badge.value)
+                            .font(.system(size: 40, weight: .semibold, design: .rounded))
+                        Text(badge.unit)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                    .foregroundStyle(tint)
+                } else {
+                    HStack(spacing: 8) {
+                        previewCell("CPU", value: "24", unit: "%", progress: 0.24, tint: tint)
+                        previewCell("GPU", value: "71", unit: "%", progress: 0.71, tint: tint)
+                        previewCell("RAM", value: "46", unit: "%", progress: 0.46, tint: tint)
+                    }
                 }
             }
+            .foregroundStyle(.white)
             .padding(14)
-            .background(activityTheme.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(tint.opacity(0.28), lineWidth: 1))
+            .background {
+                ZStack {
+                    activityTheme.background
+                    RadialGradient(colors: [tint.opacity(0.22), .clear], center: UnitPoint(x: 0.08, y: 0.1), startRadius: 2, endRadius: 190)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 1))
         }
         .padding(.horizontal, 2)
         .animation(.snappy, value: accent)
         .animation(.snappy, value: primaryMetric)
+        .animation(.snappy, value: style)
+    }
+
+    private func previewCell(_ title: String, value: String, unit: String, progress: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 9.5, weight: .bold))
+                .tracking(0.6)
+                .foregroundStyle(.white.opacity(0.58))
+            HStack(alignment: .firstTextBaseline, spacing: 1.5) {
+                Text(value)
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                Text(unit)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .monospacedDigit()
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.1))
+                    Capsule().fill(tint).frame(width: proxy.size.width * progress)
+                }
+            }
+            .frame(height: 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
+

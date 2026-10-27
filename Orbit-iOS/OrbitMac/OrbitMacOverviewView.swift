@@ -76,9 +76,9 @@ struct MacOverviewView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    HStack(spacing: 8) {
+                    MacChipFlow(spacing: 8, lineSpacing: 6) {
                         if vm.metrics.isOnline && !vm.isDemoMode {
-                            MacStatChip(label: "Ping", value: "\(vm.pingMs) ms")
+                            MacStatChip(label: "Ping", value: vm.pingMs >= 1000 ? String(format: "%.1f s", Double(vm.pingMs) / 1000) : "\(vm.pingMs) ms")
                             MacStatChip(label: "Link", value: vm.currentPC?.isSecure == true ? "Encrypted" : "—", icon: "lock.fill")
                         }
                         if vm.metrics.hasTelemetry {

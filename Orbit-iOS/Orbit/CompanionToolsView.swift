@@ -213,6 +213,16 @@ struct CompanionToolsView: View {
         }
     }
 
+    private var switcherStatus: some View {
+        OrbitStatusPill(
+            text: vm.metrics.isOnline ? (vm.hasSecureConnection ? "Encrypted" : "Connected") : "Offline",
+            tint: vm.metrics.isOnline ? .mint : .orange,
+            pulsing: vm.metrics.isOnline && !vm.isDemoMode,
+            icon: vm.metrics.isOnline && vm.hasSecureConnection ? "lock.fill" : nil
+        )
+        .fixedSize()
+    }
+
     private var pcSwitcherCard: some View {
         HStack(spacing: 14) {
             ZStack {
@@ -224,16 +234,16 @@ struct CompanionToolsView: View {
                 Text(vm.isDemoMode ? "Demo Mode" : vm.selectedPCName)
                     .font(.headline.weight(.bold))
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    OrbitStatusPill(
-                        text: vm.metrics.isOnline ? (vm.hasSecureConnection ? "Encrypted" : "Connected") : "Offline",
-                        tint: vm.metrics.isOnline ? .mint : .orange,
-                        pulsing: vm.metrics.isOnline && !vm.isDemoMode,
-                        icon: vm.metrics.isOnline && vm.hasSecureConnection ? "lock.fill" : nil
-                    )
-                    if vm.metrics.isOnline && !vm.isDemoMode {
-                        OrbitStatChip(label: "Ping", value: "\(vm.pingMs) ms")
+                // Status and ping side by side when they fit; otherwise just the status, never a clipped chip.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        switcherStatus
+                        if vm.metrics.isOnline && !vm.isDemoMode {
+                            OrbitStatChip(label: "Ping", value: vm.pingMs >= 1000 ? String(format: "%.1f s", Double(vm.pingMs) / 1000) : "\(vm.pingMs) ms")
+                                .fixedSize()
+                        }
                     }
+                    switcherStatus
                 }
             }
             Spacer(minLength: 8)

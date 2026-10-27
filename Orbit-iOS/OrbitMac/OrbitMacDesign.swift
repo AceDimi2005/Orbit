@@ -359,6 +359,47 @@ struct MacStatusPill: View {
     }
 }
 
+/// Lays chips out left to right and starts a new line instead of squeezing or clipping them
+/// (the Overview header's Ping / Link / Up / Agent / Sensors chips in a narrow window).
+struct MacChipFlow: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let ideal = view.sizeThatFits(.unspecified)
+            let width = min(ideal.width, maxWidth)
+            if x > 0, x + width > maxWidth {
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            x += width + spacing
+            widest = max(widest, x - spacing)
+            lineHeight = max(lineHeight, ideal.height)
+        }
+        return CGSize(width: min(widest, maxWidth), height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineHeight: CGFloat = 0
+        for view in subviews {
+            let ideal = view.sizeThatFits(.unspecified)
+            let width = min(ideal.width, bounds.width)
+            if x > bounds.minX, x + width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: width, height: ideal.height))
+            x += width + spacing
+            lineHeight = max(lineHeight, ideal.height)
+        }
+    }
+}
+
 struct MacStatChip: View {
     var label: String
     var value: String

@@ -214,6 +214,17 @@ private struct OrbitWidgetSnapshot: Decodable {
         case networkDownload = "network_download", networkUpload = "network_upload"
         case fps, gameName = "game_name"
     }
+
+    /// What the widget gallery and placeholders show.
+    static var sample: OrbitWidgetSnapshot {
+        OrbitWidgetSnapshot(
+            pcName: "Gaming PC", timestamp: Date().timeIntervalSince1970, telemetryAvailable: true,
+            cpuUsage: 34, gpuUsage: 71, ramUsage: 58, cpuTemp: 62, gpuTemp: 68, vramUsed: 9.4, vramTotal: 16,
+            cpuPower: 78, gpuPower: 286, cpuClock: 4850, cpuFan: 1180, gpuFan: 54, coolantTemp: 33,
+            diskRead: 182.4, diskWrite: 46.1, networkDownload: 38.2, networkUpload: 4.6, fps: 144, gameName: "Cyberpunk 2077"
+        )
+    }
+
     var measuredAt: Date? {
         guard let timestamp, timestamp.isFinite, timestamp > 0, timestamp < 253402300800 else { return nil }
         return Date(timeIntervalSince1970: timestamp)
@@ -247,21 +258,29 @@ private struct OrbitWidgetSnapshot: Decodable {
         default: return raw
         }
     }
-    func formatted(_ metric: OrbitWidgetMetric) -> String {
-        guard let value = value(metric) else { return "—" }
+
+    /// The number and its unit, drawn in two sizes.
+    func parts(_ metric: OrbitWidgetMetric) -> (value: String, unit: String) {
+        guard let value = value(metric) else { return ("—", "") }
         switch metric {
-        case .cpuUsage, .gpuUsage, .ramUsage, .vramUsage, .gpuFan: return "\(Int(value.rounded()))%"
-        case .vramUsed: return String(format: "%.1f GB", value)
-        case .cpuPower, .gpuPower: return "\(Int(value.rounded())) W"
-        case .cpuTemperature, .gpuTemperature, .coolantTemperature: return "\(Int(value.rounded()))°"
-        case .cpuClock: return String(format: "%.2f GHz", value / 1000)
-        case .cpuFan: return "\(Int(value.rounded())) RPM"
+        case .cpuUsage, .gpuUsage, .ramUsage, .vramUsage, .gpuFan: return ("\(Int(value.rounded()))", "%")
+        case .vramUsed: return (String(format: value >= 10 ? "%.0f" : "%.1f", value), "GB")
+        case .cpuPower, .gpuPower: return ("\(Int(value.rounded()))", "W")
+        case .cpuTemperature, .gpuTemperature, .coolantTemperature: return ("\(Int(value.rounded()))", "°")
+        case .cpuClock: return (String(format: "%.2f", value / 1000), "GHz")
+        case .cpuFan: return ("\(Int(value.rounded()))", "rpm")
         case .diskRead, .diskWrite, .networkDownload, .networkUpload:
-            if value >= 1 { return String(format: "%.1f MB/s", value) }
-            if value >= 0.001 { return String(format: "%.1f KB/s", value * 1000) }
-            return "\(Int((value * 1_000_000).rounded())) B/s"
-        case .fps: return "\(Int(value.rounded()))"
+            if value >= 1 { return (String(format: value >= 100 ? "%.0f" : "%.1f", value), "MB/s") }
+            if value >= 0.001 { return (String(format: "%.0f", value * 1000), "KB/s") }
+            return ("\(Int((value * 1_000_000).rounded()))", "B/s")
+        case .fps: return ("\(Int(value.rounded()))", "fps")
         }
+    }
+
+    func formatted(_ metric: OrbitWidgetMetric) -> String {
+        let parts = parts(metric)
+        guard !parts.unit.isEmpty else { return parts.value }
+        return ["%", "°"].contains(parts.unit) ? parts.value + parts.unit : "\(parts.value) \(parts.unit)"
     }
 }
 
@@ -272,15 +291,25 @@ private struct OrbitPCWidgetEntry: TimelineEntry {
     var theme: OrbitWidgetTheme = .noir
     var monochrome: Bool = false
     var snapshot: OrbitWidgetSnapshot?
+    /// Shown instead of readings when there are none at all (not paired, no access, never reached).
     var message: String?
-    var isExpired = false
+    /// The reading is a few minutes old (or the PC didn't answer just now): the values stay on screen,
+    /// dimmed, with the time they were taken.
+    var isStale = false
+    /// The PC didn't answer the last request.
+    var isUnreachable = false
 
-    var hasReadings: Bool { snapshot != nil && !isExpired && message == nil }
+    var hasReadings: Bool { snapshot != nil && message == nil }
     var name: String { snapshot?.pcName ?? pc?.name ?? "Your PC" }
     var measuredAt: Date? { snapshot?.measuredAt }
 
     func formatted(_ metric: OrbitWidgetMetric) -> String {
         hasReadings ? snapshot?.formatted(metric) ?? "—" : "—"
+    }
+
+    func parts(_ metric: OrbitWidgetMetric) -> (value: String, unit: String) {
+        guard hasReadings, let snapshot else { return ("—", "") }
+        return snapshot.parts(metric)
     }
 
     func normalizedProgress(_ metric: OrbitWidgetMetric) -> Double? {
@@ -295,9 +324,13 @@ private struct OrbitPCWidgetEntry: TimelineEntry {
         case .cpuPower:
             return min(max(raw / 200.0, 0.04), 1)
         case .gpuPower:
-            return min(max(raw / 400.0, 0.04), 1)
+            return min(max(raw / 450.0, 0.04), 1)
         case .fps:
             return min(max(raw / 165.0, 0.05), 1)
+        case .cpuFan:
+            return min(max(raw / 2500.0, 0.04), 1)
+        case .cpuClock:
+            return min(max(raw / 6000.0, 0.04), 1)
         case .vramUsed:
             if let total = snapshot?.vramTotal, total > 0 {
                 return min(max(raw / total, 0.04), 1)
@@ -317,10 +350,13 @@ private enum OrbitWidgetRequestError: Error {
         case .address: "Pair your PC in Orbit"
         case .token: "Open Orbit to enable widget access"
         case .denied: "Reconnect this PC in Orbit"
-        case .invalidResponse: "Update your Orbit PC agent"
-        case .unavailable: "PC unavailable · open Orbit"
+        case .invalidResponse: "Update Orbit on your PC"
+        case .unavailable: "PC offline · open Orbit"
         }
     }
+
+    /// Problems the user fixes in Orbit; showing old numbers would hide them.
+    var needsAttention: Bool { self == .address || self == .token || self == .denied }
 }
 
 /// Never forward the read-only credential to a different address via redirects.
@@ -351,88 +387,94 @@ private final class OrbitWidgetSessionDelegate: NSObject, URLSessionDelegate, UR
 }
 
 private enum OrbitWidgetLoader {
+    /// How old a reading may be before the widget dims it.
+    static let freshFor: TimeInterval = 3 * 60
+    /// The oldest reading still worth showing (dimmed) when the PC doesn't answer.
+    static let keepFor: TimeInterval = 24 * 60 * 60
+
     static func timeline(for entry: OrbitPCWidgetEntry) -> Timeline<OrbitPCWidgetEntry> {
-        let nextRefresh = Date().addingTimeInterval(15 * 60)
         var entries = [entry]
-        if entry.hasReadings, let sampledAt = entry.measuredAt {
-            let expiresAt = sampledAt.addingTimeInterval(15 * 60)
-            if expiresAt > entry.date {
-                var expired = entry
-                expired.date = expiresAt
-                expired.isExpired = true
-                expired.message = "Snapshot expired · open Orbit"
-                entries.append(expired)
+        // Dim the numbers by themselves once they get old, even if iOS refreshes the widget later.
+        if entry.hasReadings, !entry.isStale, let measured = entry.measuredAt {
+            let dimAt = measured.addingTimeInterval(freshFor)
+            if dimAt > entry.date {
+                var stale = entry
+                stale.date = dimAt
+                stale.isStale = true
+                entries.append(stale)
             }
         }
-        return Timeline(entries: entries, policy: .after(nextRefresh))
+        return Timeline(entries: entries, policy: .after(Date().addingTimeInterval(10 * 60)))
     }
 
-    /// A reading the app cached within the last two minutes is shown as-is: it is what the
-    /// user just saw in Orbit, and it spares the widget a network round trip that iOS may
-    /// not even allow right now.
-    private static func cachedEntry(connection: OrbitWidgetConnection, pc: OrbitWidgetPC?, metric: OrbitWidgetMetric, theme: OrbitWidgetTheme, monochrome: Bool, now: Date) -> OrbitPCWidgetEntry? {
-        guard let data = OrbitWidgetConnectionStore.cachedSnapshot(for: connection.id, maxAge: 120),
+    /// The app's own latest reading for this PC, if it is younger than `maxAge`.
+    private static func cached(_ connection: OrbitWidgetConnection, maxAge: TimeInterval, now: Date) -> OrbitWidgetSnapshot? {
+        guard let data = OrbitWidgetConnectionStore.cachedSnapshot(for: connection.id, maxAge: maxAge),
               let snapshot = try? JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data),
               snapshot.telemetryAvailable == true, let measured = snapshot.measuredAt,
-              now.timeIntervalSince(measured) <= 120, measured.timeIntervalSince(now) <= 60 else { return nil }
-        return OrbitPCWidgetEntry(date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome, snapshot: snapshot)
+              now.timeIntervalSince(measured) <= maxAge, measured.timeIntervalSince(now) <= 60 else { return nil }
+        return snapshot
     }
 
     static func load(pc: OrbitWidgetPC?, metric: OrbitWidgetMetric, theme: OrbitWidgetTheme, monochrome: Bool) async -> OrbitPCWidgetEntry {
         let now = Date()
+        func entry(_ snapshot: OrbitWidgetSnapshot?, message: String? = nil, stale: Bool = false, unreachable: Bool = false) -> OrbitPCWidgetEntry {
+            OrbitPCWidgetEntry(date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
+                               snapshot: snapshot, message: message, isStale: stale, isUnreachable: unreachable)
+        }
+        let connection: OrbitWidgetConnection?
+        if let pc {
+            connection = OrbitWidgetConnectionStore.connections().first { $0.id == pc.id }
+        } else {
+            connection = OrbitWidgetConnectionStore.defaultConnection()
+        }
+        guard let connection else { return entry(nil, message: OrbitWidgetRequestError.address.message) }
+        // What the user just saw in Orbit: no network round trip needed (iOS may not even allow one now).
+        if let fresh = cached(connection, maxAge: 120, now: now) { return entry(fresh) }
         do {
-            let connection: OrbitWidgetConnection?
-            if let pc {
-                connection = OrbitWidgetConnectionStore.connections().first { $0.id == pc.id }
-            } else {
-                connection = OrbitWidgetConnectionStore.defaultConnection()
-            }
-            guard let connection else { throw OrbitWidgetRequestError.address }
-            if let cached = cachedEntry(connection: connection, pc: pc, metric: metric, theme: theme, monochrome: monochrome, now: now) {
-                return cached
-            }
-            let url = try endpoint(connection)
-            let token: String
-            do { token = try OrbitWidgetConnectionStore.readOnlyToken(for: connection.id) }
-            catch { throw OrbitWidgetRequestError.token }
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 6
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            let sessionConfiguration = URLSessionConfiguration.ephemeral
-            sessionConfiguration.httpCookieStorage = nil
-            sessionConfiguration.urlCredentialStorage = nil
-            sessionConfiguration.timeoutIntervalForRequest = 6
-            sessionConfiguration.timeoutIntervalForResource = 8
-            let session = URLSession(configuration: sessionConfiguration, delegate: OrbitWidgetSessionDelegate(fingerprint: connection.certificateSHA256), delegateQueue: nil)
-            defer { session.invalidateAndCancel() }
-            let (data, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse else { throw OrbitWidgetRequestError.invalidResponse }
-            if response.statusCode == 401 || response.statusCode == 403 { throw OrbitWidgetRequestError.denied }
-            guard response.statusCode == 200, data.count <= 64 * 1024 else { throw OrbitWidgetRequestError.invalidResponse }
-            let snapshot = try JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data)
-            if snapshot.telemetryAvailable == true { OrbitWidgetConnectionStore.cacheSnapshot(data, for: connection.id, reloadInterval: .infinity) }
+            let (snapshot, data) = try await fetch(connection)
             guard snapshot.telemetryAvailable == true, let measured = snapshot.measuredAt else {
-                return OrbitPCWidgetEntry(
-                    date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
-                    snapshot: snapshot, message: "Waiting for PC telemetry"
-                )
+                if let last = cached(connection, maxAge: keepFor, now: now) { return entry(last, stale: true) }
+                return entry(snapshot, message: "Waiting for the PC's sensors")
             }
-            let expired = now.timeIntervalSince(measured) > 15 * 60 || measured.timeIntervalSince(now) > 60
-            return OrbitPCWidgetEntry(
-                date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
-                snapshot: snapshot,
-                message: expired ? "Snapshot expired · open Orbit" : nil,
-                isExpired: expired
-            )
+            OrbitWidgetConnectionStore.cacheSnapshot(data, for: connection.id, reloadInterval: .infinity)
+            let old = now.timeIntervalSince(measured) > freshFor || measured.timeIntervalSince(now) > 60
+            return entry(snapshot, stale: old)
         } catch {
             let problem = error as? OrbitWidgetRequestError ?? .unavailable
-            return OrbitPCWidgetEntry(
-                date: now, pc: pc, metric: metric, theme: theme, monochrome: monochrome,
-                message: problem.message
-            )
+            if !problem.needsAttention, let last = cached(connection, maxAge: keepFor, now: now) {
+                return entry(last, stale: true, unreachable: true)
+            }
+            return entry(nil, message: problem.message, unreachable: problem == .unavailable)
+        }
+    }
+
+    private static func fetch(_ connection: OrbitWidgetConnection) async throws -> (OrbitWidgetSnapshot, Data) {
+        let url = try endpoint(connection)
+        let token: String
+        do { token = try OrbitWidgetConnectionStore.readOnlyToken(for: connection.id) }
+        catch { throw OrbitWidgetRequestError.token }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 6
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.httpCookieStorage = nil
+        sessionConfiguration.urlCredentialStorage = nil
+        sessionConfiguration.timeoutIntervalForRequest = 6
+        sessionConfiguration.timeoutIntervalForResource = 8
+        let session = URLSession(configuration: sessionConfiguration, delegate: OrbitWidgetSessionDelegate(fingerprint: connection.certificateSHA256), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw OrbitWidgetRequestError.invalidResponse }
+        if response.statusCode == 401 || response.statusCode == 403 { throw OrbitWidgetRequestError.denied }
+        guard response.statusCode == 200, data.count <= 64 * 1024 else { throw OrbitWidgetRequestError.invalidResponse }
+        do {
+            return (try JSONDecoder().decode(OrbitWidgetSnapshot.self, from: data), data)
+        } catch {
+            throw OrbitWidgetRequestError.invalidResponse
         }
     }
 
@@ -452,12 +494,12 @@ private struct OrbitPanelWidgetProvider: AppIntentTimelineProvider {
     typealias Entry = OrbitPCWidgetEntry
 
     func placeholder(in context: Context) -> Entry {
-        Entry(date: Date(), message: "Pair your PC in Orbit")
+        Entry(date: Date(), snapshot: .sample)
     }
 
     func snapshot(for configuration: Intent, in context: Context) async -> Entry {
         if context.isPreview {
-            return Entry(date: Date(), pc: configuration.pc, theme: configuration.theme, monochrome: configuration.monochrome, message: "Pair your PC in Orbit")
+            return Entry(date: Date(), pc: configuration.pc, theme: configuration.theme, monochrome: configuration.monochrome, snapshot: .sample)
         }
         return await OrbitWidgetLoader.load(pc: configuration.pc, metric: .cpuUsage, theme: configuration.theme, monochrome: configuration.monochrome)
     }
@@ -473,12 +515,12 @@ private struct OrbitPCWidgetProvider: AppIntentTimelineProvider {
     typealias Entry = OrbitPCWidgetEntry
 
     func placeholder(in context: Context) -> Entry {
-        Entry(date: Date(), message: "Pair your PC in Orbit")
+        Entry(date: Date(), snapshot: .sample)
     }
 
     func snapshot(for configuration: Intent, in context: Context) async -> Entry {
         if context.isPreview {
-            return Entry(date: Date(), pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome, message: "Pair your PC in Orbit")
+            return Entry(date: Date(), pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome, snapshot: .sample)
         }
         return await OrbitWidgetLoader.load(pc: configuration.pc, metric: configuration.metric, theme: configuration.theme, monochrome: configuration.monochrome)
     }
@@ -505,23 +547,10 @@ private enum OrbitTelemetryWidgetKind {
         }
     }
 
-    var symbol: String {
-        switch self {
-        case .overview: "desktopcomputer"
-        case .gaming: "gamecontroller.fill"
-        case .power: "bolt.fill"
-        case .thermal: "thermometer.medium"
-        case .cooling: "fanblades.fill"
-        case .storage: "internaldrive.fill"
-        case .network: "arrow.up.arrow.down"
-        case .metric: "waveform.path.ecg"
-        }
-    }
-
     func metrics(_ selected: OrbitWidgetMetric) -> [OrbitWidgetMetric] {
         switch self {
         case .overview: [.cpuUsage, .gpuUsage, .ramUsage, .vramUsage]
-        case .gaming: [.fps, .vramUsed, .gpuUsage, .gpuTemperature]
+        case .gaming: [.fps, .gpuUsage, .vramUsed, .gpuTemperature]
         case .power: [.cpuPower, .gpuPower]
         case .thermal: [.cpuTemperature, .gpuTemperature, .coolantTemperature]
         case .cooling: [.cpuFan, .gpuFan, .coolantTemperature]
@@ -530,6 +559,9 @@ private enum OrbitTelemetryWidgetKind {
         case .metric: [selected]
         }
     }
+
+    /// Readings without a natural scale (throughput) are drawn as tiles instead of rings.
+    var usesRings: Bool { self != .storage && self != .network }
 }
 
 struct OrbitOverviewWidget: Widget {
@@ -620,6 +652,9 @@ struct OrbitMetricWidget: Widget {
     }
 }
 
+
+// MARK: - Views
+
 private struct OrbitTelemetryWidgetView: View {
     @Environment(\.widgetFamily) private var family
     var entry: OrbitPCWidgetEntry
@@ -627,403 +662,532 @@ private struct OrbitTelemetryWidgetView: View {
 
     private var accent: Color { entry.theme.accent }
     private var metrics: [OrbitWidgetMetric] { kind.metrics(entry.metric) }
+    private var base: Color { entry.theme == .noir ? OrbitWidgetStyle.base : entry.theme.background }
+
+    private func tint(_ metric: OrbitWidgetMetric) -> Color {
+        entry.monochrome || entry.theme.isFlat ? accent : metric.color
+    }
 
     var body: some View {
         Group {
-            if family == .accessoryCircular {
-                circular
-            } else if family == .accessoryRectangular {
-                rectangular
-            } else {
-                panel
+            switch family {
+            case .accessoryCircular: circular
+            case .accessoryRectangular: rectangular
+            case .accessoryInline: inline
+            default: panel
             }
         }
-        .widgetURL(URL(string: "orbit://dashboard"))
-        .containerBackground(entry.theme.isFlat ? AnyShapeStyle(entry.theme.background) : AnyShapeStyle(entry.theme.background.gradient), for: .widget)
+        .widgetURL(OrbitWidgetStyle.dashboardURL)
+        .containerBackground(for: .widget) {
+            OrbitWidgetBackdrop(accent: accent, base: base)
+        }
     }
+
+    // MARK: Home Screen
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: family == .systemSmall ? 8 : 10) {
-            headerBar
-            if let message = entry.message {
+            header
+            if let message = entry.message, !entry.hasReadings {
                 unavailable(message)
             } else {
-                readings
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .opacity(entry.isStale ? 0.62 : 1)
             }
-            Spacer(minLength: 0)
-            footer
         }
         .foregroundStyle(.white)
     }
 
-    private var headerBar: some View {
-        HStack(spacing: 6) {
-            Image(systemName: kind == .metric ? entry.metric.symbol : kind.symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(accent)
-            Text(kind == .metric ? entry.metric.title : kind.title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if family != .systemSmall {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(entry.hasReadings ? Color.green : Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(entry.name)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.65))
+    private var header: some View {
+        OrbitWidgetHeader(title: kind == .metric ? entry.metric.title : (family == .systemSmall ? entry.name : kind.title), accent: accent) {
+            freshnessBadge
+        }
+    }
+
+    /// A dot and the reading's time: green while fresh, amber once old or when the PC didn't answer.
+    @ViewBuilder
+    private var freshnessBadge: some View {
+        if entry.hasReadings, let measured = entry.measuredAt {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(entry.isStale ? OrbitWidgetStyle.caution : OrbitWidgetStyle.live)
+                    .frame(width: 5, height: 5)
+                Text(measured, style: .time)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(entry.isStale ? OrbitWidgetStyle.caution : .white.opacity(0.55))
+                    .lineLimit(1)
+            }
+        } else if entry.isUnreachable {
+            Circle().fill(OrbitWidgetStyle.danger).frame(width: 5, height: 5)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch family {
+        case .systemSmall: smallContent
+        case .systemLarge: largeContent
+        default: mediumContent
+        }
+    }
+
+    // MARK: Small
+
+    @ViewBuilder
+    private var smallContent: some View {
+        switch kind {
+        case .overview:
+            GeometryReader { proxy in
+                let diameter = max(34, min((proxy.size.width - 12) / 2, (proxy.size.height - 8) / 2, 60))
+                Grid(horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        ring(.cpuUsage, diameter: diameter, labelInside: true)
+                        ring(.gpuUsage, diameter: diameter, labelInside: true)
+                    }
+                    GridRow {
+                        ring(.ramUsage, diameter: diameter, labelInside: true)
+                        ring(.vramUsage, diameter: diameter, labelInside: true)
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            }
+        case .gaming:
+            VStack(alignment: .leading, spacing: 4) {
+                hero(.fps, size: 34)
+                Text(entry.snapshot?.gameName ?? "No game running")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(entry.snapshot?.gameName == nil ? .white.opacity(0.45) : accent)
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                row(.gpuUsage, compact: true)
+            }
+        case .metric:
+            VStack(alignment: .leading, spacing: 8) {
+                hero(entry.metric, size: 40)
+                Spacer(minLength: 0)
+                bar(entry.normalizedProgress(entry.metric), tint: tint(entry.metric), height: 6)
+                Text(entry.metric == .fps ? (entry.snapshot?.gameName ?? "No game running") : entry.name)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+        case .storage, .network:
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(metrics, id: \.self) { metric in
+                    throughput(metric, size: 22)
+                }
+                Spacer(minLength: 0)
+            }
+        default:
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(metrics, id: \.self) { metric in
+                    row(metric, compact: false)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // MARK: Medium
+
+    @ViewBuilder
+    private var mediumContent: some View {
+        switch kind {
+        case .gaming:
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    hero(.fps, size: 40)
+                    Text(entry.snapshot?.gameName ?? "No game running")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(entry.snapshot?.gameName == nil ? .white.opacity(0.45) : accent)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(spacing: 8) {
+                    row(.gpuUsage, compact: true)
+                    row(.vramUsed, compact: true)
+                    row(.gpuTemperature, compact: true)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        case .metric:
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    hero(entry.metric, size: 44)
+                    Text(entry.metric == .fps ? (entry.snapshot?.gameName ?? "No game running") : entry.name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(.white.opacity(0.07), in: Capsule())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                ring(entry.metric, diameter: 70, labelInside: false, showsLabel: false)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var readings: some View {
-        if kind == .metric {
-            singleMetricContent
-        } else if family == .systemMedium {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(metrics, id: \.self) { metric in
-                        metricTile(metric, prominent: true, showBar: true)
-                    }
-                }
-                if kind == .gaming, let game = entry.snapshot?.gameName {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sparkles.tv")
-                            .font(.system(size: 9))
-                            .foregroundStyle(accent)
-                        Text(game)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.75))
-                            .lineLimit(1)
-                    }
-                }
-            }
-        } else if family == .systemLarge {
-            largePanelContent
-        } else {
-            LazyVGrid(
-                columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
-                alignment: .leading,
-                spacing: 8
-            ) {
+        case .storage, .network:
+            HStack(spacing: 10) {
                 ForEach(metrics, id: \.self) { metric in
-                    metricReading(metric, prominent: false, showBar: true)
+                    throughput(metric, size: 26)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
+        default:
+            ringRow(metrics, maxDiameter: 74)
         }
     }
 
-    @ViewBuilder
-    private var singleMetricContent: some View {
-        let color = entry.monochrome || entry.theme.isFlat ? accent : entry.metric.color
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 14 : 6) {
-            Text(entry.formatted(entry.metric))
-                .font(.system(size: family == .systemSmall ? 34 : (family == .systemLarge ? 48 : 40), weight: .bold))
-                .monospacedDigit()
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-                .foregroundStyle(color)
-
-            if let progress = entry.normalizedProgress(entry.metric) {
-                progressBar(value: progress, color: color, height: family == .systemLarge ? 7 : 5)
-            }
-
-            if entry.metric == .fps {
-                Text(entry.snapshot?.gameName ?? "No active game detected")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(1)
-            } else if entry.snapshot?.value(entry.metric) == nil {
-                Text("Sensor unavailable")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.55))
-            }
-
-            if family == .systemLarge {
-                Divider().overlay(.white.opacity(0.1))
-                Text("System Context")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .textCase(.uppercase)
-                LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
-                    spacing: 10
-                ) {
-                    metricTile(.cpuUsage, prominent: true, showBar: true)
-                    metricTile(.gpuUsage, prominent: true, showBar: true)
-                    metricTile(.cpuTemperature, prominent: true, showBar: false)
-                    metricTile(.gpuTemperature, prominent: true, showBar: false)
+    /// Rings side by side, as large as the space allows.
+    private func ringRow(_ items: [OrbitWidgetMetric], maxDiameter: CGFloat) -> some View {
+        GeometryReader { proxy in
+            let count = CGFloat(max(items.count, 1))
+            let byWidth = (proxy.size.width - (count - 1) * 10) / count
+            let diameter = max(34, min(maxDiameter, byWidth, proxy.size.height - 18))
+            HStack(alignment: .center, spacing: 0) {
+                ForEach(items, id: \.self) { metric in
+                    ring(metric, diameter: diameter, labelInside: false)
+                        .frame(maxWidth: .infinity)
                 }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private var largePanelContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    // MARK: Large
+
+    private var largeContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if kind == .metric {
+                HStack(spacing: 16) {
+                    hero(entry.metric, size: 52)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ring(entry.metric, diameter: 84, labelInside: false, showsLabel: false)
+                }
+            } else {
+                ringRow(Array(metrics.prefix(4)), maxDiameter: 64)
+                    .frame(height: 84)
+            }
             if let game = entry.snapshot?.gameName, !game.isEmpty {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Image(systemName: "gamecontroller.fill")
-                        .font(.system(size: 11))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(accent)
                     Text(game)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: 4)
                     if entry.snapshot?.fps != nil {
-                        Text("\(entry.formatted(.fps)) FPS")
-                            .font(.system(size: 11, weight: .bold))
+                        let fps = entry.parts(.fps)
+                        Text("\(fps.value) \(fps.unit)")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(accent)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-
-            LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-                spacing: 10
-            ) {
-                ForEach(metrics, id: \.self) { metric in
-                    metricTile(metric, prominent: true, showBar: true)
+            VStack(spacing: 9) {
+                ForEach(largeDetails, id: \.self) { metric in
+                    row(metric, compact: true)
                 }
             }
-
-            let secondaryMetrics: [OrbitWidgetMetric] = kind == .gaming
-                ? [.cpuUsage, .cpuTemperature, .gpuPower, .ramUsage]
-                : [.cpuTemperature, .gpuTemperature, .cpuPower, .gpuPower]
-
-            HStack(spacing: 8) {
-                ForEach(secondaryMetrics, id: \.self) { metric in
-                    metricTile(metric, prominent: false, showBar: false)
-                }
-            }
-
-            HStack(spacing: 8) {
-                metricTile(.networkDownload, prominent: false, showBar: false)
-                metricTile(.diskRead, prominent: false, showBar: false)
-            }
+            .padding(12)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
-    private func metricTile(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
-        let color = entry.monochrome || entry.theme.isFlat ? accent : metric.color
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 4) {
-                Image(systemName: metric.symbol)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(color.opacity(0.9))
-                Text(metric.shortTitle)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
+    private var largeDetails: [OrbitWidgetMetric] {
+        let candidates: [OrbitWidgetMetric] = kind == .gaming
+            ? [.cpuUsage, .cpuTemperature, .gpuPower, .ramUsage, .networkDownload]
+            : [.cpuTemperature, .gpuTemperature, .cpuPower, .gpuPower, .networkDownload, .diskRead]
+        let hasGame = !(entry.snapshot?.gameName ?? "").isEmpty
+        return Array(candidates.filter { !metrics.contains($0) }.prefix(hasGame ? 4 : 5))
+    }
+
+    // MARK: Pieces
+
+    /// A ring with the reading inside (and the label under it, or inside for small widgets).
+    private func ring(_ metric: OrbitWidgetMetric, diameter: CGFloat, labelInside: Bool, showsLabel: Bool = true) -> some View {
+        let color = tint(metric)
+        let parts = entry.parts(metric)
+        let progress = entry.normalizedProgress(metric)
+        let lineWidth = max(4, diameter * 0.1)
+        return VStack(spacing: 5) {
+            ZStack {
+                Circle().stroke(.white.opacity(0.1), lineWidth: lineWidth)
+                if let progress {
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(
+                            AngularGradient(colors: [color.opacity(0.55), color], center: .center, startAngle: .degrees(0), endAngle: .degrees(max(1, 360 * progress))),
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: color.opacity(0.45), radius: 3)
+                }
+                VStack(spacing: labelInside ? 0 : -1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 0.5) {
+                        Text(parts.value)
+                            .font(.system(size: diameter * (labelInside ? 0.27 : 0.29), weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                        if ["%", "°"].contains(parts.unit) {
+                            Text(parts.unit)
+                                .font(.system(size: diameter * 0.15, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
                     .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    if labelInside {
+                        Text(metric.ringLabel)
+                            .font(.system(size: diameter * 0.15, weight: .bold))
+                            .foregroundStyle(color)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    } else if !["%", "°"].contains(parts.unit), !parts.unit.isEmpty {
+                        Text(parts.unit)
+                            .font(.system(size: diameter * 0.14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .padding(lineWidth + 2)
             }
-            Text(entry.formatted(metric))
-                .font(.system(size: prominent ? 21 : 16, weight: .bold))
-                .foregroundStyle(color)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-            if showBar {
-                progressBar(value: entry.normalizedProgress(metric) ?? 0, color: color, height: 4)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, prominent ? 8 : 7)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.7)
-        )
-    }
-
-    private func metricReading(_ metric: OrbitWidgetMetric, prominent: Bool, showBar: Bool) -> some View {
-        let color = entry.monochrome || entry.theme.isFlat ? accent : metric.color
-        return VStack(alignment: .leading, spacing: 3) {
-            Text(metric.shortTitle)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(1)
-            Text(entry.formatted(metric))
-                .font(.system(size: prominent ? 22 : 19, weight: .bold))
-                .foregroundStyle(color)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-            if showBar, let progress = entry.normalizedProgress(metric) {
-                progressBar(value: progress, color: color, height: 3.5)
+            .frame(width: diameter, height: diameter)
+            if showsLabel && !labelInside {
+                HStack(spacing: 3) {
+                    Image(systemName: metric.symbol)
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(color)
+                    Text(metric.ringLabel)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(metric.title) \(entry.formatted(metric))")
     }
 
-    private func progressBar(value: Double, color: Color, height: CGFloat) -> some View {
-        GeometryReader { geo in
+    /// The big number of a single-reading layout.
+    private func hero(_ metric: OrbitWidgetMetric, size: CGFloat) -> some View {
+        let parts = entry.parts(metric)
+        return HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text(parts.value)
+                .font(.system(size: size, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(tint(metric))
+                .contentTransition(.numericText())
+            Text(parts.unit)
+                .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.5)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(metric.title) \(entry.formatted(metric))")
+    }
+
+    /// Icon, name, reading and a thin bar.
+    private func row(_ metric: OrbitWidgetMetric, compact: Bool) -> some View {
+        let color = tint(metric)
+        let parts = entry.parts(metric)
+        return VStack(alignment: .leading, spacing: compact ? 4 : 5) {
+            HStack(spacing: 5) {
+                Image(systemName: metric.symbol)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(color)
+                    .frame(width: 12)
+                Text(metric.shortTitle)
+                    .font(.system(size: compact ? 10.5 : 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(parts.value)
+                        .font(.system(size: compact ? 13 : 15, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Text(parts.unit)
+                        .font(.system(size: compact ? 9 : 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            }
+            bar(entry.normalizedProgress(metric), tint: color, height: compact ? 3 : 4)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(metric.title) \(entry.formatted(metric))")
+    }
+
+    /// Disk and network rates: arrow, big number with unit, label.
+    private func throughput(_ metric: OrbitWidgetMetric, size: CGFloat) -> some View {
+        let color = tint(metric)
+        let parts = entry.parts(metric)
+        let symbol: String = switch metric {
+        case .diskRead, .networkDownload: "arrow.down.circle.fill"
+        default: "arrow.up.circle.fill"
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(color)
+                Text(metric.shortTitle)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(parts.value)
+                    .font(.system(size: size, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                Text(parts.unit)
+                    .font(.system(size: size * 0.45, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(metric.title) \(entry.formatted(metric))")
+    }
+
+    private func bar(_ progress: Double?, tint: Color, height: CGFloat) -> some View {
+        GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.10))
-                Capsule()
-                    .fill(color.gradient)
-                    .frame(width: max(height, geo.size.width * min(max(value, 0), 1)))
+                Capsule().fill(.white.opacity(0.10))
+                if let progress {
+                    Capsule()
+                        .fill(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(height, proxy.size.width * min(max(progress, 0), 1)))
+                }
             }
         }
         .frame(height: height)
     }
 
+    /// No readings at all: what to do, and Power On when the PC is away.
     private func unavailable(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: entry.isExpired ? "clock.badge.exclamationmark" : "desktopcomputer.trianglebadge.exclamationmark")
-                    .font(.headline).foregroundStyle(accent)
-                Text(message).font(.caption).foregroundStyle(.white.opacity(0.82)).lineLimit(2)
+        VStack(alignment: .leading, spacing: 10) {
+            Spacer(minLength: 0)
+            Image(systemName: entry.isUnreachable ? "moon.zzz.fill" : "desktopcomputer.trianglebadge.exclamationmark")
+                .font(.system(size: family == .systemSmall ? 20 : 22, weight: .semibold))
+                .foregroundStyle(entry.isUnreachable ? OrbitWidgetStyle.caution : accent)
+            Text(message)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            if entry.isUnreachable {
+                OrbitPowerPill(action: .wake, compact: true, pcID: entry.pc?.id)
             }
-            if family == .systemMedium || family == .systemLarge || family == .systemSmall {
-                HStack(spacing: 6) {
-                    OrbitProPowerButton(intent: OrbitWidgetWakePCIntent(pcID: entry.pc?.id)) {
-                        Label("Power On", systemImage: "power")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(Color.green.opacity(0.22), in: Capsule())
-                            .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
-                    }
-                    .buttonStyle(.plain)
-                    if family != .systemSmall {
-                        OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent(pcID: entry.pc?.id)) {
-                            Label("Shut Down", systemImage: "power.circle.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 5)
-                                .background(Color.red.opacity(0.20), in: Capsule())
-                                .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
-    private var footer: some View {
-        HStack(spacing: 6) {
-            if let feedback = OrbitWidgetConnectionStore.recentPowerFeedback() {
-                Image(systemName: "bolt.horizontal.circle.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(accent)
-                Text(feedback)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(accent)
-                    .lineLimit(1)
-            } else if let measured = entry.measuredAt {
-                Image(systemName: "clock").font(.system(size: 8))
-                Text(measured, style: .time).font(.system(size: 9, weight: .medium))
-            } else {
-                Text(entry.name).font(.system(size: 9, weight: .medium))
-            }
-            Spacer(minLength: 4)
-            if family == .systemMedium || family == .systemLarge {
-                OrbitProPowerButton(intent: OrbitWidgetWakePCIntent(pcID: entry.pc?.id)) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "power")
-                        Text("On")
-                    }
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background(Color.green.opacity(0.18), in: Capsule())
-                    .foregroundStyle(Color(red: 0.45, green: 0.96, blue: 0.68))
-                }
-                .buttonStyle(.plain)
-
-                OrbitProPowerButton(intent: OrbitWidgetShutdownPCIntent(pcID: entry.pc?.id)) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "power.circle.fill")
-                        Text("Off")
-                    }
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background(Color.red.opacity(0.18), in: Capsule())
-                    .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
-                }
-                .buttonStyle(.plain)
-            } else {
-                Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .bold))
-            }
-        }
-        .foregroundStyle(.white.opacity(0.45))
-        .lineLimit(1)
-    }
+    // MARK: Lock Screen
 
     @ViewBuilder
     private var circular: some View {
+        let parts = entry.parts(entry.metric)
         if let progress = entry.normalizedProgress(entry.metric) {
             Gauge(value: progress) {
                 Image(systemName: entry.metric.symbol)
-                    .font(.system(size: 10))
             } currentValueLabel: {
-                Text(entry.formatted(entry.metric))
-                    .font(.system(size: 12, weight: .bold))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.55)
-            }
-            .gaugeStyle(.accessoryCircular)
-            .accessibilityLabel("\(entry.metric.title): \(entry.formatted(entry.metric))")
-        } else {
-            VStack(spacing: 2) {
-                Image(systemName: entry.metric.symbol).font(.system(size: 11))
-                Text(entry.formatted(entry.metric))
-                    .font(.system(size: 14, weight: .bold))
+                Text(parts.value)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .minimumScaleFactor(0.5)
-                    .lineLimit(1)
+            }
+            .gaugeStyle(.accessoryCircular)
+            .widgetAccentable()
+            .accessibilityLabel("\(entry.metric.title): \(entry.formatted(entry.metric))")
+        } else {
+            ZStack {
+                AccessoryWidgetBackground()
+                VStack(spacing: 1) {
+                    Image(systemName: entry.metric.symbol).font(.system(size: 11, weight: .semibold))
+                    Text(parts.value)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
+                }
             }
             .accessibilityLabel("\(entry.metric.title): \(entry.formatted(entry.metric))")
         }
     }
 
     private var rectangular: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let parts = entry.parts(entry.metric)
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: entry.metric.symbol)
                     .font(.caption2.weight(.bold))
+                    .widgetAccentable()
                 Text(entry.metric.shortTitle)
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 2)
-                Text(entry.name)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let measured = entry.measuredAt, entry.hasReadings {
+                    Text(measured, style: .time)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
-            Text(entry.formatted(entry.metric))
-                .font(.system(size: 19, weight: .bold))
-                .monospacedDigit()
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(parts.value)
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                Text(parts.unit)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
             if let progress = entry.normalizedProgress(entry.metric) {
                 ProgressView(value: progress)
                     .progressViewStyle(.linear)
-            } else if let measured = entry.measuredAt, entry.message == nil {
-                Text(measured, style: .time)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                    .widgetAccentable()
             } else {
-                Text(entry.message ?? "Open Orbit")
-                    .font(.system(size: 9))
+                Text(entry.message ?? entry.name)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+        }
+    }
+
+    private var inline: some View {
+        Text("\(entry.metric.shortTitle) \(entry.formatted(entry.metric))")
+    }
+}
+
+private extension OrbitWidgetMetric {
+    /// One short word for ring labels.
+    var ringLabel: String {
+        switch self {
+        case .cpuUsage: "CPU"
+        case .gpuUsage: "GPU"
+        case .ramUsage: "RAM"
+        case .vramUsage, .vramUsed: "VRAM"
+        case .cpuPower: "CPU W"
+        case .gpuPower: "GPU W"
+        case .cpuTemperature: "CPU"
+        case .gpuTemperature: "GPU"
+        case .cpuClock: "Clock"
+        case .cpuFan: "CPU fan"
+        case .gpuFan: "GPU fan"
+        case .coolantTemperature: "Coolant"
+        case .diskRead: "Read"
+        case .diskWrite: "Write"
+        case .networkDownload: "Down"
+        case .networkUpload: "Up"
+        case .fps: "FPS"
         }
     }
 }
