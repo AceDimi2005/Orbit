@@ -385,6 +385,15 @@ extension OrbitStreamDisplayStatus {
     /// Something is running in Sunshine right now, so it cannot restart.
     var isBusy: Bool { streamActive == true || appRunning == true }
 
+    /// The PC's own reason when no other row explains it: the login, Sunshine and the driver are fine, yet
+    /// Fill Screen is not ready (Sunshine does not list the virtual display yet, the driver's settings file is
+    /// missing, …). Problems that have a row of their own (login, Sunshine, driver) are left out.
+    var pcNote: String? {
+        guard !fillReady, loginSaved, sunshineVersion != nil, sunshineSupported != false, driverUsable,
+              let text = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
     /// Why the driver row is not done, in plain words.
     var driverProblem: String? {
         if driverUsable { return nil }
@@ -551,7 +560,7 @@ enum OrbitStreamDisplayErrors {
             switch url.code {
             case .timedOut where waitedForChange:
                 return OrbitStreamDisplayProblem(title: "No answer yet",
-                                                 message: "The PC didn't answer within two minutes. If an administrator prompt is still open on the PC, answer it, then check again: the change may already be done.")
+                                                 message: "The PC didn't answer within two minutes. Check again in a moment: the change may already be done. If an administrator prompt from Orbit is still open on the PC, close it; it no longer changes anything.")
             case .timedOut, .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed:
                 return OrbitStreamDisplayProblem(title: "PC not reachable",
                                                  message: "Your PC didn't answer. Check that it's awake, on the same network, and that Orbit PC Companion is running.")

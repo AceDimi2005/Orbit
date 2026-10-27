@@ -730,6 +730,16 @@ struct MacLibraryView: View {
     }
 
     private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
+        // A new stream would replace the second screen's (which keeps Sunshine on the virtual display).
+        let secondScreen = OrbitSecondScreenSession.shared
+        if stream.request?.secondScreen == true || secondScreen.isBusy {
+            switch secondScreen.phase {
+            case .stopping: launchStatus = "Orbit is turning the second screen off on \(pcName). Try again in a moment."
+            case .preparing, .waitingForSunshine: launchStatus = "Orbit is starting the second screen on \(pcName). Turn it off first to stream something else."
+            case .idle, .streaming: launchStatus = "This Mac is a second screen for \(pcName). Stop it first: Control-Option-Shift-Q in the Stream window, or Turn Off in Second Screen."
+            }
+            return
+        }
         // Sized for the display the Stream window will fill: the open Stream window's, else the one in front.
         let target = MoonlightStreamTarget.make(settings: streamSettings.settings, hostSupportsHEVC: sunshine.hostSupportsHEVC,
                                                 screen: MacStreamWindowController.shared.targetScreen())

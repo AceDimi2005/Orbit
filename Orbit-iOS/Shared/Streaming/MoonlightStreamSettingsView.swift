@@ -311,7 +311,7 @@ struct MoonlightStreamSettingsView: View {
             }
             .pickerStyle(.segmented)
             if store.settings.aspect == .native {
-                if displaySetup != nil, fillSetup.availability != .olderAgent {
+                if displaySetup?.hasPC == true, fillSetup.availability != .olderAgent {
                     NavigationLink {
                         MoonlightFillScreenSetupView(model: fillSetup, size: pixelSize, refreshRate: store.settings.frameRate,
                                                      optimizeGameSettings: settings.optimizeGameSettings, accent: accent)

@@ -18,10 +18,12 @@ struct OrbitStreamDisplayContext {
     let pcName: String
     let isDemo: Bool
     let isOnline: Bool
+    /// A PC is paired (or demo mode is on). Without one, Stream Settings only lists the steps.
+    let hasPC: Bool
     let makeClient: @MainActor () throws -> OrbitAPIClient
 
     /// Changes when the screens must forget what they read (another PC, demo mode, back online).
-    var identity: String { "\(pcID)|\(isDemo)|\(isOnline)" }
+    var identity: String { "\(pcID)|\(isDemo)|\(isOnline)|\(hasPC)" }
 }
 
 /// `GET /api/capabilities` per PC for these screens: 10 minutes, 2 minutes for an older agent (404).
@@ -52,7 +54,8 @@ final class OrbitLongRequestGuard {
     init(reason: String) {
         #if os(iOS)
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: reason) { [weak self] in
-            Task { @MainActor in self?.endBackgroundTask() }
+            // iOS calls this on the main thread when the time is up and expects the task to end right here.
+            MainActor.assumeIsolated { self?.endBackgroundTask() }
         }
         if !UIApplication.shared.isIdleTimerDisabled {
             UIApplication.shared.isIdleTimerDisabled = true
@@ -214,10 +217,12 @@ final class OrbitFillScreenSetupModel: ObservableObject {
         defer { keepAwake.end() }
         do {
             var restartNote: String?
+            var addedSize = false
             if status?.lists(size, refreshRate: rate) != true {
                 work = .addingSize(size)
                 let added = try await OrbitStreamDisplayAPI.addMode(client, size: size, refreshRate: rate)
                 guard version == generation else { return }
+                addedSize = added.changed
                 if let display = added.display { status = display }
                 // The driver could not be restarted now: it reads its sizes again when it next starts.
                 if added.reload == "nextStart" { restartNote = OrbitStreamDisplayAPI.nextStartNote(size: size, pcName: context.pcName) }
@@ -228,9 +233,15 @@ final class OrbitFillScreenSetupModel: ObservableObject {
             if let display = result.display { status = display }
             loadedAt = Date()
             work = nil
-            var message = result.changed
-                ? "Sunshine on \(context.pcName) now streams the virtual display in this screen's shape. Start a stream to try it."
-                : "Everything was already set up on \(context.pcName)."
+            var message: String
+            if result.changed {
+                message = "Sunshine on \(context.pcName) now streams the virtual display in this screen's shape. Start a stream to try it."
+            } else if addedSize {
+                // Fill Screen was already on (set up from another device): only this screen's size was missing.
+                message = "\(context.pcName)'s virtual display now offers \(size) at \(rate) Hz, and Sunshine already streams it. Start a stream to try it."
+            } else {
+                message = "Everything was already set up on \(context.pcName)."
+            }
             if result.sunshineReady == false { message += " Sunshine is still restarting: give it a few seconds." }
             if let restartNote { message += " \(restartNote)" }
             if let warning = result.cleanWarning { message += " \(warning)" }
@@ -502,7 +513,7 @@ struct OrbitDisplayWorkRow: View {
                     Text("Approve the Windows PowerShell prompt on your PC.")
                         .font(.callout.weight(.bold))
                         .foregroundStyle(.yellow)
-                    Text("Windows may ask once for administrator permission to add a screen size. Orbit waits up to two minutes; nothing changes if you decline.")
+                    Text("Windows may ask once for administrator permission to add a screen size. Approve it within a minute; if you decline or nobody answers, nothing changes.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if let detail {
@@ -566,6 +577,11 @@ struct MoonlightFillScreenStatusRow: View {
             return Appearance(icon: "exclamationmark.triangle.fill", tint: .orange, title: "Couldn't check \(pc)", detail: problem.message)
         case .available, .demo:
             guard let status = model.status else { return Appearance(icon: "", tint: .secondary, title: "Checking \(pc)…", spinning: true) }
+            if status.secondScreen.active {
+                // Sunshine streams the extra display then, whatever Fill Screen's state.
+                return Appearance(icon: "rectangle.on.rectangle", tint: .blue, title: "Second Screen is on for \(pc)",
+                                  detail: "Until it's turned off, streams show the extra display next to \(pc)'s monitor, not the main one.")
+            }
             if let shortfall = status.fillShortfall(size: size, refreshRate: OrbitStreamDisplayAPI.clampedRefreshRate(refreshRate), pcName: pc) {
                 return Appearance(icon: "exclamationmark.triangle.fill", tint: .orange, title: "\(pc) isn't set up to fill this screen",
                                   detail: "\(shortfall) Until then you still see black bars.")
@@ -680,8 +696,9 @@ struct MoonlightFillScreenSetupView: View {
 
     @ViewBuilder
     private func checksSection(_ status: OrbitStreamDisplayStatus) -> some View {
+        let checks = status.fillChecks(size: displaySize, refreshRate: rate)
         Section {
-            ForEach(status.fillChecks(size: displaySize, refreshRate: rate)) { check in
+            ForEach(checks) { check in
                 VStack(alignment: .leading, spacing: 10) {
                     OrbitDisplayCheckRow(check: check)
                     if check.kind == .login, check.state != .done {
@@ -694,6 +711,11 @@ struct MoonlightFillScreenSetupView: View {
                     }
                 }
                 .padding(.vertical, 2)
+            }
+            // The PC's own words when no row above says why it isn't ready (for example Sunshine not listing
+            // the virtual display yet).
+            if let note = status.pcNote, !checks.contains(where: { $0.detail == note }) {
+                OrbitDisplayOutcomeRow(title: "Note from \(pcName)", message: note, isError: true)
             }
             if !optimizeGameSettings {
                 VStack(alignment: .leading, spacing: 4) {

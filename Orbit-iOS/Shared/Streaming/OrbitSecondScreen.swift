@@ -123,7 +123,9 @@ final class OrbitSecondScreenSession: ObservableObject {
     /// What keeps Start from running, in plain words (nil: it can start). `size` is what this screen streams at.
     func startBlocker(context: OrbitStreamDisplayContext, host: MoonlightHostCoordinator, size: OrbitDisplaySize) -> String? {
         if context.isDemo { return nil }
+        if !context.hasPC { return "Pair a PC first." }
         if let sessionPCID, sessionPCID != context.pcID { return "A second screen is running for \(sessionPCName). Turn it off there first." }
+        if Self.otherStreamIsOpen { return "End the stream that's open first." }
         if let blocker = availabilityBlocker(pcName: context.pcName) { return blocker }
         guard statusPCID == context.pcID, let status else { return "Checking \(context.pcName)…" }
         if !host.isPaired { return "Pair Orbit with Sunshine first." }
@@ -198,6 +200,13 @@ final class OrbitSecondScreenSession: ObservableObject {
         OrbitStreamDisplayAPI.clampedRefreshRate(min(settings.frameRate, max(60, MoonlightDeviceCapabilities.maximumFrameRate)))
     }
 
+    /// Another stream is on screen (the Mac's Stream window can show one while this sheet is open): starting
+    /// the second screen would replace it.
+    static var otherStreamIsOpen: Bool {
+        let controller = MoonlightStreamController.shared
+        return controller.isPresented && controller.request?.secondScreen != true
+    }
+
     // MARK: Reading the PC
 
     func refresh(context: OrbitStreamDisplayContext, force: Bool = false) async {
@@ -256,7 +265,11 @@ final class OrbitSecondScreenSession: ObservableObject {
         problem = nil
         notice = nil
         if context.isDemo {
-            notice = Notice(kind: .demo, message: "Nothing was sent to a PC. Pair your own PC to use this device as its second screen.")
+            notice = Notice(kind: .demo, message: "With your own PC, Orbit would now add a \(target.size) virtual display next to its monitor and stream it here. Nothing was sent to a PC.")
+            return
+        }
+        guard !Self.otherStreamIsOpen else {
+            problem = OrbitStreamDisplayProblem(title: "A stream is open", message: "End the stream that's open first, then start the second screen.")
             return
         }
         let client: OrbitAPIClient
@@ -437,9 +450,13 @@ final class OrbitSecondScreenSession: ObservableObject {
             let result = try await OrbitStreamDisplayAPI.setSecondScreen(client, enabled: false, size: nil, refreshRate: sessionRefreshRate,
                                                                          position: status?.secondScreen.position ?? "right")
             if let display = result.display { apply(display, pcID: pcID) }
-            var message = result.changed
-                ? "The second screen is off. Sunshine on \(pcName) streams the main monitor again."
-                : "The second screen is off."
+            // Fill Screen can stay on underneath: Sunshine then goes back to the virtual display at each stream's size.
+            let fillStaysOn = (result.display ?? status)?.fill.enabled == true
+            var message = !result.changed
+                ? "The second screen is off."
+                : (fillStaysOn
+                    ? "The second screen is off. Sunshine on \(pcName) is back to Fill Screen for your streams."
+                    : "The second screen is off. Sunshine on \(pcName) streams the main monitor again.")
             if let warning = result.cleanWarning { message += " \(warning)" }
             notice = Notice(kind: .done, message: message)
             placementHint = nil
@@ -450,6 +467,48 @@ final class OrbitSecondScreenSession: ObservableObject {
             // Keep the client and host so Turn Off can try again; the PC still has the virtual display on.
             phase = .idle
             await refreshAfterChange(client: client, pcID: pcID)
+        }
+    }
+
+    // MARK: Undo
+
+    /// "Undo Orbit's Changes": Fill Screen and the second screen off, and Sunshine's display settings back to how
+    /// they were before Orbit changed them (POST /api/stream/display/revert). Never while this device streams.
+    func revert(context: OrbitStreamDisplayContext) {
+        guard !isBusy, phase != .streaming, sessionPCID == nil || sessionPCID == context.pcID else { return }
+        problem = nil
+        notice = nil
+        if context.isDemo {
+            status = .demo()
+            notice = Notice(kind: .demo, message: "Nothing was sent to a PC.")
+            return
+        }
+        let client: OrbitAPIClient
+        do { client = try context.makeClient() } catch {
+            problem = OrbitStreamDisplayErrors.describe(error)
+            return
+        }
+        phase = .stopping("Putting Sunshine's settings back on \(context.pcName)…")
+        Task {
+            let keepAwake = OrbitLongRequestGuard(reason: "Undoing Orbit's display changes")
+            defer { keepAwake.end() }
+            do {
+                let result = try await OrbitStreamDisplayAPI.revert(client)
+                if let display = result.display { apply(display, pcID: context.pcID) }
+                var message = result.changed
+                    ? "Sunshine's display settings on \(context.pcName) are back to how they were before Orbit changed them."
+                    : "Nothing needed to change on \(context.pcName)."
+                if result.sunshineReady == false { message += " Sunshine is still restarting: give it a few seconds." }
+                if let warning = result.cleanWarning { message += " \(warning)" }
+                notice = Notice(kind: .done, message: message)
+                placementHint = nil
+                launchedAppID = nil
+                finishSession()
+            } catch {
+                problem = OrbitStreamDisplayErrors.describe(error, waitedForChange: true)
+                phase = .idle
+                await refreshAfterChange(client: client, pcID: context.pcID)
+            }
         }
     }
 

@@ -174,6 +174,20 @@ struct OrbitStreamDisplayChecks {
         expect(!notReady.fillsScreen(size: phone) && notReady.fillShortfall(size: phone, pcName: "PC") == notReady.reason, "the PC's own reason is shown")
         expect(notReady.secondScreenBlocker == nil, "a reason the PC fixes itself does not block the second screen")
 
+        // The PC's own reason is shown as a note only when no row of its own explains it.
+        expect(notReady.pcNote == notReady.reason, "a reason without a row of its own becomes the PC's note")
+        expect(listedOff.pcNote == nil, "no note when the PC is ready")
+        var driverReason = none
+        driverReason.fillReady = false
+        driverReason.reason = "Install the free Virtual Display Driver on the PC first."
+        expect(driverReason.pcNote == nil, "a missing driver has its own row, not a note")
+        var loginReason = rejected
+        loginReason.fillReady = false
+        expect(loginReason.pcNote == nil, "a login Sunshine refuses has its own row, not a note")
+        var blankReason = notReady
+        blankReason.reason = "  "
+        expect(blankReason.pcNote == nil, "a blank reason is not shown")
+
         // Second screen: something running in Sunshine.
         var busy = ready()
         busy.appRunning = true
@@ -236,6 +250,7 @@ struct OrbitStreamDisplayChecks {
             "streamActive": status.streamActive as Any,
             "savedConfig": status.savedConfig.available,
             "reason": status.reason as Any,
+            "pcNote": status.pcNote as Any,
             "resolutions": status.virtualDisplay.resolutions,
         ]
         if let size {

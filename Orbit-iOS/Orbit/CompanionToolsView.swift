@@ -51,7 +51,7 @@ struct CompanionToolsView: View {
                                 }
                             } label: {
                                 toolTile("Second Screen", subtitle: "Extra display for your PC", icon: "rectangle.on.rectangle", tint: .blue,
-                                         badge: secondScreen.isStreaming || secondScreen.isActiveOnPC(vm.selectedPCID) ? "ON" : "LABS")
+                                         badge: secondScreen.isStreaming || secondScreen.isActiveOnPC(vm.streamDisplayContext.pcID) ? "ON" : "LABS")
                             }
                         }
 

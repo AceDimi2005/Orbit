@@ -139,8 +139,19 @@ def agent_round_trip(binary, directory):
             check(refused.get("error", {}).get("status") == 428 and refused["error"]["title"] == "Sunshine login needed"
                   and "login" in refused["error"]["message"], "fill without a login is 428 in plain words", refused)
 
-            # Login saved: everything but this screen's size and Fill Screen itself.
+            # Login saved, but Sunshine's log does not list the virtual display (Sunshine started before the
+            # driver): no row of its own explains that, so the PC's sentence is the app's note. It does not block
+            # the second screen, whose start restarts Sunshine once to find the display.
             sunshine.login = True
+            original_log = sunshine.log_text
+            sunshine.log_text = fakes.LOG_NO_VDD
+            status = run(port, "status", *PHONE)
+            check(status["fillReady"] is False and status["pcNote"] == sd.VDD_NOT_IN_SUNSHINE and status["secondScreenBlocker"] is None,
+                  "Sunshine not listing the virtual display is the PC's note and does not block the second screen", status)
+            sunshine.log_text = original_log
+            service._device_cache = None  # the agent reads Sunshine's log again, as after a Sunshine restart
+
+            # Login saved: everything but this screen's size and Fill Screen itself.
             status = run(port, "status", *PHONE)
             check(status["driverUsable"] and not status["lists"] and not status["fillsScreen"] and status["fillReady"], "ready PC without the size", status)
             check(status["checks"] == ["login=done", "sunshine=done", "driver=done", "size=missing", "sunshineTarget=missing"], "checks before setup", status)

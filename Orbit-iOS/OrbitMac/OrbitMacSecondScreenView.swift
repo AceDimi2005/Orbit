@@ -11,7 +11,7 @@ extension OrbitMacViewModel {
     /// The selected PC, for the Fill Screen setup in Stream Settings and for Second Screen.
     var streamDisplayContext: OrbitStreamDisplayContext {
         OrbitStreamDisplayContext(pcID: isDemoMode ? "demo" : (currentPC?.id ?? ""), pcName: selectedPCName.isEmpty ? "your PC" : selectedPCName,
-                                  isDemo: isDemoMode, isOnline: metrics.isOnline, makeClient: { try self.client() })
+                                  isDemo: isDemoMode, isOnline: metrics.isOnline, hasPC: isDemoMode || currentPC != nil, makeClient: { try self.client() })
     }
 }
 
@@ -81,6 +81,7 @@ struct MacSecondScreenSheet: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmStop = false
+    @State private var confirmRevert = false
     @State private var savingLogin = false
     @State private var loginMessage: String?
     @State private var loginFailed = false
@@ -135,6 +136,11 @@ struct MacSecondScreenSheet: View {
         }
     }
 
+    /// Orbit changed Sunshine's settings on this PC (the PC kept the previous ones) and nothing streams here.
+    private var canUndo: Bool {
+        status?.savedConfig.available == true && sessionIsHere && !session.isStreaming
+    }
+
     private var showsSetup: Bool {
         switch session.availability {
         case .available, .demo: return true
@@ -172,6 +178,7 @@ struct MacSecondScreenSheet: View {
         case .idle: break
         }
         if vm.isDemoMode { return ("Demo", .orange) }
+        if !context.hasPC { return ("No PC", .secondary) }
         if !vm.metrics.isOnline { return ("PC offline", .orange) }
         return isActiveOnPC ? ("On", .mint) : ("Off", .secondary)
     }
@@ -208,6 +215,17 @@ struct MacSecondScreenSheet: View {
 
     @ViewBuilder
     private var availabilityNotice: some View {
+        if !context.hasPC {
+            // Nothing to check yet: without a paired PC the session only knows that it is "offline".
+            message("Pair a PC first", "Pair your PC in My PCs, or import the one you paired on your iPhone, then come back to use this Mac as its second screen.",
+                    icon: "desktopcomputer", tint: .orange)
+        } else {
+            pcAvailabilityNotice
+        }
+    }
+
+    @ViewBuilder
+    private var pcAvailabilityNotice: some View {
         switch session.availability {
         case .offline:
             message("\(pcName) is offline", "Wake it or connect to it to use this Mac as its second screen.", icon: "wifi.slash", tint: .orange)
@@ -269,6 +287,10 @@ struct MacSecondScreenSheet: View {
                         OrbitDisplayCheckRow(check: check)
                         checkAction(check, status: status)
                     }
+                }
+                // The PC's own words when it isn't ready for another reason (Start may still sort it out).
+                if let note = status.pcNote {
+                    OrbitDisplayOutcomeRow(title: "Note from \(pcName)", message: note, isError: false, symbol: "info.circle.fill", tint: .cyan)
                 }
             }
             if let loginMessage {
@@ -381,11 +403,11 @@ struct MacSecondScreenSheet: View {
             case .waitingForSunshine where sessionIsHere:
                 OrbitDisplayWorkRow(title: "Waiting for Sunshine to restart…", detail: "The Stream window opens as soon as Sunshine answers again.")
             case .stopping(let text) where sessionIsHere:
-                OrbitDisplayWorkRow(title: text, detail: "Sunshine restarts on the PC to show the main monitor again.")
+                OrbitDisplayWorkRow(title: text, detail: "Sunshine restarts on the PC to put its display settings back.")
             default:
                 if isActiveOnPC && sessionIsHere {
                     Text("The second screen is on").font(.headline)
-                    Text(session.isStreaming ? "It is streaming in the Stream window. Press ⌃⌥⇧Q there, or Turn Off here, to stop it." : "\(pcName) still has the virtual display. Show it here again, or turn it off so Sunshine streams the main monitor.")
+                    Text(session.isStreaming ? "It is streaming in the Stream window. Press ⌃⌥⇧Q there, or Turn Off here, to stop it." : "\(pcName) still has the virtual display. Show it here again, or turn it off so Sunshine \(status?.fill.enabled == true ? "goes back to Fill Screen" : "streams the main monitor").")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 10) {
                         if !session.isStreaming {
@@ -417,8 +439,23 @@ struct MacSecondScreenSheet: View {
     private var howItWorks: some View {
         VStack(alignment: .leading, spacing: 8) {
             bullet("display.2", "Orbit adds a virtual display (the free Virtual Display Driver) at this display's size and has Sunshine stream it, so it fills the screen.")
-            bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then show the main monitor again.")
-            bullet("flask", "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, use Undo Orbit's Changes in Stream Settings › Fill Screen.")
+            bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then \(status?.fill.enabled == true ? "fill the screen again, as Fill Screen is on" : "show the main monitor again").")
+            bullet("flask", canUndo
+                   ? "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, Undo Orbit's Changes below puts Sunshine's display settings back."
+                   : "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. Orbit saves Sunshine's display settings before changing them, so they can always be put back.")
+            if canUndo {
+                Button { confirmRevert = true } label: { Label("Undo Orbit's Changes…", systemImage: "arrow.uturn.backward") }
+                    .buttonStyle(MacHoverButtonStyle(tint: .orange))
+                    .disabled(session.isBusy)
+                    .help("Turns Fill Screen and the second screen off and puts Sunshine's display settings back")
+                    .padding(.top, 4)
+                    .confirmationDialog("Undo Orbit's changes on \(pcName)?", isPresented: $confirmRevert, titleVisibility: .visible) {
+                        Button("Undo Changes", role: .destructive) { session.revert(context: context) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Fill Screen and the second screen turn off, and Sunshine's display settings go back to how they were before Orbit changed them. Sunshine restarts once.")
+                    }
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
