@@ -6,6 +6,7 @@ response in test_fixtures/), and every file lives in a temporary folder.
 import contextlib
 import email.message
 import io
+import itertools
 import json
 import math
 import os
@@ -993,6 +994,10 @@ class RuntimeLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(runtime)
         self.assertIsNone(energy._RETRY)
         self.assertEqual(attempts, [path, path, path])
+        # Ticks two seconds apart on a fake clock: two calls in a row can read the same
+        # time.monotonic() value on Windows, and a zero-length tick records no energy.
+        clock = itertools.count(1000.0, 2.0)
+        runtime._monotonic = lambda: next(clock)
         energy.record_tick({"telemetryAvailable": True, "cpuPowerWatts": 100})
         energy.record_tick({"telemetryAvailable": True, "cpuPowerWatts": 100})
         energy.stop()
