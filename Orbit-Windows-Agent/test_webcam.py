@@ -33,6 +33,10 @@ WEBCAM_DIR = AGENT_DIR / "webcam"
 GIVEN_PINS = {"softcam64.dll": "f62432a498c06b053eae3d437f445ff64e8b847be92b689e5ee01f0f2fdf911a",
               "softcam32.dll": "aa2e2d870a1d280d3f11382b0fdba5cb760a66830cc3d6353a03b3571f44c66d"}
 RUNTIME_OK = (14, 44, 35211)
+# The environment as it was before any test patched it. WindowsEnvironment points SystemRoot at a temporary
+# folder, and a real powershell.exe started with that cannot load (error 8009001d), so tests that run the
+# real PowerShell hand it this one.
+REAL_ENVIRONMENT = dict(os.environ)
 
 
 def wait_until(predicate, timeout=3.0, interval=0.01):
@@ -856,7 +860,7 @@ class ScriptTests(WindowsEnvironment):
                 check = ("$t = $null; $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
                          f"'{path}', [ref]$t, [ref]$e); foreach ($x in $e) {{ Write-Output $x.Message }}; exit $e.Count")
                 result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", check],
-                                        capture_output=True, text=True, timeout=120)
+                                        capture_output=True, text=True, timeout=120, env=REAL_ENVIRONMENT)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "needs Windows PowerShell")
@@ -868,7 +872,7 @@ class ScriptTests(WindowsEnvironment):
                   "-Encoding UTF8 -NoNewline; exit 7")
         powershell = shutil.which("powershell")
         result = subprocess.run(f'"{powershell}" {webcam.powershell_parameters(script)}', capture_output=True,
-                                timeout=120)
+                                timeout=120, env=REAL_ENVIRONMENT)
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertEqual(output.read_text(encoding="utf-8-sig"), text)
 
