@@ -74,8 +74,8 @@ struct OrbitAppShortcuts: AppShortcutsProvider {
             shortTitle: "Restart PC",
             systemImageName: "arrow.triangle.2.circlepath"
         )
-        // Free actions (OrbitPCIntents.swift). Apple allows 10 App Shortcuts; 2 are left for the
-        // button deck and presentation actions. Keep every App Shortcut intent out of the widget
+        // Free actions (OrbitPCIntents.swift, OrbitPresentationIntents.swift). Apple allows 10 App
+        // Shortcuts; 1 is left. Keep every App Shortcut intent out of the widget
         // extension (the Pro ones above live in Shared/OrbitPowerIntents.swift): iOS runs an intent
         // that both targets compile in the widget process while Orbit is closed, where App Shortcuts
         // fail ("Couldn't find AppShortcutsProvider", "Unable to run App Shortcut").
@@ -118,6 +118,19 @@ struct OrbitAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Sleep After Downloads",
             systemImageName: "arrow.down.circle"
+        )
+        // Presentation remote: "Next slide with Orbit" runs the default action (next); the spoken
+        // action ("Black screen with Orbit", "Previous slide with Orbit") picks another one.
+        AppShortcut(
+            intent: PresentationControlIntent(),
+            phrases: [
+                "Next slide with \(.applicationName)",
+                "Next slide in \(.applicationName)",
+                "\(\.$action) with \(.applicationName)",
+                "\(\.$action) in my presentation with \(.applicationName)"
+            ],
+            shortTitle: "Next Slide",
+            systemImageName: "rectangle.inset.filled.and.person.filled"
         )
     }
 }

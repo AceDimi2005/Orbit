@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A30000000000000000000104 /* OrbitWatchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitWatchPresentation.swift */; };
+		A20000000000000000000114 /* OrbitWatchPresentationRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitWatchPresentationRelay.swift */; };
+		A20000000000000000000113 /* PresentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* PresentationView.swift */; };
+		A20000000000000000000112 /* OrbitPresentationIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitPresentationIntents.swift */; };
+		A30000000000000000000103 /* OrbitPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitPresentationModels.swift */; };
+		A20000000000000000000111 /* OrbitPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitPresentationModels.swift */; };
 		A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
@@ -247,6 +253,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000121 /* OrbitWatchPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentation.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* OrbitWatchPresentationRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentationRelay.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* PresentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011E /* OrbitPresentationIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPresentationIntents.swift; sourceTree = "<group>"; };
+		B2000000000000000000011D /* OrbitPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPresentationModels.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitTVDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVDeck.swift; sourceTree = "<group>"; };
@@ -483,6 +494,8 @@
 				B20000000000000000000113 /* DeckEditorView.swift */,
 				B20000000000000000000114 /* DeckView.swift */,
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
+				B2000000000000000000011F /* PresentationView.swift */,
+				B20000000000000000000120 /* OrbitWatchPresentationRelay.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -542,6 +555,8 @@
 				B20000000000000000000116 /* OrbitDeck.swift */,
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
+				B2000000000000000000011D /* OrbitPresentationModels.swift */,
+				B2000000000000000000011E /* OrbitPresentationIntents.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -566,6 +581,7 @@
 				B30000000000000000000006 /* Info.plist */,
 				B30000000000000000000007 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000011B /* OrbitWatchDeck.swift */,
+				B20000000000000000000121 /* OrbitWatchPresentation.swift */,
 			);
 			path = OrbitWatch;
 			sourceTree = "<group>";
@@ -925,6 +941,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000114 /* OrbitWatchPresentationRelay.swift in Sources */,
+				A20000000000000000000113 /* PresentationView.swift in Sources */,
+				A20000000000000000000112 /* OrbitPresentationIntents.swift in Sources */,
+				A20000000000000000000111 /* OrbitPresentationModels.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
 				A2000000000000000000010E /* OrbitDeck.swift in Sources */,
@@ -1000,6 +1020,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000104 /* OrbitWatchPresentation.swift in Sources */,
+				A30000000000000000000103 /* OrbitPresentationModels.swift in Sources */,
 				A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */,
 				A30000000000000000000101 /* OrbitWatchDeck.swift in Sources */,
 				A30000000000000000000100 /* OrbitPowerIntents.swift in Sources */,

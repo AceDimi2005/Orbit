@@ -46,6 +46,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
     case deckUnavailable
     /// The PC refused to run a deck button and said why (deleted button, invalid action…).
     case deckRejected(String)
+    /// The PC's agent has no presentation remote yet (`/api/presentation` is an unknown route).
+    case presentationUnavailable
+    /// The PC refused a slide show action or read and said why (no show running, PowerPoint busy…).
+    case presentationRejected(String)
 
     var statusCode: Int? {
         if case let .http(status, _) = self { return status }
@@ -83,6 +87,10 @@ enum OrbitWatchHTTPError: LocalizedError, Equatable {
             return "Buttons need the latest Orbit agent on your PC. Update it, then try again."
         case let .deckRejected(message):
             return message
+        case .presentationUnavailable:
+            return "The presentation remote needs the latest Orbit agent on your PC. Update it, then try again."
+        case let .presentationRejected(message):
+            return message
         }
     }
 }
@@ -101,8 +109,13 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
 
     /// The PC answers a deck run only when the button has finished: opening an app waits up to 2.5 s,
     /// OBS up to 6 s, and a sequence adds pauses. Runs get their own session with this timeout so a
-    /// button that worked is not reported as unanswered (the iPhone relay allows 12 s).
+    /// button that worked is not reported as unanswered (the iPhone relay allows 12 s). Slide show
+    /// actions use the same session: a busy PowerPoint can take up to 6 s before the PC answers.
     static let deckRunTimeout: TimeInterval = 15
+
+    /// `POST /api/presentation/{action}` actions (`orbit_presentation.ACTIONS`).
+    static let presentationActions: Set<String> = ["next", "previous", "first", "last", "start", "startCurrent",
+                                                   "end", "black", "white", "goto"]
 
     convenience init(target: OrbitWatchControlTarget) throws {
         try self.init(target: target, configuration: .ephemeral)
@@ -166,7 +179,7 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
         try await data(path: path, method: method, query: query, using: session)
     }
 
-    private func data(path: String, method: String, query: [URLQueryItem], using session: URLSession) async throws -> Data {
+    private func data(path: String, method: String, query: [URLQueryItem], using session: URLSession, json: Data? = nil) async throws -> Data {
         let allowedPath = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-.")
         guard path.hasPrefix("/api/"), path.unicodeScalars.allSatisfy(allowedPath.contains),
               !path.split(separator: "/").contains(".."),
@@ -187,6 +200,10 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
         request.setValue("Bearer \(target.token)", forHTTPHeaderField: "Authorization")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let json {
+            request.httpBody = json
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         let result: (Data, URLResponse)
         do {
             result = try await session.data(for: request)
@@ -269,6 +286,44 @@ final class OrbitWatchHTTPClient: @unchecked Sendable {
         let detail = (try? JSONDecoder().decode(Reply.self, from: response))?.detail?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return detail?.isEmpty == false ? detail : nil
+    }
+
+    /// `GET /api/presentation` (HTTPS only on the PC). Returns the raw JSON for `OrbitPresentationState`.
+    func presentationState() async throws -> Data {
+        do {
+            return try await data(path: "/api/presentation", method: "GET", query: [], using: session)
+        } catch let error as OrbitWatchHTTPError {
+            throw Self.presentationError(error)
+        }
+    }
+
+    /// `POST /api/presentation/{action}`, with `{"slide": N}` for goto. Returns the raw reply JSON. Sent
+    /// once: a timeout can arrive after the PC already changed the slide, so it is never replayed.
+    func presentationAction(_ action: String, slide: Int? = nil) async throws -> Data {
+        guard Self.presentationActions.contains(action) else { throw OrbitWatchHTTPError.invalidRequest }
+        var body: Data?
+        if action == "goto" {
+            guard let slide, (1...10_000).contains(slide) else { throw OrbitWatchHTTPError.invalidRequest }
+            body = Data("{\"slide\":\(slide)}".utf8)
+        }
+        do {
+            return try await data(path: "/api/presentation/\(action)", method: "POST", query: [], using: deckSession, json: body)
+        } catch let error as OrbitWatchHTTPError {
+            throw Self.presentationError(error)
+        }
+    }
+
+    /// FastAPI answers an unknown route with the bare detail "Not Found"; the presentation remote's own
+    /// refusals (409 no show, 422 slide, 426 not encrypted, 503 PowerPoint busy…) are sentences for people.
+    /// Pairing errors keep the Watch's own wording.
+    private static func presentationError(_ error: OrbitWatchHTTPError) -> OrbitWatchHTTPError {
+        guard case let .http(status, detail) = error else { return error }
+        if status == 404, detail == nil || detail == "Not Found" { return .presentationUnavailable }
+        let sentence = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if (400..<600).contains(status), ![401, 403, 405].contains(status), !sentence.isEmpty {
+            return .presentationRejected(sentence)
+        }
+        return error
     }
 }
 

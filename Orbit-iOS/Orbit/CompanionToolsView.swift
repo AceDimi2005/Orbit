@@ -30,6 +30,9 @@ struct CompanionToolsView: View {
                             NavigationLink { DeckView(vm: vm) } label: {
                                 toolTile("Buttons", subtitle: "One-tap shortcuts, OBS & media", icon: "square.grid.3x2.fill", tint: .pink)
                             }
+                            NavigationLink { PresentationView(vm: vm) } label: {
+                                toolTile("Presentation", subtitle: "Slides, notes & timer", icon: "rectangle.inset.filled.and.person.filled", tint: .yellow)
+                            }
                             NavigationLink { ClipboardView(vm: vm) } label: {
                                 toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
                             }

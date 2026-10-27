@@ -116,6 +116,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     @Published var games: [WatchSunshineGame] = []
     /// The PC's custom buttons for the Buttons page (OrbitWatchDeck.swift).
     let deck = WatchDeckStore()
+    /// The slide show remote on the Present page (OrbitWatchPresentation.swift).
+    let presentation = WatchPresentationStore()
 
     // Wrist Motion Air Mouse state
     @Published var isMotionCursorActive: Bool = false
@@ -231,6 +233,8 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             selectedTab = 3
         } else if hostOrPath.contains("button") || hostOrPath.contains("deck") {
             selectedTab = WatchDeckStore.tab
+        } else if hostOrPath.contains("present") || hostOrPath.contains("slide") {
+            selectedTab = WatchPresentationStore.tab
         } else {
             selectedTab = 0
         }
@@ -1001,6 +1005,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
 
         deck.applyPhonePayload(payload)
+        presentation.applyPhonePayload(payload)
         statusMessage = isOnline ? "Synced · \(pcName)" : "Offline · \(pcName)"
         saveSnapshotForComplications()
     }
