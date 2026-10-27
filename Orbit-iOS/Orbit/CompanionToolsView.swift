@@ -5,6 +5,7 @@ struct CompanionToolsView: View {
     @ObservedObject var vm: OrbitViewModel
     @ObservedObject private var proStore = OrbitProStore.shared
     @ObservedObject private var watchBridge = OrbitWatchBridge.shared
+    @ObservedObject private var secondScreen = OrbitSecondScreenSession.shared
     @State private var showsSettings = false
     @State private var showsDiscovery = false
     @State private var showsProPaywall = false
@@ -43,6 +44,14 @@ struct CompanionToolsView: View {
                                 showsStreamSettings = true
                             } label: {
                                 toolTile("Stream Settings", subtitle: "Resolution, bitrate, codec & HDR", icon: "play.rectangle.fill", tint: theme.accent)
+                            }
+                            NavigationLink {
+                                OrbitProGate(title: "Second Screen", message: "Using this iPhone or iPad as an extra display for your PC is part of Orbit Pro.") {
+                                    SecondScreenView(vm: vm)
+                                }
+                            } label: {
+                                toolTile("Second Screen", subtitle: "Extra display for your PC", icon: "rectangle.on.rectangle", tint: .blue,
+                                         badge: secondScreen.isStreaming || secondScreen.isActiveOnPC(vm.selectedPCID) ? "ON" : "LABS")
                             }
                         }
 
@@ -166,7 +175,8 @@ struct CompanionToolsView: View {
             .sheet(isPresented: $showsStreamSettings) {
                 // Sized for the selected PC's codecs, as the library's sheet and the streams it starts are.
                 MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent,
-                                            hostSupportsHEVC: MoonlightHostStore.record(for: vm.selectedPCID)?.supportsHEVC) { showsStreamSettings = false }
+                                            hostSupportsHEVC: MoonlightHostStore.record(for: vm.selectedPCID)?.supportsHEVC,
+                                            displaySetup: vm.streamDisplayContext) { showsStreamSettings = false }
                     .presentationBackground(theme.background)
             }
         }

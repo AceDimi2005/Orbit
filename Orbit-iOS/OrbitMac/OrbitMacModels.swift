@@ -745,7 +745,7 @@ enum MacFormat {
 
 /// Queued by menu commands (⇧⌘S, Stream Settings…); the Stream section runs it once it is on screen.
 enum MacStreamAction: Equatable {
-    case desktop, settings
+    case desktop, settings, secondScreen
 }
 
 /// Where "Stream" opens a session on the Mac: inside Orbit, or in the separate Moonlight app.

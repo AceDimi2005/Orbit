@@ -196,7 +196,8 @@ struct OrbitProUnlockView: View {
         ("power.circle.fill", "Power widgets & Siri", "Wake, sleep and shut down from widgets, Control Center and Siri."),
         ("desktopcomputer", "Unlimited PCs", "Save and switch between every PC you own."),
         ("chart.xyaxis.line", "Session graphs", "History of FPS, temperatures and power."),
-        ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64.")
+        ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64."),
+        ("rectangle.on.rectangle", "Second Screen (Labs)", "Use your iPad, iPhone or Mac as an extra display for your PC.")
     ]
 
     var body: some View {

@@ -20,7 +20,8 @@ final class OrbitAPIClient: @unchecked Sendable {
         return normalized.count == 64 && normalized.allSatisfy { $0.isASCII && $0.isHexDigit }
     }
 
-    init(host: String, port: Int, token: String, fingerprint: String, pairingOnly: Bool = false) throws {
+    /// `requestTimeout`: how long a request may wait for the PC's answer (20 s; see `withTimeout`).
+    init(host: String, port: Int, token: String, fingerprint: String, pairingOnly: Bool = false, requestTimeout: TimeInterval = 20) throws {
         guard !host.isEmpty, !host.contains("/"), !host.contains(":"), (1...65535).contains(port), (!token.isEmpty || pairingOnly) else {
             throw OrbitError(message: "Enter the PC address, secure port and pairing token in My PCs.")
         }
@@ -32,7 +33,7 @@ final class OrbitAPIClient: @unchecked Sendable {
         self.fingerprint = Self.normalizedFingerprint(fingerprint)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForRequest = max(1, requestTimeout)
         configuration.timeoutIntervalForResource = 60 * 60
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
@@ -40,6 +41,12 @@ final class OrbitAPIClient: @unchecked Sendable {
         session = URLSession(configuration: configuration, delegate: authentication, delegateQueue: nil)
     }
     deinit { session.invalidateAndCancel() }
+
+    /// The same PC with a longer wait per request, for calls the PC answers only after slow work
+    /// (an administrator prompt someone has to approve, a Sunshine restart).
+    func withTimeout(_ seconds: TimeInterval) throws -> OrbitAPIClient {
+        try OrbitAPIClient(host: host, port: port, token: token, fingerprint: fingerprint, pairingOnly: pairingOnly, requestTimeout: seconds)
+    }
 
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
         let isWebSocket = (path == "/ws/stream" || path == "/ws/input")

@@ -10,6 +10,7 @@ struct OrbitApp: App {
         #if DEBUG
         if let mode = ProcessInfo.processInfo.environment["ORBIT_IDENTITY_SELFTEST"] { OrbitIdentitySelfTest.run(mode: mode) }
         if let mode = ProcessInfo.processInfo.environment["ORBIT_INTENTS_SELFTEST"] { OrbitIntentsSelfTest.run(mode: mode) }
+        if let mode = ProcessInfo.processInfo.environment["ORBIT_STREAM_DISPLAY_SELFTEST"] { OrbitStreamDisplaySelfTest.start(mode: mode) }
         #endif
         OrbitIntentClient.startMirroringDemoMode()
         OrbitShortcutsParameters.start()

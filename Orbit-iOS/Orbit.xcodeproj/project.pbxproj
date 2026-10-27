@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A60000000000000000000107 /* OrbitMacSecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitMacSecondScreenView.swift */; };
+		A20000000000000000000114 /* SecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* SecondScreenView.swift */; };
+		A60000000000000000000106 /* OrbitSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitSecondScreen.swift */; };
+		A20000000000000000000113 /* OrbitSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitSecondScreen.swift */; };
+		A60000000000000000000105 /* OrbitStreamDisplaySetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitStreamDisplaySetup.swift */; };
+		A20000000000000000000112 /* OrbitStreamDisplaySetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitStreamDisplaySetup.swift */; };
+		A60000000000000000000104 /* OrbitStreamDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitStreamDisplay.swift */; };
+		A20000000000000000000111 /* OrbitStreamDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitStreamDisplay.swift */; };
 		A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
@@ -247,6 +255,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000121 /* OrbitMacSecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacSecondScreenView.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* SecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecondScreenView.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* OrbitSecondScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSecondScreen.swift; sourceTree = "<group>"; };
+		B2000000000000000000011E /* OrbitStreamDisplaySetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitStreamDisplaySetup.swift; sourceTree = "<group>"; };
+		B2000000000000000000011D /* OrbitStreamDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitStreamDisplay.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitTVDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVDeck.swift; sourceTree = "<group>"; };
@@ -483,6 +496,7 @@
 				B20000000000000000000113 /* DeckEditorView.swift */,
 				B20000000000000000000114 /* DeckView.swift */,
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
+				B20000000000000000000120 /* SecondScreenView.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -542,6 +556,7 @@
 				B20000000000000000000116 /* OrbitDeck.swift */,
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
+				B2000000000000000000011D /* OrbitStreamDisplay.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -552,6 +567,8 @@
 				B20000000000000000000082 /* MoonlightStreamLauncher.swift */,
 				B20000000000000000000083 /* MoonlightStreamScreen.swift */,
 				B20000000000000000000084 /* MoonlightStreamSettingsView.swift */,
+				B2000000000000000000011E /* OrbitStreamDisplaySetup.swift */,
+				B2000000000000000000011F /* OrbitSecondScreen.swift */,
 			);
 			path = Streaming;
 			sourceTree = "<group>";
@@ -620,6 +637,7 @@
 				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000010F /* OrbitMacPCAlerts.swift */,
 				B20000000000000000000119 /* OrbitMacDeckView.swift */,
+				B20000000000000000000121 /* OrbitMacSecondScreenView.swift */,
 			);
 			path = OrbitMac;
 			sourceTree = "<group>";
@@ -925,6 +943,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000114 /* SecondScreenView.swift in Sources */,
+				A20000000000000000000113 /* OrbitSecondScreen.swift in Sources */,
+				A20000000000000000000112 /* OrbitStreamDisplaySetup.swift in Sources */,
+				A20000000000000000000111 /* OrbitStreamDisplay.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
 				A2000000000000000000010E /* OrbitDeck.swift in Sources */,
@@ -1051,6 +1073,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000107 /* OrbitMacSecondScreenView.swift in Sources */,
+				A60000000000000000000106 /* OrbitSecondScreen.swift in Sources */,
+				A60000000000000000000105 /* OrbitStreamDisplaySetup.swift in Sources */,
+				A60000000000000000000104 /* OrbitStreamDisplay.swift in Sources */,
 				A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */,
 				A60000000000000000000102 /* OrbitMacDeckView.swift in Sources */,
 				A60000000000000000000101 /* OrbitEventFeed.swift in Sources */,

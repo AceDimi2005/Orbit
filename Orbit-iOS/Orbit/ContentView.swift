@@ -1112,7 +1112,8 @@ struct GameLibraryView: View {
                 .presentationBackground(theme.background)
         }
         .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC,
+                                        displaySetup: vm.streamDisplayContext) { showsStreamSettings = false }
                 .presentationBackground(theme.background)
         }
     }

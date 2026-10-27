@@ -180,12 +180,19 @@ private struct MoonlightSessionLayer: View {
                 scheduleHide()
             }
         }
-        .confirmationDialog("End the stream?", isPresented: $confirmEnd, titleVisibility: .visible) {
-            Button("Disconnect") { onEnd(false) }
-            Button("Quit \(request.app.title) on PC", role: .destructive) { onEnd(true) }
+        .confirmationDialog(request.secondScreen ? "Stop the second screen?" : "End the stream?", isPresented: $confirmEnd, titleVisibility: .visible) {
+            if request.secondScreen {
+                // OrbitSecondScreenSession closes the Desktop session and turns the virtual display off afterwards.
+                Button("Stop Second Screen", role: .destructive) { onEnd(false) }
+            } else {
+                Button("Disconnect") { onEnd(false) }
+                Button("Quit \(request.app.title) on PC", role: .destructive) { onEnd(true) }
+            }
             Button("Keep streaming", role: .cancel) { scheduleHide() }
         } message: {
-            Text("Disconnecting leaves \(request.app.title) running on \(request.pcName); you can resume later.")
+            Text(request.secondScreen
+                 ? "Orbit ends the stream, turns the virtual display on \(request.pcName) off and puts Sunshine's settings back."
+                 : "Disconnecting leaves \(request.app.title) running on \(request.pcName); you can resume later.")
         }
     }
 
@@ -193,7 +200,7 @@ private struct MoonlightSessionLayer: View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
                 Circle().fill(session.connectionIsPoor ? Color.orange : accent).frame(width: 8, height: 8)
-                Text(request.app.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(request.secondScreen ? "Second Screen" : request.app.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Text("·").foregroundStyle(.secondary)
                 Text(request.pcName).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 if session.isHDR { Text("HDR").font(.caption2.weight(.bold)).padding(.horizontal, 5).padding(.vertical, 2).background(accent.opacity(0.25), in: Capsule()) }

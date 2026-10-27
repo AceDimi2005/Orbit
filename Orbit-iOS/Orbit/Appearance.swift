@@ -682,6 +682,12 @@ struct OrbitProPaywallView: View {
                                 title: "Unlimited Buttons",
                                 subtitle: "Go past the 6 free buttons: up to 64 one-tap shortcuts, OBS controls and app launchers per PC."
                             )
+                            proFeatureRow(
+                                icon: "rectangle.on.rectangle",
+                                tint: .blue,
+                                title: "Second Screen (Labs)",
+                                subtitle: "Use your iPad, iPhone or Mac as an extra display for your PC, with touch on iPad and iPhone."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

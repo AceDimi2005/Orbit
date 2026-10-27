@@ -197,11 +197,14 @@ final class MoonlightStreamController: ObservableObject {
         var quitRunningApp = false
         /// Open the sign-in prompt as soon as the stream runs (the PC sits at its lock screen).
         var promptUnlock = false
+        /// This stream shows the PC's virtual second screen (iPhone, iPad and Mac): ending it turns the
+        /// second screen off again (`OrbitSecondScreenSession`), and the Mac always opens it in full screen.
+        var secondScreen = false
 
         /// `target` defaults to this device's screen (the Mac: the display in front).
         @MainActor
         init(host: MoonlightHostCoordinator, app: MoonlightApp, pcName: String, settings: MoonlightStreamSettings,
-             target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false) {
+             target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false, secondScreen: Bool = false) {
             self.host = host
             self.app = app
             self.pcName = pcName
@@ -209,6 +212,7 @@ final class MoonlightStreamController: ObservableObject {
             self.target = target ?? MoonlightStreamTarget.make(settings: settings, hostSupportsHEVC: host.hostSupportsHEVC)
             self.quitRunningApp = quitRunningApp
             self.promptUnlock = promptUnlock
+            self.secondScreen = secondScreen
         }
     }
 
@@ -272,7 +276,8 @@ final class MoonlightStreamController: ObservableObject {
     /// Instead of quitting the running app, stream it.
     func streamRunningAppInstead() {
         guard let busyError, let request, let running = request.host.apps.first(where: { $0.id == busyError.runningAppID }) else { return }
-        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target, quitRunningApp: false)
+        self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target, quitRunningApp: false,
+                               secondScreen: request.secondScreen)
         retry()
     }
 

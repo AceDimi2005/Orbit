@@ -22,6 +22,7 @@ struct MacLibraryView: View {
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
     @State private var confirmForgetPairing = false
+    @State private var showsSecondScreen = false
 
     private static let refreshFailurePrefix = "Could not refresh the Sunshine library"
     private static let launchWarningPrefixes = ["Could not", "Launch stopped", "Moonlight is not installed"]
@@ -41,7 +42,10 @@ struct MacLibraryView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if vm.isDemoMode { demoNotice }
-                if vm.isDemoMode || vm.currentPC != nil { streamHero }
+                if vm.isDemoMode || vm.currentPC != nil {
+                    streamHero
+                    MacSecondScreenCard(pcName: pcName, pcID: vm.streamDisplayContext.pcID) { showsSecondScreen = true }
+                }
                 content
                 footer
             }
@@ -54,6 +58,7 @@ struct MacLibraryView: View {
             switch action {
             case .desktop: streamDesktop()
             case .settings: showsStreamSettings = true
+            case .secondScreen: showsSecondScreen = true
             }
         }
         .sheet(isPresented: $showsPairing) {
@@ -62,9 +67,14 @@ struct MacLibraryView: View {
                 .background(theme.background)
         }
         .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC,
+                                        displaySetup: vm.streamDisplayContext) { showsStreamSettings = false }
                 .frame(width: 560, height: 680)
                 .background(theme.background)
+        }
+        .sheet(isPresented: $showsSecondScreen) {
+            MacSecondScreenSheet(host: sunshine, onPair: { showsSecondScreen = false; showsPairing = true }) { showsSecondScreen = false }
+                .environmentObject(vm)
         }
         .confirmationDialog("Forget the Sunshine pairing?", isPresented: $confirmForgetPairing, titleVisibility: .visible) {
             Button("Forget Pairing", role: .destructive) { sunshine.forgetPairing() }
@@ -984,7 +994,8 @@ struct MacStreamWindowView: View {
 
     private func presentCurrentStream() {
         guard stream.isPresented, let request = stream.request else { return }
-        MacStreamWindowController.shared.streamStarted(request.id, displayID: request.target.displayID, fullScreen: opensInFullScreen)
+        // A second screen always fills the display it was sized for.
+        MacStreamWindowController.shared.streamStarted(request.id, displayID: request.target.displayID, fullScreen: opensInFullScreen || request.secondScreen)
     }
 }
 
