@@ -47,8 +47,23 @@ import UIKit
 public final class MoonlightStreamSurfaceView: UIView {
     weak var handle: MoonlightSurfaceHandle?
     var onToggleOverlay: (() -> Void)?
-    public var session: MoonlightStreamSession? { didSet { attachLayer() } }
+    public var session: MoonlightStreamSession? {
+        didSet {
+            attachLayer()
+            #if os(iOS)
+            // A new connection starts with nothing held down on the PC.
+            if oldValue !== session { resetKeyBar() }
+            #endif
+        }
+    }
     public var settings = MoonlightStreamSettings() { didSet { applyMode() } }
+    #if os(iOS)
+    /// The key bar's latched modifiers and the bar keys that are down on the PC.
+    private(set) var keyLatch = MoonlightModifierLatch()
+    private(set) var keyBarView: MoonlightKeyBarView?
+    /// Sees every key the key bar and the software keyboard send (the DEBUG key bar preview logs them).
+    var keyOutputObserver: ((MoonlightKeyOutput) -> Void)?
+    #endif
 
     private var videoLayer: AVSampleBufferDisplayLayer?
     private var lastPanPoint: CGPoint?
@@ -114,12 +129,22 @@ public final class MoonlightStreamSurfaceView: UIView {
         [panRecognizer, tapRecognizer, twoFingerTapRecognizer, threeFingerTapRecognizer, scrollRecognizer, longPressRecognizer].forEach(addGestureRecognizer)
         tapRecognizer.require(toFail: twoFingerTapRecognizer)
         applyMode()
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillResignActive),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
         #endif
     }
 
     required init?(coder: NSCoder) { fatalError("Not used") }
 
     public override var canBecomeFirstResponder: Bool { true }
+
+    public override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        #if os(iOS)
+        if resigned, softwareKeyboardVisible { softwareKeyboardWentAway() }
+        #endif
+        return resigned
+    }
 
     public override func layoutSubviews() {
         super.layoutSubviews()
@@ -132,6 +157,9 @@ public final class MoonlightStreamSurfaceView: UIView {
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { becomeFirstResponder() }
+        #if os(iOS)
+        if window == nil { releaseKeyBar() }
+        #endif
     }
 
     private func attachLayer() {
@@ -309,6 +337,13 @@ public final class MoonlightStreamSurfaceView: UIView {
 
     private func handle(_ presses: Set<UIPress>, pressed: Bool) -> Set<UIPress> {
         var unhandled = Set<UIPress>()
+        #if os(iOS)
+        var finishedKey = false
+        defer {
+            // A key bar modifier latched for one key combined with this hardware key on the PC; it is done now.
+            if finishedKey, keyLatch.hasOneShot { updateKeys { $0.releaseOneShots() } }
+        }
+        #endif
         for press in presses {
             guard let key = press.key, let session, let virtualKey = MoonlightVirtualKey.fromHIDUsage(Int(key.keyCode.rawValue)) else {
                 unhandled.insert(press)
@@ -324,6 +359,9 @@ public final class MoonlightStreamSurfaceView: UIView {
             if key.modifierFlags.contains(.alternate) { modifiers.insert(.alt) }
             if key.modifierFlags.contains(.command) { modifiers.insert(.meta) }
             session.sendKey(virtualKey: virtualKey, pressed: pressed, modifiers: modifiers)
+            #if os(iOS)
+            if !pressed, !MoonlightVirtualKey.isModifier(virtualKey) { finishedKey = true }
+            #endif
         }
         return unhandled
     }
@@ -337,12 +375,70 @@ public final class MoonlightStreamSurfaceView: UIView {
     public func setSoftwareKeyboard(visible: Bool) {
         softwareKeyboardVisible = visible
         handle?.keyboardVisible = visible
+        if !visible { releaseKeyBar() }
         reloadInputViews()
         if visible { becomeFirstResponder() }
     }
 
     private let hiddenInputView = UIView(frame: .zero)
     public override var inputView: UIView? { softwareKeyboardVisible ? nil : hiddenInputView }
+    /// The row of PC keys (Win, Ctrl, Alt, Shift, Esc, arrows, F-keys, shortcuts) rides on top of the keyboard.
+    public override var inputAccessoryView: UIView? { softwareKeyboardVisible ? keyBar : nil }
+
+    /// The keyboard went away without the Keyboard button: the iPad's hide key, or another field took focus.
+    private func softwareKeyboardWentAway() {
+        softwareKeyboardVisible = false
+        releaseKeyBar()
+        // This can happen while SwiftUI updates views (a sheet's field taking focus), so publish afterwards.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.softwareKeyboardVisible else { return }
+            self.handle?.keyboardVisible = false
+        }
+    }
+
+    // MARK: Key bar
+
+    private var keyBar: MoonlightKeyBarView {
+        if let keyBarView { return keyBarView }
+        let bar = MoonlightKeyBarView()
+        bar.onModifierTap = { [weak self] modifier in self?.updateKeys { $0.tap(modifier, at: CACurrentMediaTime()) } }
+        bar.onModifierLock = { [weak self] modifier in self?.updateKeys { $0.lock(modifier) } }
+        bar.onKeyDown = { [weak self] key in self?.updateKeys { $0.press(key) } }
+        bar.onKeyUp = { [weak self] key in self?.updateKeys { $0.release(key) } }
+        bar.onShortcut = { [weak self] shortcut in self?.updateKeys { $0.perform(shortcut.chord) } }
+        bar.onHideKeyboard = { [weak self] in self?.setSoftwareKeyboard(visible: false) }
+        bar.show(keyLatch)
+        keyBarView = bar
+        return bar
+    }
+
+    /// Changes the key latch, sends what the change produced and shows the modifiers' new state.
+    private func updateKeys(_ change: (inout MoonlightModifierLatch) -> [MoonlightKeyOutput]) {
+        let outputs = change(&keyLatch)
+        for output in outputs {
+            switch output {
+            case let .key(key, pressed, modifiers): session?.sendKey(virtualKey: key, pressed: pressed, modifiers: modifiers)
+            case let .text(text): session?.sendText(text)
+            }
+            keyOutputObserver?(output)
+        }
+        keyBarView?.show(keyLatch)
+    }
+
+    /// Lets go of every latched modifier and held bar key on the PC, so nothing stays stuck down.
+    private func releaseKeyBar() {
+        guard !keyLatch.isIdle else { return }
+        updateKeys { $0.releaseAll() }
+    }
+
+    private func resetKeyBar() {
+        keyLatch = MoonlightModifierLatch()
+        keyBarView?.show(keyLatch)
+    }
+
+    @objc private func applicationWillResignActive() {
+        releaseKeyBar()
+    }
     #endif
 }
 
@@ -358,13 +454,13 @@ extension MoonlightStreamSurfaceView: UIGestureRecognizerDelegate {
 extension MoonlightStreamSurfaceView: UIKeyInput {
     public var hasText: Bool { true }
 
+    /// Plain text (any language) as before; while a key bar modifier is latched, key presses with it (Ctrl + c).
     public func insertText(_ text: String) {
-        guard let session else { return }
-        if text == "\n" { session.tapKey(virtualKey: MoonlightVirtualKey.enter) } else { session.sendText(text) }
+        updateKeys { $0.type(text) }
     }
 
     public func deleteBackward() {
-        session?.tapKey(virtualKey: MoonlightVirtualKey.back)
+        updateKeys { $0.deleteBackward() }
     }
 
     public var keyboardAppearance: UIKeyboardAppearance { get { .dark } set {} }

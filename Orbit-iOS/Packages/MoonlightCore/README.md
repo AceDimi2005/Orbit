@@ -7,7 +7,7 @@ Local Swift package that gives Orbit in-app game streaming from a Sunshine host.
 | `Sources/CMoonlight/src`, `include/Limelight.h` | [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) at the revision in `VENDORED_REVISION.txt`: RTSP handshake, video/audio/control/input streams, FEC. `PlatformCrypto.c` is replaced by the Swift hooks below. | GPL-3.0 (`LICENSE.txt`) |
 | `Sources/CMoonlight/enet` | Moonlight's fork of ENet (reliable UDP for the control stream) | MIT (`enet/LICENSE.txt`) |
 | `Sources/CMoonlight/nanors` | nanors Reed-Solomon codec used for FEC | MIT (`nanors/LICENSE.txt`) |
-| `Sources/MoonlightCore` | Orbit's Swift layer: `PlatformCrypto.swift` (AES-GCM/CBC hooks on CryptoKit/CommonCrypto), `VideoRenderer.swift` (VideoToolbox through `AVSampleBufferDisplayLayer`), `AudioRenderer.swift` (Opus → `AVAudioEngine`), `ControllerBridge.swift` (GameController + rumble), `StreamSession.swift` (connection lifecycle, statistics, input), `StreamSurface.swift` (touch/mouse/keyboard views), `StreamSettings.swift` | Same as the app |
+| `Sources/MoonlightCore` | Orbit's Swift layer: `PlatformCrypto.swift` (AES-GCM/CBC hooks on CryptoKit/CommonCrypto), `VideoRenderer.swift` (VideoToolbox through `AVSampleBufferDisplayLayer`), `AudioRenderer.swift` (Opus → `AVAudioEngine`), `ControllerBridge.swift` (GameController + rumble), `StreamSession.swift` (connection lifecycle, statistics, input), `StreamSurface.swift` (touch/mouse/keyboard views), `KeyBar.swift` (the PC key row's latching modifiers, shortcuts and layout) with `KeyBarView.swift` (that row above the iPhone/iPad software keyboard), `StreamSettings.swift` | Same as the app |
 | `Copus` dependency | libopus packaged by [alta/swift-opus](https://github.com/alta/swift-opus) | BSD-3-Clause |
 
 ## Local changes to the vendored code
@@ -31,7 +31,7 @@ work). The rest of the repository stays MIT; the obligation attaches to the ship
 ```bash
 cd Orbit-iOS/Packages/MoonlightCore
 swift build
-swift test            # crypto hooks vs. CommonCrypto/CryptoKit references, bitrate curve, key maps,
+swift test            # crypto hooks vs. CommonCrypto/CryptoKit references, bitrate curve, key maps, key row latching/shortcuts,
                       # stream sizes (16:9 / Fill Screen, H.264 4096 cap), Mac keep-awake assertion
 xcodebuild -scheme MoonlightCore -destination 'generic/platform=tvOS Simulator' build
 ```

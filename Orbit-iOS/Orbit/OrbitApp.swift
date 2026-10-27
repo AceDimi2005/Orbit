@@ -1,4 +1,7 @@
 import AppIntents
+#if DEBUG
+import MoonlightCore
+#endif
 import SwiftUI
 
 @main
@@ -29,7 +32,16 @@ struct OrbitApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["ORBIT_KEYBAR_PREVIEW"] != nil {
+                // The stream's keyboard and its row of PC keys without a stream, for screenshots.
+                MoonlightKeyBarPreview()
+            } else {
+                ContentView()
+            }
+            #else
             ContentView()
+            #endif
         }
     }
 }
