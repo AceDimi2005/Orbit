@@ -335,7 +335,8 @@ enum MacSunshineSelfTest {
         }
 
         let host = MoonlightHostCoordinator()
-        host.configure(pcID: pc.id, address: pc.address, httpPort: info?.httpPort ?? 47989, httpsPort: info?.httpsPort ?? 47984)
+        host.configure(pcID: pc.id, address: pc.address, secondaryAddress: pc.secondaryHost,
+                       httpPort: info?.httpPort ?? 47989, httpsPort: info?.httpsPort ?? 47984)
         await host.refresh()
         report(host)
 

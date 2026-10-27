@@ -27,6 +27,9 @@ struct OrbitSyncedPCItem: Codable, Equatable {
     var origin: String? = nil
     /// Extra Wake-on-LAN target (`host` or `host:port`), e.g. a router reachable over Tailscale.
     var wolRelay: String? = nil
+    /// Second address of the PC (its Tailscale IPv4 or MagicDNS name), tried when `address` does not answer.
+    /// Optional, so items from older apps decode as nil.
+    var secondaryAddress: String? = nil
 }
 
 /// Minimal surface of `NSUbiquitousKeyValueStore`, so the merge logic can run against an
@@ -87,6 +90,8 @@ enum OrbitPCCloudSync {
         copy.bonjourHost = resolved.bonjourHost
         copy.certificateFingerprint = normalizedFingerprint(item.certificateFingerprint).isEmpty ? item.certificateFingerprint : normalizedFingerprint(item.certificateFingerprint)
         copy.name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secondary = item.secondaryAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        copy.secondaryAddress = secondary.isEmpty ? nil : secondary
         return copy
     }
 
@@ -132,6 +137,7 @@ enum OrbitPCCloudSync {
                 if winner.lastKnownIPv4.isEmpty { winner.lastKnownIPv4 = loser.lastKnownIPv4 }
                 if winner.bonjourHost == nil { winner.bonjourHost = loser.bonjourHost }
                 if winner.macAddress.isEmpty { winner.macAddress = loser.macAddress }
+                // `wolRelay` and `secondaryAddress` are never filled in from the older copy: clearing them must stick.
                 if preferCandidate { winner.isSelected = item.isSelected }
                 result[position] = winner
             } else {
@@ -207,5 +213,90 @@ enum OrbitWakeTargets {
             cursor = entry.pointee.ai_next
         }
         return results
+    }
+}
+
+/// Which of a PC's two addresses requests go to: its LAN address whenever that answers, else its
+/// optional secondary address (for example the PC's Tailscale IPv4 or MagicDNS name). While the
+/// secondary address is in use the LAN address is tried again every `primaryRetryInterval` seconds and after
+/// every network change, so streaming at home stays on the fast local path. Certificate pinning works
+/// the same on either address. Wake-on-LAN never uses this: magic packets only go to the local network.
+struct OrbitAddressRoute: Equatable, Sendable {
+    static let primaryRetryInterval: TimeInterval = 30
+
+    private(set) var primary: String
+    private(set) var secondary: String
+    private(set) var usesSecondary: Bool
+    private(set) var nextPrimaryRetry: Date = .distantPast
+
+    init(primary: String = "", secondary: String = "", usesSecondary: Bool = false) {
+        self.primary = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.secondary = Self.cleanedSecondary(secondary, primary: primary)
+        self.usesSecondary = usesSecondary && !self.secondary.isEmpty
+    }
+
+    /// `value` trimmed, or "" when it is empty, not a bare host name or IPv4 address (no scheme, port or
+    /// path), or the same host as `primary`.
+    static func cleanedSecondary(_ value: String, primary: String) -> String {
+        let host = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lan = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isBareHost(host), host.caseInsensitiveCompare(lan) != .orderedSame else { return "" }
+        return host
+    }
+
+    /// Letters, digits, dots and hyphens only: what the API clients accept as a host.
+    static func isBareHost(_ value: String) -> Bool {
+        !value.isEmpty && value.count <= 253 && value.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || scalar == "." || scalar == "-")
+        }
+    }
+
+    var hasSecondary: Bool { !secondary.isEmpty }
+    /// Where requests go now.
+    var current: String { usesSecondary ? secondary : primary }
+    /// The other address, tried when `current` does not answer; nil without a secondary address.
+    var alternate: String? { hasSecondary ? (usesSecondary ? primary : secondary) : nil }
+
+    /// Follows edited addresses. Unchanged addresses keep the path in use; a changed one starts on the LAN.
+    mutating func update(primary newPrimary: String, secondary newSecondary: String) {
+        let cleanPrimary = newPrimary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanSecondary = Self.cleanedSecondary(newSecondary, primary: cleanPrimary)
+        guard cleanPrimary != primary || cleanSecondary != secondary else { return }
+        self = OrbitAddressRoute(primary: cleanPrimary, secondary: cleanSecondary)
+    }
+
+    /// While on the secondary address: whether to try the LAN address again now. Saying yes schedules the next try.
+    mutating func shouldRetryPrimary(now: Date = Date()) -> Bool {
+        guard usesSecondary, now >= nextPrimaryRetry else { return false }
+        nextPrimaryRetry = now.addingTimeInterval(Self.primaryRetryInterval)
+        return true
+    }
+
+    /// `host` answered, so requests go there from now on. Returns whether the path changed.
+    @discardableResult
+    mutating func answered(_ host: String, now: Date = Date()) -> Bool {
+        let useSecondary: Bool
+        if host == primary {
+            useSecondary = false
+        } else if hasSecondary, host == secondary {
+            useSecondary = true
+        } else {
+            return false
+        }
+        guard useSecondary != usesSecondary else { return false }
+        usesSecondary = useSecondary
+        // The LAN address just failed: give it a while before trying it again.
+        nextPrimaryRetry = useSecondary ? now.addingTimeInterval(Self.primaryRetryInterval) : .distantPast
+        return true
+    }
+
+    /// Wi-Fi, cellular or a VPN came or went: try the LAN address again at the next chance.
+    mutating func networkChanged() { nextPrimaryRetry = .distantPast }
+
+    /// Whether a request that failed with `error` may work on the other address: this one did not answer
+    /// (timeout, refused, unreachable, TLS failure). A reply from the PC (an HTTP status) or a cancellation would not.
+    static func mayAnswerElsewhere(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        return urlError.code != .cancelled
     }
 }

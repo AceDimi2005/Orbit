@@ -40,6 +40,12 @@ enum OrbitPCSyncTests {
         legacyStore.values[OrbitPCCloudSync.itemsKey] = Data(legacyJSON.utf8)
         let legacy = OrbitPCCloudSync.cloudItems(from: legacyStore)
         check(legacy.count == 1 && legacy[0].updatedAt == nil && legacy[0].name == "Old", "legacy item decodes with nil optionals")
+        check(legacy[0].secondaryAddress == nil && legacy[0].wolRelay == nil, "legacy item has no secondary address or wake relay")
+        // A 4.3 payload (wake relay, no secondary address) decodes too.
+        let relayJSON = #"[{"id":"relay","name":"Relay","address":"10.0.0.3","agentPort":8765,"securePort":8766,"certificateFingerprint":"","macAddress":"","subnetMask":"255.255.255.0","broadcastAddress":"","wolPort":9,"lastKnownIPv4":"","apiToken":"t","isSelected":false,"updatedAt":5,"origin":"Mac","wolRelay":"router.example.net:9"}]"#
+        legacyStore.values[OrbitPCCloudSync.itemsKey] = Data(relayJSON.utf8)
+        let relay = OrbitPCCloudSync.cloudItems(from: legacyStore)
+        check(relay.count == 1 && relay[0].wolRelay == "router.example.net:9" && relay[0].secondaryAddress == nil, "4.3 item decodes without a secondary address")
 
         // 3. The same PC is matched by its agent certificate even when the ids differ (paired separately on two devices).
         let store = MemoryStore()
@@ -83,6 +89,57 @@ enum OrbitPCSyncTests {
         check(OrbitPCCloudSync.identity(of: manual) == "id:manual", "no fingerprint → id identity")
         check(OrbitPCCloudSync.identity(fingerprint: "AB:CD" + String(repeating: "ab", count: 30), id: "x").hasPrefix("fp:"), "fingerprints normalize")
 
-        print("PASS: iCloud PC sync merge, .local → IPv4 normalisation, legacy payloads, fingerprint matching, token fill-in, no-op republish and removals")
+        // 7. The secondary address (for example Tailscale) travels with the PC, trimmed, under its own JSON key;
+        //    a newer edit that clears it wins, and an older copy does not bring it back.
+        let tailStore = MemoryStore()
+        OrbitPCCloudSync.now = { 4_000 }
+        var tailnet = item(id: "pc-tail", name: "Tailnet PC", address: "192.168.1.80", fingerprint: String(repeating: "ef", count: 32),
+                           lastKnownIPv4: "192.168.1.80", updatedAt: 4_000)
+        tailnet.secondaryAddress = "  100.101.102.103 "
+        check(String(decoding: try! JSONEncoder().encode(tailnet), as: UTF8.self).contains("\"secondaryAddress\""), "wire name secondaryAddress")
+        check(OrbitPCCloudSync.publish(local: [tailnet], to: tailStore), "secondary publish writes")
+        check(OrbitPCCloudSync.cloudItems(from: tailStore).first?.secondaryAddress == "100.101.102.103", "secondary address synced and trimmed")
+        var blank = tailnet; blank.secondaryAddress = "   "; blank.updatedAt = 4_050
+        OrbitPCCloudSync.publish(local: [blank], to: tailStore)
+        check(OrbitPCCloudSync.cloudItems(from: tailStore).first?.secondaryAddress == nil, "a blank secondary address is stored as none")
+        var restored = tailnet; restored.updatedAt = 4_060
+        OrbitPCCloudSync.publish(local: [restored], to: tailStore)
+        var cleared = tailnet; cleared.secondaryAddress = nil; cleared.updatedAt = 4_100
+        OrbitPCCloudSync.publish(local: [cleared], to: tailStore)
+        check(OrbitPCCloudSync.cloudItems(from: tailStore).first?.secondaryAddress == nil, "clearing the secondary address on a newer edit wins")
+        OrbitPCCloudSync.publish(local: [restored], to: tailStore)
+        check(OrbitPCCloudSync.cloudItems(from: tailStore).first?.secondaryAddress == nil, "an older copy does not bring the secondary address back")
+
+        // 8. Address route: the LAN address first, the secondary address while it does not answer, back to the LAN as soon as it does.
+        let t0 = Date(timeIntervalSince1970: 10_000)
+        var route = OrbitAddressRoute(primary: "192.168.1.80", secondary: " 100.101.102.103 ")
+        check(route.current == "192.168.1.80" && route.alternate == "100.101.102.103" && !route.usesSecondary, "starts on the LAN address")
+        check(!route.shouldRetryPrimary(now: t0), "nothing to retry while on the LAN address")
+        check(route.answered("100.101.102.103", now: t0) && route.current == "100.101.102.103" && route.alternate == "192.168.1.80", "fails over")
+        check(!route.answered("100.101.102.103", now: t0), "answering on the same path changes nothing")
+        check(!route.shouldRetryPrimary(now: t0.addingTimeInterval(10)), "the LAN address is not retried right after failing")
+        check(route.shouldRetryPrimary(now: t0.addingTimeInterval(31)), "the LAN address is retried after 30 s")
+        check(!route.shouldRetryPrimary(now: t0.addingTimeInterval(32)), "and then not again for 30 s")
+        route.networkChanged()
+        check(route.shouldRetryPrimary(now: t0.addingTimeInterval(33)), "a network change retries the LAN address at once")
+        check(route.answered("192.168.1.80") && route.current == "192.168.1.80", "back on the LAN address")
+        check(!route.answered("10.9.9.9") && route.current == "192.168.1.80", "an unknown host is ignored")
+        route.answered("100.101.102.103", now: t0)
+        route.update(primary: "192.168.1.80 ", secondary: "100.101.102.103")
+        check(route.usesSecondary, "unchanged addresses keep the path in use")
+        route.update(primary: "192.168.1.80", secondary: "gaming-pc.tail1234.ts.net")
+        check(!route.usesSecondary && route.alternate == "gaming-pc.tail1234.ts.net", "a new secondary address starts on the LAN address")
+        check(!OrbitAddressRoute(primary: "PC.local", secondary: "pc.LOCAL").hasSecondary, "the same host is no secondary address")
+        check(OrbitAddressRoute(primary: "10.0.0.2", usesSecondary: true).current == "10.0.0.2", "no secondary address, no secondary path")
+        check(OrbitAddressRoute(primary: "10.0.0.2", secondary: "100.64.1.2", usesSecondary: true).current == "100.64.1.2", "a saved secondary path is restored")
+        for bad in ["https://100.64.1.2", "100.64.1.2:8766", "100.64.1.2/api", "pc name", "fe80::1", ""] {
+            check(OrbitAddressRoute.cleanedSecondary(bad, primary: "10.0.0.2").isEmpty, "\(bad) is not a bare host")
+        }
+        check(OrbitAddressRoute.mayAnswerElsewhere(URLError(.timedOut)) && OrbitAddressRoute.mayAnswerElsewhere(URLError(.cannotConnectToHost))
+              && OrbitAddressRoute.mayAnswerElsewhere(URLError(.secureConnectionFailed)), "no answer: try the other address")
+        check(!OrbitAddressRoute.mayAnswerElsewhere(URLError(.cancelled)) && !OrbitAddressRoute.mayAnswerElsewhere(CancellationError()),
+              "cancellations stay put")
+
+        print("PASS: iCloud PC sync merge, .local → IPv4 normalisation, legacy payloads, fingerprint matching, token fill-in, no-op republish, removals, secondary addresses and the LAN/secondary route")
     }
 }

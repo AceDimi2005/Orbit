@@ -22,8 +22,8 @@ extension MoonlightHostCoordinator {
             if let title = runningAppTitle { return "\(title) is running on \(pcName). Resume the stream to keep playing, or quit it here." }
             return "Paired with Sunshine. \(apps.count) app\(apps.count == 1 ? "" : "s") ready to stream here with video, audio and controller input."
         }
-        if reachable { return "Sunshine answered on \(address). Pair once (PIN) and Orbit can stream \(pcName) right here." }
-        return "Sunshine was not found on \(address). Install Sunshine on the PC and allow it through the firewall."
+        if reachable { return "Sunshine answered on \(activeAddress). Pair once (PIN) and Orbit can stream \(pcName) right here." }
+        return "Sunshine was not found on \(activeAddress). Install Sunshine on the PC and allow it through the firewall."
     }
 }
 
@@ -88,7 +88,7 @@ struct MoonlightPairingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Pair with Sunshine")
                     .font(.title2.weight(.bold))
-                Text("\(pcName) · \(host.address)")
+                Text("\(pcName) · \(host.activeAddress)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

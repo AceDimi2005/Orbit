@@ -21,15 +21,21 @@ struct SavedPC: Codable, Identifiable, Equatable {
     var updatedAt: Double? = nil
     /// Extra Wake-on-LAN target (`host` or `host:port`), for example a router reachable over Tailscale.
     var wolRelay: String = ""
+    /// Second address of the PC (its Tailscale IPv4 or MagicDNS name), used while `address` does not answer.
+    /// Optional so profiles saved before it existed still decode. Never a Wake-on-LAN target.
+    var secondaryAddress: String? = nil
 
     var syncIdentity: String { OrbitPCCloudSync.identity(fingerprint: certificateFingerprint, id: id) }
+    /// `secondaryAddress` when it is a usable host different from `address`, else "".
+    var secondaryHost: String { OrbitAddressRoute.cleanedSecondary(secondaryAddress ?? "", primary: address) }
 
     func syncedItem(token: String, selected: Bool) -> OrbitSyncedPCItem {
         OrbitSyncedPCItem(id: id, name: name, address: address, agentPort: agentPort, securePort: securePort,
                           certificateFingerprint: certificateFingerprint, macAddress: macAddress, subnetMask: subnetMask,
                           broadcastAddress: broadcastAddress, wolPort: wolPort, lastKnownIPv4: lastKnownIPv4 ?? "",
                           apiToken: token, isSelected: selected, bonjourHost: bonjourHost, autoCalcBroadcast: autoCalcBroadcast,
-                          updatedAt: updatedAt, origin: "iPhone", wolRelay: wolRelay.isEmpty ? nil : wolRelay)
+                          updatedAt: updatedAt, origin: "iPhone", wolRelay: wolRelay.isEmpty ? nil : wolRelay,
+                          secondaryAddress: secondaryAddress?.isEmpty == false ? secondaryAddress : nil)
     }
 
     init(from item: OrbitSyncedPCItem) {
@@ -38,6 +44,7 @@ struct SavedPC: Codable, Identifiable, Equatable {
         broadcastAddress = item.broadcastAddress; wolPort = item.wolPort; autoCalcBroadcast = item.autoCalcBroadcast ?? true
         lastKnownIPv4 = item.lastKnownIPv4.isEmpty ? nil : item.lastKnownIPv4; bonjourHost = item.bonjourHost; updatedAt = item.updatedAt
         wolRelay = item.wolRelay ?? ""
+        secondaryAddress = item.secondaryAddress?.isEmpty == false ? item.secondaryAddress : nil
     }
 
     init(name: String, address: String, agentPort: Int = 8765, securePort: Int = 8766, certificateFingerprint: String = "", macAddress: String = "",
@@ -136,6 +143,7 @@ enum PCProfileStore {
             if survivor.macAddress.isEmpty { survivor.macAddress = dropped.macAddress }
             if survivor.bonjourHost == nil { survivor.bonjourHost = dropped.bonjourHost }
             if survivor.lastKnownIPv4 == nil { survivor.lastKnownIPv4 = dropped.lastKnownIPv4 }
+            if survivor.secondaryAddress == nil { survivor.secondaryAddress = dropped.secondaryAddress }
             if survivor.name == "My PC", dropped.name != "My PC" { survivor.name = dropped.name }
             if UserDefaults.standard.string(forKey: "selectedPCID") == dropped.id { UserDefaults.standard.set(survivor.id, forKey: "selectedPCID") }
             result[index] = survivor
@@ -265,9 +273,10 @@ extension OrbitViewModel {
     }
     var selectedPCName: String { savedPCs.first(where: { $0.id == selectedPCID })?.name ?? metrics.hostname }
     var hasSecureConnection: Bool { OrbitAPIClient.validFingerprint(certificateFingerprint) }
+    /// Pinned client for the selected PC, on its LAN address or, while that does not answer, its secondary address.
     func companionClient() throws -> OrbitAPIClient {
         guard !isDemoMode else { throw OrbitError(message: "Connect a real PC to use Files, clipboard, mixer and session history.") }
-        return try OrbitAPIClient(host: cleanHost(), port: securePort, token: apiToken, fingerprint: certificateFingerprint)
+        return try OrbitAPIClient(host: connectionHost(), port: securePort, token: apiToken, fingerprint: certificateFingerprint)
     }
     /// Free users can keep one PC; Orbit Pro removes the limit.
     var canAddNewPC: Bool {
@@ -285,6 +294,8 @@ extension OrbitViewModel {
         profile.address = profile.address.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(profile.certificateFingerprint)
+        let secondary = profile.secondaryAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        profile.secondaryAddress = secondary.isEmpty ? nil : secondary
         let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if let previous = savedPCs.first(where: { $0.id == profile.id }), previous != profile { profile.updatedAt = Date().timeIntervalSince1970 }
         if profile.updatedAt == nil { profile.updatedAt = Date().timeIntervalSince1970 }
@@ -302,7 +313,8 @@ extension OrbitViewModel {
             broadcastAddress: profile.broadcastAddress,
             subnetMask: profile.subnetMask,
             wolPort: profile.wolPort,
-            lastKnownIPv4: profile.lastKnownIPv4
+            lastKnownIPv4: profile.lastKnownIPv4,
+            secondaryHost: profile.secondaryHost
         )
         if select { selectPC(profile, persistCurrent: false) }
         OrbitWatchBridge.shared.pushStateToWatch(force: true)
@@ -330,7 +342,8 @@ extension OrbitViewModel {
             broadcastAddress: p.broadcastAddress,
             subnetMask: p.subnetMask,
             wolPort: p.wolPort,
-            lastKnownIPv4: p.lastKnownIPv4
+            lastKnownIPv4: p.lastKnownIPv4,
+            secondaryHost: p.secondaryHost
         )
     }
     func saveCurrentConnection() {
@@ -398,7 +411,7 @@ struct PCProfilesView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("\(vm.savedPCs.count) saved PC\(vm.savedPCs.count == 1 ? "" : "s")")
                             .font(.headline.weight(.bold))
-                        Text("Each PC keeps its own address, token, certificate and Wake-on-LAN settings.")
+                        Text("Each PC keeps its own address, Secondary IP, token, certificate and Wake-on-LAN settings. Tap the pencil to edit them.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -491,6 +504,10 @@ struct PCProfilesView: View {
                             if !profile.macAddress.isEmpty {
                                 Label("Wake-on-LAN", systemImage: "power").foregroundStyle(.secondary)
                             }
+                            if !profile.secondaryHost.isEmpty {
+                                Label(selected && vm.usingSecondaryAddress ? "Remote" : "Secondary IP", systemImage: "point.3.connected.trianglepath.dotted")
+                                    .foregroundStyle(selected && vm.usingSecondaryAddress ? theme.accent : .secondary)
+                            }
                         }
                         .font(.caption2.weight(.medium))
                     }
@@ -512,16 +529,25 @@ struct PCProfilesView: View {
     }
 }
 
-private struct PCProfileEditor: View {
+/// One PC's connection settings: address, Secondary IP, token, certificate and Wake-on-LAN. Opened from
+/// My PCs and from the Secondary IP row in Settings.
+struct PCProfileEditor: View {
     @ObservedObject var vm: OrbitViewModel
     @State var profile: SavedPC
     @State private var token = ""
     @Environment(\.dismiss) private var dismiss
     @Environment(\.orbitTheme) private var theme
+    private var secondaryText: String { (profile.secondaryAddress ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var secondaryValid: Bool { secondaryText.isEmpty || OrbitAddressRoute.isBareHost(secondaryText) }
+    /// A Tailscale address the agent reported for this PC, offered with one tap while no secondary address is set.
+    private var tailscaleSuggestion: String? {
+        guard profile.id == vm.selectedPCID, secondaryText.isEmpty else { return nil }
+        return vm.reportedTailscaleAddresses.first { $0 != profile.address.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
     private var valid: Bool {
         !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !profile.address.isEmpty && !profile.address.contains("/") && !profile.address.contains(":") &&
         (1...65535).contains(profile.agentPort) && (1...65535).contains(profile.securePort) && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        (profile.certificateFingerprint.isEmpty || OrbitAPIClient.validFingerprint(profile.certificateFingerprint))
+        (profile.certificateFingerprint.isEmpty || OrbitAPIClient.validFingerprint(profile.certificateFingerprint)) && secondaryValid
     }
     var body: some View {
         NavigationStack {
@@ -530,6 +556,27 @@ private struct PCProfileEditor: View {
                     TextField("Name, for example Gaming PC", text: $profile.name)
                     TextField("PC address", text: $profile.address).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Pairing token", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                .orbitRow()
+                Section {
+                    TextField("Secondary IP, for example 100.101.102.103", text: Binding(get: { profile.secondaryAddress ?? "" }, set: { profile.secondaryAddress = $0 }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    if let suggestion = tailscaleSuggestion {
+                        Button { profile.secondaryAddress = suggestion } label: {
+                            Label("Use \(suggestion) (Tailscale)", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                    }
+                    if profile.id == vm.selectedPCID, vm.usingSecondaryAddress {
+                        Label("In use now: the PC address above isn't answering.", systemImage: "point.3.connected.trianglepath.dotted")
+                            .font(.caption).foregroundStyle(theme.accent)
+                    }
+                    if !secondaryValid {
+                        Text("Enter only a host name or an IPv4 address, without http:// or a port.").font(.caption).foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Secondary IP")
+                } footer: {
+                    Text("Your PC's Tailscale or other remote address (or its MagicDNS name). Orbit uses it for everything, streaming included, when the main address doesn't answer, and goes back to the main address as soon as it answers. Wake-on-LAN always uses the local network.")
                 }
                 .orbitRow()
                 Section("Encrypted connection") {

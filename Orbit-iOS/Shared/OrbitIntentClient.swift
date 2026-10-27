@@ -14,6 +14,8 @@ struct OrbitIntentClient: Sendable {
     let pcID: String
     let pcName: String
     private let host: String
+    /// The PC's Secondary IP (for example Tailscale), tried when `host` does not answer; "" when it has none.
+    private var secondaryHost = ""
     private let port: Int
     private let fingerprint: String
     private let token: String
@@ -41,15 +43,35 @@ struct OrbitIntentClient: Sendable {
               !token.contains(where: { $0.isNewline }) else {
             throw OrbitIntentError.needsSetup(name)
         }
-        return OrbitIntentClient(pcID: connection.id, pcName: name, host: connection.host, port: connection.port,
-                                 fingerprint: fingerprint, token: token, timeout: timeout)
+        var client = OrbitIntentClient(pcID: connection.id, pcName: name, host: connection.host, port: connection.port,
+                                       fingerprint: fingerprint, token: token, timeout: timeout)
+        client.secondaryHost = connection.hosts.dropFirst().first ?? ""
+        return client
     }
 
     // MARK: Requests
 
-    /// Sends one request and returns the body of a 2xx reply.
+    /// Sends one request and returns the body of a 2xx reply. When nothing answers on the PC's address,
+    /// the same request goes to its Secondary IP (for example Tailscale), if it has one.
     @discardableResult
     func data(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil) async throws -> Data {
+        do {
+            return try await data(method, path, query: query, body: body, host: host)
+        } catch let failure as OrbitIntentHostUnanswered where !secondaryHost.isEmpty {
+            do {
+                return try await data(method, path, query: query, body: body, host: secondaryHost)
+            } catch is OrbitIntentHostUnanswered {
+                throw failure.error
+            }
+        } catch let failure as OrbitIntentHostUnanswered {
+            throw failure.error
+        }
+    }
+
+    /// The request reached nobody at that address; `error` is what to show if no other address answers either.
+    private struct OrbitIntentHostUnanswered: Error { let error: Error }
+
+    private func data(_ method: String, _ path: String, query: [URLQueryItem], body: Data?, host: String) async throws -> Data {
         guard path.hasPrefix("/api/") else { throw OrbitIntentError("Orbit tried an invalid PC request.") }
         var parts = URLComponents()
         parts.scheme = "https"
@@ -89,7 +111,9 @@ struct OrbitIntentClient: Sendable {
         do {
             reply = try await session.data(for: request)
         } catch {
-            throw transportError(error, pinFailed: delegate.pinFailed)
+            let mapped = transportError(error, pinFailed: delegate.pinFailed)
+            if !delegate.pinFailed, OrbitWidgetConnection.reachedNobody(error) { throw OrbitIntentHostUnanswered(error: mapped) }
+            throw mapped
         }
         guard let http = reply.1 as? HTTPURLResponse else { throw OrbitIntentError.unexpectedReply(pcName) }
         guard (200..<300).contains(http.statusCode) else {

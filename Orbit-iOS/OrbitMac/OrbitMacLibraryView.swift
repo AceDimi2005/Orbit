@@ -21,6 +21,7 @@ struct MacLibraryView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
+    @State private var showsUnlockPrompt = false
     @State private var confirmForgetPairing = false
 
     private static let refreshFailurePrefix = "Could not refresh the Sunshine library"
@@ -28,11 +29,15 @@ struct MacLibraryView: View {
     private static let moonlightSite = "https://moonlight-stream.org"
     private let columns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)]
 
-    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)" }
+    private var sunshineKey: String {
+        "\(vm.selectedPCID)|\(vm.currentPC?.address ?? "")|\(vm.currentPC?.secondaryHost ?? "")|\(vm.usingSecondaryAddress)|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)|\(vm.isDemoMode)"
+    }
 
     private func syncSunshine() async {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return }
-        sunshine.configure(pcID: pc.id, address: pc.address, httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        // Sunshine runs on the same PC: try its secondary address too, first while the agent only answers there.
+        sunshine.configure(pcID: pc.id, address: pc.address, secondaryAddress: pc.secondaryHost, preferSecondary: vm.usingSecondaryAddress,
+                           httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
     }
 
@@ -65,6 +70,13 @@ struct MacLibraryView: View {
             MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
                 .frame(width: 560, height: 680)
                 .background(theme.background)
+        }
+        // "Unlock PC": the password first, then the stream window, which signs in by itself.
+        .sheet(isPresented: $showsUnlockPrompt) {
+            MoonlightUnlockPromptSheet(host: sunshine, pcName: pcName, accent: theme.accent) { secret in
+                guard let app = sunshine.desktopApp else { secret.discard(); return }
+                startStream(app, signIn: secret)
+            }
         }
         .confirmationDialog("Forget the Sunshine pairing?", isPresented: $confirmForgetPairing, titleVisibility: .visible) {
             Button("Forget Pairing", role: .destructive) { sunshine.forgetPairing() }
@@ -114,7 +126,7 @@ struct MacLibraryView: View {
     /// Sunshine's Web UI on the paired PC (its documented default port is 47990).
     private var sunshineWebURL: URL? {
         guard !vm.isDemoMode, let pc = vm.currentPC else { return nil }
-        let host = pc.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = vm.connectionHost(for: pc).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty, !host.contains(":"), !host.contains("/") else { return nil }
         return URL(string: "https://\(host):47990/")
     }
@@ -272,6 +284,10 @@ struct MacLibraryView: View {
                             } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
                                 MacStatChip(label: "Host", value: info.hostname)
                             }
+                            if sunshine.reachable, sunshine.isUsingSecondary {
+                                MacStatChip(label: "Via", value: "Remote", icon: "point.3.connected.trianglepath.dotted")
+                                    .help("Sunshine answers on the secondary IP \(sunshine.activeAddress); streams use it too")
+                            }
                         }
                     }
                     Text(heroMessage)
@@ -318,12 +334,10 @@ struct MacLibraryView: View {
                     streamDesktopButton
                     streamSettingsButton
                     if vm.metrics.sessionLocked == true {
-                        Button {
-                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
-                        } label: { Label("Unlock PC…", systemImage: "lock.open.fill") }
+                        Button { showsUnlockPrompt = true } label: { Label("Unlock PC…", systemImage: "lock.open.fill") }
                             .buttonStyle(MacHoverButtonStyle(tint: .yellow))
                             .disabled(!canStream || sunshine.desktopApp == nil)
-                            .help("Open the stream at the sign-in screen and type the Windows password there (nothing is saved)")
+                            .help("Enter the Windows password; Orbit then opens the stream and signs in (nothing is saved)")
                     }
                     if sunshine.isBusy {
                         Button { Task { await sunshine.quitRunningApp() } } label: { Label("Quit Session", systemImage: "stop.fill") }
@@ -719,11 +733,11 @@ struct MacLibraryView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
+    private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil) {
         // Sized for the display the Stream window will fill: the open Stream window's, else the one in front.
         let target = MoonlightStreamTarget.make(settings: streamSettings.settings, hostSupportsHEVC: sunshine.hostSupportsHEVC,
                                                 screen: MacStreamWindowController.shared.targetScreen())
-        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, target: target, promptUnlock: promptUnlock))
+        stream.begin(.init(host: sunshine, app: app, pcName: pcName, settings: streamSettings.settings, target: target, signIn: signIn))
         openWindow(id: "stream")
     }
 

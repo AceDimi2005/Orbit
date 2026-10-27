@@ -211,11 +211,24 @@ enum OrbitDeckIntentRunner {
         guard let token = try? OrbitWidgetConnectionStore.controlToken(for: connection.id), !token.isEmpty else {
             throw failure("Open Orbit once to allow buttons for \(connection.name).", pcID: connection.id)
         }
-        let target = OrbitDeckHTTP.Target(host: connection.host, port: connection.port, fingerprint: connection.certificateSHA256, token: token)
+        var target = OrbitDeckHTTP.Target(host: connection.host, port: connection.port, fingerprint: connection.certificateSHA256, token: token)
 
         let deck: OrbitDeck
         do {
-            let fetched = try await OrbitDeckHTTP.fetchDeck(on: target, pcID: connection.id)
+            let fetched: (deck: OrbitDeck, changed: Bool)
+            do {
+                fetched = try await OrbitDeckHTTP.fetchDeck(on: target, pcID: connection.id)
+            } catch let error as OrbitDeckRequestError where error.statusCode == nil && error.message == OrbitDeckRequestError.unreachable
+                        && connection.hosts.count > 1 {
+                // Nothing answered on the PC's address: read the deck, and then run the button, on its Secondary IP.
+                let secondary = OrbitDeckHTTP.Target(host: connection.hosts[1], port: connection.port, fingerprint: connection.certificateSHA256, token: token)
+                do {
+                    fetched = try await OrbitDeckHTTP.fetchDeck(on: secondary, pcID: connection.id)
+                } catch let other as OrbitDeckRequestError where other.statusCode == nil && other.message == OrbitDeckRequestError.unreachable {
+                    throw error
+                }
+                target = secondary
+            }
             if fetched.changed { OrbitDeckSurfaces.reload() }
             deck = fetched.deck
         } catch {

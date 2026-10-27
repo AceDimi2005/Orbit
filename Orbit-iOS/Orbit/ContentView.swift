@@ -432,7 +432,9 @@ struct DashboardView: View {
                 heroStatDivider
                 heroStat("Uptime", value: vm.metrics.telemetryAvailable != false ? vm.metrics.formattedUptime : "—")
                 heroStatDivider
-                heroStat("Link", value: vm.hasSecureConnection ? "Secure" : "HTTP", icon: vm.hasSecureConnection ? "lock.fill" : "lock.open.fill")
+                // "Remote": the LAN address didn't answer, so Orbit uses the PC's Secondary IP (still encrypted).
+                heroStat("Link", value: vm.usingSecondaryAddress ? "Remote" : (vm.hasSecureConnection ? "Secure" : "HTTP"),
+                         icon: vm.usingSecondaryAddress ? "point.3.connected.trianglepath.dotted" : (vm.hasSecureConnection ? "lock.fill" : "lock.open.fill"))
                 heroStatDivider
                 heroStat("Agent", value: vm.metrics.agentVersion ?? "—")
             }
@@ -1104,6 +1106,7 @@ struct GameLibraryView: View {
     @ObservedObject private var stream = MoonlightStreamController.shared
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
+    @State private var showsUnlockPrompt = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.orbitTheme) private var theme
 
@@ -1115,7 +1118,9 @@ struct GameLibraryView: View {
     private var filteredGames: [SunshineGame] {
         searchText.isEmpty ? libraryGames : libraryGames.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
-    private var sunshineKey: String { "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)" }
+    private var sunshineKey: String {
+        "\(vm.selectedPCID)|\(vm.cleanHost())|\(vm.secondaryHost)|\(vm.usingSecondaryAddress)|\(vm.metrics.isOnline)|\(vm.sunshineInfo?.httpPort ?? 0)"
+    }
     private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
 
     /// The agent on the PC can type the pairing PIN and start Sunshine (agent 4.3+).
@@ -1127,7 +1132,9 @@ struct GameLibraryView: View {
 
     private func syncSunshine() async {
         guard !vm.isDemoMode else { return }
-        sunshine.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+        // Sunshine runs on the same PC: try its secondary address too, first while the agent only answers there.
+        sunshine.configure(pcID: vm.selectedPCID, address: vm.cleanHost(), secondaryAddress: vm.secondaryHost,
+                           preferSecondary: vm.usingSecondaryAddress,
                            httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
         if vm.metrics.isOnline { await sunshine.refresh() }
     }
@@ -1195,6 +1202,16 @@ struct GameLibraryView: View {
         .sheet(isPresented: $showsStreamSettings) {
             MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
                 .presentationBackground(theme.background)
+        }
+        // "Unlock PC": the password first, then the stream. The stream is launched as soon as the password
+        // is in, and shown once this sheet has closed (one presentation at a time).
+        .sheet(isPresented: $showsUnlockPrompt, onDismiss: { stream.presentPendingStream() }) {
+            MoonlightUnlockPromptSheet(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent) { secret in
+                guard let app = sunshine.desktopApp else { secret.discard(); return }
+                startStream(app, signIn: secret, present: false)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationBackground(theme.background)
         }
     }
 
@@ -1283,6 +1300,10 @@ struct GameLibraryView: View {
                         } else if sunshine.reachable, let info = sunshine.info, !info.hostname.isEmpty {
                             OrbitStatChip(label: "Host", value: info.hostname)
                         }
+                        if sunshine.reachable, sunshine.isUsingSecondary {
+                            OrbitStatChip(label: "Via", value: "Remote", icon: "point.3.connected.trianglepath.dotted")
+                                .accessibilityLabel("Streaming through the secondary IP \(sunshine.activeAddress)")
+                        }
                     }
                 }
                 Spacer(minLength: 6)
@@ -1326,7 +1347,7 @@ struct GameLibraryView: View {
                     if vm.metrics.sessionLocked == true {
                         Button {
                             OrbitHaptics.press()
-                            if let app = sunshine.desktopApp { startStream(app, promptUnlock: true) }
+                            showsUnlockPrompt = true
                         } label: {
                             Image(systemName: "lock.open.fill")
                                 .font(.subheadline.weight(.bold))
@@ -1335,7 +1356,8 @@ struct GameLibraryView: View {
                         }
                         .buttonStyle(OrbitGlassButtonStyle(tint: .yellow, cornerRadius: 16))
                         .disabled(!canStream || sunshine.desktopApp == nil)
-                        .accessibilityLabel("Unlock the PC through the stream")
+                        .accessibilityLabel("Unlock the PC")
+                        .accessibilityHint("Asks for the Windows password, then opens the stream and signs in")
                     }
 
                     if sunshine.isBusy {
@@ -1383,8 +1405,8 @@ struct GameLibraryView: View {
         }
     }
 
-    private func startStream(_ app: MoonlightApp, promptUnlock: Bool = false) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, promptUnlock: promptUnlock))
+    private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil, present: Bool = true) {
+        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, signIn: signIn), present: present)
     }
 }
 
@@ -2203,6 +2225,7 @@ struct SettingsView: View {
     @State private var isShowingProPaywall = false
     @State private var isShowingPrivacy = false
     @State private var isShowingAcknowledgements = false
+    @State private var editingConnection: SavedPC?
     @FocusState private var focusedField: Bool
 
     var body: some View {
@@ -2236,6 +2259,14 @@ struct SettingsView: View {
 
                     NavigationLink { PCProfilesView(vm: vm) } label: {
                         settingsRow("Saved PCs & Profiles", icon: "desktopcomputer", tint: theme.accent, detail: "\(vm.savedPCs.count)")
+                    }
+                    // The selected PC's Secondary IP (Tailscale…), one tap away: it opens that PC's connection settings.
+                    if !vm.isDemoMode, let profile = vm.savedPCs.first(where: { $0.id == vm.selectedPCID }) {
+                        Button { editingConnection = profile } label: {
+                            settingsRow("Secondary IP", icon: "point.3.connected.trianglepath.dotted", tint: theme.accent,
+                                        detail: profile.secondaryHost.isEmpty ? "Not set" : (vm.usingSecondaryAddress ? "\(profile.secondaryHost) · in use" : profile.secondaryHost))
+                        }
+                        .accessibilityHint("Your PC's Tailscale or other remote address, used when the main address doesn't answer")
                     }
                 }
                 .orbitRow(tint: theme.accent)
@@ -2344,6 +2375,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $isShowingAcknowledgements) {
                 OrbitAcknowledgementsView(accent: theme.accent)
+            }
+            .sheet(item: $editingConnection) { profile in
+                PCProfileEditor(vm: vm, profile: profile)
             }
             .alert("Live Activity unavailable", isPresented: Binding(get: { vm.liveActivityError != nil }, set: { if !$0 { vm.liveActivityError = nil } })) {
                 Button("OK") { vm.liveActivityError = nil }
