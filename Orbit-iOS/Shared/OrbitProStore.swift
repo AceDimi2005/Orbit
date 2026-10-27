@@ -202,6 +202,18 @@ struct OrbitProUnlockView: View {
     ]
 
     var body: some View {
+        #if os(tvOS)
+        // The list grows with Pro: on a TV screen, scroll rather than cut off the buttons once it no longer fits.
+        ViewThatFits(in: .vertical) {
+            card
+            ScrollView { card }
+        }
+        #else
+        card
+        #endif
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 14) {
                 Image(systemName: "crown.fill")
