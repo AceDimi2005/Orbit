@@ -261,6 +261,9 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                 // boot here would exceed WatchConnectivity's interactive deadline.
                 try await WakeOnLANService.sendMagicPacket(macAddress: vm.pcMAC, pcIP: ip,
                     targetBroadcastIP: vm.wolTargetIP, subnetMask: vm.subnetMask, port: UInt16(vm.wolPort))
+            } else if cmd == OrbitWatchPresentationRelay.command {
+                // The Watch's Present page (F8): slide show actions and state reads, over one reused client.
+                return await OrbitWatchPresentationRelay.forward(message, vm: vm, pcID: pcID, deadline: deadline)
             } else {
                 let client = try vm.companionClient()
                 let path: String
@@ -287,10 +290,6 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                     path = try OrbitWatchDeckSync.runPath(buttonID: message["buttonID"] as? String,
                                                           cached: OrbitWatchDeckSync.cachedDeck(pcID: pcID),
                                                           isPro: OrbitProStore.shared.isProUnlocked)
-                case OrbitWatchPresentationRelay.command:
-                    // The Watch's Present page (F8): slide show actions and state reads.
-                    return await OrbitWatchPresentationRelay.forward(message, client: client, pcID: pcID,
-                                                                    pcName: vm.selectedPCName, deadline: deadline)
                 default: throw OrbitError(message: "Unsupported PC command.")
                 }
                 guard deadline > Date().timeIntervalSince1970 else { throw OrbitError(message: "The command expired. Try again.") }

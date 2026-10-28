@@ -129,7 +129,10 @@ struct OrbitPresentationState: Codable, Equatable, Sendable {
         func text(_ key: CodingKeys, limit: Int) -> String {
             let decoded: String? = try? c.decodeIfPresent(String.self, forKey: key)
             let value = decoded ?? ""
-            let clean = String(value.unicodeScalars.filter { $0 == "\n" || $0 == "\t" || !CharacterSet.controlCharacters.contains($0) })
+            // Control characters only (Unicode Cc). Format characters (Cf) are part of the text: the zero-width
+            // joiner inside emoji sequences, right-to-left marks in Hebrew or Arabic notes, soft hyphens.
+            // (`CharacterSet.controlCharacters` would remove those too.)
+            let clean = String(value.unicodeScalars.filter { $0 == "\n" || $0 == "\t" || $0.properties.generalCategory != .control })
             return clean.count > limit ? String(clean.prefix(limit)) + "…" : clean
         }
         func count(_ key: CodingKeys) -> Int {
@@ -300,18 +303,30 @@ struct OrbitPresentationActionReply: Decodable, Equatable, Sendable {
 
 /// The talk timer. While PowerPoint runs the show it follows the PC (`elapsedSeconds`), so every device
 /// shows the same time; with key presses (Google Slides, a PDF) the PC can't tell, so it starts when Orbit
-/// sends Start (or the first slide change) and stops when Orbit sends End. It can also be reset by hand.
+/// sends Start (or the first slide change) and stops when Orbit sends End. It can also be started again or
+/// reset by hand, also during PowerPoint's show: it is then the user's own timer until that show ends.
 /// Codable so the Watch can keep a talk's timer when watchOS ends Orbit in the background.
 struct OrbitPresentationTimer: Codable, Equatable, Sendable {
     private(set) var startedAt: Date?
     private(set) var stoppedAt: Date?
     /// Anchored to the PC's own show time.
     private(set) var followsPC = false
+    /// Started again or reset by hand during PowerPoint's show: the PC's show time is ignored until that show
+    /// ends, so the next read doesn't undo it.
+    private(set) var overridesPC = false
+    /// When the overridden show started (the anchor of its show time). Orbit may not see a show end (the screen
+    /// or the Watch page was closed): a show that started elsewhere in time is another one, followed again.
+    private(set) var overriddenShowStart: Date?
 
     /// A drift smaller than this keeps the current anchor, so the display doesn't jitter by a second.
     static let resyncTolerance: TimeInterval = 2
+    /// The show's start moved by more than this: another show (rounding and short pauses move it by seconds).
+    static let newShowTolerance: TimeInterval = 30
 
     var isRunning: Bool { startedAt != nil && stoppedAt == nil }
+
+    /// Shows PowerPoint's own show time right now.
+    var isFollowingPC: Bool { followsPC && isRunning }
 
     func elapsed(at now: Date) -> TimeInterval? {
         guard let startedAt else { return nil }
@@ -322,14 +337,51 @@ struct OrbitPresentationTimer: Codable, Equatable, Sendable {
     mutating func sync(with state: OrbitPresentationState, now: Date) {
         if state.running, let elapsed = state.elapsedSeconds {
             let anchor = now.addingTimeInterval(-TimeInterval(elapsed))
+            if overridesPC {
+                let drift = overriddenShowStart.map { abs($0.timeIntervalSince(anchor)) } ?? 0
+                if drift <= Self.newShowTolerance {
+                    // The user's own timer, until this show ends. Only a real move of the show's start is kept, so
+                    // a read doesn't change (and publish) the timer every time.
+                    if overriddenShowStart == nil || drift > Self.resyncTolerance { overriddenShowStart = anchor }
+                    return
+                }
+                // Another show runs now (Orbit didn't see the overridden one end): follow it.
+                overridesPC = false
+                overriddenShowStart = nil
+            }
             if startedAt == nil || stoppedAt != nil || !followsPC || abs(startedAt!.timeIntervalSince(anchor)) > Self.resyncTolerance {
                 startedAt = anchor
             }
             stoppedAt = nil
             followsPC = true
-        } else if followsPC, !state.running, isRunning {
-            stoppedAt = now // PowerPoint's show ended: keep the final time on screen.
+        } else if !state.running {
+            if overridesPC {
+                // The show the user's own timer ran beside has ended: keep its final time, follow the next show.
+                overridesPC = false
+                overriddenShowStart = nil
+                if isRunning { stoppedAt = now }
+            } else if followsPC, isRunning {
+                stoppedAt = now // PowerPoint's show ended: keep the final time on screen.
+            }
         }
+    }
+
+    /// "Start Timer Now" on iPhone, "Restart timer" on the Watch: counts from zero now.
+    mutating func startByHand(now: Date) {
+        let duringShow = isFollowingPC || overridesPC
+        let showStart = isFollowingPC ? startedAt : overriddenShowStart
+        start(now: now)
+        overridesPC = duringShow
+        overriddenShowStart = duringShow ? showStart : nil
+    }
+
+    /// "Reset Timer": back to 0:00, not running (the next slide change Orbit sends starts it).
+    mutating func resetByHand() {
+        let duringShow = isFollowingPC || overridesPC
+        let showStart = isFollowingPC ? startedAt : overriddenShowStart
+        reset()
+        overridesPC = duringShow
+        overriddenShowStart = duringShow ? showStart : nil
     }
 
     /// Orbit sent an action that the PC carried out.
@@ -347,16 +399,78 @@ struct OrbitPresentationTimer: Codable, Equatable, Sendable {
         }
     }
 
+    /// Starts from zero now (Orbit's Start, or the first slide change). Keeps a running override.
     mutating func start(now: Date) {
         startedAt = now
         stoppedAt = nil
         followsPC = false
     }
 
+    /// Back to nothing at all: another PC, demo mode switched.
     mutating func reset() {
-        startedAt = nil
-        stoppedAt = nil
-        followsPC = false
+        self = OrbitPresentationTimer()
+    }
+}
+
+// MARK: - Sending actions
+
+/// Slide show actions waiting to be sent, oldest first; the first one is in flight. Taps that waited behind a
+/// failed or slow action are dropped instead of reaching the audience seconds later, after the user may have
+/// checked the slide and tapped again (the agent drops stale slide changes the same way, see
+/// `orbit_presentation.ComWorker`).
+struct OrbitPresentationQueue: Equatable, Sendable {
+    struct Item: Equatable, Sendable {
+        let action: OrbitPresentationAction
+        let slide: Int?
+        let queuedAt: Date
+    }
+
+    /// Actions accepted at a time, the one in flight included.
+    let capacity: Int
+    /// A waiting action that waited longer than this when its turn comes is not sent, nor anything after it:
+    /// they were all tapped before the slow one's result could be seen.
+    let maxWait: TimeInterval
+    private(set) var items: [Item] = []
+
+    init(capacity: Int, maxWait: TimeInterval) {
+        self.capacity = capacity
+        self.maxWait = maxWait
+    }
+
+    var isEmpty: Bool { items.isEmpty }
+    var count: Int { items.count }
+    var first: Item? { items.first }
+
+    /// Adds a tap; false when the queue is full.
+    @discardableResult
+    mutating func append(_ action: OrbitPresentationAction, slide: Int? = nil, now: Date) -> Bool {
+        guard items.count < capacity else { return false }
+        items.append(Item(action: action, slide: slide, queuedAt: now))
+        return true
+    }
+
+    /// The action in flight is done. Returns how many waiting actions were dropped because the next one
+    /// waited too long (then every one is dropped).
+    mutating func finishFirst(now: Date) -> Int {
+        guard !items.isEmpty else { return 0 }
+        items.removeFirst()
+        guard let next = items.first, now.timeIntervalSince(next.queuedAt) > maxWait else { return 0 }
+        let dropped = items.count
+        items.removeAll()
+        return dropped
+    }
+
+    /// The action in flight failed (or may have happened anyway): drops the ones waiting behind it and returns
+    /// how many. The one in flight stays first until `finishFirst`.
+    mutating func dropWaiting() -> Int {
+        guard items.count > 1 else { return 0 }
+        let dropped = items.count - 1
+        items.removeSubrange(1...)
+        return dropped
+    }
+
+    mutating func removeAll() {
+        items.removeAll()
     }
 }
 
@@ -402,6 +516,22 @@ enum OrbitPresentationText {
         if seconds > 0 || parts.isEmpty { parts.append(seconds == 1 ? "1 second" : "\(seconds) seconds") }
         return parts.joined(separator: " ")
     }
+
+    /// "tap", "3 taps".
+    static func taps(_ count: Int) -> String { count == 1 ? "tap" : "\(count) taps" }
+
+    /// The action in flight took longer than the queue's `maxWait`, so the taps behind it were dropped.
+    static func skippedSlowTaps(_ count: Int) -> String {
+        "Your PC took a moment, so Orbit didn't send your next \(taps(count)). Check the slide, then tap again."
+    }
+
+    /// Added after a failure's own sentence when taps were waiting behind it.
+    static func skippedTapsAfterFailure(_ count: Int) -> String {
+        "Orbit didn't send the \(taps(count)) after it."
+    }
+
+    /// The Watch's short form, put first so a two-line caption keeps it: "Skipped 2 taps."
+    static func skippedTapsShort(_ count: Int) -> String { "Skipped \(count) \(count == 1 ? "tap" : "taps")." }
 
     static let olderAgent = "Presentation remote needs a newer Orbit agent on the PC. Update it from Settings → PC Companion, then try again."
     static let needsEncryption = "Presentation remote works over Orbit's encrypted connection. Pair the PC again with Find my PC to turn it on."

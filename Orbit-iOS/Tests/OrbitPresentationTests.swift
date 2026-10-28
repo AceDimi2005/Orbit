@@ -9,7 +9,9 @@ import Foundation
 struct OrbitPresentationTests {
     static func main() throws {
         checkTimer()
+        checkTimerByHand()
         checkSavedTimer()
+        checkQueue()
         checkReminderPlan()
         checkDemo()
         checkLenientDecoding()
@@ -118,6 +120,114 @@ struct OrbitPresentationTests {
         precondition(keys.startedAt == nil && !keys.isRunning)
     }
 
+    /// "Start Timer Now" / "Reset Timer" (iPhone) and "Restart timer" / "Reset timer" (Watch) during PowerPoint's
+    /// show: the next read must not put the PC's show time back.
+    static func checkTimerByHand() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        func show(_ elapsed: Int) -> OrbitPresentationState {
+            OrbitPresentationState(app: .powerpoint, running: true, source: .show, slide: 3, slides: 12, showState: .running,
+                                   control: .powerpoint, elapsedSeconds: elapsed)
+        }
+        let ended = OrbitPresentationState(app: .powerpoint, running: false, source: .editor, slide: 3, slides: 12, control: .keys)
+        var timer = OrbitPresentationTimer()
+        timer.sync(with: show(600), now: t0)
+        precondition(timer.isFollowingPC && !timer.overridesPC && timer.elapsed(at: t0) == 600)
+        // Reset during the show: stays at 0:00 after the next reads.
+        timer.resetByHand()
+        timer.sync(with: show(601), now: t0 + 1)
+        timer.sync(with: show(602), now: t0 + 2)
+        precondition(timer.startedAt == nil && !timer.isRunning && timer.overridesPC, "a reset during the show stays reset")
+        // The next slide change Orbit sends starts it (like with key presses).
+        timer.note(.next, via: "powerpoint", now: t0 + 3)
+        timer.sync(with: show(604), now: t0 + 4)
+        precondition(timer.isRunning && timer.elapsed(at: t0 + 4) == 1 && timer.overridesPC)
+        // Start Timer Now during the show: counts from zero, the PC's 10 minutes don't come back.
+        timer.startByHand(now: t0 + 10)
+        timer.sync(with: show(611), now: t0 + 11)
+        timer.sync(with: show(612), now: t0 + 12)
+        precondition(timer.elapsed(at: t0 + 12) == 2 && !timer.isFollowingPC, "a start during the show counts from zero")
+        // Restart from slide 1 (PowerPoint keeps its own show time): the user's timer starts again too.
+        timer.note(.start, via: "powerpoint", now: t0 + 20)
+        timer.sync(with: show(620), now: t0 + 21)
+        precondition(timer.elapsed(at: t0 + 21) == 1 && timer.overridesPC)
+        // The show ends: the final time stays, and the next show is followed again.
+        timer.sync(with: ended, now: t0 + 50)
+        precondition(!timer.isRunning && !timer.overridesPC && timer.elapsed(at: t0 + 99) == 30)
+        timer.sync(with: show(5), now: t0 + 100)
+        precondition(timer.isFollowingPC && timer.elapsed(at: t0 + 100) == 5, "a new show is followed again")
+        // A reset during the show, then the show ends while reset: nothing runs, the next show is followed.
+        timer.resetByHand()
+        timer.sync(with: ended, now: t0 + 110)
+        precondition(timer.startedAt == nil && !timer.overridesPC)
+        timer.sync(with: show(2), now: t0 + 120)
+        precondition(timer.isFollowingPC && timer.elapsed(at: t0 + 120) == 2)
+        // Orbit didn't see the show end (the screen or the Watch page was closed), and another show started: that
+        // one is followed. The same show much later, or its start moving by a few seconds, keeps the user's timer.
+        var missed = OrbitPresentationTimer()
+        missed.sync(with: show(300), now: t0)
+        missed.startByHand(now: t0 + 1)
+        precondition(missed.overriddenShowStart == t0 - 300)
+        missed.sync(with: show(3900), now: t0 + 3600)
+        precondition(missed.overridesPC && missed.elapsed(at: t0 + 3600) == 3599, "the same show an hour later")
+        missed.sync(with: show(3905), now: t0 + 3602)
+        precondition(missed.overridesPC && missed.overriddenShowStart == t0 - 303, "a drift of seconds keeps the user's timer")
+        let unchanged = missed
+        missed.sync(with: show(3906), now: t0 + 3603)
+        precondition(missed == unchanged, "a read within the tolerance changes nothing (no publish per read)")
+        missed.sync(with: show(40), now: t0 + 7200)
+        precondition(missed.isFollowingPC && !missed.overridesPC && missed.overriddenShowStart == nil && missed.elapsed(at: t0 + 7200) == 40,
+                     "another show is followed again")
+        // By hand without a PowerPoint show (key presses): no override, so a PowerPoint show started later is followed.
+        var keys = OrbitPresentationTimer()
+        keys.startByHand(now: t0)
+        precondition(keys.isRunning && !keys.overridesPC)
+        keys.sync(with: show(3), now: t0 + 30)
+        precondition(keys.isFollowingPC && keys.elapsed(at: t0 + 30) == 3)
+        // After PowerPoint's show ended (final time on screen) a reset is a plain reset.
+        keys.sync(with: ended, now: t0 + 40)
+        keys.resetByHand()
+        precondition(!keys.overridesPC && keys.startedAt == nil)
+        // Another PC or demo mode: everything goes, the override too.
+        timer.startByHand(now: t0 + 200)
+        precondition(timer.overridesPC)
+        timer.reset()
+        precondition(timer == OrbitPresentationTimer())
+    }
+
+    /// Taps waiting behind a failed or slow action are dropped, never sent seconds later.
+    static func checkQueue() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        var queue = OrbitPresentationQueue(capacity: 4, maxWait: 2.5)
+        precondition(queue.isEmpty && queue.first == nil && queue.finishFirst(now: t0) == 0 && queue.dropWaiting() == 0)
+        // Quick taps go out one after another.
+        for tap in 0..<4 { precondition(queue.append(.next, now: t0 + Double(tap) * 0.2)) }
+        precondition(!queue.append(.next, now: t0 + 1), "the fifth tap is refused while four wait")
+        precondition(queue.finishFirst(now: t0 + 0.5) == 0 && queue.count == 3 && queue.first?.queuedAt == t0 + 0.2)
+        // The action in flight failed: the taps behind it are dropped; the one in flight stays first until finished.
+        precondition(queue.dropWaiting() == 2 && queue.count == 1 && queue.first?.queuedAt == t0 + 0.2)
+        precondition(queue.finishFirst(now: t0 + 9) == 0 && queue.isEmpty)
+        // A slow action: every tap made while it was on its way is dropped once the first one waited too long,
+        // also the one made just before it landed.
+        queue.append(.next, now: t0 + 10)
+        queue.append(.next, now: t0 + 10.5)
+        queue.append(.goto, slide: 7, now: t0 + 12.9)
+        precondition(queue.finishFirst(now: t0 + 13.2) == 2 && queue.isEmpty, "a stale head drops every waiting tap")
+        // A tap made after the slow one landed goes out as usual.
+        queue.append(.previous, now: t0 + 14)
+        precondition(queue.first?.action == .previous && queue.first?.slide == nil && queue.finishFirst(now: t0 + 14.1) == 0)
+        // Waiting exactly the limit still goes out; the slide number travels with its tap.
+        queue.append(.next, now: t0 + 20)
+        queue.append(.goto, slide: 9, now: t0 + 20)
+        precondition(queue.finishFirst(now: t0 + 22.5) == 0 && queue.first?.slide == 9 && queue.first?.action == .goto)
+        queue.removeAll()
+        precondition(queue.isEmpty && queue.count == 0)
+        precondition(OrbitPresentationText.skippedSlowTaps(1).contains("your next tap.")
+                     && OrbitPresentationText.skippedSlowTaps(3).contains("your next 3 taps."))
+        precondition(OrbitPresentationText.skippedTapsAfterFailure(2) == "Orbit didn't send the 2 taps after it."
+                     && OrbitPresentationText.skippedTapsAfterFailure(1) == "Orbit didn't send the tap after it.")
+        precondition(OrbitPresentationText.skippedTapsShort(1) == "Skipped 1 tap." && OrbitPresentationText.skippedTapsShort(3) == "Skipped 3 taps.")
+    }
+
     /// The Watch keeps a running talk timer across launches (`Orbit.WatchPresentTalk.v1`).
     static func checkSavedTimer() {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000.25)
@@ -136,6 +246,12 @@ struct OrbitPresentationTests {
         keys.note(.end, via: "keys", now: t0 + 30)
         precondition(roundTrip(keys) == keys && !roundTrip(keys).isRunning && roundTrip(keys).elapsed(at: t0 + 99) == 30)
         precondition(roundTrip(OrbitPresentationTimer()) == OrbitPresentationTimer())
+        // A timer restarted by hand during the show keeps ignoring the PC's show time after a relaunch.
+        var mine = pc
+        mine.startByHand(now: t0 + 30)
+        let reopened = roundTrip(mine)
+        precondition(reopened == mine && reopened.overridesPC && reopened.overriddenShowStart == pc.startedAt
+                     && reopened.elapsed(at: t0 + 40) == 10)
     }
 
     static func checkReminderPlan() {
@@ -226,6 +342,17 @@ struct OrbitPresentationTests {
         precondition(clamped.slide == 12 && clamped.elapsedSeconds == 3 && clamped.source == .show && clamped.showState == .running && clamped.control == .powerpoint)
         let long = decode("{\"notes\":\"\(String(repeating: "x", count: 25_000))\"}")
         precondition(long.notes.count == OrbitPresentationState.maxNotes + 1 && long.notes.hasSuffix("…"))
+        // Format characters belong to the text (an emoji ZWJ sequence, a right-to-left mark after Hebrew, a soft
+        // hyphen, bidi isolates); only control characters (here a bell and a carriage return) are removed.
+        let joined = "Team \u{1F469}\u{200D}\u{1F4BB} \u{05E9}\u{05DC}\u{05D5}\u{05DD}\u{200F} co\u{00AD}operate"
+        let isolated = "\u{2067}\u{05E9}\u{05DC}\u{05D5}\u{05DD}\u{2069} Agenda"
+        let formatted = try! JSONDecoder().decode(OrbitPresentationState.self, from: JSONSerialization.data(withJSONObject: [
+            "notes": joined + "\u{0007}\r", "title": "Deck \u{1F469}\u{200D}\u{1F4BB}\u{200F}", "slideTitle": isolated
+        ]))
+        precondition(Array(formatted.notes.unicodeScalars) == Array(joined.unicodeScalars), "notes keep ZWJ, RLM and soft hyphen")
+        precondition(Array(formatted.title.unicodeScalars) == Array("Deck \u{1F469}\u{200D}\u{1F4BB}\u{200F}".unicodeScalars))
+        precondition(Array(formatted.slideTitle.unicodeScalars) == Array(isolated.unicodeScalars), "titles keep bidi isolates")
+        precondition(formatted.forWatch.title == formatted.title)
         let reply = try! JSONDecoder().decode(OrbitPresentationActionReply.self, from: Data(#"{"detail":"  Pressed Right on the PC.  ","presentation":{"bogus":1},"keys":"Right"}"#.utf8))
         precondition(reply.status == "done" && reply.detail == "Pressed Right on the PC." && reply.keys.isEmpty)
         precondition(reply.presentation == OrbitPresentationState(), "an unreadable presentation decodes to defaults, never fails the reply")

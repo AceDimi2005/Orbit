@@ -1,7 +1,7 @@
 """Check the presentation remote's Swift models against the real agent module.
 
 Compiles `Shared/OrbitPresentationModels.swift` with `Tests/OrbitPresentationTests.swift` (which also checks
-the talk timer, the Watch's saved timer and reminder plan, demo mode and lenient decoding) and feeds it
+the talk timer, the send queue, the Watch's saved timer and reminder plan, demo mode and lenient decoding) and feeds it
 replies made by `orbit_presentation.py`'s own router: a fake PowerPoint (the agent's test fakes from
 `test_presentation.py`) in every state the app shows,
 key presses, refusals (409, 422, 503), an older agent's 404, plain HTTP's 426 and a wrong token's 401. Then
@@ -200,8 +200,15 @@ bridge = (ROOT / 'Orbit-iOS/Orbit/OrbitWatchBridge.swift').read_text()
 assert 'static let command = "presentation"' in relay and '"cmd": "presentation"' in watch
 assert 'static let stateAction = "state"' in relay and 'relayPresentation("state"' in watch
 assert bridge.count('OrbitWatchPresentationRelay.command') >= 2, 'bridge must dispatch and forward the presentation command'
+# Both remotes send through the shared queue, which drops taps waiting behind a failed or slow action.
+iphone = (ROOT / 'Orbit-iOS/Orbit/PresentationView.swift').read_text()
+for name, source in (('iPhone', iphone), ('Watch', watch)):
+    assert 'OrbitPresentationQueue(' in source and 'finishFirst(now:' in source and 'dropWaiting()' in source, \
+        f'{name} remote must use OrbitPresentationQueue and drop waiting taps after a failure'
+    assert 'startByHand(now:' in source and 'resetByHand()' in source, f'{name} timer controls must override the PC show time'
 shortcuts = (ROOT / 'Orbit-iOS/Orbit/OrbitApp.swift').read_text()
 assert shortcuts.count('AppShortcut(') <= 10, 'Apple allows at most 10 App Shortcuts'
 
 print(f"PASS: presentation remote models against orbit_presentation ({len(states)} states, {len(replies)} replies, "
-      f"{len(errors)} errors), timer, saved timer, reminder plan, demo deck, lenient decoding, Shortcuts/Watch/relay action names")
+      f"{len(errors)} errors), timer (also by hand during a show), saved timer, send queue, reminder plan, demo deck, "
+      f"lenient decoding (format characters kept), Shortcuts/Watch/relay action names")

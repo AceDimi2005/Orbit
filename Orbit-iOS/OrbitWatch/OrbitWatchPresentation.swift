@@ -19,6 +19,13 @@ final class WatchPresentationStore: ObservableObject {
     static let tab = 5
     static let reminderChoices = [1, 2, 3, 5, 10, 15, 20, 30]
     static let maxQueued = 3
+    /// A tap still waiting after this long is dropped with the ones after it, as on iPhone. A slide change takes
+    /// well under a second through the iPhone relay, so quick Crown turns still all go out.
+    static let maxQueueWait: TimeInterval = 2.5
+    /// The slide show on the page counts as not up to date after this many failed reads in a row, or once a
+    /// failed read comes this long after the last good one.
+    static let staleAfterFailedReads = 2
+    static let staleAfterSeconds: TimeInterval = 6
 
     enum Phase: Equatable {
         case idle, loading, ready
@@ -37,6 +44,8 @@ final class WatchPresentationStore: ObservableObject {
         didSet { if timer != oldValue { saveTalk() } }
     }
     @Published var message: String?
+    /// The slide show shown is from an earlier read: the last reads failed (iPhone or PC gone). Says why.
+    @Published private(set) var staleReason: String?
     @Published private(set) var pending = 0
     /// "Via iPhone" or "Direct to PC" for the last exchange.
     @Published private(set) var route = ""
@@ -67,8 +76,11 @@ final class WatchPresentationStore: ObservableObject {
     private(set) var pcID = "" {
         didSet { if pcID != oldValue { saveTalk() } }
     }
-    private var queue: [(action: OrbitPresentationAction, slide: Int?)] = []
+    private var queue = OrbitPresentationQueue(capacity: WatchPresentationStore.maxQueued,
+                                                maxWait: WatchPresentationStore.maxQueueWait)
     private var queueGeneration = 0
+    private var failedReads = 0
+    private var lastGoodReadAt: Date?
     private var actionTask: Task<Void, Never>?
     private var messageTask: Task<Void, Never>?
     /// Reminders counted when the page last checked (nil: not counted yet), for the in-app taps.
@@ -131,6 +143,7 @@ final class WatchPresentationStore: ObservableObject {
         isDemo = demoMode
         demo = OrbitPresentationDemo()
         state = nil
+        markRead()
         timer.reset()
         phase = .idle
         message = nil
@@ -147,6 +160,7 @@ final class WatchPresentationStore: ObservableObject {
         }
         let old = state
         if old != new { state = new }
+        markRead(Date())
         if phase != .ready { phase = .ready }
         if self.route != route { self.route = route }
         let now = Date()
@@ -158,9 +172,22 @@ final class WatchPresentationStore: ObservableObject {
     }
 
     func readFailed(_ phase: Phase) {
-        // Keep the last state on screen; a busy PowerPoint or a slow iPhone is usually brief.
-        if case .failed = phase, state != nil { return }
+        // Keep the last state on screen; a busy PowerPoint or a slow iPhone is usually brief. After a couple of
+        // failed reads in a row (or one long after the last good read) the page says it isn't up to date.
+        if case .failed(let reason) = phase, state != nil {
+            failedReads += 1
+            let longAgo = lastGoodReadAt.map { Date().timeIntervalSince($0) > Self.staleAfterSeconds } ?? true
+            if failedReads >= Self.staleAfterFailedReads || longAgo, staleReason != reason { staleReason = reason }
+            return
+        }
         if self.phase != phase { self.phase = phase }
+    }
+
+    /// A good read (`at`), or nothing read yet (nil: another PC, demo mode switched).
+    private func markRead(_ at: Date? = nil) {
+        failedReads = 0
+        lastGoodReadAt = at
+        if staleReason != nil { staleReason = nil }
     }
 
     func show(_ text: String) {
@@ -196,10 +223,10 @@ final class WatchPresentationStore: ObservableObject {
 
     // MARK: Action queue
 
-    /// Adds an action; returns false when too many are already waiting (fast Crown turns).
+    /// Adds an action; returns false when too many are already waiting (fast Crown turns). Taps waiting behind
+    /// an action that failed (`dropWaiting`) or took longer than `maxQueueWait` are not sent.
     func enqueue(_ action: OrbitPresentationAction, slide: Int?, run: @escaping (OrbitPresentationAction, Int?) async -> Void) -> Bool {
-        guard queue.count < Self.maxQueued else { return false }
-        queue.append((action, slide))
+        guard queue.append(action, slide: slide, now: Date()) else { return false }
         pending = queue.count
         guard actionTask == nil else { return true }
         let generation = queueGeneration
@@ -208,19 +235,32 @@ final class WatchPresentationStore: ObservableObject {
                 await run(next.action, next.slide)
                 // The queue was cleared meanwhile (another PC, demo mode): leave the new one alone.
                 guard generation == self.queueGeneration else { return }
-                if !self.queue.isEmpty { self.queue.removeFirst() }
+                let skipped = self.queue.finishFirst(now: Date())
                 self.pending = self.queue.count
+                if skipped > 0 {
+                    WKInterfaceDevice.current().play(.retry)
+                    // The PC took a while: short enough for the two-line caption.
+                    self.show("\(OrbitPresentationText.skippedTapsShort(skipped)) Check the slide, then tap again.")
+                }
             }
             if let self, generation == self.queueGeneration { self.actionTask = nil }
         }
         return true
     }
 
+    /// The action in flight failed or may have happened anyway: the taps waiting behind it are dropped (they were
+    /// made before its outcome could be seen). Returns how many.
+    func dropWaiting() -> Int {
+        let dropped = queue.dropWaiting()
+        pending = queue.count
+        return dropped
+    }
+
     func cancelQueue() {
         queueGeneration &+= 1
         actionTask?.cancel()
         actionTask = nil
-        queue = []
+        queue.removeAll()
         pending = 0
     }
 
@@ -239,14 +279,17 @@ final class WatchPresentationStore: ObservableObject {
         if copy != timer { timer = copy }
     }
 
+    /// "Restart timer": from zero now. During PowerPoint's show it is the Watch's own timer until that show ends,
+    /// so the next read doesn't put PowerPoint's show time back (and the reminders count from now).
     func restartTimer() {
-        timer.start(now: Date())
+        let now = Date()
+        updateTimer { $0.startByHand(now: now) }
         lastReminderCount = nil
         updateReminders()
     }
 
     func resetTimer() {
-        timer.reset()
+        updateTimer { $0.resetByHand() }
         lastReminderCount = nil
         updateReminders()
     }
@@ -539,9 +582,13 @@ extension OrbitWatchViewModel {
             if action.isMove, reply?.presentation?.isShowingSlide != true { WKInterfaceDevice.current().play(.click) }
         } catch {
             guard target == destination else { return }
+            // Taps made while this one was on its way aren't sent after a failure (the slide may have changed).
+            let skipped = store.dropWaiting()
             if case WatchPresentationRelayFailure.olderAgent = error { store.readFailed(.unsupported) }
             if case OrbitWatchHTTPError.presentationUnavailable = error { store.readFailed(.unsupported) }
-            store.show(Self.presentationMessage(error, action: action))
+            let message = Self.presentationMessage(error, action: action)
+            // The skipped count first: the caption has two lines.
+            store.show(skipped > 0 ? "\(OrbitPresentationText.skippedTapsShort(skipped)) \(message)" : message)
             WKInterfaceDevice.current().play(.failure)
             Task { await refreshPresentation() }
         }
@@ -755,9 +802,18 @@ struct WatchPresentPage: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(startsShow ? "Start slide show" : "Next slide")
-        .accessibilityValue(state?.spokenPosition ?? "")
+        .accessibilityValue(spokenValue(state))
         .accessibilityHint("Turn the Digital Crown to go forward or back")
     }
+
+    private func spokenValue(_ state: OrbitPresentationState?) -> String {
+        let position = state?.spokenPosition ?? ""
+        guard isStale else { return position }
+        return position.isEmpty ? "Not updated" : "\(position), not updated"
+    }
+
+    /// The slide show on screen is from an earlier read (the iPhone or the PC stopped answering).
+    private var isStale: Bool { store.staleReason != nil && blockingMessage == nil && !store.isDemo }
 
     private var enabled: Bool {
         store.isDemo || (vm.canControlPC && store.phase != .unsupported && store.phase != .needsPhone)
@@ -780,9 +836,11 @@ struct WatchPresentPage: View {
             .monospacedDigit()
             .lineLimit(1)
             .minimumScaleFactor(0.5)
+            .opacity(isStale ? 0.4 : 1)
         } else if let state, state.running {
             Text(state.showState == .black ? "Black" : state.showState == .white ? "White" : "End")
                 .font(.system(.title2, design: .rounded).weight(.bold))
+                .opacity(isStale ? 0.4 : 1)
         } else {
             Image(systemName: startsShow ? "play.fill" : "chevron.forward")
                 .font(.system(size: 34, weight: .bold))
@@ -793,6 +851,7 @@ struct WatchPresentPage: View {
     private func bigCaption(_ state: OrbitPresentationState?, startsShow: Bool) -> String {
         if let message = store.message { return message }
         if let blocking = blockingMessage { return blocking.text }
+        if isStale, let reason = store.staleReason { return "Not updated · \(reason)" }
         guard let state else { return "Tap for the next slide" }
         if startsShow { return state.isReadyInEditor && !state.title.isEmpty ? "Start “\(state.title)”" : "Start the slide show" }
         if state.isShowingSlide {
@@ -845,7 +904,9 @@ struct WatchPresentPage: View {
 /// `ORBIT_WATCH_PRESENT_SELFTEST=next,next,previous` together with `ORBIT_WATCH_LINK=orbitwatch://present` (as
 /// `SIMCTL_CHILD_` variables of `xcrun simctl launch`): once the Present page is on screen, sends these actions
 /// the way a tap or a Crown detent does, `ORBIT_WATCH_PRESENT_SELFTEST_GAP` seconds apart (4 by default), and
-/// prints what the page shows after each one. `ORBIT_WATCH_PRESENT_TEST_PC='host|token|securePort|fingerprint'`
+/// prints what the page shows after each one. `burst:next:3` sends three taps 0.2 s apart, `timer:restart` and
+/// `timer:reset` press the More sheet's timer buttons, `wait:N` waits N seconds and prints the page.
+/// `ORBIT_WATCH_PRESENT_TEST_PC='host|token|securePort|fingerprint'`
 /// points the Watch straight at a PC over HTTPS (the presentation remote needs it), for a Simulator without a
 /// paired iPhone. `ORBIT_WATCH_PRESENT_REMINDERS=<minutes>` turns the haptic reminders on and prints what is
 /// scheduled. Debug builds only; use it with a pretend PC.
@@ -897,11 +958,29 @@ enum WatchPresentSelfTest {
             try? await Task.sleep(for: .seconds(max(5, gap)))
             print("WATCH_PRESENT_SELFTEST ready: \(summary(vm.presentation))")
             for (index, step) in plan.split(separator: ",").enumerated() {
-                guard let action = OrbitPresentationAction(rawValue: String(step)) else {
+                let parts = step.split(separator: ":").map(String.init)
+                // `timer:restart` / `timer:reset` (the More sheet's buttons), `wait:N` (N seconds, then the page).
+                if parts.first == "timer" || parts.first == "wait" {
+                    if parts.first == "timer" {
+                        if parts.dropFirst().first == "reset" { vm.presentation.resetTimer() } else { vm.presentation.restartTimer() }
+                    }
+                    let seconds = parts.first == "wait" ? parts.dropFirst().first.flatMap(Double.init) ?? 5 : 4.5
+                    try? await Task.sleep(for: .seconds(seconds)) // timer: two reads of the PC's show time later
+                    print("WATCH_PRESENT_SELFTEST step \(index + 1) \(step): \(summary(vm.presentation))")
+                    try? await Task.sleep(for: .seconds(gap))
+                    continue
+                }
+                // `burst:next:3`: taps 0.2 s apart, like Crown detents while the PC is slow.
+                let burst = parts.first == "burst"
+                let words = burst ? Array(parts.dropFirst()) : parts
+                guard let first = words.first, let action = OrbitPresentationAction(rawValue: first) else {
                     print("WATCH_PRESENT_SELFTEST step \(index + 1) \(step): unknown action")
                     continue
                 }
-                vm.sendPresentation(action)
+                for _ in 0..<(burst ? (words.count > 1 ? Int(words[1]) ?? 3 : 3) : 1) {
+                    vm.sendPresentation(action)
+                    if burst { try? await Task.sleep(for: .milliseconds(200)) }
+                }
                 for _ in 0..<150 where vm.presentation.pending > 0 { try? await Task.sleep(for: .milliseconds(100)) }
                 try? await Task.sleep(for: .milliseconds(600))
                 print("WATCH_PRESENT_SELFTEST step \(index + 1) \(step): \(summary(vm.presentation))")
@@ -913,7 +992,9 @@ enum WatchPresentSelfTest {
 
     private static func summary(_ store: WatchPresentationStore) -> String {
         let shown = store.state.map { "\($0.positionText ?? "-") \($0.showState.rawValue) · control \($0.control.rawValue)" } ?? "no state"
-        return "\(store.phase) · \(shown) · route \(store.route.isEmpty ? "-" : store.route) · timer \(store.timer.isRunning ? "running" : "stopped") · message \(store.message ?? "-")"
+        let elapsed = store.timer.elapsed(at: Date()).map(OrbitPresentationText.clock) ?? "-"
+        let source = store.timer.isFollowingPC ? "PowerPoint" : (store.timer.overridesPC ? "own" : "Orbit")
+        return "\(store.phase) · \(shown) · route \(store.route.isEmpty ? "-" : store.route) · timer \(store.timer.isRunning ? "running" : "stopped") \(elapsed) (\(source)) · stale \(store.staleReason ?? "-") · message \(store.message ?? "-")"
     }
 }
 #endif
@@ -948,6 +1029,13 @@ private struct WatchPresentMoreSheet: View {
                 }
 
                 WatchSectionLabel(title: "Timer")
+                if let note = timerNote {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
+                }
                 WatchActionButton(title: "Restart timer", symbol: "timer") {
                     WKInterfaceDevice.current().play(.click)
                     store.restartTimer()
@@ -998,7 +1086,15 @@ private struct WatchPresentMoreSheet: View {
             return "Stopped for this talk. Restart the timer or pick another interval to get them again."
         }
         let every = store.reminderMinutes == 1 ? "minute" : "\(store.reminderMinutes) minutes"
-        return "A tap on your wrist every \(every) of talk time, also with the screen off. Stop Reminders on a reminder ends them for this talk."
+        // Reminders are notifications: outside Silent Mode the watch also plays its alert sound.
+        return "A tap on your wrist every \(every) of talk time, also with the screen off. Turn on Silent Mode so they make no sound. Stop Reminders on a reminder ends them for this talk."
+    }
+
+    /// Where the talk time comes from, while it matters.
+    private var timerNote: String? {
+        if store.timer.isFollowingPC { return "Shows PowerPoint's own show time." }
+        if store.timer.overridesPC { return "Your own timer until this slide show ends." }
+        return nil
     }
 
     private var howItWorks: String {

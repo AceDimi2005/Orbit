@@ -26,10 +26,9 @@ final class OrbitPresentationStore: ObservableObject {
         let image: UIImage
     }
 
-    struct QueuedAction: Equatable {
-        let action: OrbitPresentationAction
-        let slide: Int?
-    }
+    static let maxQueued = 4
+    /// A tap still waiting after this long (behind a slow PowerPoint) is dropped with the ones after it.
+    static let maxQueueWait: TimeInterval = 2.5
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var state: OrbitPresentationState?
@@ -39,8 +38,12 @@ final class OrbitPresentationStore: ObservableObject {
     /// The newest slide picture loaded; it can belong to the previous slide while the next one loads.
     @Published private(set) var thumbnail: Thumbnail?
     @Published private(set) var isLoadingThumbnail = false
+    /// The slide whose picture the PC couldn't make (404, 503…) until a retry works: no other slide's picture
+    /// stands in for it.
+    @Published private(set) var thumbnailMissingKey: String?
     /// Actions waiting or in flight, oldest first.
-    @Published private(set) var queue: [QueuedAction] = []
+    @Published private(set) var queue = OrbitPresentationQueue(capacity: OrbitPresentationStore.maxQueued,
+                                                               maxWait: OrbitPresentationStore.maxQueueWait)
     /// What the last slide change did ("Went to the next slide.", "Pressed Right on the PC…").
     @Published private(set) var lastResult: String?
     @Published var toast: OrbitDeckToast?
@@ -57,9 +60,11 @@ final class OrbitPresentationStore: ObservableObject {
     private var thumbnailTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var readTask: Task<Void, Never>?
-    /// PNG bytes per slide (key: PC, deck title, slide count, slide); decoded only when shown.
+    /// PNG bytes per slide (key: PC, deck title, slide count, slide); decoded only when shown. Kept while a
+    /// Presentation screen is open, within `maxCachedThumbnailBytes`.
     private var thumbnailData: [String: Data] = [:]
     private var thumbnailOrder: [String] = []
+    private var thumbnailBytes = 0
     /// When a slide picture that failed may be asked for again.
     private var thumbnailRetryAt: [String: Date] = [:]
     private var consecutiveFailures = 0
@@ -75,9 +80,12 @@ final class OrbitPresentationStore: ObservableObject {
     /// share the reads.
     private var lastReadAt = Date.distantPast
 
-    static let maxQueued = 4
     private static let maxCachedThumbnails = 40
+    /// Photo slides export at 1–2 MB each; older pictures go first beyond this.
+    private static let maxCachedThumbnailBytes = 20 * 1024 * 1024
     private static let offlineAfterUnansweredReads = 3
+    /// The Overview polls `/api/status` every 2 s; this long without a reply is more than one missed poll.
+    private static let statusOfflineAfter: TimeInterval = 5
 
     var isSending: Bool { !queue.isEmpty }
     var canControl: Bool { phase == .ready || phase == .demo }
@@ -93,15 +101,12 @@ final class OrbitPresentationStore: ObservableObject {
         actionTask?.cancel(); actionTask = nil
         thumbnailTask?.cancel(); thumbnailTask = nil
         readTask?.cancel(); readTask = nil
-        queue = []
+        queue.removeAll()
         state = nil
         staleReason = nil
         lastResult = nil
-        thumbnail = nil
         isLoadingThumbnail = false
-        thumbnailData = [:]
-        thumbnailOrder = []
-        thumbnailRetryAt = [:]
+        forgetThumbnails()
         consecutiveFailures = 0
         unansweredReads = 0
         link = nil
@@ -115,6 +120,14 @@ final class OrbitPresentationStore: ObservableObject {
     func setVisible(_ visible: Bool) {
         visibleViews = max(0, visibleViews + (visible ? 1 : -1))
         updateIdleTimer()
+        guard visibleViews == 0 else { return }
+        // The slide pictures go once no Presentation screen is left (a moment later, so a screen that is only
+        // replaced by another keeps them): they would otherwise stay in memory for the rest of the session.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.visibleViews == 0 else { return }
+            self.forgetThumbnails()
+        }
     }
 
     /// The polling loop; runs until the view's task is cancelled (screen hidden, app in the background).
@@ -150,13 +163,14 @@ final class OrbitPresentationStore: ObservableObject {
         }
         guard vm.isConfigured, !vm.selectedPCID.isEmpty else { phase = .notPaired; state = nil; return }
         guard vm.hasSecureConnection else { phase = .insecure; return }
-        // One missed reply to the Overview's status poll marks the PC offline until the next one (2 s later).
-        // Mid-talk the remote stays usable while the slide show itself still answers; "PC offline" shows once
-        // three reads in a row went unanswered too.
-        guard vm.metrics.isOnline || (phase == .ready && unansweredReads < Self.offlineAfterUnansweredReads) else {
+        // The Overview's status poll says "offline" until its first reply (`orbit://presentation` on a cold
+        // launch) and after one missed reply, so the slide show is asked anyway. "PC offline" (with Wake PC)
+        // shows right away only when the status poll has had no reply for a while; otherwise once the slide
+        // show doesn't answer either (mid-talk: three reads in a row, see `handleReadFailure`). Reads go on
+        // while it shows, so a PC that answers brings the remote back at once.
+        if statusSaysOffline(vm), phase != .ready, phase != .offline {
             phase = .offline
             updateIdleTimer()
-            return
         }
         guard let link = currentLink() else { phase = .failed("Orbit couldn't open the encrypted connection to this PC. Pair it again in My PCs."); return }
         let version = generation
@@ -187,11 +201,17 @@ final class OrbitPresentationStore: ObservableObject {
                 }
             } catch {
                 guard version == generation, !Task.isCancelled else { return }
-                phase = .failed(OrbitPlainError.describe(error))
+                if error is URLError, !vm.metrics.isOnline {
+                    // No answer, and the status poll has none either: the PC is off or away.
+                    phase = .offline
+                    updateIdleTimer()
+                } else {
+                    phase = .failed(OrbitPlainError.describe(error))
+                }
                 return
             }
             guard version == generation else { return }
-            if state == nil { phase = .loading }
+            if state == nil, phase != .offline { phase = .loading }
         }
 
         do {
@@ -238,8 +258,22 @@ final class OrbitPresentationStore: ObservableObject {
         staleReason = Self.transportMessage(error, action: nil)
         // The next read builds a fresh client from the current connection settings.
         link = nil
-        if state == nil, consecutiveFailures >= 2 { phase = .failed(staleReason ?? "Couldn't read the slide show.") }
-        else if phase != .ready { phase = .ready }
+        if error is URLError, vm?.metrics.isOnline == false,
+           phase != .ready || unansweredReads >= Self.offlineAfterUnansweredReads {
+            // Neither the slide show nor the Overview's status poll gets an answer: the PC is off or away.
+            phase = .offline
+            updateIdleTimer()
+        } else if state == nil, consecutiveFailures >= 2 {
+            phase = .failed(staleReason ?? "Couldn't read the slide show.")
+        } else if phase != .ready {
+            phase = .ready
+        }
+    }
+
+    /// The Overview's status poll has had no reply for a while (more than one missed poll).
+    private func statusSaysOffline(_ vm: OrbitViewModel) -> Bool {
+        guard !vm.metrics.isOnline, let last = vm.lastUpdated else { return false }
+        return Date().timeIntervalSince(last) > Self.statusOfflineAfter
     }
 
     // MARK: Applying a state
@@ -265,22 +299,26 @@ final class OrbitPresentationStore: ObservableObject {
 
     // MARK: Actions
 
-    /// Queues an action; actions run one after another so quick taps arrive in order.
+    /// Queues an action; actions run one after another so quick taps arrive in order. Taps waiting behind an
+    /// action that failed, or that took longer than `maxQueueWait`, are dropped (see `OrbitPresentationQueue`).
     func send(_ action: OrbitPresentationAction, slide: Int? = nil) {
         guard canControl else { return }
-        guard queue.count < Self.maxQueued else {
+        guard queue.append(action, slide: slide, now: Date()) else {
             OrbitHaptics.warning()
             return
         }
         if action.isMove { OrbitHaptics.selection() } else { OrbitHaptics.press() }
-        queue.append(QueuedAction(action: action, slide: slide))
         guard actionTask == nil else { return }
         let version = generation
         actionTask = Task { [weak self] in
             while let self, version == self.generation, let next = self.queue.first, !Task.isCancelled {
                 await self.perform(next, version: version)
                 guard version == self.generation else { return }
-                if !self.queue.isEmpty { self.queue.removeFirst() }
+                let skipped = self.queue.finishFirst(now: Date())
+                if skipped > 0 {
+                    OrbitHaptics.warning()
+                    self.show(OrbitPresentationText.skippedSlowTaps(skipped), kind: .failure)
+                }
             }
             guard let self, version == self.generation else { return }
             self.actionTask = nil
@@ -289,7 +327,7 @@ final class OrbitPresentationStore: ObservableObject {
         }
     }
 
-    private func perform(_ item: QueuedAction, version: Int) async {
+    private func perform(_ item: OrbitPresentationQueue.Item, version: Int) async {
         let action = item.action
         if isDemo {
             do {
@@ -318,13 +356,14 @@ final class OrbitPresentationStore: ObservableObject {
             // Done on the PC; the reply just wasn't readable. Read the state instead.
             guard version == generation else { return }
             lastResult = "Sent “\(action.title)”."
-            await refresh()
+            Task { await self.refresh() }
         } catch {
             guard version == generation, !Task.isCancelled else { return }
             if let orbit = error as? OrbitError, let status = orbit.statusCode {
                 if status == 404, Self.detail(of: orbit) == nil {
                     OrbitFeatureStore.shared.invalidate(link.id)
                     phase = .olderAgent(version: nil)
+                    _ = queue.dropWaiting()
                     return
                 }
                 fail(OrbitPresentationText.failure(status: status, detail: Self.detail(of: orbit)))
@@ -332,8 +371,9 @@ final class OrbitPresentationStore: ObservableObject {
                 fail(Self.transportMessage(error, action: action))
                 self.link = nil
             }
-            // The PC may have changed something anyway (a slow PowerPoint); show what it has now.
-            await refresh()
+            // The PC may have changed something anyway (a slow PowerPoint); show what it has now. Not awaited:
+            // a tap made after the failure goes out without waiting for this read.
+            Task { await self.refresh() }
         }
     }
 
@@ -360,19 +400,22 @@ final class OrbitPresentationStore: ObservableObject {
         updateIdleTimer()
     }
 
+    /// The action in flight failed or may have happened anyway: the taps waiting behind it were made before
+    /// its outcome could be seen, so they are dropped rather than sent later.
     private func fail(_ message: String) {
+        let skipped = queue.dropWaiting()
         OrbitHaptics.error()
-        show(message, kind: .failure)
+        show(skipped > 0 ? "\(message) \(OrbitPresentationText.skippedTapsAfterFailure(skipped))" : message, kind: .failure)
     }
 
     func resetTimer() {
-        updateTimer { $0.reset() }
+        updateTimer { $0.resetByHand() }
         updateIdleTimer()
     }
 
     func startTimerNow() {
         let now = Date()
-        updateTimer { $0.start(now: now) }
+        updateTimer { $0.startByHand(now: now) }
         updateIdleTimer()
     }
 
@@ -403,7 +446,7 @@ final class OrbitPresentationStore: ObservableObject {
     }
 
     private func loadThumbnailIfNeeded() {
-        guard !isDemo, let key = thumbnailKeyForCurrentSlide, let state else { return }
+        guard !isDemo, visibleViews > 0, let key = thumbnailKeyForCurrentSlide, let state else { return }
         if thumbnail?.key == key { return }
         if let data = thumbnailData[key], let image = UIImage(data: data) {
             thumbnail = Thumbnail(key: key, image: image)
@@ -442,33 +485,63 @@ final class OrbitPresentationStore: ObservableObject {
             guard version == self.generation else { return }
             self.thumbnailTask = nil
             self.isLoadingThumbnail = false
+            // The screen closed meanwhile: keep nothing (`forgetThumbnails` already ran or is about to).
+            guard self.visibleViews > 0 else { return }
             switch result {
             case .success(let data):
                 if let image = UIImage(data: data) {
                     self.remember(data, for: key)
+                    if self.thumbnailMissingKey == key { self.thumbnailMissingKey = nil }
                     if self.thumbnailKeyForCurrentSlide == key || self.thumbnail == nil {
                         self.thumbnail = Thumbnail(key: key, image: image)
                     }
                 } else {
                     self.thumbnailRetryAt[key] = Date().addingTimeInterval(60)
+                    self.thumbnailMissingKey = key
                 }
             case .failure(let error):
                 // No picture for this slide (404): ask again in a minute. PowerPoint busy or slow: in a few
-                // seconds. Never in a loop.
+                // seconds. Never in a loop. Meanwhile the slide shows "No preview", not another slide's picture.
                 let missing = (error as? OrbitError)?.statusCode == 404
                 self.thumbnailRetryAt[key] = Date().addingTimeInterval(missing ? 60 : 5)
+                self.thumbnailMissingKey = key
             }
             self.loadThumbnailIfNeeded()
         }
     }
 
+    /// The current slide has no picture for now (the last try failed): another slide's picture must not stand in.
+    var currentSlidePictureMissing: Bool {
+        guard let key = thumbnailKeyForCurrentSlide else { return false }
+        return thumbnailMissingKey == key
+    }
+
     private func remember(_ data: Data, for key: String) {
-        thumbnailData[key] = data
+        if let old = thumbnailData.updateValue(data, forKey: key) { thumbnailBytes -= old.count }
+        thumbnailBytes += data.count
         thumbnailOrder.removeAll { $0 == key }
         thumbnailOrder.append(key)
-        while thumbnailOrder.count > Self.maxCachedThumbnails {
-            thumbnailData[thumbnailOrder.removeFirst()] = nil
+        // The newest picture always stays, even on its own above the byte limit.
+        while thumbnailOrder.count > 1,
+              thumbnailOrder.count > Self.maxCachedThumbnails || thumbnailBytes > Self.maxCachedThumbnailBytes {
+            if let removed = thumbnailData.removeValue(forKey: thumbnailOrder.removeFirst()) { thumbnailBytes -= removed.count }
         }
+    }
+
+    /// Frees the slide pictures kept for going back a slide; the one on screen stays. iOS is short of memory, or
+    /// Orbit went to the background (where a big cache makes iOS end it sooner, losing a key-press talk timer).
+    func trimThumbnails() {
+        thumbnailData = [:]
+        thumbnailOrder = []
+        thumbnailBytes = 0
+    }
+
+    /// Frees every slide picture: no Presentation screen is open any more, or another PC.
+    private func forgetThumbnails() {
+        trimThumbnails()
+        thumbnailRetryAt = [:]
+        thumbnailMissingKey = nil
+        thumbnail = nil
     }
 
     // MARK: Screen stays on while presenting
@@ -495,8 +568,9 @@ final class OrbitPresentationStore: ObservableObject {
     /// these actions through the same queue as the buttons, `ORBIT_PRESENT_SELFTEST_GAP` seconds apart (4 by
     /// default), and prints what the screen shows after each one (`PRESENT_SELFTEST step …`). Steps starting
     /// with `watch:` (`watch:state`, `watch:next`, `watch:goto:5`, `watch:otherpc:next`, `watch:expired:next`)
-    /// send what the Watch's Present page sends through the iPhone bridge instead. Debug builds only; use it
-    /// with a pretend PC.
+    /// send what the Watch's Present page sends through the iPhone bridge instead. `burst:next:3` taps Next three
+    /// times 0.2 s apart, like a presenter tapping again while the PC is slow; `timer:start` and `timer:reset` use
+    /// the timer's menu. Debug builds only; use it with a pretend PC.
     private var selfTestStarted = false
 
     private func runSelfTestIfRequested() {
@@ -514,12 +588,27 @@ final class OrbitPresentationStore: ObservableObject {
                     await self.runWatchSelfTestStep(parts.dropFirst().map(String.init), label: "step \(index + 1) \(step)")
                     continue
                 }
-                guard let action = OrbitPresentationAction(rawValue: String(parts[0])) else {
+                if parts.first == "timer" {
+                    if parts.dropFirst().first == "reset" { self.resetTimer() } else { self.startTimerNow() }
+                    try? await Task.sleep(for: .seconds(2.5)) // two reads of the PC's show time later
+                    print("PRESENT_SELFTEST step \(index + 1) \(step): \(self.selfTestSummary)")
+                    continue
+                }
+                let burst = parts.first == "burst"
+                let words = burst ? Array(parts.dropFirst()) : Array(parts)
+                guard let first = words.first, let action = OrbitPresentationAction(rawValue: String(first)) else {
                     print("PRESENT_SELFTEST step \(index + 1) \(step): unknown action")
                     continue
                 }
                 toast = nil
-                send(action, slide: parts.count > 1 ? Int(parts[1]) : nil)
+                if burst {
+                    for _ in 0..<(words.count > 1 ? Int(words[1]) ?? 3 : 3) {
+                        send(action)
+                        try? await Task.sleep(for: .milliseconds(200))
+                    }
+                } else {
+                    send(action, slide: words.count > 1 ? Int(words[1]) : nil)
+                }
                 while isSending { try? await Task.sleep(for: .milliseconds(100)) }
                 try? await Task.sleep(for: .milliseconds(400))
                 print("PRESENT_SELFTEST step \(index + 1) \(step): \(selfTestSummary)")
@@ -553,7 +642,9 @@ final class OrbitPresentationStore: ObservableObject {
 
     private var selfTestSummary: String {
         let shown = state.map { "\($0.positionText ?? "-") \($0.showState.rawValue) · control \($0.control.rawValue) · running \($0.running)" } ?? "no state"
-        return "\(phase) · \(shown) · timer \(timer.isRunning ? "running" : "stopped") · result \(lastResult ?? "-") · toast \(toast?.message ?? "-")"
+        let elapsed = timer.elapsed(at: Date()).map(OrbitPresentationText.clock) ?? "-"
+        let source = timer.isFollowingPC ? "PowerPoint" : (timer.overridesPC ? "own" : "Orbit")
+        return "\(phase) · \(shown) · timer \(timer.isRunning ? "running" : "stopped") \(elapsed) (\(source)) · result \(lastResult ?? "-") · toast \(toast?.message ?? "-")"
     }
 
     /// `ORBIT_PRESENT_SELFTEST_ORIENTATION=landscape` turns the screen sideways when the remote opens, for
@@ -675,7 +766,11 @@ struct PresentationView: View {
             Button("End Slide Show", role: .destructive) { store.send(.end) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(store.state?.running == true || store.timer.isRunning ? "The audience sees the end of the show." : "Orbit presses Esc on the PC.")
+            // PowerPoint's show closes (SlideShowView.Exit): there is no end screen, the projector shows what's
+            // behind it (PowerPoint's editor or the desktop).
+            Text(store.state?.running == true
+                 ? "The slide show closes on the PC, and the audience sees what's behind it."
+                 : "Orbit presses Esc on the PC. That ends most slide shows, and the audience then sees what's behind it.")
         }
         .task(id: PollKey(active: scenePhase == .active, connection: vm.connectionID, demo: vm.isDemoMode,
                           online: vm.metrics.isOnline, pcID: vm.selectedPCID)) {
@@ -694,6 +789,13 @@ struct PresentationView: View {
             #endif
         }
         .onDisappear { store.setVisible(false) }
+        // Only the picture on screen stays when iOS is short of memory or Orbit goes to the background.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            store.trimThumbnails()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { store.trimThumbnails() }
+        }
         .accessibilityAction(.magicTap) { if store.canControl { store.send(.next) } }
         .orbitAppearance()
     }
@@ -851,9 +953,11 @@ struct PresentationView: View {
 
     private var timerStat: some View {
         Menu {
-            Button("Start Timer Now", systemImage: "timer") { store.startTimerNow() }
-            Button("Reset Timer", systemImage: "arrow.counterclockwise") { store.resetTimer() }
-                .disabled(store.timer.startedAt == nil)
+            Section(timerSourceNote) {
+                Button("Start Timer Now", systemImage: "timer") { store.startTimerNow() }
+                Button("Reset Timer", systemImage: "arrow.counterclockwise") { store.resetTimer() }
+                    .disabled(store.timer.startedAt == nil)
+            }
         } label: {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = store.timer.elapsed(at: context.date)
@@ -867,6 +971,13 @@ struct PresentationView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Where the talk time comes from, above the timer's options.
+    private var timerSourceNote: String {
+        if store.timer.isFollowingPC { return "Shows PowerPoint's own show time" }
+        if store.timer.overridesPC { return "Your own timer until this slide show ends" }
+        return "Starts with Start or your first slide change"
     }
 
     private func stat(label: String, value: String, tint: Color = .white, alignment: HorizontalAlignment = .leading) -> some View {
@@ -1109,19 +1220,27 @@ struct PresentationView: View {
         VStack(alignment: .leading, spacing: 8) {
             notesHeader
             if scrolls {
+                // A new scroll view per slide, so the next slide's notes start at the top instead of where the
+                // previous slide's notes were left. (Black or white screen keeps the place.)
                 ScrollView { notesText(state) }
                     .scrollIndicators(.visible)
+                    .id(notesIdentity(state))
             } else {
                 notesText(state)
                     .fixedSize(horizontal: false, vertical: true)
+                    .id(notesIdentity(state))
             }
         }
+    }
+
+    private func notesIdentity(_ state: OrbitPresentationState) -> String {
+        "\(state.title)#\(state.slide)#\(state.showState == .done)"
     }
 
     private func notesText(_ state: OrbitPresentationState) -> some View {
         Group {
             if state.showState == .done {
-                Text("End of slide show. Press Previous to go back to the last slide.")
+                Text("End of slide show. Press Back to return to the last slide.")
                     .foregroundStyle(.secondary)
             } else if state.notes.isEmpty {
                 Text(state.app == .powerpoint ? "No speaker notes on this slide." : "Speaker notes come from PowerPoint. With other presenters Orbit only presses keys.")
@@ -1134,7 +1253,6 @@ struct PresentationView: View {
         }
         .font(.system(size: notesBaseSize * (1 + 0.15 * CGFloat(notesStep))))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .id("\(state.slide)-\(state.showState.rawValue)")
     }
 
     @ViewBuilder
@@ -1154,7 +1272,9 @@ struct PresentationView: View {
             default:
                 if store.isDemoMode {
                     PresentationDemoSlide(slide: state.slide, title: state.slideTitle)
-                } else if let thumbnail = store.thumbnail, state.canShowThumbnail {
+                } else if let thumbnail = store.thumbnail, state.canShowThumbnail,
+                          thumbnail.key == store.thumbnailKeyForCurrentSlide || !store.currentSlidePictureMissing {
+                    // Another slide's picture only while this one loads (dimmed, with a spinner).
                     Image(uiImage: thumbnail.image)
                         .resizable()
                         .scaledToFit()
@@ -1163,11 +1283,12 @@ struct PresentationView: View {
                         ProgressView().tint(.white)
                     }
                 } else {
+                    let loading = state.canShowThumbnail && !store.currentSlidePictureMissing
                     shape.fill(Color.white.opacity(0.06))
                     VStack(spacing: 4) {
-                        Image(systemName: state.thumbnails ? "photo" : "rectangle.on.rectangle.slash")
+                        Image(systemName: loading ? "photo" : "rectangle.on.rectangle.slash")
                             .font(.title3)
-                        Text(state.canShowThumbnail ? "Loading slide…" : "No preview")
+                        Text(loading ? "Loading slide…" : "No preview")
                             .font(.caption2)
                     }
                     .foregroundStyle(.secondary)
@@ -1403,16 +1524,20 @@ struct PresentationView: View {
 
     // MARK: Go to slide
 
+    /// PowerPoint's slide count limits the number only while its show runs (then Orbit drives that show). With
+    /// keys the window in front gets the number, and the deck open in PowerPoint (`source` "editor") may not be
+    /// what it shows: a 30-page PDF in front of a 12-slide deck.
     private var goToRange: ClosedRange<Int> {
-        if let slides = store.state?.slides, slides > 0, store.state?.app == .powerpoint { return 1...slides }
+        if let state = store.state, state.running, state.slides > 0 { return 1...state.slides }
         return OrbitPresentationAction.slideRange
     }
 
     private var goToPlaceholder: String { "Slide number" }
 
     private var goToMessage: String {
-        if let state = store.state, state.app == .powerpoint, state.slides > 0 {
-            return "Choose a slide from 1 to \(state.slides)."
+        if let state = store.state {
+            if state.running, state.slides > 0 { return "Choose a slide from 1 to \(state.slides)." }
+            if state.isBlocked { return "Start the slide show first. With PowerPoint's editor in front, Orbit doesn't type into your slides." }
         }
         return "Orbit types the number and Enter on the PC, which most presenters understand."
     }
@@ -1532,7 +1657,7 @@ struct PresentationControlInfoView: View {
                         icon: "keyboard", tint: theme.accent)
                     row("Browsers", detail: "In a browser, F5 reloads the page. Start the presentation in Google Slides itself (Ctrl+F5 or the Slideshow button), then use Next and Previous here.",
                         icon: "safari", tint: .orange)
-                    row("Timer", detail: "Without PowerPoint the PC can't tell when the show started, so the timer starts with Start or your first slide change. Tap it to restart or reset it.",
+                    row("Timer", detail: "Without PowerPoint the PC can't tell when the show started, so the timer starts with Start or your first slide change. Tap it to restart or reset it. During a PowerPoint show it follows the show's own time; restarted or reset by hand, it stays yours until that show ends.",
                         icon: "timer", tint: theme.accent)
                 }
                 .orbitRow()
