@@ -360,6 +360,27 @@ struct OrbitPresentationTimer: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Talk reminders
+
+/// When the Watch's tap reminders are due: reminder n comes n × `minutes` after the talk started.
+enum OrbitPresentationReminderPlan {
+    /// The reminders still to come after `now`, as (n, seconds from now), at most `limit` of them and none
+    /// further ahead than `horizon`. A reminder due exactly now counts as already delivered.
+    static func upcoming(startedAt: Date, now: Date, minutes: Int, limit: Int,
+                         horizon: TimeInterval) -> [(number: Int, delay: TimeInterval)] {
+        guard minutes > 0, limit > 0 else { return [] }
+        let interval = TimeInterval(minutes * 60)
+        let next = Int(max(0, now.timeIntervalSince(startedAt)) / interval) + 1
+        var plan: [(number: Int, delay: TimeInterval)] = []
+        for number in next..<(next + limit) {
+            let delay = startedAt.addingTimeInterval(TimeInterval(number) * interval).timeIntervalSince(now)
+            guard delay <= horizon else { break }
+            plan.append((number, delay))
+        }
+        return plan
+    }
+}
+
 // MARK: - Words
 
 enum OrbitPresentationText {

@@ -30,11 +30,13 @@ enum OrbitWatchPresentationRelay {
             slide = number
         }
 
-        // Older agents have no presentation remote; the answer is cached for 10 minutes per PC. Bounded well
-        // inside the Watch's wait (the shared client alone would wait 20 s).
+        // Older agents have no presentation remote; the answer is cached for 10 minutes per PC, but a PC that
+        // lacked it is asked again after half a minute (it may have been updated meanwhile). Bounded well inside
+        // the Watch's wait (the shared client alone would wait 20 s).
         do {
             let link = OrbitPCLink(id: pcID, name: pcName, client: client)
-            let features = try await OrbitDeadline.run(seconds: 4) { try await OrbitFeatureStore.shared.features(for: link) }
+            let maxAge: TimeInterval = OrbitFeatureStore.shared.cached(pcID).has("presentation") ? 600 : 30
+            let features = try await OrbitDeadline.run(seconds: 4) { try await OrbitFeatureStore.shared.features(for: link, maxAge: maxAge) }
             guard features.has("presentation") else { return failed(OrbitPresentationText.olderAgent, code: "olderAgent") }
         } catch {
             return failed(OrbitPlainError.describe(error))

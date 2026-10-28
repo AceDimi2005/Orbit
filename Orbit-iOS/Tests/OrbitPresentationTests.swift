@@ -9,6 +9,8 @@ import Foundation
 struct OrbitPresentationTests {
     static func main() throws {
         checkTimer()
+        checkSavedTimer()
+        checkReminderPlan()
         checkDemo()
         checkLenientDecoding()
         checkText()
@@ -114,6 +116,51 @@ struct OrbitPresentationTests {
         precondition(keys.isRunning && keys.elapsed(at: t0 + 110) == 10)
         keys.reset()
         precondition(keys.startedAt == nil && !keys.isRunning)
+    }
+
+    /// The Watch keeps a running talk timer across launches (`Orbit.WatchPresentTalk.v1`).
+    static func checkSavedTimer() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000.25)
+        func roundTrip(_ timer: OrbitPresentationTimer) -> OrbitPresentationTimer {
+            try! JSONDecoder().decode(OrbitPresentationTimer.self, from: JSONEncoder().encode(timer))
+        }
+        var pc = OrbitPresentationTimer()
+        pc.sync(with: OrbitPresentationState(running: true, slide: 2, slides: 9, showState: .running, control: .powerpoint, elapsedSeconds: 75), now: t0)
+        var restored = roundTrip(pc)
+        precondition(restored == pc && restored.isRunning && restored.followsPC && restored.elapsed(at: t0 + 5) == 80)
+        // Picked up again, the PC's show time keeps the same anchor (no jump in the reminders).
+        restored.sync(with: OrbitPresentationState(running: true, slide: 3, slides: 9, showState: .running, elapsedSeconds: 95), now: t0 + 20)
+        precondition(restored.startedAt == pc.startedAt)
+        var keys = OrbitPresentationTimer()
+        keys.note(.next, via: "keys", now: t0)
+        keys.note(.end, via: "keys", now: t0 + 30)
+        precondition(roundTrip(keys) == keys && !roundTrip(keys).isRunning && roundTrip(keys).elapsed(at: t0 + 99) == 30)
+        precondition(roundTrip(OrbitPresentationTimer()) == OrbitPresentationTimer())
+    }
+
+    static func checkReminderPlan() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func plan(after seconds: TimeInterval, minutes: Int = 5, limit: Int = 48, horizon: TimeInterval = 3 * 3600) -> [(number: Int, delay: TimeInterval)] {
+            OrbitPresentationReminderPlan.upcoming(startedAt: start, now: start + seconds, minutes: minutes, limit: limit, horizon: horizon)
+        }
+        // Every 5 minutes from the start, within 3 hours: 36 reminders, the first one 5 minutes in.
+        var reminders = plan(after: 0)
+        precondition(reminders.count == 36 && reminders.first?.number == 1 && reminders.first?.delay == 300)
+        precondition(reminders.last?.number == 36 && reminders.last?.delay == 3 * 3600)
+        // 7.5 minutes in: the next one is the second (10 minutes), due in 2.5 minutes.
+        reminders = plan(after: 450)
+        precondition(reminders.first?.number == 2 && reminders.first?.delay == 150)
+        // Exactly at a reminder: that one was just delivered, the window moves on.
+        reminders = plan(after: 600)
+        precondition(reminders.first?.number == 3 && reminders.first?.delay == 300)
+        // Every minute: capped by the number of slots, not by the horizon.
+        reminders = plan(after: 30, minutes: 1)
+        precondition(reminders.count == 48 && reminders.first?.number == 1 && reminders.first?.delay == 30 && reminders.last?.number == 48)
+        // A timer that started in the future (clock change) still plans from the first reminder.
+        reminders = OrbitPresentationReminderPlan.upcoming(startedAt: start + 120, now: start, minutes: 2, limit: 3, horizon: 3600)
+        precondition(reminders.map(\.number) == [1, 2, 3] && reminders.first?.delay == 240)
+        precondition(plan(after: 0, minutes: 0).isEmpty && plan(after: 0, limit: 0).isEmpty)
+        precondition(plan(after: 0, minutes: 30, horizon: 1200).isEmpty, "nothing due within the horizon")
     }
 
     static func checkDemo() {

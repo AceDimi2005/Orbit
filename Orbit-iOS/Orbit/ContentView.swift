@@ -65,7 +65,8 @@ struct ContentView: View {
         .sheet(item: $deckLink) { link in
             NavigationStack { DeckView(vm: vm, focusButtonID: link.buttonID, showsDoneButton: true) }
         }
-        .sheet(isPresented: $isShowingPresentation) {
+        // Full screen: a swipe on the remote mid-talk can't close it, and iPad gets its own layout.
+        .fullScreenCover(isPresented: $isShowingPresentation) {
             NavigationStack { PresentationView(vm: vm, showsDoneButton: true) }
         }
         .onAppear {

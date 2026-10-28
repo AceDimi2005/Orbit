@@ -1,8 +1,9 @@
 """Check the presentation remote's Swift models against the real agent module.
 
 Compiles `Shared/OrbitPresentationModels.swift` with `Tests/OrbitPresentationTests.swift` (which also checks
-the talk timer, demo mode and lenient decoding) and feeds it replies made by `orbit_presentation.py`'s own
-router: a fake PowerPoint (the agent's test fakes from `test_presentation.py`) in every state the app shows,
+the talk timer, the Watch's saved timer and reminder plan, demo mode and lenient decoding) and feeds it
+replies made by `orbit_presentation.py`'s own router: a fake PowerPoint (the agent's test fakes from
+`test_presentation.py`) in every state the app shows,
 key presses, refusals (409, 422, 503), an older agent's 404, plain HTTP's 426 and a wrong token's 401. Then
 checks that the action names the iPhone, the Watch and Shortcuts send exist in the agent.
 
@@ -203,4 +204,4 @@ shortcuts = (ROOT / 'Orbit-iOS/Orbit/OrbitApp.swift').read_text()
 assert shortcuts.count('AppShortcut(') <= 10, 'Apple allows at most 10 App Shortcuts'
 
 print(f"PASS: presentation remote models against orbit_presentation ({len(states)} states, {len(replies)} replies, "
-      f"{len(errors)} errors), timer, demo deck, lenient decoding, Shortcuts/Watch/relay action names")
+      f"{len(errors)} errors), timer, saved timer, reminder plan, demo deck, lenient decoding, Shortcuts/Watch/relay action names")

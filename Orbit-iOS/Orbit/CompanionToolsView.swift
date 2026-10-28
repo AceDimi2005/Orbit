@@ -345,6 +345,18 @@ struct AppleWatchCompanionHelpView: View {
                     )
 
                     featureCard(
+                        title: "Presentation Remote",
+                        subtitle: "Change slides from your wrist",
+                        icon: "rectangle.inset.filled.and.person.filled",
+                        tint: .yellow,
+                        points: [
+                            "Swipe to the Present page: tap for the next slide, or turn the Digital Crown one step forward or back.",
+                            "See slide x of y and your talk time. Under More, turn on a tap on your wrist every few minutes.",
+                            "It works through your iPhone, or straight to the PC over the Watch's Wi-Fi."
+                        ]
+                    )
+
+                    featureCard(
                         title: "Live Activities & Watch Face Complications",
                         subtitle: "Smart Stack & Watch Face gauges",
                         icon: "applewatch.watchface",

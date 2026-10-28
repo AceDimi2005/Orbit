@@ -63,17 +63,21 @@ final class OrbitPresentationStore: ObservableObject {
     /// When a slide picture that failed may be asked for again.
     private var thumbnailRetryAt: [String: Date] = [:]
     private var consecutiveFailures = 0
+    /// Reads in a row that got no answer at all (timeouts, no route), as opposed to the PC refusing one.
+    private var unansweredReads = 0
     /// One pinned client per PC connection, so the once-a-second read reuses its TLS session.
     private var link: OrbitPCLink?
     /// Presentation screens on screen (the Tools tile and the Remote menu each push one, `orbit://presentation`
-    /// opens one as a sheet).
+    /// opens one full screen).
     private var visibleViews = 0
     private var holdsIdleTimer = false
-    /// When the last read finished; with two screens polling (a sheet over a pushed one) they share the reads.
+    /// When the last read finished; with two screens polling (`orbit://presentation` over a pushed one) they
+    /// share the reads.
     private var lastReadAt = Date.distantPast
 
     static let maxQueued = 4
     private static let maxCachedThumbnails = 40
+    private static let offlineAfterUnansweredReads = 3
 
     var isSending: Bool { !queue.isEmpty }
     var canControl: Bool { phase == .ready || phase == .demo }
@@ -99,6 +103,7 @@ final class OrbitPresentationStore: ObservableObject {
         thumbnailOrder = []
         thumbnailRetryAt = [:]
         consecutiveFailures = 0
+        unansweredReads = 0
         link = nil
         timer.reset()
         isDemo = vm.isDemoMode
@@ -145,7 +150,10 @@ final class OrbitPresentationStore: ObservableObject {
         }
         guard vm.isConfigured, !vm.selectedPCID.isEmpty else { phase = .notPaired; state = nil; return }
         guard vm.hasSecureConnection else { phase = .insecure; return }
-        guard vm.metrics.isOnline else {
+        // One missed reply to the Overview's status poll marks the PC offline until the next one (2 s later).
+        // Mid-talk the remote stays usable while the slide show itself still answers; "PC offline" shows once
+        // three reads in a row went unanswered too.
+        guard vm.metrics.isOnline || (phase == .ready && unansweredReads < Self.offlineAfterUnansweredReads) else {
             phase = .offline
             updateIdleTimer()
             return
@@ -154,15 +162,25 @@ final class OrbitPresentationStore: ObservableObject {
         let version = generation
 
         if phase != .ready {
+            // While the screen says the agent is too old it asks the PC again every half minute, so an agent
+            // updated meanwhile is found when the user comes back (capabilities are cached for 10 minutes).
+            let maxAge: TimeInterval
+            if case .olderAgent = phase { maxAge = 30 } else { maxAge = 600 }
             do {
-                switch try await OrbitDeadline.run(seconds: 6, { try await OrbitFeatureStore.shared.features(for: link) }) {
+                switch try await OrbitDeadline.run(seconds: 6, { try await OrbitFeatureStore.shared.features(for: link, maxAge: maxAge) }) {
                 case .olderAgent:
                     guard version == generation else { return }
                     phase = .olderAgent(version: nil)
+                    #if DEBUG
+                    runSelfTestIfRequested() // `watch:` steps check the relay's answer for older agents
+                    #endif
                     return
                 case .available(let agentVersion, let features) where !features.contains("presentation"):
                     guard version == generation else { return }
                     phase = .olderAgent(version: agentVersion)
+                    #if DEBUG
+                    runSelfTestIfRequested()
+                    #endif
                     return
                 default:
                     break
@@ -184,6 +202,7 @@ final class OrbitPresentationStore: ObservableObject {
             phase = .ready
             staleReason = nil
             consecutiveFailures = 0
+            unansweredReads = 0
             apply(decoded)
             #if DEBUG
             runSelfTestIfRequested()
@@ -197,6 +216,7 @@ final class OrbitPresentationStore: ObservableObject {
     private func handleReadFailure(_ error: Error, pcID: String) {
         consecutiveFailures += 1
         if let orbit = error as? OrbitError, let status = orbit.statusCode {
+            unansweredReads = 0 // the PC answered, just not with the slide show
             let message = OrbitPresentationText.failure(status: status, detail: Self.detail(of: orbit))
             switch status {
             case 404 where Self.detail(of: orbit) == nil:
@@ -214,6 +234,7 @@ final class OrbitPresentationStore: ObservableObject {
             }
             return
         }
+        unansweredReads += 1
         staleReason = Self.transportMessage(error, action: nil)
         // The next read builds a fresh client from the current connection settings.
         link = nil
@@ -469,7 +490,8 @@ final class OrbitPresentationStore: ObservableObject {
     // MARK: Self-test
 
     /// `ORBIT_PRESENT_SELFTEST=start,next,black,black,goto:7,end` (`SIMCTL_CHILD_ORBIT_PRESENT_SELFTEST` in the
-    /// Simulator, with `ORBIT_SELFTEST_OPEN_URL=orbit://presentation`): once the screen has read the PC, sends
+    /// Simulator, with `ORBIT_SELFTEST_OPEN_URL=orbit://presentation`): once the screen has read the PC (or found
+    /// that its agent is too old for the presentation remote), sends
     /// these actions through the same queue as the buttons, `ORBIT_PRESENT_SELFTEST_GAP` seconds apart (4 by
     /// default), and prints what the screen shows after each one (`PRESENT_SELFTEST step …`). Steps starting
     /// with `watch:` (`watch:state`, `watch:next`, `watch:goto:5`, `watch:otherpc:next`, `watch:expired:next`)
@@ -539,7 +561,7 @@ final class OrbitPresentationStore: ObservableObject {
     static func rotateForSelfTestIfRequested() {
         guard let wanted = ProcessInfo.processInfo.environment["ORBIT_PRESENT_SELFTEST_ORIENTATION"] else { return }
         Task { @MainActor in
-            // After the sheet has finished appearing: UIKit refuses to rotate during a presentation.
+            // After the screen has finished appearing: UIKit refuses to rotate during a presentation.
             try? await Task.sleep(for: .seconds(2))
             guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
             let mask: UIInterfaceOrientationMask = wanted == "landscape" ? .landscapeRight : .portrait
@@ -581,12 +603,13 @@ final class OrbitPresentationStore: ObservableObject {
 
 struct PresentationView: View {
     @ObservedObject var vm: OrbitViewModel
-    /// Opened as a sheet (`orbit://presentation`) rather than pushed.
+    /// Opened full screen (`orbit://presentation`) rather than pushed.
     var showsDoneButton = false
     @ObservedObject private var store = OrbitPresentationStore.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("orbit.theme") private var theme: OrbitTheme = .noir
@@ -694,7 +717,22 @@ struct PresentationView: View {
         case .loading where store.state == nil:
             lookingForShow
         default:
-            if wide {
+            if usesScrollingLayout {
+                // Accessibility text sizes on iPhone: the remote can't fit on one screen with the slide and the
+                // notes, so the page scrolls. Next stays right under the status; the slide and notes follow in full.
+                ScrollView {
+                    VStack(spacing: 10) {
+                        statusCard
+                        notices
+                        remoteArea(minHeight: 200)
+                            .frame(height: 220)
+                        toolsRow
+                        if showsSlideArea { slideAndNotesCard(scrollingNotes: false) }
+                    }
+                    .padding(.bottom, 12)
+                }
+                .scrollIndicators(.visible)
+            } else if wide {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(spacing: 12) {
                         slideCard(maxPictureHeight: size.height * 0.45)
@@ -730,7 +768,7 @@ struct PresentationView: View {
                     statusCard
                     notices
                     if showsSlideArea {
-                        slideAndNotesCard
+                        slideAndNotesCard()
                     } else {
                         Spacer(minLength: 0)
                     }
@@ -743,6 +781,11 @@ struct PresentationView: View {
     }
 
     private var showsSlideArea: Bool { store.state != nil }
+
+    /// iPhone (portrait or landscape) with an accessibility text size; iPad has room for its own layouts.
+    private var usesScrollingLayout: Bool {
+        dynamicTypeSize.isAccessibilitySize && !(horizontalSizeClass == .regular && verticalSizeClass == .regular)
+    }
 
     private var lookingForShow: some View {
         VStack(spacing: 14) {
@@ -940,8 +983,9 @@ struct PresentationView: View {
 
     // MARK: Slide and notes
 
-    /// Portrait: the slide picture and title beside each other, notes below.
-    private var slideAndNotesCard: some View {
+    /// Portrait: the slide picture and title beside each other, notes below. `scrollingNotes: false` when the
+    /// whole page scrolls (accessibility text sizes): the notes then take their full height.
+    private func slideAndNotesCard(scrollingNotes: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let state = store.state, state.running {
                 HStack(alignment: .top, spacing: 12) {
@@ -964,7 +1008,7 @@ struct PresentationView: View {
                     Spacer(minLength: 0)
                 }
                 Divider().overlay(Color.white.opacity(0.08))
-                notesBody(state)
+                notesBody(state, scrolls: scrollingNotes)
             } else if let state = store.state {
                 preShow(state)
             }
@@ -1025,6 +1069,8 @@ struct PresentationView: View {
             Label("Speaker notes", systemImage: "text.alignleft")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Spacer(minLength: 4)
             // A compact pill, so the notes themselves keep the room.
             HStack(spacing: 0) {
@@ -1059,29 +1105,36 @@ struct PresentationView: View {
         }
     }
 
-    private func notesBody(_ state: OrbitPresentationState) -> some View {
+    private func notesBody(_ state: OrbitPresentationState, scrolls: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             notesHeader
-            ScrollView {
-                Group {
-                    if state.showState == .done {
-                        Text("End of slide show. Press Previous to go back to the last slide.")
-                            .foregroundStyle(.secondary)
-                    } else if state.notes.isEmpty {
-                        Text(state.app == .powerpoint ? "No speaker notes on this slide." : "Speaker notes come from PowerPoint. With other presenters Orbit only presses keys.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(state.notes)
-                            .foregroundStyle(.white)
-                            .textSelection(.enabled)
-                    }
-                }
-                .font(.system(size: notesBaseSize * (1 + 0.15 * CGFloat(notesStep))))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .id("\(state.slide)-\(state.showState.rawValue)")
+            if scrolls {
+                ScrollView { notesText(state) }
+                    .scrollIndicators(.visible)
+            } else {
+                notesText(state)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .scrollIndicators(.visible)
         }
+    }
+
+    private func notesText(_ state: OrbitPresentationState) -> some View {
+        Group {
+            if state.showState == .done {
+                Text("End of slide show. Press Previous to go back to the last slide.")
+                    .foregroundStyle(.secondary)
+            } else if state.notes.isEmpty {
+                Text(state.app == .powerpoint ? "No speaker notes on this slide." : "Speaker notes come from PowerPoint. With other presenters Orbit only presses keys.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(state.notes)
+                    .foregroundStyle(.white)
+                    .textSelection(.enabled)
+            }
+        }
+        .font(.system(size: notesBaseSize * (1 + 0.15 * CGFloat(notesStep))))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .id("\(state.slide)-\(state.showState.rawValue)")
     }
 
     @ViewBuilder
@@ -1148,14 +1201,15 @@ struct PresentationView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(preShowTitle(state))
                         .font(.headline.weight(.bold))
-                        .lineLimit(2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                     Text(preShowMessage(state))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            HStack(spacing: 10) {
+            // Side by side, or stacked at accessibility text sizes so both labels stay readable.
+            (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))) {
                 Button {
                     store.send(.start)
                 } label: {

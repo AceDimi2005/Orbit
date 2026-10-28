@@ -382,24 +382,21 @@ final class WatchPresentationReminders: NSObject, UNUserNotificationCenterDelega
             }
             return
         }
-        let interval = TimeInterval(minutes * 60)
-        let now = Date()
-        let next = Int(max(0, now.timeIntervalSince(startedAt)) / interval) + 1
-        let wanted = "\(Int(startedAt.timeIntervalSince1970.rounded()))-\(minutes)-\(next)"
+        let plan = OrbitPresentationReminderPlan.upcoming(startedAt: startedAt, now: Date(), minutes: minutes,
+                                                          limit: Self.slots, horizon: Self.horizon)
+        let wanted = "\(Int(startedAt.timeIntervalSince1970.rounded()))-\(minutes)-\(plan.first?.number ?? 0)"
         guard wanted != signature else { return }
         signature = wanted
         center.removePendingNotificationRequests(withIdentifiers: Self.identifiers)
-        for (slot, index) in (next..<(next + Self.slots)).enumerated() {
-            let delay = startedAt.addingTimeInterval(TimeInterval(index) * interval).timeIntervalSince(now)
-            guard delay <= Self.horizon else { break }
+        for (slot, reminder) in plan.enumerated() {
             let content = UNMutableNotificationContent()
             content.title = "Presentation"
-            content.body = "\(OrbitPresentationText.spokenDuration(TimeInterval(index * minutes * 60))) since the slide show started."
+            content.body = "\(OrbitPresentationText.spokenDuration(TimeInterval(reminder.number * minutes * 60))) since the slide show started."
             content.sound = .default
             content.threadIdentifier = "orbit.present"
             content.categoryIdentifier = Self.categoryID
             content.userInfo = [Self.talkStartKey: startedAt.timeIntervalSince1970]
-            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false)
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, reminder.delay), repeats: false)
             center.add(UNNotificationRequest(identifier: Self.prefix + String(slot), content: content, trigger: trigger))
         }
     }
