@@ -28,7 +28,8 @@ Planned downtime never raises a "PC offline" alert: `planned_offline()` tells th
 own sleep/shutdown/restart (BEFORE_POWER_HOOKS), before Windows suspends the PC (PBT_APMSUSPEND, from the
 tray window or, in the windowless boot-time instance, `watch_suspend_resume()`), and when Windows ends
 the session (WM_ENDSESSION: shutdown, restart or sign-out started from Windows). After that no heartbeat
-re-arms the relay's alarm until the PC resumes (PBT_APMRESUMEAUTOMATIC), which sends one right away.
+re-arms the relay's alarm until the PC resumes (PBT_APMRESUMEAUTOMATIC), which sends one right away, or
+until Windows' shutdown countdown is cancelled (POWER_CANCELLED_HOOKS: `planned_offline_cancelled()`).
 """
 import base64
 import binascii
@@ -1054,6 +1055,14 @@ class PushService:
         """The PC woke up (PBT_APMRESUMEAUTOMATIC / PBT_APMRESUMESUSPEND)."""
         self._rearm()
 
+    def planned_offline_cancelled(self):
+        """The shutdown or restart announced by planned_offline() won't happen: Windows' countdown was
+        cancelled (POST /api/power/cancel) or refused. Heartbeat now, so the relay arms its offline
+        alarm again, and forget the announcement, so a real shutdown right after is told too."""
+        with self._lock:
+            self._last_planned = None
+        self._rearm()
+
 
 # -- Shared service, power hook and routes --------------------------------------------------------
 
@@ -1079,6 +1088,15 @@ def planned_offline(action=None):
 
 
 planned_offline.accepts_action = True
+
+
+def planned_offline_cancelled():
+    """POWER_CANCELLED_HOOKS entry: forwards to the running service (no-op without one)."""
+    service = shared_service()
+    if service is None:
+        return False
+    service.planned_offline_cancelled()
+    return True
 
 # Windows power messages (WM_POWERBROADCAST wParam values).
 PBT_APMSUSPEND = 0x0004

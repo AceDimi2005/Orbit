@@ -978,6 +978,27 @@ class SystemPowerTests(ServiceTestCase):
         self.svc.step()
         self.assertEqual(self.routes(), ["hb"])
 
+    def test_a_cancelled_countdown_re_arms_the_alarm_right_away(self):
+        """Shut Down from the apps announces the shutdown before Windows' 30-second countdown. Cancel
+        arms the relay's alarm again at once, and a real shutdown moments later is announced too."""
+        import orbit_agent as agent
+        self.assertIn(push.planned_offline_cancelled, agent.POWER_CANCELLED_HOOKS)
+        self.assertTrue(push.planned_offline("shutdown"))
+        self.advance(10)
+        self.svc.step()
+        self.assertEqual(self.routes(), ["offline-expected"])  # quiet: nothing re-arms the alarm yet
+        self.assertEqual(self.relay_channel()["state"], "expected-offline")
+        self.assertTrue(push.planned_offline_cancelled())
+        self.svc.step()
+        self.assertEqual(self.routes(), ["offline-expected", "hb"])
+        self.assertEqual(self.relay_channel()["state"], "online")
+        self.back_online.assert_not_called()
+        self.advance(5)
+        self.assertTrue(push.system_power_event("session-ending"))
+        self.assertEqual(self.relay_channel()["offlineExpected"], [{}, {}])
+        push.set_shared_service(None)
+        self.assertFalse(push.planned_offline_cancelled())
+
     def test_events_without_a_service_or_unknown_kinds_do_nothing(self):
         self.assertFalse(push.system_power_event("hibernate"))
         push.set_shared_service(None)

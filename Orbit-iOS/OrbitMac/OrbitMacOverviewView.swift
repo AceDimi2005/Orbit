@@ -1,9 +1,60 @@
 import SwiftUI
 
+/// Windows' 30-second warning after Shut Down or Restart, counting down, with Cancel while it runs.
+/// `compact` is the menu bar popover's version.
+struct MacPowerCountdownBanner: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let countdown = vm.powerCountdown.visible(at: context.date) {
+                let running = countdown.isRunning(at: context.date)
+                HStack(alignment: .center, spacing: compact ? 10 : 12) {
+                    MacIconBadge(systemName: countdown.symbol, tint: .orange, size: compact ? 26 : 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(countdown.summary(at: context.date))
+                            .font((compact ? Font.callout : Font.subheadline).weight(.semibold).monospacedDigit())
+                            .contentTransition(reduceMotion ? .identity : .numericText(countsDown: true))
+                        Text(vm.powerCancelError ?? countdown.detail(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(vm.powerCancelError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(countdown.spokenSummary(at: context.date))
+                    Spacer(minLength: 8)
+                    if running {
+                        Button {
+                            Task { await vm.cancelPowerCountdown() }
+                        } label: {
+                            if vm.isCancellingPower {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("Cancel")
+                            }
+                        }
+                        .buttonStyle(MacHoverButtonStyle(tint: .orange, prominent: true))
+                        .disabled(vm.isCancellingPower)
+                        .help(countdown.cancelTitle)
+                        .accessibilityLabel(countdown.cancelTitle)
+                    }
+                }
+                .padding(compact ? 10 : 13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .macGlass(cornerRadius: compact ? 12 : 16, tint: .orange)
+            }
+        }
+    }
+}
+
 /// Dashboard: hero card, live metric grid with sparklines, quick controls and specs.
 struct MacOverviewView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var pendingPower: MacPowerConfirmation?
     @State private var showsCustomizer = false
     @AppStorage("mac.reduceGlow") private var reduceGlow = false
@@ -12,29 +63,39 @@ struct MacOverviewView: View {
 
     var body: some View {
         MacPage {
-            VStack(alignment: .leading, spacing: 16) {
-                if vm.isDemoMode { demoNotice }
-                heroCard
-                if vm.metrics.isOnline || vm.isDemoMode {
-                    if let game = vm.metrics.activeGame, !game.isEmpty { activeGameCard(game) }
-                    if vm.metrics.telemetryAvailable == false && !vm.isDemoMode {
-                        MacNotice(title: "Syncing sensors…", message: "Collecting the first readings from your PC. Cards appear as soon as the agent reports them.", icon: "waveform.path.ecg", tint: theme.accent)
-                    } else {
-                        metricsHeader
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            ForEach(vm.dashboardMetrics) { metric in
-                                metricCard(metric)
+            ScrollViewReader { proxy in
+                VStack(alignment: .leading, spacing: 16) {
+                    if vm.isDemoMode { demoNotice }
+                    heroCard
+                    if vm.metrics.isOnline || vm.isDemoMode {
+                        if vm.powerCountdown.visible() != nil { MacPowerCountdownBanner().id(OrbitPowerCountdown.scrollID) }
+                        if let game = vm.metrics.activeGame, !game.isEmpty { activeGameCard(game) }
+                        if vm.metrics.telemetryAvailable == false && !vm.isDemoMode {
+                            MacNotice(title: "Syncing sensors…", message: "Collecting the first readings from your PC. Cards appear as soon as the agent reports them.", icon: "waveform.path.ecg", tint: theme.accent)
+                        } else {
+                            metricsHeader
+                            LazyVGrid(columns: columns, spacing: 12) {
+                                ForEach(vm.dashboardMetrics) { metric in
+                                    metricCard(metric)
+                                }
                             }
+                            .animation(.snappy(duration: 0.3), value: vm.dashboardMetrics)
                         }
-                        .animation(.snappy(duration: 0.3), value: vm.dashboardMetrics)
+                        HStack(alignment: .top, spacing: 14) {
+                            quickControls.frame(maxWidth: .infinity)
+                            specsCard.frame(maxWidth: .infinity)
+                        }
+                    } else {
+                        offlineCard
+                        specsCard
                     }
-                    HStack(alignment: .top, spacing: 14) {
-                        quickControls.frame(maxWidth: .infinity)
-                        specsCard.frame(maxWidth: .infinity)
+                }
+                // Restart and Shut Down sit below the readings: bring the countdown with Cancel into view.
+                .onChange(of: vm.powerCountdown.countdown) { old, new in
+                    guard old == nil, new != nil else { return }
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
+                        proxy.scrollTo(OrbitPowerCountdown.scrollID, anchor: .top)
                     }
-                } else {
-                    offlineCard
-                    specsCard
                 }
             }
         }

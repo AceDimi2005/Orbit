@@ -5,10 +5,15 @@ struct MacMenuBarView: View {
     @EnvironmentObject var vm: OrbitMacViewModel
     @Environment(\.macTheme) private var theme
     @Environment(\.openWindow) private var openWindow
+    /// Restart or Shut Down waiting for a second click here; a modal alert would close the panel.
+    @State private var confirming: MacPowerConfirmation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if vm.metrics.isOnline && vm.powerCountdown.visible() != nil {
+                MacPowerCountdownBanner(compact: true)
+            }
             if vm.metrics.hasTelemetry {
                 HStack(spacing: 10) {
                     gauge("CPU", value: vm.metrics.cpuUsage, detail: vm.metrics.cpuTemp.map { "\(Int($0))°C" }, tint: MacMetric.cpuLoad.accent)
@@ -50,6 +55,9 @@ struct MacMenuBarView: View {
                     Label("Open Orbit", systemImage: "macwindow")
                 }
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
+            }
+            if vm.metrics.isOnline && !vm.isDemoMode {
+                powerRow
             }
             MacMenuBarDeckRow(deck: vm.deck)
             HStack {
@@ -160,6 +168,42 @@ struct MacMenuBarView: View {
                 .frame(width: 44, alignment: .trailing)
         }
         .disabled(vm.metrics.volumeAvailable == false)
+    }
+
+    /// Restart and Shut Down, confirmed in place.
+    @ViewBuilder
+    private var powerRow: some View {
+        if let action = confirming {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(action.title)
+                    .font(.caption.weight(.semibold))
+                Text(action.message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Cancel") { confirming = nil }
+                        .buttonStyle(MacHoverButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button(action.button) {
+                        confirming = nil
+                        Task { await vm.sendAction(action.rawValue) }
+                    }
+                    .buttonStyle(MacHoverButtonStyle(tint: .orange, prominent: true))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .macGlass(cornerRadius: 12, tint: .orange)
+            .onDisappear { confirming = nil }  // closing the panel cancels the question
+        } else {
+            HStack(spacing: 8) {
+                menuButton("Restart…", icon: "arrow.clockwise", tint: .orange) { confirming = .restart }
+                menuButton("Shut Down…", icon: "power", tint: .orange) { confirming = .shutdown }
+                Spacer()
+            }
+        }
     }
 
     private func menuButton(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {

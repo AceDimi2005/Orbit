@@ -308,7 +308,7 @@ struct OrbitTVRootView: View {
             isPresented: $showShutdownConfirm,
             titleVisibility: .visible
         ) {
-            Button("Shut Down PC Now", role: .destructive) {
+            Button("Shut Down PC", role: .destructive) {
                 Task { await vm.sendAction("shutdown") }
             }
             Button("Put PC to Sleep") {
@@ -323,12 +323,56 @@ struct OrbitTVRootView: View {
             isPresented: $showRestartConfirm,
             titleVisibility: .visible
         ) {
-            Button("Restart PC Now", role: .destructive) {
+            Button("Restart PC", role: .destructive) {
                 Task { await vm.sendAction("restart") }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Your PC will reboot and reconnect automatically once Windows starts.")
+        }
+    }
+}
+
+// MARK: - Windows' shutdown countdown
+
+/// Windows' 30-second warning after Shut Down or Restart, counting down, with Cancel while it runs.
+struct TVPowerCountdownBanner: View {
+    @EnvironmentObject var vm: OrbitTVViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let countdown = vm.powerCountdown.visible(at: context.date) {
+                let running = countdown.isRunning(at: context.date)
+                HStack(spacing: 24) {
+                    Image(systemName: countdown.symbol)
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(TVPalette.amber)
+                        .frame(width: 56)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(countdown.summary(at: context.date))
+                            .font(.system(size: 30, weight: .bold).monospacedDigit())
+                            .contentTransition(reduceMotion ? .identity : .numericText(countsDown: true))
+                        Text(vm.powerCancelError ?? countdown.detail(at: context.date))
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(vm.powerCancelError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(TVPalette.amber))
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(countdown.spokenSummary(at: context.date))
+                    Spacer(minLength: 20)
+                    if running {
+                        Button {
+                            Task { await vm.cancelPowerCountdown() }
+                        } label: {
+                            Label(vm.isCancellingPower ? "Cancelling…" : countdown.cancelTitle, systemImage: "xmark.circle.fill")
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.amber, isProminent: true))
+                        .disabled(vm.isCancellingPower)
+                    }
+                }
+                .padding(28)
+                .tvGlass(tint: TVPalette.amber)
+            }
         }
     }
 }
@@ -352,6 +396,10 @@ struct TVDashboardTab: View {
                     showShutdownConfirm: $showShutdownConfirm,
                     showRestartConfirm: $showRestartConfirm
                 )
+
+                if vm.metrics.isOnline && vm.powerCountdown.visible() != nil {
+                    TVPowerCountdownBanner()
+                }
 
                 if !hasTelemetry && vm.metrics.isOnline {
                     HStack(spacing: 18) {

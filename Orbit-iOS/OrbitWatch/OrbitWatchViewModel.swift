@@ -69,6 +69,8 @@ struct WatchSummaryResponse: Decodable {
     var volume: Double?
     var isMuted: Bool?
     var uptimeSeconds: Int?
+    /// Windows' 30-second warning after Shut Down or Restart; nil from older PCs.
+    var powerCountdown: OrbitPowerCountdownReport?
 }
 
 @MainActor
@@ -116,6 +118,9 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
     /// True while the PC shows its sign-in or lock screen (agent 4.3+).
     @Published var sessionLocked: Bool = false
     @Published var isUnlocking: Bool = false
+    /// Windows' 30-second warning after Shut Down or Restart, with Cancel (OrbitPowerCountdown.swift).
+    @Published private(set) var powerCountdown = OrbitPowerCountdownTracker()
+    @Published private(set) var isCancellingPower = false
     @Published var savedPCs: [WatchPCProfile] = []
     @Published var games: [WatchSunshineGame] = []
     /// The PC's custom buttons for the Buttons page (OrbitWatchDeck.swift).
@@ -224,6 +229,21 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// Simulator testing without a paired iPhone: `host|token[|agentPort]`, reached over plain HTTP.
+    func useTestPC(_ spec: String) {
+        let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return }
+        selectedPCID = "debug-test-pc"
+        pcName = "Test PC"
+        host = parts[0]
+        apiToken = parts[1]
+        agentPort = parts.count > 2 ? Int(parts[2]) ?? 8765 : 8765
+        certificateFingerprint = ""
+        Task { await refreshTelemetry() }
+    }
+    #endif
+
     func handleDeepLink(_ url: URL) {
         let hostOrPath = (url.host ?? url.path).lowercased()
         if hostOrPath.contains("power") || hostOrPath.contains("wake") {
@@ -298,6 +318,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 let data = try await performPCRequest(path: "/api/watch/summary", method: "GET")
                 let summary = try JSONDecoder().decode(WatchSummaryResponse.self, from: data)
                 guard requestedTarget == target else { return }
+                powerCountdown.apply(OrbitPowerCountdown(summary.powerCountdown), requestedAt: start)
                 lastTelemetryAt = Date()
                 isOnline = summary.isOnline ?? true
                 sessionLocked = summary.sessionLocked ?? false
@@ -329,6 +350,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                 if let data = try? await performPCRequest(path: "/api/status", method: "GET"),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     guard requestedTarget == target else { return }
+                    powerCountdown.apply(OrbitPowerCountdown(json: json["powerCountdown"]), requestedAt: start)
                     lastTelemetryAt = Date()
                     isOnline = true
                     telemetryAvailable = (json["telemetryAvailable"] as? Bool) ?? true
@@ -360,6 +382,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
                     directUsesSecondary.toggle()
                 }
             }
+            powerCountdown.pcUnreachable()
         }
 
         if !isTelemetryFresh { isOnline = false }
@@ -445,14 +468,23 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         do {
             // The paired phone also works when the Watch only has Bluetooth.
             // Choose one route; an unconfirmed media toggle must not be replayed.
+            let countdown: OrbitPowerCountdown?
             if phoneCanRelay {
-                _ = try await sendPCMessage(["cmd": "powerAction", "action": action], to: destination)
+                let reply = try await sendPCMessage(["cmd": "powerAction", "action": action], to: destination)
+                countdown = OrbitPowerCountdown(relay: reply["powerCountdown"])
             } else {
-                _ = try await client(for: destination).data(path: "/api/action/\(action)", method: "POST")
+                let data = try await client(for: destination).data(path: "/api/action/\(action)", method: "POST")
+                countdown = OrbitPowerCountdown(action: action, response: data)
             }
             guard target == destination else { return }
             statusMessage = "\(label) sent"
-            if ["shutdown", "sleep", "restart"].contains(action) { isOnline = false; stopMotionCursor() }
+            if let countdown {
+                // Windows waits 30 seconds and the PC keeps answering, so Cancel still reaches it.
+                powerCountdown.set(countdown)
+            } else if ["shutdown", "sleep", "restart"].contains(action) {
+                isOnline = false
+                stopMotionCursor()
+            }
             if action == "mute" { isMuted.toggle() }
             WKInterfaceDevice.current().play(.success)
             saveSnapshotForComplications()
@@ -461,6 +493,44 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             statusMessage = "\(label) failed: \(error.localizedDescription)"
             WKInterfaceDevice.current().play(.failure)
         }
+    }
+
+    /// Stops Windows' countdown after Shut Down or Restart. Through the iPhone when it's near, else
+    /// (or when that fails) straight to the PC: Cancel is safe to send twice, since the PC answers
+    /// 409 once nothing waits, and that means it's done.
+    func cancelPowerCountdown() async {
+        guard !isCancellingPower, let pending = powerCountdown.running() else { return }
+        isCancellingPower = true
+        defer { isCancellingPower = false }
+        WKInterfaceDevice.current().play(.click)
+        let destination = target
+        statusMessage = "Cancelling…"
+        var failure: Error = WatchControlError("Open Orbit on your nearby iPhone, or connect the watch to the PC's network.")
+        for viaPhone in [true, false] {
+            if viaPhone ? !phoneCanRelay : !destination.hasCredentials { continue }
+            do {
+                if viaPhone {
+                    _ = try await sendPCMessage(["cmd": "cancelPower"], to: destination)
+                } else {
+                    do {
+                        _ = try await client(for: destination).data(path: "/api/power/cancel", method: "POST")
+                    } catch let error as OrbitWatchHTTPError where error.statusCode == 409 {
+                        // Nothing waits any more: cancelled from another device, or at the PC.
+                    }
+                }
+                guard target == destination else { return }
+                powerCountdown.set(nil)
+                statusMessage = pending.cancelledMessage
+                WKInterfaceDevice.current().play(.success)
+                saveSnapshotForComplications()
+                return
+            } catch {
+                failure = error
+            }
+        }
+        guard target == destination else { return }
+        statusMessage = "Couldn't cancel: \(failure.localizedDescription)"
+        WKInterfaceDevice.current().play(.failure)
     }
 
     func setPCVolume(_ newVolume: Double) {
@@ -531,6 +601,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
         volumeQueue?.cancel()
         lastTelemetryAt = nil
         isOnline = false
+        powerCountdown = OrbitPowerCountdownTracker()
         pendingSelection = (profile.id, Date().addingTimeInterval(10))
         selectedPCID = profile.id
         pcName = profile.name
@@ -932,6 +1003,7 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             volumeQueue?.cancel()
             lastTelemetryAt = nil
             isOnline = false
+            powerCountdown = OrbitPowerCountdownTracker()
         }
         selectedPCID = incomingID
         if let name = payload["pcName"] as? String, !name.isEmpty { pcName = name }
@@ -951,6 +1023,11 @@ final class OrbitWatchViewModel: NSObject, ObservableObject {
             directUsesSecondary = (payload["usingSecondary"] as? Bool ?? false) && canUseSecondaryAddress
         }
         if let la = payload["isLiveActivityActive"] as? Bool { isLiveActivityActive = la }
+        // The iPhone's view of Windows' countdown, as of when it built this message.
+        if payload["type"] as? String == "stateSync", payload["isDemoMode"] as? Bool != true {
+            powerCountdown.apply(OrbitPowerCountdown(relay: payload["powerCountdown"]),
+                                 requestedAt: Date(timeIntervalSince1970: contextTime))
+        }
 
         // Context delivery time does not make a cached PC sample fresh. Older phone
         // samples must not overwrite a newer direct HTTPS response from the Watch.

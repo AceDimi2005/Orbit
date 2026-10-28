@@ -57,6 +57,8 @@ struct PCMetrics: Codable {
     var lastUpdated: String? = nil
     var volumeAvailable: Bool? = nil
     var telemetryAvailable: Bool? = nil
+    /// Windows' 30-second warning after Shut Down or Restart from Orbit; nil from older PCs.
+    var powerCountdown: OrbitPowerCountdownReport? = nil
 
     var formattedUptime: String { "\(uptimeSeconds / 3600)h \((uptimeSeconds % 3600) / 60)m" }
     static var demo: PCMetrics {
@@ -501,6 +503,10 @@ final class OrbitViewModel: ObservableObject {
     private var addressRoute = OrbitAddressRoute()
     private var lanProbeRunning = false
     private let pathMonitor = NWPathMonitor()
+    /// Windows' 30-second warning after Shut Down or Restart, with Cancel (OrbitPowerCountdown.swift).
+    @Published private(set) var powerCountdown = OrbitPowerCountdownTracker()
+    @Published private(set) var isCancellingPower = false
+    @Published var powerCancelError: String?
     private let activity = OrbitLiveActivityCoordinator()
     private var activitySubscription: AnyCancellable?
     private var monitoringTask: Task<Void, Never>?
@@ -587,6 +593,7 @@ final class OrbitViewModel: ObservableObject {
         metrics = PCMetrics(); history = MetricHistory(); specs = nil; games = []; sunshineInfo = nil; lastUpdated = nil; pingMs = 0
         widgetToken = nil; widgetSetupError = nil
         processes = []; processesError = nil; processActionStatus = nil; lastProcessesUpdated = nil; processGpuStatus = nil
+        powerCountdown = OrbitPowerCountdownTracker(); powerCancelError = nil
         hasSynced = false; currentIdentity = ""; lastSpecsAttempt = .distantPast
         statusLog = "Connection settings changed — ready to connect"
         stopScreenFeed(); isShowingStreamView = false; activeStreamingGame = nil; loadOverrides(); loadDashboardConfiguration()
@@ -724,11 +731,13 @@ final class OrbitViewModel: ObservableObject {
         let polledAlerts = await OrbitEventPoller.shared.backgroundCheck()
         guard !isDemoMode, isConfigured, activity.isActive else { return polledAlerts }
         let version = generation
+        let start = Date()
         do {
             let data = try await request("/api/status")
             let decoded = try JSONDecoder().decode(PCMetrics.self, from: data)
             guard generation == version else { return false }
             metrics = decoded
+            powerCountdown.apply(OrbitPowerCountdown(decoded.powerCountdown), requestedAt: start)
             lastUpdated = Date()
             await updateLiveActivity(force: true)
             publishWidgetSnapshot(decoded)
@@ -736,6 +745,7 @@ final class OrbitViewModel: ObservableObject {
         } catch {
             guard generation == version else { return false }
             metrics.isOnline = false
+            powerCountdown.pcUnreachable()
             await updateLiveActivity(force: true)
             return false
         }
@@ -806,6 +816,7 @@ final class OrbitViewModel: ObservableObject {
             guard generation == version, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
             metrics = decoded
+            powerCountdown.apply(OrbitPowerCountdown(decoded.powerCountdown), requestedAt: start)
             history.append(decoded)
             if savedPCs.isEmpty || selectedPCID.isEmpty { saveCurrentConnection() }
             if isDraggingVolume || volumeCommands.isSending || start <= lastVolumeChangeTime || Date().timeIntervalSince(lastVolumeChangeTime) < 2 { metrics.volume = sliderVolume }
@@ -829,6 +840,7 @@ final class OrbitViewModel: ObservableObject {
         } catch {
             guard generation == version, !Task.isCancelled else { return }
             metrics.isOnline = false; metrics.fps = nil; pingMs = 0
+            powerCountdown.pcUnreachable()
             statusLog = (error as? OrbitError)?.message ?? "PC unreachable • check Wi-Fi and Orbit Agent"
             await updateLiveActivity()
             OrbitWatchBridge.shared.pushStateToWatch()
@@ -1182,11 +1194,62 @@ final class OrbitViewModel: ObservableObject {
         guard metrics.isOnline else { statusLog = "Connect to your PC first."; return }
         let version = generation
         do {
-            _ = try await request("/api/action/\(action)", method: "POST")
+            let data = try await request("/api/action/\(action)", method: "POST")
             guard generation == version else { return }
             statusLog = "Command sent • \(action.replacingOccurrences(of: "_", with: " "))"
-            if ["sleep", "shutdown", "restart"].contains(action) { metrics.isOnline = false; await activity.stop() }
+            await noteActionSent(action, response: data)
         } catch { if generation == version { statusLog = error.localizedDescription } }
+    }
+
+    /// After a PC action went through, here or for the Watch. Shut Down and Restart on a PC with
+    /// Windows' 30-second warning keep it online (it still answers, so Cancel reaches it) and
+    /// count down; otherwise sleep, shutdown and restart take it offline right away.
+    /// Returns the countdown, if one started.
+    @discardableResult
+    func noteActionSent(_ action: String, response: Data) async -> OrbitPowerCountdown? {
+        if let countdown = OrbitPowerCountdown(action: action, response: response) {
+            powerCountdown.set(countdown)
+            powerCancelError = nil
+            OrbitWatchBridge.shared.pushStateToWatch(force: true)
+            return countdown
+        }
+        if ["sleep", "shutdown", "restart"].contains(action) {
+            metrics.isOnline = false
+            await activity.stop()
+        }
+        return nil
+    }
+
+    /// Stops Windows' countdown (`POST /api/power/cancel`). True when nothing is left counting down.
+    @discardableResult
+    func cancelPowerCountdown() async -> Bool {
+        guard !isCancellingPower, !isDemoMode, let pending = powerCountdown.running() else { return false }
+        isCancellingPower = true
+        defer { isCancellingPower = false }
+        let version = generation
+        do {
+            _ = try await request("/api/power/cancel", method: "POST")
+            guard generation == version else { return false }
+            noteCountdownCancelled()
+            statusLog = "\(pending.cancelledMessage) on \(selectedPCName)"
+            return true
+        } catch let error as OrbitError where error.statusCode == 409 {
+            // Nothing waits on the PC any more: cancelled from another device, or at the PC.
+            guard generation == version else { return false }
+            noteCountdownCancelled()
+            return true
+        } catch {
+            guard generation == version else { return false }
+            powerCancelError = "Couldn't cancel: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// The PC said its countdown is gone (Cancel here, or for the Watch).
+    func noteCountdownCancelled() {
+        powerCountdown.set(nil)
+        powerCancelError = nil
+        OrbitWatchBridge.shared.pushStateToWatch(force: true)
     }
     func setVolume(_ value: Double) {
         guard value.isFinite, metrics.isOnline, metrics.volumeAvailable != false else { return }

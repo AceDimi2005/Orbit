@@ -38,7 +38,7 @@ class RegistryTests(unittest.TestCase):
     def test_only_the_designed_feature_strings_are_accepted(self):
         self.assertEqual(set(capabilities.KNOWN_FEATURES), {
             "events", "alerts", "downloads", "tasks", "powerAfter", "push", "openUrl", "hotkeys", "deck", "obs",
-            "energy", "summary", "presentation", "streamDisplay", "secondScreen", "webcam"})
+            "energy", "summary", "presentation", "streamDisplay", "secondScreen", "webcam", "powerCountdown"})
         for name in ("", "Events", "open-url", "open url", None, 7, "teleport", "x" * 41):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 capabilities.register_feature(name)

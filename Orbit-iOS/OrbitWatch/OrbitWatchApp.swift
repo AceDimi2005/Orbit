@@ -22,6 +22,11 @@ struct OrbitWatchApp: App {
                 }
                 #if DEBUG
                 .onAppear {
+                    // A PC reached directly over plain HTTP, for testing without a paired iPhone:
+                    // `SIMCTL_CHILD_ORBIT_WATCH_TEST_PC='192.168.1.20|<token>|8765' xcrun simctl launch <device> com.dimitrie.orbit.watchkitapp`
+                    if let spec = ProcessInfo.processInfo.environment["ORBIT_WATCH_TEST_PC"] {
+                        viewModel.useTestPC(spec)
+                    }
                     // The watchOS Simulator cannot open URLs; for screenshots:
                     // `SIMCTL_CHILD_ORBIT_WATCH_LINK=orbitwatch://buttons xcrun simctl launch <device> com.dimitrie.orbit.watchkitapp`
                     if let link = ProcessInfo.processInfo.environment["ORBIT_WATCH_LINK"].flatMap(URL.init(string:)) {

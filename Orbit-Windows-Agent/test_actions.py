@@ -84,7 +84,9 @@ class PerformActionTests(unittest.TestCase):
         self.windll.powrprof.SetSuspendState.return_value = 0
         self.assertEqual(self.client.post("/api/action/sleep", headers=AUTH).status_code, 503)
 
-    def test_restart_and_shutdown_use_shutdown_exe_with_a_short_delay(self):
+    def test_automation_restart_and_shutdown_use_shutdown_exe_with_a_short_delay(self):
+        # Power after downloads and deck buttons call perform_action directly; the apps' route
+        # starts Windows' 30-second countdown instead (test_power_countdown).
         for name, switch in (("restart", "/r"), ("shutdown", "/s")):
             with self.subTest(action=name):
                 agent.subprocess.run.reset_mock()
@@ -94,7 +96,10 @@ class PerformActionTests(unittest.TestCase):
         for error in (OSError("missing"), subprocess.CalledProcessError(1, "shutdown"), subprocess.TimeoutExpired("shutdown", 5)):
             with self.subTest(error=type(error).__name__):
                 agent.subprocess.run.side_effect = error
-                self.assertEqual(self.client.post("/api/action/shutdown", headers=AUTH).status_code, 503)
+                with self.assertRaises(HTTPException) as failed:
+                    agent.perform_action("shutdown")
+                self.assertEqual(failed.exception.status_code, 503)
+        self.assertIsNone(agent.POWER_COUNTDOWN.snapshot())
 
     def test_restore_display(self):
         agent.perform_action("restore_display")

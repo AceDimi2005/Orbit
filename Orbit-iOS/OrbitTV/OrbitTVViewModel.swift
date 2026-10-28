@@ -47,6 +47,8 @@ struct TVPCMetrics: Codable {
     var fps: Double? = nil
     var fpsSource: String? = nil
     var telemetryAvailable: Bool? = nil
+    /// Windows' 30-second warning after Shut Down or Restart from Orbit; nil from older PCs.
+    var powerCountdown: OrbitPowerCountdownReport? = nil
     /// Agent 4.3+: true while Windows shows the sign-in or lock screen.
     var sessionLocked: Bool? = nil
 
@@ -287,6 +289,10 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var isDemoMode: Bool = UserDefaults.standard.bool(forKey: "tv.demoMode")
 
     @Published var metrics = TVPCMetrics()
+    /// Windows' 30-second warning after Shut Down or Restart, with Cancel (OrbitPowerCountdown.swift).
+    @Published private(set) var powerCountdown = OrbitPowerCountdownTracker()
+    @Published private(set) var isCancellingPower = false
+    @Published var powerCancelError: String?
     @Published var pingMs: Int = 0
     @Published var statusBanner: String = "Sync your PC from iPhone or pair in the My PCs tab"
     @Published var isWaking: Bool = false
@@ -408,6 +414,8 @@ final class OrbitTVViewModel: ObservableObject {
 
     private func clearLiveAndDemoData() {
         metrics = TVPCMetrics()
+        powerCountdown = OrbitPowerCountdownTracker()
+        powerCancelError = nil
         if let pc = currentPC {
             metrics.hostname = pc.name
         }
@@ -613,6 +621,7 @@ final class OrbitTVViewModel: ObservableObject {
         do {
             let fetched = try await fetchStatus(for: pc)
             metrics = fetched
+            powerCountdown.apply(OrbitPowerCountdown(fetched.powerCountdown), requestedAt: start)
             pingMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
             statusBanner = usingSecondaryAddress ? "Connected to \(pc.name) · Remote via \(connectionHost(for: pc)) · \(pingMs) ms"
                                                 : "Connected to \(pc.name) · \(pc.address) · \(pingMs) ms"
@@ -628,6 +637,7 @@ final class OrbitTVViewModel: ObservableObject {
             metrics.isOnline = false
             metrics.activeGame = nil
             metrics.fps = nil
+            powerCountdown.pcUnreachable()
             pingMs = 0
             games = []
             audioSessions = []
@@ -741,15 +751,38 @@ final class OrbitTVViewModel: ObservableObject {
         }
         do {
             let apiClient = try client()
-            _ = try await apiClient.data("/api/action/\(action)", method: "POST")
+            let data = try await apiClient.data("/api/action/\(action)", method: "POST")
             statusBanner = "Executed \(label) on \(currentPC?.name ?? "PC")"
-            if ["shutdown", "sleep", "restart"].contains(action) {
+            if let countdown = OrbitPowerCountdown(action: action, response: data) {
+                // Windows waits 30 seconds and the PC keeps answering, so Cancel still reaches it.
+                powerCountdown.set(countdown)
+                powerCancelError = nil
+            } else if ["shutdown", "sleep", "restart"].contains(action) {
                 metrics.isOnline = false
             } else if action == "mute" {
                 metrics.isMuted.toggle()
             }
         } catch {
             statusBanner = "Action failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Stops Windows' countdown after Shut Down or Restart (`POST /api/power/cancel`).
+    func cancelPowerCountdown() async {
+        guard !isCancellingPower, !isDemoMode, let pending = powerCountdown.running() else { return }
+        isCancellingPower = true
+        defer { isCancellingPower = false }
+        do {
+            _ = try await client().data("/api/power/cancel", method: "POST")
+            powerCountdown.set(nil)
+            powerCancelError = nil
+            statusBanner = "\(pending.cancelledMessage) on \(currentPC?.name ?? "the PC")"
+        } catch let error as OrbitError where error.statusCode == 409 {
+            // Nothing waits on the PC any more: cancelled from another device, or at the PC.
+            powerCountdown.set(nil)
+            powerCancelError = nil
+        } catch {
+            powerCancelError = "Couldn't cancel: \(error.localizedDescription)"
         }
     }
 

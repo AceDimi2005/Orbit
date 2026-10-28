@@ -11,7 +11,7 @@ import threading
 # because no client would ever look for it.
 KNOWN_FEATURES = (
     "events", "alerts", "downloads", "tasks", "powerAfter", "push", "openUrl", "hotkeys", "deck",
-    "obs", "energy", "summary", "presentation", "streamDisplay", "secondScreen", "webcam",
+    "obs", "energy", "summary", "presentation", "streamDisplay", "secondScreen", "webcam", "powerCountdown",
 )
 _FEATURE_NAME = re.compile(r"^[a-z][A-Za-z0-9]{0,39}$")
 

@@ -62,6 +62,8 @@ struct MacPCMetrics: Codable {
     var lastUpdated: String? = nil
     var volumeAvailable: Bool? = nil
     var telemetryAvailable: Bool? = nil
+    /// Windows' 30-second warning after Shut Down or Restart from Orbit; nil from older PCs.
+    var powerCountdown: OrbitPowerCountdownReport? = nil
 
     var hasTelemetry: Bool { isOnline && telemetryAvailable != false }
     var formattedUptime: String {

@@ -40,6 +40,12 @@ with tempfile.TemporaryDirectory(prefix="orbit-protocol-") as directory:
     extended.update(cpuPowerWatts=62.5, gpuPowerWatts=210, cpuClockMHz=4200, cpuClockSource="System · nominal clock",
                     cpuFanRPM=900, gpuFanPercent=40, diskReadMBps=25.4, diskWriteMBps=5.2, networkDownloadMBps=8.1, networkUploadMBps=1.3)
     payloads["extended"] = extended
+    # /api/status adds Windows' countdown after Shut Down or Restart (null when none runs).
+    import orbit_power_countdown
+    pending = orbit_power_countdown.PowerCountdown(runner=lambda arguments: 0)
+    pending.start("shutdown")
+    payloads["countdown"] = {**status, "powerCountdown": pending.snapshot()}
+    payloads["idle"] = {**status, "powerCountdown": None}
     payloads["processes"] = {"processes": [{"pid": 42, "name": "Example.exe", "createTime": 1234567.125,
                                           "memoryMB": 250, "cpuPercent": None, "status": "running", "canTerminate": True}],
                              "capturedAt": 1234568, "totalCount": 1}
@@ -57,6 +63,12 @@ precondition(status.cpuTemp == nil && status.fps == nil && status.hdrEnabled == 
 precondition(status.volumeAvailable == false && status.telemetryAvailable == false)
 let legacy = try decode(PCMetrics.self, "legacy")
 precondition(legacy.fps == nil && legacy.volumeAvailable == nil && legacy.cpuPowerWatts == nil && legacy.networkDownloadMBps == nil)
+let counting = try decode(PCMetrics.self, "countdown")
+precondition(counting.powerCountdown?.action == "shutdown" && counting.powerCountdown?.remainingSeconds == 30)
+let shown = OrbitPowerCountdown(counting.powerCountdown, receivedAt: Date(timeIntervalSince1970: 0))
+precondition(shown?.summary(at: Date(timeIntervalSince1970: 3)) == "Shutting down in 0:27")
+let idle = try decode(PCMetrics.self, "idle")
+precondition(idle.powerCountdown == nil && status.powerCountdown == nil && legacy.powerCountdown == nil)
 let extended = try decode(PCMetrics.self, "extended")
 precondition(extended.cpuPowerWatts == 62.5 && extended.cpuClockMHz == 4200 && extended.diskReadMBps == 25.4)
 precondition(extended.cpuClockSource == "System · nominal clock" && extended.networkUploadMBps == 1.3)
@@ -103,9 +115,9 @@ reading.telemetryAvailable = true
 reading.cpuUsage = .nan
 history.append(reading)
 precondition(history.series(for: .cpuLoad).isEmpty)
-print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address, legacy PC profiles and bounded telemetry history with missing/invalid/offline readings")
+print("PASS: agent/Swift contract, nullable sensors, legacy optional fields, Windows' shutdown countdown, extended telemetry, process identities, full specs, Sunshine library, Bonjour Wake-on-LAN address, legacy PC profiles and bounded telemetry history with missing/invalid/offline readings")
 ''')
     binary = temporary / "protocol-check"
     # WakeOnLANService throws OrbitError, which lives in Shared/OrbitError.swift.
-    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPCSync.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitError.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
+    subprocess.run(["swiftc", str(ROOT / "Orbit-iOS/Orbit/DashboardConfiguration.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPCSync.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitError.swift"), str(ROOT / "Orbit-iOS/Shared/OrbitPowerCountdown.swift"), str(temporary / "Models.swift"), str(temporary / "main.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary), str(temporary)], check=True)
