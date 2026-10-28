@@ -155,29 +155,59 @@ struct OrbitSummaryShareCard: View {
     }
 }
 
-/// A rendered summary picture for `ShareLink`: PNG data plus a file name such as "Orbit October 2026.png".
+/// What `ShareLink` shares for a monthly summary: the month and the theme's colours, plus a small preview
+/// for the share sheet. The full 1080 × 1350 PNG ("Orbit October 2026.png") is only drawn once the person
+/// picks where it goes, not each time the month on screen changes.
 struct OrbitSummaryPicture: Transferable {
-    let png: Data
-    let image: Image
-    let fileName: String
+    let summary: OrbitMonthSummary
+    let accent: Color
+    let secondary: Color
+    /// The card drawn at 1× (360 × 450): enough for the share sheet's thumbnail, and cheap to draw.
+    let preview: Image
 
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .png) { $0.png }
-            .suggestedFileName { $0.fileName }
+    var fileName: String {
+        "Orbit \(summary.monthID?.title(locale: Locale(identifier: "en_US")) ?? summary.month).png"
     }
 
-    /// Draws the card at 3× (1080 × 1350 pixels). Nil only if the system can't render or encode it.
+    struct RenderError: LocalizedError {
+        var errorDescription: String? { "Orbit couldn't draw the summary picture." }
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .png) { picture in
+            guard let data = await picture.pngData() else { throw RenderError() }
+            return data
+        }
+        .suggestedFileName { $0.fileName }
+    }
+
+    /// The share picture at 3× (1080 × 1350 pixels), drawn now.
     @MainActor
-    static func render(_ summary: OrbitMonthSummary, accent: Color, secondary: Color) -> OrbitSummaryPicture? {
-        let renderer = ImageRenderer(content: OrbitSummaryShareCard(summary: summary, accent: accent, secondary: secondary))
-        renderer.scale = 3
-        renderer.isOpaque = true
-        guard let cgImage = renderer.cgImage else { return nil }
+    func pngData() -> Data? { Self.png(summary, accent: accent, secondary: secondary) }
+
+    /// The item for `ShareLink`. Nil only if the system can't draw the card.
+    @MainActor
+    static func make(_ summary: OrbitMonthSummary, accent: Color, secondary: Color) -> OrbitSummaryPicture? {
+        guard let preview = image(summary, accent: accent, secondary: secondary, scale: 1) else { return nil }
+        return OrbitSummaryPicture(summary: summary, accent: accent, secondary: secondary, preview: Image(decorative: preview, scale: 1))
+    }
+
+    /// The card as PNG data (3×: 1080 × 1350 pixels). Nil only if the system can't render or encode it.
+    @MainActor
+    static func png(_ summary: OrbitMonthSummary, accent: Color, secondary: Color, scale: CGFloat = 3) -> Data? {
+        guard let cgImage = image(summary, accent: accent, secondary: secondary, scale: scale) else { return nil }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, cgImage, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
-        let title = summary.monthID?.title(locale: Locale(identifier: "en_US")) ?? summary.month
-        return OrbitSummaryPicture(png: data as Data, image: Image(decorative: cgImage, scale: 3), fileName: "Orbit \(title).png")
+        return data as Data
+    }
+
+    @MainActor
+    private static func image(_ summary: OrbitMonthSummary, accent: Color, secondary: Color, scale: CGFloat) -> CGImage? {
+        let renderer = ImageRenderer(content: OrbitSummaryShareCard(summary: summary, accent: accent, secondary: secondary))
+        renderer.scale = scale
+        renderer.isOpaque = true
+        return renderer.cgImage
     }
 }

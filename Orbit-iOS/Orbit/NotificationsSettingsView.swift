@@ -354,6 +354,7 @@ struct NotificationsSettingsView: View {
     var showsDoneButton = false
     @StateObject private var model = OrbitPCAutomationModel()
     @ObservedObject private var registrar = OrbitPushRegistrar.shared
+    @ObservedObject private var pro = OrbitProStore.shared
     @AppStorage(OrbitNotificationPreferences.enabledKey) private var enabled = false
     @State private var authorization: UNAuthorizationStatus?
     @State private var timeSensitive: UNNotificationSetting?
@@ -663,7 +664,10 @@ struct NotificationsSettingsView: View {
             Toggle(isOn: alertBinding(\.tasks)) { Label("A watched app finishes", systemImage: "app.badge.checkmark.fill") }
             Toggle(isOn: alertBinding(\.online)) { Label("The PC comes online", systemImage: "power.circle.fill") }
             if features.has("summary") {
-                Toggle(isOn: alertBinding(\.summary)) { Label("My monthly summary is ready", systemImage: "calendar") }
+                Toggle(isOn: alertBinding(\.summary)) {
+                    // The summary is Orbit Pro: without it this iPhone doesn't show the alert (other devices may).
+                    Label(pro.isProUnlocked ? "My monthly summary is ready" : "My monthly summary is ready (Orbit Pro)", systemImage: "calendar")
+                }
             }
             Toggle(isOn: alertBinding(\.temperatureEnabled)) { Label("The PC runs hot", systemImage: "thermometer.high") }
             if settings.temperatureEnabled {

@@ -10,8 +10,10 @@
    reset, settings) and session details with and without `"energy"` (plus a session with one reading).
 3. The Swift check decodes every reply, re-encodes it and compares it key by key with the PC's JSON (so a
    renamed, dropped or unread key fails), checks the numbers that tie the two summaries together, the
-   formatting helpers and price parsing, the `summary.ready` link, the demo data, that an odd `"energy"`
-   never breaks a session detail, and renders the share picture (1080 × 1350 PNG). The agent must also
+   formatting helpers (free electricity, currencies without decimals) and price parsing, the versus
+   headlines, the `summary.ready` link, the demo data (re-priced with an edited price and other estimate
+   settings), that an odd `"energy"` never breaks a session detail, and renders the share picture
+   (1080 × 1350 PNG, also through the Transferable export the share sheet uses). The agent must also
    accept every currency the price editor offers and every value its two setting steppers can send.
 
 Run with the agent's Python environment (FastAPI): no PC, network or device is touched, and nothing is
@@ -40,6 +42,7 @@ SWIFT_CHECK = r'''
 import Foundation
 import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
@@ -105,6 +108,11 @@ func writeJSON<T: Encodable>(_ value: T, _ url: URL) {
     encoder.outputFormatting = [.sortedKeys]
     guard let data = try? encoder.encode(value) else { fail("cannot encode \(url.lastPathComponent)") }
     do { try data.write(to: url) } catch { fail("cannot write \(url.path)") }
+}
+
+/// Formatted money with plain spaces (Foundation puts a no-break space between "RON" and the number).
+func plain(_ text: String) -> String {
+    text.replacingOccurrences(of: "\u{00A0}", with: " ").replacingOccurrences(of: "\u{202F}", with: " ")
 }
 
 func pngSize(_ data: Data) -> (Int, Int)? {
@@ -213,6 +221,8 @@ check(oct.today != nil && oct.peakDay?.day == "2026-10-03", "today and peak day"
 check(oct.available == ["2026-09", "2026-10"], "available months: \(oct.available)")
 check(OrbitMonthID.pickerMonths(available: oct.available, including: oct.monthID).map(\.text) == ["2026-10", "2026-09"], "month picker")
 check(oct.price == priceRO.value, "the month carries the price")
+// The cost chart spans the whole month, so the first days' bars aren't stretched across it.
+check(oct.chartDomain(calendar: utc) == utc.date(from: DateComponents(year: 2026, month: 10, day: 1))!...utc.date(from: DateComponents(year: 2026, month: 11, day: 1))!, "chart domain: \(String(describing: oct.chartDomain(calendar: utc)))")
 
 let september = load(OrbitEnergyMonth.self, "energy-september", in: directory)
 roundTrips(september.value, september.raw, "energy-september")
@@ -254,6 +264,7 @@ check(s.peakGPUTemp == 83 && s.peakCPUTemp == 88 && s.hottestGame?.name == "Cybe
 check(s.games.first { $0.name == "ELDEN RING" }?.averageFPS == 60, "average FPS")
 check(near(s.energy?.kWh, oct.kWh, 0.0005) && near(s.energy?.cost, oct.cost, 0.0005) && s.energy?.currency == "RON", "summary energy matches the cost screen")
 check(near(s.energy?.gamingKWh, oct.games.reduce(0) { $0 + $1.kWh }, 0.006), "gaming energy matches the games")
+check(near(s.averagePricePerKWh, 1.4573, 0.01) && near(s.averageSessionSeconds, s.playSeconds / 4, 0.01), "average price and session: \(String(describing: s.averagePricePerKWh)) \(String(describing: s.averageSessionSeconds))")
 
 let previous = load(OrbitMonthSummary.self, "summary-september", in: directory)
 roundTrips(previous.value, previous.raw, "summary-september")
@@ -261,6 +272,23 @@ check(s.previous?.month == "2026-09" && near(s.previous?.playSeconds, previous.v
 check(near(s.previous?.kWh, september.value.kWh, 0.0005), "previous energy matches september's cost screen")
 check(s.playChange != nil && s.energyChange != nil, "comparisons with september")
 check(previous.value.previous?.playSeconds == 0 && previous.value.playChange == nil, "nothing to compare before the first month")
+// The versus page names what changed, and why there is nothing to compare with.
+let versus = s.versusHeadline(previousName: "September", locale: us) ?? ""
+check(versus.hasSuffix("more play time than September") && versus.first?.isNumber == true, "versus headline: \(versus)")
+check(previous.value.versusHeadline(previousName: "August", locale: us) == "Your first month with Orbit counting", "first month headline")
+var noGames = s
+noGames.previous = .init(month: "2026-09", playSeconds: 0, kWh: 2.5)
+check(noGames.playChange == nil && noGames.versusHeadline(previousName: "September", locale: us) == "No games in September", "a month of energy without games")
+noGames.previous = .init(month: "2026-09", playSeconds: 30, kWh: 0.4)
+check(noGames.playChange == nil && noGames.versusHeadline(previousName: "September", locale: us) == "No games in September", "30 seconds of a game is no play, as on the PC")
+var gap = s
+gap.previous = .init(month: "2026-09", playSeconds: 0, kWh: 0)
+gap.available = ["2026-07", "2026-10"]
+check(gap.versusHeadline(previousName: "September", locale: us) == "Nothing recorded in September", "a month without Orbit after earlier ones")
+gap.available = ["2026-10"]
+check(gap.versusHeadline(previousName: "September", locale: us) == "Your first month with Orbit counting", "the first month Orbit counted")
+gap.previous = nil
+check(gap.versusHeadline(previousName: "September", locale: us) == nil, "no previous month, no headline")
 
 let empty = load(OrbitMonthSummary.self, "summary-empty", in: directory)
 roundTrips(empty.value, empty.raw, "summary-empty")
@@ -299,7 +327,19 @@ check(OrbitEnergyFormat.duration(10) == "under a minute" && OrbitEnergyFormat.du
 check(OrbitEnergyFormat.spokenDuration(3660) == "1 hour 1 minute" && OrbitEnergyFormat.spokenDuration(7200) == "2 hours", "spoken durations")
 check(OrbitEnergyFormat.energy(12.4, locale: us) == "12.4 kWh" && OrbitEnergyFormat.energy(0.056, locale: us) == "0.056 kWh" && OrbitEnergyFormat.energy(0, locale: us) == "0 kWh", "energy text")
 check(OrbitEnergyFormat.energy(312.4, locale: us) == "312 kWh", "large energy text")
-check(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 0.003, locale: us).hasPrefix("less than"), "tiny costs")
+check(plain(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 0.003, locale: us)) == "less than RON 0.01", "tiny costs: \(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 0.003, locale: us))")
+// Free electricity (a price of 0, for example solar) costs nothing, never "less than".
+check(plain(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 0.003, pricePerKWh: 0, locale: us)) == "RON 0.00", "free electricity at a known price of 0")
+check(plain(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 12.4, locale: us)) == "RON 0.00", "a month at a price of 0 shows it in its own numbers")
+check(plain(OrbitEnergyFormat.cost(0, currency: "RON", kWh: 0.003, pricePerKWh: 1.4573, locale: us)) == "less than RON 0.01", "a priced tiny use stays less than")
+// Currencies without decimals: less than one unit, never "less than ¥0".
+check(plain(OrbitEnergyFormat.cost(0.3, currency: "JPY", kWh: 0.01, locale: us)) == "less than ¥1", "yen: \(OrbitEnergyFormat.cost(0.3, currency: "JPY", kWh: 0.01, locale: us))")
+check(plain(OrbitEnergyFormat.cost(0, currency: "ISK", kWh: 0.01, locale: us)) == "less than ISK 1", "krónur: \(OrbitEnergyFormat.cost(0, currency: "ISK", kWh: 0.01, locale: us))")
+check(plain(OrbitEnergyFormat.cost(0, currency: "KRW", kWh: 2, locale: us)) == "₩0" && plain(OrbitEnergyFormat.cost(18.4, currency: "JPY", kWh: 0.6, locale: us)) == "¥18", "won at a price of 0, yen")
+check(plain(OrbitEnergyFormat.cost(0, currency: "KWD", kWh: 0.1, locale: us)) == "less than KWD 0.010" && OrbitEnergyFormat.smallestAmount("jpy") == 1, "three-decimal currencies and the smallest amounts")
+check(plain(OrbitEnergyFormat.approximateCost(18.1, currency: "RON", kWh: 12, locale: us)) == "about RON 18.10", "about a cost")
+check(plain(OrbitEnergyFormat.approximateCost(0, currency: "RON", kWh: 0.003, locale: us)) == "less than RON 0.01" && plain(OrbitEnergyFormat.approximateCost(0, currency: "RON", kWh: 3, locale: us)) == "RON 0.00", "no about before less than or nothing")
+check(OrbitEnergyFormat.approximateCost(nil, currency: nil) == "—", "no price, no cost")
 check(OrbitEnergyFormat.cost(18.1, currency: "RON", locale: us).contains("18.10") && OrbitEnergyFormat.cost(18.1, currency: "RON", locale: us).contains("RON"), "cost with the ISO code")
 check(OrbitEnergyFormat.unitPrice(0.1723, currency: "USD", locale: us) == "$0.1723", "dollar unit price")
 check(OrbitEnergyFormat.period("2026-Q4", locale: us) == "Oct–Dec 2026" && OrbitEnergyFormat.period("2025", locale: us) == "2025" && OrbitEnergyFormat.period("2026-S2", locale: us) == "Jul–Dec 2026", "periods")
@@ -311,6 +351,8 @@ check(OrbitMonthID("2026-01")!.shifted(by: -1).text == "2025-12" && OrbitMonthID
 check(OrbitMonthID("2026-10")!.title(locale: us) == "October 2026" && OrbitMonthID("2026-02")!.dayCount(calendar: utc) == 28, "month title and length")
 check(OrbitChange(current: 120, previous: 100)?.percentText(locale: us) == "+20%" && OrbitChange(current: 80, previous: 100)?.percentText(locale: us) == "−20%", "change text")
 check(OrbitChange(current: 120, previous: 100)?.sentence(versus: "September", locale: us) == "20% more than September", "change sentence")
+check(OrbitChange(current: 120, previous: 100)?.sentence(versus: "September", of: "play time", locale: us) == "20% more play time than September"
+      && OrbitChange(current: 100.2, previous: 100)?.sentence(versus: "September", of: "play time", locale: us) == "About the same play time as September", "change sentence naming what changed")
 check(OrbitChange(current: 100.2, previous: 100)?.isSame == true && OrbitChange(current: 5, previous: 0) == nil, "same and nothing to compare")
 check(OrbitEnergyPriceChange.isValid(price: 1.07, currency: "RON") && !OrbitEnergyPriceChange.isValid(price: -1, currency: "RON") && !OrbitEnergyPriceChange.isValid(price: 1, currency: "LE1"), "price validation")
 check(!OrbitEnergyPriceChange.isValid(price: 1, currency: "VEF") && !OrbitEnergyPriceChange.isValid(price: 1, currency: "cuc"), "withdrawn currencies are refused, as the PC does")
@@ -361,20 +403,61 @@ check(OrbitEnergyDemo.energyMonth(OrbitMonthID("2026-11"), today: today, calenda
 let firstMinute = utc.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 0, minute: 5))!
 _ = OrbitEnergyDemo.summary(nil, today: firstMinute, calendar: utc)
 _ = OrbitEnergyDemo.energyMonth(nil, today: firstMinute, calendar: utc)
+// Demo mode re-prices the sample months with the price and settings the person enters.
+check(OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, price: OrbitEnergyDemo.price, settings: .defaults) == demoMonth, "the defaults give the sample month")
+var euroPrice = OrbitEnergyDemo.price
+euroPrice.pricePerKWh = 0.30
+euroPrice.currency = "EUR"
+euroPrice.isOverride = true
+let demoEuro = OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, price: euroPrice)
+check(demoEuro.currency == "EUR" && demoEuro.kWh == demoMonth.kWh && near(demoEuro.cost, demoEuro.kWh * 0.30, 0.02) && demoEuro.price == euroPrice, "demo month at another price: \(String(describing: demoEuro.cost))")
+check(demoEuro.days.allSatisfy { near($0.cost, $0.kWh * 0.30, 0.006) } && near(demoEuro.today?.cost, (demoEuro.today?.kWh ?? 0) * 0.30, 0.006), "demo days at another price")
+check(demoEuro.games.allSatisfy { near($0.cost, $0.kWh * 0.30, 0.006) }, "demo games at another price")
+let demoSummaryEuro = OrbitEnergyDemo.summary(nil, today: today, calendar: utc, price: euroPrice)
+check(demoSummaryEuro.energy?.currency == "EUR" && near(demoSummaryEuro.energy?.cost, demoEuro.cost, 0.0005) && demoSummaryEuro.playSeconds == demoSummary.playSeconds, "demo summary at another price")
+let hours = demoMonth.trackedHours ?? 0
+let measuredKWh = (demoMonth.breakdown?.cpuKWh ?? 0) + (demoMonth.breakdown?.gpuKWh ?? 0)
+let heavier = OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, settings: OrbitEnergySettings(baseWatts: 120, psuEfficiency: 0.88))
+let efficient = OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, settings: OrbitEnergySettings(baseWatts: 60, psuEfficiency: 0.95))
+check(heavier.kWh > demoMonth.kWh && efficient.kWh < demoMonth.kWh, "demo energy follows the settings: \(heavier.kWh) \(demoMonth.kWh) \(efficient.kWh)")
+check(near(heavier.kWh, (measuredKWh + 120 * hours / 1000) / 0.88, 0.02) && near(heavier.breakdown?.baseKWh, 120 * hours / 1000, 0.01), "wall = (CPU + GPU + rest of the PC) / efficiency")
+check(near(heavier.breakdown?.total, heavier.kWh, 0.01) && near(efficient.breakdown?.total, efficient.kWh, 0.01) && near(heavier.cost, heavier.kWh * OrbitEnergyDemo.pricePerKWh, 0.02), "demo breakdown with other settings")
+let heavierSummary = OrbitEnergyDemo.summary(nil, today: today, calendar: utc, settings: OrbitEnergySettings(baseWatts: 120, psuEfficiency: 0.88))
+check(near(heavierSummary.energy?.kWh, heavier.kWh, 0.0005) && near(heavierSummary.previous?.kWh, OrbitEnergyDemo.energyMonth(OrbitMonthID("2026-09"), today: today, calendar: utc, settings: OrbitEnergySettings(baseWatts: 120, psuEfficiency: 0.88)).kWh, 0.0005), "demo summary with other settings")
+var unpriced = OrbitEnergyDemo.price
+unpriced.pricePerKWh = nil
+let demoUnpriced = OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, price: unpriced)
+check(demoUnpriced.cost == nil && demoUnpriced.currency == nil && demoUnpriced.days.allSatisfy { $0.cost == nil } && demoUnpriced.games.allSatisfy { $0.cost == nil }, "demo month without a price")
+var freePrice = OrbitEnergyDemo.price
+freePrice.pricePerKWh = 0
+let demoFree = OrbitEnergyDemo.energyMonth(nil, today: today, calendar: utc, price: freePrice)
+check(demoFree.cost == 0 && plain(OrbitEnergyFormat.cost(demoFree.cost, currency: demoFree.currency, kWh: demoFree.kWh, pricePerKWh: 0, locale: us)) == "RON 0.00", "demo month with free electricity")
+OrbitEnergyDemoEdits.apply(.set(0.30, currency: "eur"))
+check(OrbitEnergyDemoEdits.price.isOverride && OrbitEnergyDemoEdits.price.currency == "EUR" && OrbitEnergyDemoEdits.price.source == "Your own price"
+      && OrbitEnergyDemoEdits.price.detectedPrice?.pricePerKWh == 1.4573, "demo price edit: \(OrbitEnergyDemoEdits.price)")
+check(OrbitEnergyDemoEdits.energyMonth().currency == "EUR" && OrbitEnergyDemoEdits.summary().energy?.currency == "EUR", "demo screens follow the edited price")
+OrbitEnergyDemoEdits.apply(.resetToDetected)
+check(OrbitEnergyDemoEdits.price == OrbitEnergyDemo.price && OrbitEnergyDemoEdits.energyMonth().currency == "RON", "demo price reset")
 
 // MARK: Share picture
 
 for (name, value) in [("agent", s), ("demo", demoSummary)] {
-    guard let picture = OrbitSummaryPicture.render(value, accent: .cyan, secondary: .blue) else { fail("the \(name) share picture did not render") }
-    guard let size = pngSize(picture.png) else { fail("the \(name) share picture is not a PNG") }
-    check(size == (1080, 1350) && picture.png.count > 20_000, "\(name) share picture is \(size), \(picture.png.count) bytes")
+    // The Share button's item draws only a preview; the PNG is drawn when the share sheet asks for it.
+    guard let picture = OrbitSummaryPicture.make(value, accent: .cyan, secondary: .blue) else { fail("the \(name) share item did not render") }
+    guard let png = picture.pngData(), let size = pngSize(png) else { fail("the \(name) share picture is not a PNG") }
+    check(size == (1080, 1350) && png.count > 20_000, "\(name) share picture is \(size), \(png.count) bytes")
     check(picture.fileName.hasPrefix("Orbit ") && picture.fileName.hasSuffix(".png"), "file name \(picture.fileName)")
+    if #available(macOS 15.2, *) {
+        // What a share sheet gets: the same picture through the Transferable export.
+        let exported = try! await picture.exported(as: .png)
+        check(pngSize(exported).map { $0 == (1080, 1350) } == true && exported.count > 20_000, "the \(name) picture the share sheet gets is \(String(describing: pngSize(exported)))")
+    }
     if arguments.count > 3 {
-        try! picture.png.write(to: URL(fileURLWithPath: arguments[3]).appendingPathComponent("share-\(name).png"))
+        try! png.write(to: URL(fileURLWithPath: arguments[3]).appendingPathComponent("share-\(name).png"))
     }
 }
 
-print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy (recorded, one reading, odd values) decode into the app's models key for key; the app's own price/settings bodies, every currency its editor offers and every stepper value are accepted; the two summaries agree; price parsing, formatting, month links, demo data and the 1080 × 1350 share picture check out")
+print("PASS: the agent's electricity price, settings, monthly energy (this month, last month, future, no price, another currency), monthly summaries (with play, previous month, empty) and session energy (recorded, one reading, odd values) decode into the app's models key for key; the app's own price/settings bodies, every currency its editor offers and every stepper value are accepted; the two summaries agree; price parsing, formatting (free electricity, currencies without decimals), versus headlines, month links, demo data (re-priced with edited prices and settings) and the 1080 × 1350 share picture (also as the share sheet exports it) check out")
 '''
 
 

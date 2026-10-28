@@ -1228,7 +1228,7 @@
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
@@ -1266,7 +1266,7 @@
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;

@@ -8,11 +8,14 @@ private struct MacEnergyCapabilities: Decodable {
     var features: [String]?
 }
 
-/// An error in plain words: the PC's own sentence, or what to check when it didn't answer.
-private func macEnergyErrorText(_ error: Error, pcName: String) -> String {
+/// An error in plain words: the PC's own sentence, or what to check when it didn't answer. Nil for a
+/// cancelled request (the card's task restarted): what's on screen stays.
+private func macEnergyErrorText(_ error: Error, pcName: String) -> String? {
+    if error is CancellationError { return nil }
     if let orbit = error as? OrbitError { return orbit.message }
     if let url = error as? URLError {
         switch url.code {
+        case .cancelled: return nil
         case .timedOut, .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed:
             return "\(pcName) didn't answer. Check that it's awake, on the same network, and that Orbit PC Companion is running."
         case .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .secureConnectionFailed:
@@ -40,8 +43,32 @@ final class MacThisMonthModel: ObservableObject {
     @Published private(set) var energy: OrbitEnergyMonth?
     @Published private(set) var summary: OrbitMonthSummary?
     @Published private(set) var hasSummaryFeature = false
+    @Published private(set) var hasEnergyFeature = false
     private var loadedKey: String?
     private var isLoading = false
+    /// The PC's features for `loadedKey` (nil set: an agent older than `/api/capabilities`), read again
+    /// after a few minutes or when the card's task restarts (a reconnect can bring a newer agent).
+    private var features: (set: Set<String>?, checkedAt: Date)?
+    private static let featuresMaxAge: TimeInterval = 300
+    /// Failed reads in a row, for the retry backoff.
+    private var failures = 0
+    private var reloadRequested = false
+
+    /// How long the card waits before reading the PC again.
+    var retryDelay: Duration {
+        switch phase {
+        // The PC writes its energy ledger every minute; the month changes slowly.
+        case .ready: return .seconds(120)
+        // A newer agent comes with a reconnect, which restarts the card's task anyway.
+        case .olderAgent: return .seconds(300)
+        // 10, 20, 40, 80 s, then every two minutes.
+        case .failed: return .seconds(min(120, 10 << min(4, max(0, failures - 1))))
+        case .idle, .loading, .offline: return .seconds(10)
+        }
+    }
+
+    /// Forgets the PC's features: the card's task restarted (another PC, or the PC came back online).
+    func forgetFeatures() { features = nil }
 
     func load(_ vm: OrbitMacViewModel) async {
         let key = "\(vm.isDemoMode)|\(vm.selectedPCID)|\(vm.generation)"
@@ -50,13 +77,19 @@ final class MacThisMonthModel: ObservableObject {
             energy = nil
             summary = nil
             hasSummaryFeature = false
+            hasEnergyFeature = false
+            features = nil
+            failures = 0
             phase = .idle
             isLoading = false
+            reloadRequested = false
         }
         if vm.isDemoMode {
-            energy = OrbitEnergyDemo.energyMonth()
-            summary = OrbitEnergyDemo.summary()
+            // At the price entered in demo mode (see `OrbitEnergyDemoEdits`).
+            energy = OrbitEnergyDemoEdits.energyMonth()
+            summary = OrbitEnergyDemoEdits.summary()
             hasSummaryFeature = true
+            hasEnergyFeature = true
             phase = .ready
             return
         }
@@ -65,34 +98,51 @@ final class MacThisMonthModel: ObservableObject {
             if energy == nil && summary == nil { phase = .offline }
             return
         }
-        guard !isLoading else { return }
+        // A read already on its way reads once more when it's done (a price saved meanwhile shows at once).
+        guard !isLoading else { reloadRequested = true; return }
         isLoading = true
         defer { if key == loadedKey { isLoading = false } }
+        repeat {
+            reloadRequested = false
+            await read(vm, key: key)
+        } while reloadRequested && key == loadedKey && !Task.isCancelled
+    }
+
+    private func read(_ vm: OrbitMacViewModel, key: String) async {
         if energy == nil && summary == nil { phase = .loading }
         do {
             let client = try vm.client()
-            let features: Set<String>
-            do {
-                let reply: MacEnergyCapabilities = try await client.get("/api/capabilities")
-                features = Set(reply.features ?? [])
-            } catch let error as OrbitError where error.statusCode == 404 {
-                features = []
+            let known: Set<String>?
+            if let cached = features, Date().timeIntervalSince(cached.checkedAt) < Self.featuresMaxAge {
+                known = cached.set
+            } else {
+                do {
+                    let reply: MacEnergyCapabilities = try await client.get("/api/capabilities")
+                    known = Set(reply.features ?? [])
+                } catch let error as OrbitError where error.statusCode == 404 {
+                    known = nil
+                }
+                guard key == loadedKey, !Task.isCancelled else { return }
+                features = (known, Date())
             }
-            guard key == loadedKey else { return }
-            let hasEnergy = features.contains(OrbitEnergyAPI.energyFeature)
-            let hasSummary = features.contains(OrbitEnergyAPI.summaryFeature)
-            guard hasEnergy || hasSummary else { phase = .olderAgent; return }
+            let hasEnergy = known?.contains(OrbitEnergyAPI.energyFeature) ?? false
+            let hasSummary = known?.contains(OrbitEnergyAPI.summaryFeature) ?? false
+            guard hasEnergy || hasSummary else { phase = .olderAgent; failures = 0; return }
             hasSummaryFeature = hasSummary
+            hasEnergyFeature = hasEnergy
             async let energyReply = Self.fetch(OrbitEnergyMonth.self, from: client, OrbitEnergyAPI.energySummaryPath, when: hasEnergy)
             async let summaryReply = Self.fetch(OrbitMonthSummary.self, from: client, OrbitEnergyAPI.monthSummaryPath, when: hasSummary)
             let (newEnergy, newSummary) = try await (energyReply, summaryReply)
-            guard key == loadedKey else { return }
+            guard key == loadedKey, !Task.isCancelled else { return }
             energy = newEnergy
             summary = newSummary
+            failures = 0
             phase = .ready
         } catch {
-            guard key == loadedKey else { return }
-            if energy == nil && summary == nil { phase = .failed(macEnergyErrorText(error, pcName: vm.selectedPCName)) }
+            // Cancelled with the card's task (the PC went offline, another PC): the restarted task decides.
+            guard key == loadedKey, !Task.isCancelled, let message = macEnergyErrorText(error, pcName: vm.selectedPCName) else { return }
+            failures += 1
+            if energy == nil && summary == nil { phase = .failed(message) }
         }
     }
 
@@ -110,8 +160,13 @@ struct MacThisMonthCard: View {
     @Environment(\.macTheme) private var theme
     @StateObject private var model = MacThisMonthModel()
     @State private var showsSummary = false
+    /// The price the editor opened with (kept while the card reads the PC again behind it).
+    @State private var editingPrice: OrbitEnergyPrice?
 
     private var pcName: String { vm.selectedPCName }
+    /// The PC's price, from this month's report (the same object as `GET /api/energy/price`).
+    private var price: OrbitEnergyPrice? { model.energy?.price }
+    private var canSetPrice: Bool { model.phase == .ready && model.hasEnergyFeature && price != nil && (vm.isDemoMode || vm.metrics.isOnline) }
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -129,6 +184,15 @@ struct MacThisMonthCard: View {
             }
             Spacer(minLength: 8)
             if model.phase == .loading { ProgressView().controlSize(.small) }
+            if canSetPrice {
+                Button {
+                    editingPrice = price
+                } label: {
+                    Label(price?.hasPrice == true ? "Price…" : "Set Price…", systemImage: "pencil")
+                }
+                .buttonStyle(MacHoverButtonStyle(tint: .yellow))
+                .help(price?.hasPrice == true ? "Change the electricity price Orbit uses for \(pcName)" : "Enter your electricity price to see what \(pcName) costs to run")
+            }
             Button {
                 showsSummary = true
             } label: {
@@ -141,16 +205,27 @@ struct MacThisMonthCard: View {
         .padding(18)
         .macGlass(cornerRadius: 22, tint: .orange)
         .task(id: "\(vm.selectedPCID)|\(vm.metrics.isOnline)|\(vm.isDemoMode)") {
+            // Another PC, or the PC came back (perhaps with a newer agent): read its features again.
+            model.forgetFeatures()
             while !Task.isCancelled {
                 await model.load(vm)
-                // The PC writes its energy ledger every minute.
-                do { try await Task.sleep(for: .seconds(model.phase == .ready ? 120 : 10)) } catch { break }
+                do { try await Task.sleep(for: model.retryDelay) } catch { break }
             }
         }
         .sheet(isPresented: $showsSummary) {
             MacMonthlySummarySheet(initial: model.summary)
                 .environmentObject(vm)
                 .macAppearance()
+        }
+        .sheet(isPresented: Binding(get: { editingPrice != nil }, set: { if !$0 { editingPrice = nil } })) {
+            if let editingPrice {
+                MacEnergyPriceSheet(price: editingPrice) {
+                    // Costs follow the new price (a new currency re-prices the month), so read it again.
+                    await model.load(vm)
+                }
+                .environmentObject(vm)
+                .macAppearance()
+            }
         }
     }
 
@@ -181,10 +256,12 @@ struct MacThisMonthCard: View {
         HStack(spacing: 8) {
             if let energy = model.energy {
                 if energy.cost != nil, energy.currency != nil {
-                    MacStatChip(label: "Cost", value: OrbitEnergyFormat.cost(energy.cost, currency: energy.currency, kWh: energy.kWh), icon: "bolt.fill", tint: .yellow)
+                    MacStatChip(label: "Cost", value: OrbitEnergyFormat.cost(energy.cost, currency: energy.currency, kWh: energy.kWh,
+                                                                             pricePerKWh: energy.price?.pricePerKWh),
+                                icon: "bolt.fill", tint: .yellow)
                 } else {
-                    MacStatChip(label: "Cost", value: "Set a price on iPhone", icon: "bolt.fill", tint: .yellow)
-                        .help("Orbit has no electricity price for this PC's country yet. Set yours in Orbit on iPhone or iPad: Tools › Electricity Cost.")
+                    MacStatChip(label: "Cost", value: "No price yet", icon: "bolt.fill", tint: .yellow)
+                        .help("Orbit has no electricity price for this PC's country. Click Set Price… to enter the one on your bill.")
                 }
                 if showsEnergy { MacStatChip(label: "Energy", value: OrbitEnergyFormat.energy(energy.kWh), icon: "powerplug.fill") }
             }
@@ -194,6 +271,168 @@ struct MacThisMonthCard: View {
                     MacStatChip(label: "Top game", value: top.name, icon: "crown.fill", tint: .orange)
                 }
             }
+        }
+    }
+}
+
+// MARK: - Electricity price sheet
+
+/// The Mac's "Change price": the person's own price per kWh and its currency, or back to the published
+/// average (`PUT /api/energy/price`, the same body as the iPhone's editor). Demo mode keeps it in memory.
+struct MacEnergyPriceSheet: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+    @Environment(\.dismiss) private var dismiss
+    let price: OrbitEnergyPrice
+    let onSaved: () async -> Void
+    @State private var text: String
+    @State private var currency: String
+    @State private var error: String?
+    @State private var isSaving = false
+    @FocusState private var priceFocused: Bool
+
+    init(price: OrbitEnergyPrice, onSaved: @escaping () async -> Void) {
+        self.price = price
+        self.onSaved = onSaved
+        _text = State(initialValue: price.pricePerKWh.map { $0.formatted(.number.precision(.fractionLength(0...4)).grouping(.never)) } ?? "")
+        let fallback = Locale.current.currency?.identifier ?? "EUR"
+        _currency = State(initialValue: (price.currency ?? price.defaultPrice?.currency ?? fallback).uppercased())
+    }
+
+    private var pcName: String { vm.selectedPCName }
+    private var parsedPrice: Double? { OrbitEnergyPriceChange.parse(text) }
+    private var isValid: Bool { parsedPrice.map { OrbitEnergyPriceChange.isValid(price: $0, currency: currency) } ?? false }
+
+    /// Suggestions first (the PC's currency, its country's, this Mac's), then every other offered currency.
+    private var suggested: [String] {
+        var codes: [String] = []
+        for code in [price.currency, price.defaultPrice?.currency, Locale.current.currency?.identifier, "EUR", "USD", "GBP"] {
+            if let code = code?.uppercased(), code.count == 3, OrbitEnergyPriceChange.offeredCurrencies.contains(code), !codes.contains(code) { codes.append(code) }
+        }
+        if !codes.contains(currency) { codes.insert(currency, at: 0) }
+        return codes
+    }
+
+    private static let all: [String] = OrbitEnergyPriceChange.offeredCurrencies
+        .sorted { OrbitEnergyFormat.currencyName($0) < OrbitEnergyFormat.currencyName($1) }
+
+    /// What Save would store, written out with the currency, so a mistyped mark shows before it's saved.
+    private var preview: (text: String, isProblem: Bool)? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let value = parsedPrice else { return ("Enter the price as a number, for example 1.07.", true) }
+        guard OrbitEnergyPriceChange.priceRange.contains(value) else {
+            return ("Orbit accepts prices up to \(OrbitEnergyPriceChange.priceRange.upperBound.formatted(.number.precision(.fractionLength(0)))) per kWh.", true)
+        }
+        return ("Saves as \(OrbitEnergyFormat.unitPrice(value, currency: currency)) per kWh.", false)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                MacIconBadge(systemName: "bolt.fill", tint: .yellow, size: 36, filled: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Electricity Price").font(.title2.weight(.bold))
+                    Text(vm.isDemoMode ? "Demo mode · sample PC" : pcName).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                if let current = OrbitEnergyFormat.pricePerKWh(price) {
+                    Text("Now: \(current)").font(.callout.weight(.semibold))
+                }
+                Text(OrbitEnergyFormat.sourceExplanation(price))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Your price per kWh").font(.headline)
+                HStack(spacing: 10) {
+                    TextField("Price", text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.title3.monospacedDigit())
+                        .frame(width: 150)
+                        .focused($priceFocused)
+                        .onSubmit { if isValid, !isSaving { save() } }
+                        .accessibilityLabel("Price per kilowatt hour")
+                    Picker("Currency", selection: $currency) {
+                        Section("Suggested") {
+                            ForEach(suggested, id: \.self) { Text(OrbitEnergyFormat.currencyName($0)).tag($0) }
+                        }
+                        Section("All currencies") {
+                            ForEach(Self.all.filter { !suggested.contains($0) }, id: \.self) { Text(OrbitEnergyFormat.currencyName($0)).tag($0) }
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 250)
+                    .accessibilityLabel("Currency")
+                    Text("per kWh").foregroundStyle(.secondary)
+                }
+                if let preview {
+                    Text(preview.text)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(preview.isProblem ? Color.orange : Color.secondary)
+                }
+                Text("Use the price on your electricity bill, with taxes and fees included. The new price counts from now on: days already recorded keep their price, unless you pick another currency, which shows the whole history at this price.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if price.isOverride, let detected = price.detectedPrice, let value = detected.pricePerKWh, let detectedCurrency = detected.currency {
+                HStack(spacing: 10) {
+                    Button {
+                        save(.resetToDetected)
+                    } label: {
+                        Label("Use the Published Average", systemImage: "arrow.uturn.backward.circle")
+                    }
+                    .buttonStyle(MacHoverButtonStyle(tint: .green))
+                    .disabled(isSaving)
+                    Text("\(OrbitEnergyFormat.unitPrice(value, currency: detectedCurrency)) per kWh · \(detected.source ?? "Published average")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let error {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if isSaving { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(MacHoverButtonStyle(tint: .white))
+                Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(MacHoverButtonStyle(tint: .yellow, prominent: true))
+                    .disabled(!isValid || isSaving)
+            }
+        }
+        .padding(22)
+        .frame(width: 560)
+        .background(MacAmbientBackground(isOnline: true))
+        .onAppear { priceFocused = true }
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private func save() {
+        guard let value = parsedPrice else { return }
+        save(.set(value, currency: currency))
+    }
+
+    private func save(_ change: OrbitEnergyPriceChange) {
+        isSaving = true
+        error = nil
+        Task {
+            defer { isSaving = false }
+            if vm.isDemoMode {
+                OrbitEnergyDemoEdits.apply(change)
+            } else {
+                do {
+                    let _: OrbitEnergyPrice = try await vm.client().send(OrbitEnergyAPI.pricePath, method: "PUT", body: change)
+                } catch {
+                    self.error = macEnergyErrorText(error, pcName: pcName) ?? "Not saved. Try again."
+                    return
+                }
+            }
+            await onSaved()
+            dismiss()
         }
     }
 }
@@ -235,9 +474,10 @@ struct MacMonthlySummarySheet: View {
                 await load(previous)
             }
         }
+        // Only a small preview is drawn here; the full picture is drawn when the person picks where it goes.
         .task(id: pictureKey) {
             guard let summary, summary.hasPlay else { picture = nil; return }
-            picture = OrbitSummaryPicture.render(summary, accent: theme.accent, secondary: theme.secondary)
+            picture = OrbitSummaryPicture.make(summary, accent: theme.accent, secondary: theme.secondary)
         }
     }
 
@@ -261,7 +501,7 @@ struct MacMonthlySummarySheet: View {
                 .disabled(isLoading)
             }
             if let picture, let summary, summary.hasPlay {
-                ShareLink(item: picture, preview: SharePreview("\(summary.monthID?.title() ?? summary.month) in games", image: picture.image)) {
+                ShareLink(item: picture, preview: SharePreview("\(summary.monthID?.title() ?? summary.month) in games", image: picture.preview)) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent))
@@ -277,7 +517,7 @@ struct MacMonthlySummarySheet: View {
 
     private func load(_ month: OrbitMonthID?) async {
         if vm.isDemoMode {
-            summary = OrbitEnergyDemo.summary(month)
+            summary = OrbitEnergyDemoEdits.summary(month)
             return
         }
         isLoading = true
@@ -307,7 +547,8 @@ struct MacMonthlySummarySheet: View {
                               title: summary.available.isEmpty ? "Your first summary is on its way" : "No games recorded in \(summary.monthID?.name() ?? "this month")",
                               message: summary.available.isEmpty
                                 ? "Play a game while Orbit PC Companion runs on \(vm.selectedPCName). Orbit counts play time, frame rates and temperatures, and your month appears here."
-                                : "Orbit PC Companion counts play time while a game runs. Pick another month above.",
+                                // The month picker is in the header only when there is another month to pick.
+                                : "Orbit PC Companion counts play time while a game runs." + (months.count > 1 ? " Pick another month above." : " Come back after a gaming session."),
                               tint: .orange)
                     .macGlass(cornerRadius: 22, tint: .orange)
             }
@@ -326,7 +567,7 @@ struct MacMonthlySummarySheet: View {
             gamesTable(summary)
             HStack(alignment: .top, spacing: 14) {
                 if summary.peakCPUTemp != nil || summary.peakGPUTemp != nil { temperaturesCard(summary) }
-                if let energy = summary.energy, energy.kWh > 0 { energyCard(energy) }
+                if let energy = summary.energy, energy.kWh > 0 { energyCard(energy, summary: summary) }
                 if let previous = summary.previous { versusCard(summary, previous: previous) }
             }
         }
@@ -435,7 +676,7 @@ struct MacMonthlySummarySheet: View {
                         Text(game.averageFPS.map { "\(Int($0.rounded()))" } ?? "—")
                         Text(OrbitEnergyFormat.temperature(game.peakGPUTemp))
                         Text(OrbitEnergyFormat.energy(game.kWh))
-                        if hasCost { Text(OrbitEnergyFormat.cost(game.cost, currency: summary.energy?.currency, kWh: game.kWh)) }
+                        if hasCost { Text(OrbitEnergyFormat.cost(game.cost, currency: summary.energy?.currency, kWh: game.kWh, pricePerKWh: summary.averagePricePerKWh)) }
                     }
                     .font(.callout.monospacedDigit())
                 }
@@ -457,11 +698,11 @@ struct MacMonthlySummarySheet: View {
         }
     }
 
-    private func energyCard(_ energy: OrbitMonthSummary.Energy) -> some View {
+    private func energyCard(_ energy: OrbitMonthSummary.Energy, summary: OrbitMonthSummary) -> some View {
         card("Energy (estimate)", icon: "bolt.fill", tint: .yellow) {
             Text(OrbitEnergyFormat.energy(energy.kWh)).font(.title3.weight(.bold))
             if energy.cost != nil, energy.currency != nil {
-                Text("about \(OrbitEnergyFormat.cost(energy.cost, currency: energy.currency, kWh: energy.kWh)) of electricity")
+                Text("\(OrbitEnergyFormat.approximateCost(energy.cost, currency: energy.currency, kWh: energy.kWh, pricePerKWh: summary.averagePricePerKWh)) of electricity")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let gaming = energy.gamingKWh, energy.kWh > 0 {
@@ -474,10 +715,8 @@ struct MacMonthlySummarySheet: View {
     private func versusCard(_ summary: OrbitMonthSummary, previous: OrbitMonthSummary.Previous) -> some View {
         let name = OrbitMonthID(previous.month)?.name() ?? "last month"
         return card("Versus \(name)", icon: "arrow.left.arrow.right", tint: .purple) {
-            if let change = summary.playChange {
-                Text(change.sentence(versus: name)).font(.headline).fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Your first month with Orbit counting").font(.headline)
+            if let headline = summary.versusHeadline(previousName: name) {
+                Text(headline).font(.headline).fixedSize(horizontal: false, vertical: true)
             }
             Text("\(OrbitEnergyFormat.duration(previous.playSeconds)) of play in \(name)").font(.caption).foregroundStyle(.secondary)
             if let change = summary.energyChange {

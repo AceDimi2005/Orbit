@@ -14,8 +14,12 @@ final class OrbitEnergyModel: ObservableObject {
         case ready
         /// The PC's agent predates electricity cost (no "energy" in `/api/capabilities`, or a 404).
         case olderAgent
-        case failed(String)
+        /// `replied`: the PC answered, with an error or a reply Orbit can't read, rather than not at all.
+        case failed(String, replied: Bool)
     }
+
+    /// The PC answered (an HTTP error or a reply Orbit can't read) rather than not at all.
+    static func replied(_ error: Error) -> Bool { (error as? OrbitError)?.statusCode != nil || error is DecodingError }
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var report: OrbitEnergyMonth?
@@ -44,6 +48,11 @@ final class OrbitEnergyModel: ObservableObject {
     var shownMonth: OrbitMonthID? { selectedMonth ?? report?.monthID ?? currentMonth }
     var isCurrentMonth: Bool { shownMonth != nil && shownMonth == currentMonth }
     var pickerMonths: [OrbitMonthID] { OrbitMonthID.pickerMonths(available: report?.available ?? knownMonths, including: shownMonth) }
+    /// The price the costs on screen use, so free electricity (0) reads "RON 0.00" rather than "less than".
+    var unitPrice: Double? { (report?.price ?? price)?.pricePerKWh }
+    /// How long the screen waits before reading the PC again: the ledger is written every minute, and a
+    /// screen without its month (a failed or cut-short read) tries again soon.
+    var refreshDelay: Duration { phase == .ready && report != nil ? .seconds(60) : .seconds(5) }
 
     func configure(_ vm: OrbitViewModel) {
         let newLink = OrbitPCLink.current(vm)
@@ -66,13 +75,14 @@ final class OrbitEnergyModel: ObservableObject {
         if isDemo { loadDemo() }
     }
 
+    /// Demo mode: the sample month at the price and settings entered so far (see `OrbitEnergyDemoEdits`).
     private func loadDemo() {
-        let month = OrbitEnergyDemo.energyMonth(selectedMonth)
+        let month = OrbitEnergyDemoEdits.energyMonth(selectedMonth)
         report = month
         knownMonths = month.available
         currentMonth = OrbitMonthID.containing(Date())
-        if price == nil { price = OrbitEnergyDemo.price }
-        if settings == nil { settings = OrbitEnergyDemo.settings }
+        price = OrbitEnergyDemoEdits.price
+        settings = OrbitEnergyDemoEdits.settings
         phase = .ready
     }
 
@@ -91,8 +101,13 @@ final class OrbitEnergyModel: ObservableObject {
         } catch {
             // Cancelled with the screen's task (the app went inactive): the restarted task reads it again.
             guard version == generation, token == loadToken, !Task.isCancelled else { return }
-            // Keep what's on screen after a hiccup; only an empty screen shows the failure.
-            if report == nil && price == nil { phase = .failed(OrbitPlainError.describe(error)) }
+            // Keep what's on screen after a hiccup; only an empty screen shows the failure. A month picked
+            // just before says why it isn't there, next to the month picker.
+            if report == nil && price == nil {
+                phase = .failed(OrbitPlainError.describe(error), replied: Self.replied(error))
+            } else if report == nil {
+                reportError = OrbitPlainError.describe(error)
+            }
             return
         }
         let client = link.client
@@ -122,7 +137,7 @@ final class OrbitEnergyModel: ObservableObject {
             settingsError = nil
         }
         if case .failure(let error) = newReport, case .failure = newPrice, report == nil {
-            phase = .failed(OrbitPlainError.describe(error))
+            phase = .failed(OrbitPlainError.describe(error), replied: Self.replied(error))
         } else {
             phase = .ready
         }
@@ -137,7 +152,7 @@ final class OrbitEnergyModel: ObservableObject {
         // Picking the PC's own month follows it again (so "Today" keeps showing).
         selectedMonth = month == currentMonth ? nil : month
         if isDemo {
-            report = OrbitEnergyDemo.energyMonth(month)
+            loadDemo()
             return
         }
         report = nil
@@ -148,18 +163,10 @@ final class OrbitEnergyModel: ObservableObject {
     /// Saves the user's price (or goes back to the detected one). Returns a sentence when it failed.
     func savePrice(_ change: OrbitEnergyPriceChange) async -> String? {
         if isDemo {
-            var updated = price ?? OrbitEnergyDemo.price
-            if change.reset == true {
-                updated = OrbitEnergyDemo.price
-            } else if let value = change.pricePerKWh, let currency = change.currency {
-                updated.pricePerKWh = value
-                updated.currency = currency
-                updated.source = "Your own price"
-                updated.period = nil
-                updated.isOverride = true
-            }
-            price = updated
-            notice = "Demo mode: nothing was sent to a PC."
+            // Every sample cost follows the new price at once (a PC applies it from now on).
+            OrbitEnergyDemoEdits.apply(change)
+            loadDemo()
+            notice = "Demo mode: nothing was sent to a PC. The sample months are worked out again at this price."
             return nil
         }
         guard let link else { return "Connect to your PC to change its price." }
@@ -183,7 +190,9 @@ final class OrbitEnergyModel: ObservableObject {
         settings = value
         settingsError = nil
         if isDemo {
-            notice = "Demo mode: nothing was sent to a PC."
+            OrbitEnergyDemoEdits.settings = value
+            loadDemo()
+            notice = "Demo mode: nothing was sent to a PC. The sample months are worked out again with these settings."
             return
         }
         guard let link else { return }
@@ -296,20 +305,28 @@ struct EnergyCostView: View {
             while !Task.isCancelled {
                 // The PC writes its energy ledger every minute.
                 if vm.metrics.isOnline || model.isDemo { await model.load() }
-                do { try await Task.sleep(for: .seconds(model.phase == .ready ? 60 : 5)) } catch { break }
+                do { try await Task.sleep(for: model.refreshDelay) } catch { break }
             }
         }
         .onChange(of: model.report?.month) { _, _ in selectedDate = nil }
         #if DEBUG
         // `ORBIT_SELFTEST_SCROLL=chart|games|price|settings|about` and `ORBIT_SELFTEST_PRICE_EDITOR=1`:
-        // screenshots of the lower cards and the editor without taps.
+        // screenshots of the lower cards and the editor without taps. `ORBIT_SELFTEST_PRICE_EDITOR="0.30 EUR"`
+        // also saves that price through the editor, and `ORBIT_SELFTEST_ESTIMATE="120 0.95"` changes the
+        // estimate settings as the steppers do.
         .modifier(OrbitSelfTestScroll())
         .task {
-            guard ProcessInfo.processInfo.environment["ORBIT_SELFTEST_PRICE_EDITOR"] != nil else { return }
-            // Opens once the PC has answered (a busy PC can take a while).
+            let environment = ProcessInfo.processInfo.environment
+            guard environment["ORBIT_SELFTEST_PRICE_EDITOR"] != nil || environment["ORBIT_SELFTEST_ESTIMATE"] != nil else { return }
+            // Once the PC has answered (a busy PC can take a while).
             for _ in 0..<30 {
                 try? await Task.sleep(for: .seconds(2))
-                if model.price != nil { showsPriceEditor = true; return }
+                guard model.price != nil, model.settings != nil else { continue }
+                if let parts = environment["ORBIT_SELFTEST_ESTIMATE"]?.split(separator: " ").compactMap({ Double($0) }), parts.count == 2 {
+                    model.updateSettings(OrbitEnergySettings(baseWatts: parts[0], psuEfficiency: parts[1]))
+                }
+                if environment["ORBIT_SELFTEST_PRICE_EDITOR"] != nil { showsPriceEditor = true }
+                return
             }
         }
         #endif
@@ -339,8 +356,9 @@ struct EnergyCostView: View {
                         : "Showing the last numbers Orbit read. They update when the PC is back.", icon: "wifi.slash", tint: .orange)
         } else if model.phase == .olderAgent {
             OrbitNotice(title: "Update Orbit PC Companion", message: "\(pcName) runs an older agent without electricity cost. Update it from Settings › Check for PC Companion Update.", icon: "arrow.down.circle.fill", tint: .orange)
-        } else if case .failed(let message) = model.phase {
-            OrbitNotice(title: "Couldn't reach \(pcName)", message: message, icon: "exclamationmark.triangle.fill", tint: .orange)
+        } else if case .failed(let message, let replied) = model.phase {
+            OrbitNotice(title: replied ? "Can't show the electricity cost" : "Couldn't reach \(pcName)", message: message,
+                        icon: "exclamationmark.triangle.fill", tint: .orange)
         }
         if let notice = model.notice {
             Text(notice).font(.caption).foregroundStyle(.orange)
@@ -389,7 +407,7 @@ struct EnergyCostView: View {
         let hasCost = report.cost != nil && report.currency != nil
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(hasCost ? OrbitEnergyFormat.cost(report.cost, currency: report.currency, kWh: report.kWh) : OrbitEnergyFormat.energy(report.kWh))
+                Text(hasCost ? costText(report.cost, currency: report.currency, kWh: report.kWh) : OrbitEnergyFormat.energy(report.kWh))
                     .font(.system(.largeTitle, design: .rounded).weight(.heavy))
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
@@ -440,14 +458,19 @@ struct EnergyCostView: View {
         return "\(OrbitEnergyFormat.hours(hours)) tracked"
     }
 
+    /// A cost at the price on screen (free electricity reads "RON 0.00").
+    private func costText(_ cost: Double?, currency: String?, kWh: Double) -> String {
+        OrbitEnergyFormat.cost(cost, currency: currency, kWh: kWh, pricePerKWh: model.unitPrice)
+    }
+
     private func amountText(kWh: Double, cost: Double?, currency: String?) -> String {
         guard cost != nil, currency != nil else { return OrbitEnergyFormat.energy(kWh) }
-        return "\(OrbitEnergyFormat.energy(kWh)) · \(OrbitEnergyFormat.cost(cost, currency: currency, kWh: kWh))"
+        return "\(OrbitEnergyFormat.energy(kWh)) · \(costText(cost, currency: currency, kWh: kWh))"
     }
 
     private func heroAccessibility(_ report: OrbitEnergyMonth) -> String {
         var parts = ["Estimated"]
-        if report.cost != nil, report.currency != nil { parts.append("cost \(OrbitEnergyFormat.cost(report.cost, currency: report.currency, kWh: report.kWh))") }
+        if report.cost != nil, report.currency != nil { parts.append("cost \(costText(report.cost, currency: report.currency, kWh: report.kWh))") }
         parts.append("energy \(OrbitEnergyFormat.energy(report.kWh).replacingOccurrences(of: "kWh", with: "kilowatt hours"))")
         parts.append(trackedText(report).replacingOccurrences(of: " h ", with: " hours "))
         return parts.joined(separator: ", ")
@@ -502,7 +525,7 @@ struct EnergyCostView: View {
             switch metric {
             case .cost:
                 return ChartDay(id: day.day, date: date, value: day.cost ?? 0,
-                                label: OrbitEnergyFormat.cost(day.cost ?? 0, currency: report.currency, kWh: day.kWh))
+                                label: costText(day.cost ?? 0, currency: report.currency, kWh: day.kWh))
             case .energy:
                 return ChartDay(id: day.day, date: date, value: day.kWh, label: OrbitEnergyFormat.energy(day.kWh))
             }
@@ -547,6 +570,8 @@ struct EnergyCostView: View {
                         }
                 }
             }
+            // The whole month, so the 2nd's two bars are as wide as the 30th's thirty.
+            .chartXScale(domain: chartDomain(report, days: days))
             .chartXAxis {
                 AxisMarks(values: .stride(by: .day, count: 7)) { _ in
                     AxisGridLine()
@@ -566,6 +591,14 @@ struct EnergyCostView: View {
         }
         .padding(16)
         .liquidGlass(cornerRadius: 22, tint: .yellow)
+    }
+
+    /// The month from its 1st to the start of the next (the days listed so far if the month can't be read).
+    private func chartDomain(_ report: OrbitEnergyMonth, days: [ChartDay]) -> ClosedRange<Date> {
+        if let month = report.chartDomain() { return month }
+        let dates = days.map(\.date)
+        guard let first = dates.min(), let last = dates.max() else { return Date()...Date().addingTimeInterval(86_400) }
+        return first.addingTimeInterval(-43_200)...last.addingTimeInterval(43_200)
     }
 
     private func barStyle(isToday: Bool, isSelected: Bool) -> AnyShapeStyle {
@@ -606,7 +639,7 @@ struct EnergyCostView: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(cost != nil && currency != nil ? OrbitEnergyFormat.cost(cost, currency: currency, kWh: kWh) : OrbitEnergyFormat.energy(kWh))
+                    Text(cost != nil && currency != nil ? costText(cost, currency: currency, kWh: kWh) : OrbitEnergyFormat.energy(kWh))
                         .font(.subheadline.weight(.bold)).monospacedDigit()
                     if cost != nil && currency != nil {
                         Text(OrbitEnergyFormat.energy(kWh)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
@@ -726,8 +759,11 @@ struct EnergyCostView: View {
             if let error = model.settingsError {
                 Text(error).font(.caption).foregroundStyle(.orange)
             }
-            Text("Saved on \(pcName). Changes apply to new readings; days already counted keep their estimate.")
+            Text(model.isDemo
+                 ? "Demo mode works the sample months out again with these settings. On a PC they're saved on it and apply to new readings; days already counted keep their estimate."
+                 : "Saved on \(pcName). Changes apply to new readings; days already counted keep their estimate.")
                 .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .disabled(!canEdit || model.settings == nil)
         .padding(16)
@@ -903,6 +939,18 @@ struct EnergyPriceEditorView: View {
         }
         .onAppear { if !price.hasPrice { priceFocused = true } }
         .interactiveDismissDisabled(isSaving)
+        #if DEBUG
+        .task {
+            // `ORBIT_SELFTEST_PRICE_EDITOR="0.30 EUR"`: types that price, picks the currency and saves.
+            let parts = (ProcessInfo.processInfo.environment["ORBIT_SELFTEST_PRICE_EDITOR"] ?? "").split(separator: " ")
+            guard parts.count == 2 else { return }
+            try? await Task.sleep(for: .seconds(2))
+            text = String(parts[0])
+            currency = String(parts[1]).uppercased()
+            try? await Task.sleep(for: .seconds(2))
+            if let value = parsedPrice, isValid { await save(.set(value, currency: currency)) }
+        }
+        #endif
     }
 
     private var suggestedCurrencies: [String] {

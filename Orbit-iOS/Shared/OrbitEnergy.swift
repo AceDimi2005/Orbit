@@ -373,6 +373,14 @@ struct OrbitEnergyMonth: Codable, Equatable, Sendable {
     }
 
     var monthID: OrbitMonthID? { OrbitMonthID(month) }
+    /// The month's days from the 1st to the start of the next month (local midnights), so a chart keeps the
+    /// same bar width on the 2nd as on the 30th. Nil for a month name Orbit can't read.
+    func chartDomain(calendar: Calendar = OrbitEnergyFormat.gregorian()) -> ClosedRange<Date>? {
+        guard let id = monthID, let start = calendar.date(from: DateComponents(year: id.year, month: id.month, day: 1)) else { return nil }
+        let next = id.shifted(by: 1)
+        guard let end = calendar.date(from: DateComponents(year: next.year, month: next.month, day: 1)), end > start else { return nil }
+        return start...end
+    }
     /// False for a month the PC recorded nothing in (the agent wasn't running, or it's in the future).
     var hasReadings: Bool { kWh > 0 || (trackedHours ?? 0) > 0 }
     /// Energy outside games: the desktop, videos, idle time.
@@ -549,7 +557,16 @@ struct OrbitMonthSummary: Codable, Equatable, Sendable {
 
     var monthID: OrbitMonthID? { OrbitMonthID(month) }
     /// The PC counts a month as played from one minute of play (like a day played).
-    var hasPlay: Bool { playSeconds >= 60 && !games.isEmpty }
+    static let minimumPlaySeconds: Double = 60
+    var hasPlay: Bool { playSeconds >= Self.minimumPlaySeconds && !games.isEmpty }
+    /// The month's price per kWh worked out from its own totals, once there is enough energy for the PC's
+    /// rounding to a hundredth not to hide it (0 for free electricity); nil when it can't tell.
+    var averagePricePerKWh: Double? {
+        guard let energy, let cost = energy.cost, energy.kWh >= 0.5 else { return nil }
+        return cost / energy.kWh
+    }
+    /// Play time per session (sessions of different games can overlap, so it's an approximation).
+    var averageSessionSeconds: Double? { sessions > 0 && playSeconds > 0 ? playSeconds / Double(sessions) : nil }
     /// The game with the hottest GPU this month.
     var hottestGame: Game? {
         games.filter { $0.peakGPUTemp != nil }.max { ($0.peakGPUTemp ?? 0) < ($1.peakGPUTemp ?? 0) }
@@ -559,10 +576,28 @@ struct OrbitMonthSummary: Codable, Equatable, Sendable {
         guard let top = topGame, playSeconds > 0 else { return nil }
         return min(1, top.playSeconds / playSeconds)
     }
-    var playChange: OrbitChange? { previous.flatMap { OrbitChange(current: playSeconds, previous: $0.playSeconds) } }
+    /// Play time against last month's, when last month had play by the PC's own rule (a minute or more):
+    /// 30 seconds there would otherwise read as thousands of percent more.
+    var playChange: OrbitChange? {
+        guard let previous, previous.playSeconds >= Self.minimumPlaySeconds else { return nil }
+        return OrbitChange(current: playSeconds, previous: previous.playSeconds)
+    }
     var energyChange: OrbitChange? {
         guard let energy, let previous else { return nil }
         return OrbitChange(current: energy.kWh, previous: previous.kWh)
+    }
+
+    /// The versus page's headline: how play time changed, or why there's nothing to compare it with.
+    /// `previousName` is last month's name ("September"). Nil without a previous month.
+    func versusHeadline(previousName: String, locale: Locale = .current) -> String? {
+        guard let previous else { return nil }
+        if let change = playChange { return change.sentence(versus: previousName, of: "play time", locale: locale) }
+        // Orbit counted energy (or a few seconds of a game) then: it was there, the games weren't.
+        if previous.playSeconds > 0 || previous.kWh > 0 { return "No games in \(previousName)" }
+        if let month = OrbitMonthID(previous.month), available.compactMap(OrbitMonthID.init).contains(where: { $0 < month }) {
+            return "Nothing recorded in \(previousName)"
+        }
+        return "Your first month with Orbit counting"
     }
 }
 
@@ -615,11 +650,13 @@ struct OrbitChange: Equatable, Sendable {
         return (fraction > 0 ? "+" : "−") + percent
     }
 
-    /// "23% more than September", "12% less than September", "about the same as September".
-    func sentence(versus month: String, locale: Locale = .current) -> String {
-        if isSame { return "About the same as \(month)" }
+    /// "23% more than September", "12% less than September", "About the same as September"; with `measure`
+    /// it names what changed: "23% more play time than September", "About the same play time as September".
+    func sentence(versus month: String, of measure: String? = nil, locale: Locale = .current) -> String {
+        let what = measure.map { " \($0)" } ?? ""
+        if isSame { return "About the same\(what) as \(month)" }
         let percent = (abs(fraction)).formatted(.percent.precision(.fractionLength(0)).locale(locale))
-        return "\(percent) \(fraction > 0 ? "more" : "less") than \(month)"
+        return "\(percent) \(fraction > 0 ? "more" : "less")\(what) than \(month)"
     }
 }
 
@@ -638,11 +675,49 @@ enum OrbitEnergyFormat {
         amount.formatted(.currency(code: currency.uppercased()).locale(locale))
     }
 
-    /// The month's or a game's cost: "RON 18.10"; "less than RON 0.01" for a tiny non-zero use; "—" without a price.
-    static func cost(_ amount: Double?, currency: String?, kWh: Double? = nil, locale: Locale = .current) -> String {
+    /// Decimals a currency is written with (2 for RON, 0 for JPY and ISK, 3 for KWD), read once per code.
+    private final class MinorUnits: @unchecked Sendable {
+        private let lock = NSLock()
+        private var known: [String: Int] = [:]
+
+        func digits(_ code: String) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            if let digits = known[code] { return digits }
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .currency
+            formatter.currencyCode = code
+            let digits = max(0, min(4, formatter.maximumFractionDigits))
+            known[code] = digits
+            return digits
+        }
+    }
+    private static let minorUnits = MinorUnits()
+
+    /// The smallest amount a cost can show in a currency: one minor unit, but never below the hundredth the
+    /// PC rounds costs to. 0.01 for RON and KWD, 1 for JPY.
+    static func smallestAmount(_ currency: String) -> Double {
+        max(0.01, pow(10, -Double(minorUnits.digits(currency.uppercased()))))
+    }
+
+    /// The month's or a game's cost: "RON 18.10"; "less than RON 0.01" ("less than ¥1") for a small use that
+    /// rounds to nothing; "—" without a price. Free electricity (a price of 0, for example solar) costs
+    /// "RON 0.00", never "less than": the price is 0 when the caller passes `pricePerKWh` 0, or when this
+    /// amount's own energy is big enough that any price from 0.01 per kWh would have shown.
+    static func cost(_ amount: Double?, currency: String?, kWh: Double? = nil, pricePerKWh: Double? = nil, locale: Locale = .current) -> String {
         guard let amount, let currency, !currency.isEmpty, amount.isFinite else { return "—" }
-        if amount < 0.005, (kWh ?? 0) > 0 { return "less than " + money(0.01, currency: currency, locale: locale) }
+        let smallest = smallestAmount(currency)
+        let energy = kWh ?? 0
+        let isFree = (pricePerKWh.map { $0 <= 0 } ?? false) || (amount == 0 && energy >= 0.5)
+        if amount < smallest / 2, energy > 0, !isFree { return "less than " + money(smallest, currency: currency, locale: locale) }
         return money(amount, currency: currency, locale: locale)
+    }
+
+    /// The cost inside a sentence: "about RON 18.10" ("less than RON 0.01" and "RON 0.00" as they are).
+    static func approximateCost(_ amount: Double?, currency: String?, kWh: Double? = nil, pricePerKWh: Double? = nil, locale: Locale = .current) -> String {
+        let text = cost(amount, currency: currency, kWh: kWh, pricePerKWh: pricePerKWh, locale: locale)
+        guard let amount, amount > 0, !text.hasPrefix("less than") else { return text }
+        return "about " + text
     }
 
     /// A price per kWh keeps up to four decimals ("RON 1.4573").
@@ -819,7 +894,9 @@ enum OrbitEnergyFormat {
 // MARK: - Demo data
 
 /// Sample numbers for demo mode: about three months of a gaming PC in Romania, generated the same way
-/// every time (no randomness), so the cost screen and the summary agree with each other.
+/// every time (no randomness), so the cost screen and the summary agree with each other. The price and
+/// the estimate settings are parameters: demo mode works its sample months out again with what the
+/// person enters (`OrbitEnergyDemoEdits`), so the numbers follow the price editor and the steppers.
 enum OrbitEnergyDemo {
     static let country = "RO"
     static let currency = "RON"
@@ -840,7 +917,7 @@ enum OrbitEnergyDemo {
     struct Title: Sendable {
         let key: String
         let name: String
-        /// Whole-PC wall power while it runs.
+        /// Whole-PC wall power while it runs, at the default estimate settings.
         let wallWatts: Double
         let fps: Double
         let gpuTemp: Double
@@ -854,7 +931,21 @@ enum OrbitEnergyDemo {
         Title(key: "cs2", name: "Counter-Strike 2", wallWatts: 390, fps: 288, gpuTemp: 69, cpuTemp: 84, weight: 0.24),
         Title(key: "bg3", name: "Baldur's Gate 3", wallWatts: 470, fps: 112, gpuTemp: 75, cpuTemp: 79, weight: 0.14),
     ]
+    /// The desktop's wall power at the default estimate settings.
     static let desktopWatts = 128.0
+
+    /// The CPU and GPU part (what the sensors report) of a wall power given at the default settings.
+    static func measuredWatts(_ wallAtDefaults: Double) -> Double {
+        let defaults = OrbitEnergySettings.defaults
+        return max(0, wallAtDefaults * defaults.psuEfficiency - defaults.baseWatts)
+    }
+
+    /// The same load at the wall with other estimate settings, the way the PC counts it:
+    /// (CPU + GPU + rest of the PC) / power supply efficiency.
+    static func wallWatts(_ wallAtDefaults: Double, settings: OrbitEnergySettings) -> Double {
+        let efficiency = max(OrbitEnergySettings.efficiencyRange.lowerBound, settings.psuEfficiency)
+        return (measuredWatts(wallAtDefaults) + max(0, settings.baseWatts)) / efficiency
+    }
 
     struct Play: Sendable {
         let title: Int
@@ -866,9 +957,23 @@ enum OrbitEnergyDemo {
         let desktopSeconds: Double
         let plays: [Play]
         var playSeconds: Double { plays.reduce(0) { $0 + $1.seconds } }
-        var gamingWh: Double { plays.reduce(0) { $0 + $1.seconds / 3600 * OrbitEnergyDemo.titles[$1.title].wallWatts } }
-        var wallWh: Double { gamingWh + desktopSeconds / 3600 * OrbitEnergyDemo.desktopWatts }
         var trackedSeconds: Double { desktopSeconds + playSeconds }
+
+        /// Watt-hours at the wall while games ran.
+        func gamingWh(_ settings: OrbitEnergySettings) -> Double {
+            plays.reduce(0) { $0 + $1.seconds / 3600 * OrbitEnergyDemo.wallWatts(OrbitEnergyDemo.titles[$1.title].wallWatts, settings: settings) }
+        }
+
+        /// Watt-hours at the wall for the whole day.
+        func wallWh(_ settings: OrbitEnergySettings) -> Double {
+            gamingWh(settings) + desktopSeconds / 3600 * OrbitEnergyDemo.wallWatts(OrbitEnergyDemo.desktopWatts, settings: settings)
+        }
+
+        /// Watt-hours the CPU and GPU sensors reported (the same whatever the settings).
+        var measuredWh: Double {
+            plays.reduce(0) { $0 + $1.seconds / 3600 * OrbitEnergyDemo.measuredWatts(OrbitEnergyDemo.titles[$1.title].wallWatts) }
+                + desktopSeconds / 3600 * OrbitEnergyDemo.measuredWatts(OrbitEnergyDemo.desktopWatts)
+        }
     }
 
     /// A stable number in 0..<1 for a day and a purpose.
@@ -936,53 +1041,64 @@ enum OrbitEnergyDemo {
         return (value * scale).rounded() / scale
     }
 
-    static func energyMonth(_ month: OrbitMonthID? = nil, today: Date = Date(), calendar: Calendar = OrbitEnergyFormat.gregorian()) -> OrbitEnergyMonth {
+    /// The price as the PC costs rows with it: a number and an upper-case currency, or nothing.
+    private static func costing(_ price: OrbitEnergyPrice) -> (unit: Double, currency: String)? {
+        guard price.hasPrice, let unit = price.pricePerKWh, unit.isFinite, unit >= 0, let currency = price.currency else { return nil }
+        return (unit, currency.uppercased())
+    }
+
+    static func energyMonth(_ month: OrbitMonthID? = nil, today: Date = Date(), calendar: Calendar = OrbitEnergyFormat.gregorian(),
+                            price: OrbitEnergyPrice = OrbitEnergyDemo.price, settings: OrbitEnergySettings = OrbitEnergyDemo.settings) -> OrbitEnergyMonth {
         let current = OrbitMonthID.containing(today, calendar: calendar)
         let month = month ?? current
         let plans = plans(month, today: today, calendar: calendar)
+        let costing = costing(price)
+        func cost(_ kWh: Double) -> Double? { costing.map { round(kWh * $0.unit, 2) } }
         // Every day of the month up to today, zeros included, like the PC's own report.
         let lastListed = month < current ? month.dayCount(calendar: calendar) : (month == current ? calendar.component(.day, from: today) : 0)
         var days: [OrbitEnergyMonth.Day] = []
         if lastListed > 0 {
             for day in 1...lastListed {
                 let text = String(format: "%04d-%02d-%02d", month.year, month.month, day)
-                let kWh = (plans.first { $0.day == text }?.wallWh ?? 0) / 1000
-                days.append(.init(day: text, kWh: round(kWh, 3), cost: round(kWh * pricePerKWh, 2)))
+                let kWh = (plans.first { $0.day == text }?.wallWh(settings) ?? 0) / 1000
+                days.append(.init(day: text, kWh: round(kWh, 3), cost: cost(kWh)))
             }
         }
         var gameWh: [Int: (wh: Double, seconds: Double)] = [:]
         for plan in plans {
             for play in plan.plays {
-                let wh = play.seconds / 3600 * titles[play.title].wallWatts
+                let wh = play.seconds / 3600 * wallWatts(titles[play.title].wallWatts, settings: settings)
                 gameWh[play.title, default: (0, 0)].wh += wh
                 gameWh[play.title, default: (0, 0)].seconds += play.seconds
             }
         }
         let games = gameWh.map { index, value in
             OrbitEnergyMonth.Game(game: titles[index].key, name: titles[index].name, kWh: round(value.wh / 1000, 3),
-                                  cost: round(value.wh / 1000 * pricePerKWh, 2), hours: round(value.seconds / 3600, 2))
+                                  cost: cost(value.wh / 1000), hours: round(value.seconds / 3600, 2))
         }.sorted { ($0.kWh, $1.name) > ($1.kWh, $0.name) }
-        let totalWh = plans.reduce(0) { $0 + $1.wallWh }
+        let wall = plans.reduce(0) { $0 + $1.wallWh(settings) } / 1000
         let seconds = plans.reduce(0) { $0 + $1.trackedSeconds }
         let todayPlan = Self.plans(current, today: today, calendar: calendar).last
-        let todayKWh = (todayPlan?.wallWh ?? 0) / 1000
-        // Wall = (CPU + GPU + base) / efficiency; the base is 60 W of every tracked second.
-        let wall = totalWh / 1000
-        let base = min(wall * settings.psuEfficiency, settings.baseWatts * seconds / 3600 / 1000)
-        let measured = max(0, wall * settings.psuEfficiency - base)
+        let todayKWh = (todayPlan?.wallWh(settings) ?? 0) / 1000
+        // Wall = (CPU + GPU + rest of the PC) / efficiency, like the PC's ledger.
+        let measured = plans.reduce(0) { $0 + $1.measuredWh } / 1000
+        let base = max(0, settings.baseWatts) * seconds / 3600 / 1000
         return OrbitEnergyMonth(
-            month: month.text, kWh: round(wall, 3), cost: round(wall * pricePerKWh, 2), currency: currency,
+            month: month.text, kWh: round(wall, 3), cost: cost(wall), currency: costing?.currency,
             coverage: seconds > 0 ? 0.97 : nil, days: days, games: games,
-            today: .init(kWh: round(todayKWh, 3), cost: round(todayKWh * pricePerKWh, 2)), price: price,
+            today: .init(kWh: round(todayKWh, 3), cost: cost(todayKWh)), price: price,
             breakdown: .init(cpuKWh: round(measured * 0.32, 3), gpuKWh: round(measured * 0.68, 3), baseKWh: round(base, 3),
-                             lossKWh: round(wall * (1 - settings.psuEfficiency), 3)),
+                             lossKWh: round(max(0, wall - measured - base), 3)),
             trackedHours: round(seconds / 3600, 2), available: availableMonths(today: today, calendar: calendar))
     }
 
-    static func summary(_ month: OrbitMonthID? = nil, today: Date = Date(), calendar: Calendar = OrbitEnergyFormat.gregorian()) -> OrbitMonthSummary {
+    static func summary(_ month: OrbitMonthID? = nil, today: Date = Date(), calendar: Calendar = OrbitEnergyFormat.gregorian(),
+                        price: OrbitEnergyPrice = OrbitEnergyDemo.price, settings: OrbitEnergySettings = OrbitEnergyDemo.settings) -> OrbitMonthSummary {
         let current = OrbitMonthID.containing(today, calendar: calendar)
         let month = month ?? current
         let plans = plans(month, today: today, calendar: calendar)
+        let costing = costing(price)
+        func cost(_ kWh: Double) -> Double? { costing.map { round(kWh * $0.unit, 2) } }
         struct Totals { var seconds = 0.0; var wh = 0.0; var days = 0 }
         var totals: [Int: Totals] = [:]
         var longest: (play: Play, day: String)?
@@ -990,7 +1106,7 @@ enum OrbitEnergyDemo {
         for plan in plans {
             for play in plan.plays {
                 totals[play.title, default: Totals()].seconds += play.seconds
-                totals[play.title, default: Totals()].wh += play.seconds / 3600 * titles[play.title].wallWatts
+                totals[play.title, default: Totals()].wh += play.seconds / 3600 * wallWatts(titles[play.title].wallWatts, settings: settings)
                 if play.seconds >= 60 {
                     totals[play.title, default: Totals()].days += 1
                     sessions += play.seconds > 3.2 * 3600 ? 2 : 1
@@ -1006,11 +1122,11 @@ enum OrbitEnergyDemo {
                 averageFPS: round(title.fps * (0.96 + 0.06 * wobble), 1),
                 peakGPUTemp: round(title.gpuTemp + 3 * wobble, 1), peakCPUTemp: round(title.cpuTemp + 4 * wobble, 1),
                 averageGPUTemp: round(title.gpuTemp - 7 + 2 * wobble, 1), averageCPUTemp: round(title.cpuTemp - 9 + 2 * wobble, 1),
-                daysPlayed: value.days, kWh: round(value.wh / 1000, 3), cost: round(value.wh / 1000 * pricePerKWh, 2))
+                daysPlayed: value.days, kWh: round(value.wh / 1000, 3), cost: cost(value.wh / 1000))
         }.filter { $0.playSeconds > 0 }.sorted { ($0.playSeconds, $1.name) > ($1.playSeconds, $0.name) }
         let busiest = plans.filter { $0.playSeconds > 0 }.max { ($0.playSeconds, $1.day) < ($1.playSeconds, $0.day) }
-        let wall = plans.reduce(0) { $0 + $1.wallWh } / 1000
-        let gaming = plans.reduce(0) { $0 + $1.gamingWh } / 1000
+        let wall = plans.reduce(0) { $0 + $1.wallWh(settings) } / 1000
+        let gaming = plans.reduce(0) { $0 + $1.gamingWh(settings) } / 1000
         let previousPlans = Self.plans(month.shifted(by: -1), today: today, calendar: calendar)
         let playTotal = games.reduce(0) { $0 + $1.playSeconds }
         return OrbitMonthSummary(
@@ -1021,9 +1137,42 @@ enum OrbitEnergyDemo {
                                                 seconds: $0.play.seconds.rounded(), date: $0.day) },
             busiestDay: busiest.map { .init(day: $0.day, playSeconds: $0.playSeconds.rounded()) },
             peakCPUTemp: games.compactMap(\.peakCPUTemp).max(), peakGPUTemp: games.compactMap(\.peakGPUTemp).max(),
-            energy: .init(kWh: round(wall, 3), cost: round(wall * pricePerKWh, 2), currency: currency, gamingKWh: round(gaming, 3)),
+            energy: .init(kWh: round(wall, 3), cost: cost(wall), currency: costing?.currency, gamingKWh: round(gaming, 3)),
             previous: .init(month: month.shifted(by: -1).text, playSeconds: previousPlans.reduce(0) { $0 + $1.playSeconds }.rounded(),
-                            kWh: round(previousPlans.reduce(0) { $0 + $1.wallWh } / 1000, 3)),
+                            kWh: round(previousPlans.reduce(0) { $0 + $1.wallWh(settings) } / 1000, 3)),
             available: availableMonths(today: today, calendar: calendar))
+    }
+}
+
+/// Demo mode's electricity price and estimate settings while Orbit runs. The price editor and the steppers
+/// change them, and every demo screen (cost, summary, the Mac's This Month card) works its sample months out
+/// with them, so the numbers move the way they would with a PC. Kept in memory only: the next launch starts
+/// from the sample price again.
+@MainActor
+enum OrbitEnergyDemoEdits {
+    static var price = OrbitEnergyDemo.price
+    static var settings = OrbitEnergyDemo.settings
+
+    static func energyMonth(_ month: OrbitMonthID? = nil) -> OrbitEnergyMonth {
+        OrbitEnergyDemo.energyMonth(month, price: price, settings: settings)
+    }
+
+    static func summary(_ month: OrbitMonthID? = nil) -> OrbitMonthSummary {
+        OrbitEnergyDemo.summary(month, price: price, settings: settings)
+    }
+
+    /// Applies a change from the price editor the way the PC does: an own price, or back to the published one.
+    static func apply(_ change: OrbitEnergyPriceChange) {
+        if change.reset == true {
+            price = OrbitEnergyDemo.price
+        } else if let value = change.pricePerKWh, let currency = change.currency {
+            var updated = price
+            updated.pricePerKWh = value
+            updated.currency = currency.uppercased()
+            updated.source = "Your own price"
+            updated.period = nil
+            updated.isOverride = true
+            price = updated
+        }
     }
 }

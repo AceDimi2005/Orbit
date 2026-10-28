@@ -135,6 +135,8 @@ final class MacPCAlertPoller {
     private func shouldShow(_ event: OrbitPCEvent, from pc: MacSavedPC) -> Bool {
         let category = OrbitEventFeed.category(of: event.kind)
         guard MacPCAlertPrefs.allows(category) else { return false }
+        // "Your summary is ready" is about an Orbit Pro screen: without Pro it would only advertise it.
+        if event.kind == OrbitEnergyAPI.summaryReadyKind, !OrbitProStore.shared.isProUnlocked { return false }
         // The Mac already says "<PC> is online" for the selected PC when it reconnects.
         if event.kind == "pc.online", pc.id == viewModel?.currentPC?.id, UserDefaults.standard.bool(forKey: "mac.notifyOnline") { return false }
         return true
@@ -235,12 +237,14 @@ final class MacNotificationPresenter: NSObject, UNUserNotificationCenterDelegate
 /// Settings › General › PC alerts.
 struct MacPCAlertsSettingsSection: View {
     @AppStorage(MacPCAlertPrefs.enabledKey) private var enabled = true
+    @ObservedObject private var pro = OrbitProStore.shared
 
     var body: some View {
         Section {
             Toggle("Show alerts from your PCs", isOn: $enabled)
             ForEach(MacPCAlertPrefs.choices, id: \.category) { choice in
-                MacPCAlertToggle(category: choice.category, title: choice.title)
+                // Monthly summaries are Orbit Pro: without it their alert isn't shown.
+                MacPCAlertToggle(category: choice.category, title: choice.category == .summary && !pro.isProUnlocked ? choice.title + " (Orbit Pro)" : choice.title)
                     .disabled(!enabled)
             }
         } header: {

@@ -67,11 +67,22 @@ final class OrbitSummaryModel: ObservableObject {
     /// The months the PC has play for, from the last summary (kept while another month loads or fails, so the
     /// picker stays).
     @Published private(set) var knownMonths: [String] = []
+    /// The PC an alert came from, when Orbit can't read it from here: removed from My PCs since, or saved
+    /// without the encrypted connection. Nothing of another PC is shown under its alert.
+    @Published private(set) var unreachablePC: UnreachablePC?
     private(set) var link: OrbitPCLink?
     private(set) var isDemo = false
     private var requestedMonth: OrbitMonthID?
     private var generation = 0
     private var configuredFor: String?
+
+    struct UnreachablePC: Equatable {
+        let id: String
+        /// Its name in My PCs; nil once it was removed.
+        let savedName: String?
+        /// The name its alerts were shown with (kept for a removed PC when Orbit still knows it).
+        let lastKnownName: String?
+    }
 
     var pickerMonths: [OrbitMonthID] {
         OrbitMonthID.pickerMonths(available: summary?.available ?? knownMonths, including: summary?.monthID ?? requestedMonth)
@@ -94,12 +105,21 @@ final class OrbitSummaryModel: ObservableObject {
         knownMonths = []
         isLoading = false
         phase = .idle
+        unreachablePC = nil
         if isDemo {
             link = nil
             pcName = vm.metrics.hostname
-        } else if let pcID, pcID != vm.selectedPCID, let other = OrbitPCLink.link(for: pcID) {
-            link = other
-            pcName = other.name
+        } else if let pcID, pcID != vm.selectedPCID {
+            if let other = OrbitPCLink.link(for: pcID) {
+                link = other
+                pcName = other.name
+            } else {
+                // Never the selected PC's month under another PC's alert.
+                link = nil
+                let saved = vm.savedPCs.first { $0.id == pcID }?.name
+                unreachablePC = UnreachablePC(id: pcID, savedName: saved, lastKnownName: saved ?? OrbitPushStore.pcName(for: pcID))
+                pcName = saved ?? ""
+            }
         } else {
             link = OrbitPCLink.current(vm)
             pcName = vm.selectedPCName
@@ -112,7 +132,8 @@ final class OrbitSummaryModel: ObservableObject {
             currentMonth = current
             var month = requestedMonth ?? summary?.monthID
             if month == nil, !OrbitEnergyDemo.summary(current).hasPlay { month = current.shifted(by: -1) }
-            summary = OrbitEnergyDemo.summary(month ?? current)
+            // At the price entered on the demo cost screen, like a PC's summary would be.
+            summary = OrbitEnergyDemoEdits.summary(month ?? current)
             knownMonths = summary?.available ?? []
             phase = .ready
             return
@@ -145,7 +166,7 @@ final class OrbitSummaryModel: ObservableObject {
         } catch {
             // Cancelled with the screen's task (the app went inactive): the restarted task reads it again.
             guard version == generation, !Task.isCancelled else { return }
-            if summary == nil { phase = .failed(OrbitPlainError.describe(error), replied: (error as? OrbitError)?.statusCode != nil) }
+            if summary == nil { phase = .failed(OrbitPlainError.describe(error), replied: OrbitEnergyModel.replied(error)) }
         }
     }
 
@@ -153,7 +174,7 @@ final class OrbitSummaryModel: ObservableObject {
         guard month != summary?.monthID else { return }
         requestedMonth = month
         if isDemo {
-            summary = OrbitEnergyDemo.summary(month)
+            summary = OrbitEnergyDemoEdits.summary(month)
             knownMonths = summary?.available ?? knownMonths
             return
         }
@@ -176,8 +197,12 @@ struct MonthlySummaryView: View {
     @StateObject private var model = OrbitSummaryModel()
     @State private var page: Page = .cover
     @State private var picture: OrbitSummaryPicture?
+    /// The person chose the selected PC's summary instead of an alert's PC that Orbit can't read.
+    @State private var showsSelectedPC = false
     /// One height for every tile's symbol (they differ in shape), so the tiles of a row come out the same size.
     @ScaledMetric(relativeTo: .subheadline) private var statIconHeight: CGFloat = 20
+    /// The story pages' rings grow with the text size (and stay inside the card).
+    @ScaledMetric(relativeTo: .title) private var ringSize: CGFloat = 150
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbitTheme) private var theme
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -186,6 +211,9 @@ struct MonthlySummaryView: View {
         case cover, topGame, games, records, temperatures, energy, versus
         var id: String { rawValue }
     }
+
+    /// The PC this screen reads: the alert's own PC, or the selected one.
+    private var shownPCID: String? { showsSelectedPC ? nil : pcID }
 
     var body: some View {
         ZStack {
@@ -198,7 +226,7 @@ struct MonthlySummaryView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if model.pickerMonths.count > 1 { monthMenu }
                 if let picture, let summary = model.summary, summary.hasPlay {
-                    ShareLink(item: picture, preview: SharePreview("\(summary.monthID?.title() ?? summary.month) in games", image: picture.image)) {
+                    ShareLink(item: picture, preview: SharePreview("\(summary.monthID?.title() ?? summary.month) in games", image: picture.preview)) {
                         Image(systemName: "square.and.arrow.up")
                     }
                     .accessibilityLabel("Share summary picture")
@@ -207,15 +235,15 @@ struct MonthlySummaryView: View {
         }
         // The scene phase is part of the id: a task only sees the phase it started with, and an alert tapped
         // while Orbit launches opens this before the app is active. Restarted once it is, it loads.
-        .task(id: "\(vm.connectionID)|\(vm.isDemoMode)|\(pcID ?? "")|\(scenePhase == .active)") {
-            model.configure(vm, pcID: pcID, initialMonth: initialMonth)
+        .task(id: "\(vm.connectionID)|\(vm.isDemoMode)|\(shownPCID ?? "")|\(scenePhase == .active)") {
+            model.configure(vm, pcID: shownPCID, initialMonth: initialMonth)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 if model.summary == nil || model.phase != .ready || model.isShowingCurrentMonth { await model.load() }
                 do { try await Task.sleep(for: .seconds(model.phase == .ready ? 120 : 5)) } catch { break }
             }
         }
-        .task(id: shareKey) { renderPicture() }
+        .task(id: shareKey) { preparePicture() }
         .onChange(of: model.summary?.month) { _, _ in page = Self.firstPage }
     }
 
@@ -224,9 +252,11 @@ struct MonthlySummaryView: View {
         return "\(summary.month)|\(summary.playSeconds)|\(theme.rawValue)"
     }
 
-    private func renderPicture() {
+    /// The Share button's item. Only a small preview is drawn here; the full picture is drawn when the
+    /// person picks where it goes.
+    private func preparePicture() {
         guard let summary = model.summary, summary.hasPlay else { picture = nil; return }
-        picture = OrbitSummaryPicture.render(summary, accent: theme.accent, secondary: theme.secondary)
+        picture = OrbitSummaryPicture.make(summary, accent: theme.accent, secondary: theme.secondary)
     }
 
     /// The first page after a month loads. Debug builds take `ORBIT_SELFTEST_SUMMARY_PAGE=topGame|games|…`
@@ -242,7 +272,14 @@ struct MonthlySummaryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let notice = blockingNotice {
+        if let unreachable = model.unreachablePC, !model.isDemo {
+            ScrollView {
+                unreachableNotice(unreachable)
+                    .frame(maxWidth: 640)
+                    .padding(18)
+                    .frame(maxWidth: .infinity)
+            }
+        } else if let notice = blockingNotice {
             ScrollView {
                 VStack(spacing: 14) { notice }
                     .frame(maxWidth: 640)
@@ -277,6 +314,31 @@ struct MonthlySummaryView: View {
         }
     }
 
+    /// An alert's PC that Orbit can't read from here: say so, and offer the selected PC only when asked.
+    private func unreachableNotice(_ pc: OrbitSummaryModel.UnreachablePC) -> some View {
+        let canShowSelected = vm.hasSecureConnection && vm.selectedPCID != pc.id && vm.savedPCs.contains { $0.id == vm.selectedPCID }
+        return VStack(spacing: 14) {
+            if let name = pc.savedName {
+                OrbitNotice(title: "Needs the encrypted connection", message: "Pair \(name) again in My PCs to see its monthly summary.",
+                            icon: "lock.trianglebadge.exclamationmark", tint: .orange)
+            } else {
+                OrbitNotice(title: "\(pc.lastKnownName ?? "This PC") is no longer saved in Orbit",
+                            message: "The summary alert came from a PC that isn't in My PCs any more, so Orbit can't read its month.",
+                            icon: "desktopcomputer", tint: .orange)
+            }
+            if canShowSelected {
+                Button {
+                    OrbitHaptics.tap()
+                    showsSelectedPC = true
+                } label: {
+                    Label("Show \(vm.selectedPCName) Instead", systemImage: "arrow.right.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(OrbitGlassButtonStyle(tint: theme.accent))
+            }
+        }
+    }
+
     private var blockingNotice: OrbitNotice? {
         let name = model.pcName.isEmpty ? vm.selectedPCName : model.pcName
         if model.isDemo { return nil }
@@ -299,12 +361,14 @@ struct MonthlySummaryView: View {
     private func emptyMonth(_ summary: OrbitMonthSummary) -> some View {
         let month = summary.monthID?.name() ?? "this month"
         let first = summary.available.isEmpty
+        // The picker sits in the toolbar only when there is another month to pick.
+        let pick = model.pickerMonths.count > 1 ? " Pick another month above, or come back after a gaming session." : " Come back after a gaming session."
         return VStack(spacing: 14) {
             OrbitEmptyState(icon: first ? "sparkles" : "gamecontroller",
                             title: first ? "Your first summary is on its way" : "No games recorded in \(month)",
                             message: first
                                 ? "Play a game while Orbit PC Companion runs on \(model.pcName). Orbit counts play time, frame rates and temperatures, and your month appears here."
-                                : "Orbit PC Companion counts play time while a game runs. Pick another month above, or come back after a gaming session.",
+                                : "Orbit PC Companion counts play time while a game runs." + pick,
                             tint: theme.accent)
             if !summary.available.isEmpty, summary.monthID == model.currentMonth {
                 Text("You'll also get a notification when a month is ready, if you turned that on in Notifications.")
@@ -352,7 +416,7 @@ struct MonthlySummaryView: View {
     }
 
     private func storyPages(_ summary: OrbitMonthSummary) -> some View {
-        // Each card fills the page like a story; larger text scrolls inside it.
+        // Each card fills the page like a story, its content in the middle; larger text scrolls inside it.
         GeometryReader { proxy in
             TabView(selection: $page) {
                 ForEach(pages(summary)) { page in
@@ -408,7 +472,8 @@ struct MonthlySummaryView: View {
             }
         }
         .padding(22)
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        // `.leading` centres the page's content vertically in a card taller than it.
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(LinearGradient(colors: [tint.opacity(0.30), tint.opacity(0.06), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -434,12 +499,13 @@ struct MonthlySummaryView: View {
             .accessibilityLabel(spoken ?? text)
     }
 
-    private func statTile(_ title: String, _ value: String, icon: String, tint: Color) -> some View {
+    private func statTile(_ title: String, _ value: String, spoken: String? = nil, icon: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Image(systemName: icon).font(.subheadline.weight(.bold)).foregroundStyle(tint)
                 .frame(height: statIconHeight, alignment: .leading)
                 .accessibilityHidden(true)
             Text(value).font(.title3.weight(.bold)).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
+                .accessibilityLabel(spoken ?? value)
             // Two lines kept for every title, so the tiles of a row line up whatever their titles' length.
             Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
         }
@@ -453,20 +519,80 @@ struct MonthlySummaryView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10, alignment: .top)], spacing: 10, content: content)
     }
 
+    /// The pages' big visual: a ring filled to `fraction`, with its number in the middle. VoiceOver reads
+    /// `spoken` instead of the parts.
+    private func ring(_ fraction: Double, value: String, caption: String, tint: Color, spoken: String, scale: CGFloat = 1) -> some View {
+        let side = min(ringSize * scale, 220 * scale)
+        let line = max(9, side * 0.085)
+        return ZStack {
+            Circle().stroke(.white.opacity(0.08), lineWidth: line)
+            Circle()
+                .trim(from: 0, to: max(0.012, min(1, fraction.isFinite ? fraction : 0)))
+                .stroke(LinearGradient(colors: [tint, tint.opacity(0.55)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        style: StrokeStyle(lineWidth: line, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .shadow(color: tint.opacity(0.35), radius: 10)
+            VStack(spacing: 1) {
+                Text(value)
+                    .font(.system(.title, design: .rounded).weight(.heavy))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+                Text(caption)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(2)
+            }
+            .padding(line + side * 0.08)
+        }
+        .frame(width: side, height: side)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
+    }
+
+    /// A ring centred in the card, with a little room around it.
+    private func centred<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack { Spacer(minLength: 0); content(); Spacer(minLength: 0) }
+            .padding(.vertical, 6)
+    }
+
     // MARK: Pages
 
+    /// Days in the month so far: the whole month once it's over, today's date while it runs.
+    private func daysSoFar(_ summary: OrbitMonthSummary) -> Int? {
+        guard let month = summary.monthID else { return nil }
+        let total = month.dayCount()
+        guard month == model.currentMonth else { return total }
+        let today = OrbitEnergyFormat.gregorian().component(.day, from: Date())
+        return min(total, max(summary.daysPlayed, today))
+    }
+
     private func coverPage(_ summary: OrbitMonthSummary, tint: Color) -> some View {
-        Group {
+        let days = daysSoFar(summary)
+        let isCurrent = summary.monthID == model.currentMonth
+        return Group {
             eyebrow(summary.monthID?.title() ?? summary.month, icon: "calendar", tint: tint)
             Text("Your month in games").font(.title2.weight(.bold))
             VStack(alignment: .leading, spacing: 4) {
                 bigNumber(OrbitEnergyFormat.duration(summary.playSeconds), spoken: OrbitEnergyFormat.spokenDuration(summary.playSeconds), tint: tint)
                 Text("of play on \(model.pcName)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             }
+            if let days, days > 0 {
+                centred {
+                    ring(Double(summary.daysPlayed) / Double(days), value: "\(summary.daysPlayed)",
+                         caption: "of \(days) days\(isCurrent ? " so far" : "")", tint: tint,
+                         spoken: "Played on \(summary.daysPlayed) of \(days) days\(isCurrent ? " so far" : "")")
+                }
+            }
             statGrid {
-                statTile("Days played", "\(summary.daysPlayed)", icon: "calendar.badge.checkmark", tint: tint)
-                statTile("Sessions", "\(summary.sessions)", icon: "play.circle.fill", tint: tint)
+                if days == nil { statTile("Days played", "\(summary.daysPlayed)", icon: "calendar.badge.checkmark", tint: tint) }
+                statTile(summary.sessions == 1 ? "Session" : "Sessions", "\(summary.sessions)", icon: "play.circle.fill", tint: tint)
                 statTile(summary.games.count == 1 ? "Game" : "Games", "\(summary.games.count)", icon: "gamecontroller.fill", tint: tint)
+                if let average = summary.averageSessionSeconds {
+                    statTile("Average session", OrbitEnergyFormat.duration(average), spoken: OrbitEnergyFormat.spokenDuration(average), icon: "timer", tint: tint)
+                }
             }
             if sizeClass != .regular {
                 Label("Swipe for your top game", systemImage: "hand.draw")
@@ -483,10 +609,11 @@ struct MonthlySummaryView: View {
             Text(top.name)
                 .font(.system(.title, design: .rounded).weight(.heavy))
                 .fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 4) {
-                bigNumber(OrbitEnergyFormat.duration(top.playSeconds), spoken: OrbitEnergyFormat.spokenDuration(top.playSeconds), tint: tint)
-                if let share = summary.topGameShare {
-                    Text("\(OrbitEnergyFormat.percent(share)) of your play time").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            bigNumber(OrbitEnergyFormat.duration(top.playSeconds), spoken: OrbitEnergyFormat.spokenDuration(top.playSeconds), tint: tint)
+            if let share = summary.topGameShare {
+                centred {
+                    ring(share, value: OrbitEnergyFormat.percent(share), caption: "of your play time", tint: tint,
+                         spoken: "\(OrbitEnergyFormat.percent(share)) of your play time")
                 }
             }
             statGrid {
@@ -570,9 +697,40 @@ struct MonthlySummaryView: View {
                 }
                 .padding(.top, 6)
             }
+            // How the record compares with a usual session.
+            if let longest = summary.longestSession, longest.seconds > 0, let average = summary.averageSessionSeconds {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Session length").font(.headline)
+                    comparisonBar(label: "Longest", value: OrbitEnergyFormat.duration(longest.seconds), fraction: 1, color: tint)
+                    comparisonBar(label: "Average", value: OrbitEnergyFormat.duration(average), fraction: min(1, average / longest.seconds),
+                                  color: .white.opacity(0.35))
+                }
+                .padding(.top, 6)
+            }
             Text("A session ends after its game has been closed for five minutes, so a quick restart stays one session.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Green to red with the heat, for the temperature gauges.
+    private func heat(_ celsius: Double) -> Color {
+        switch celsius {
+        case ..<60: return .green
+        case ..<75: return .yellow
+        case ..<85: return .orange
+        default: return .red
+        }
+    }
+
+    @ViewBuilder
+    private func temperatureGauge(_ title: String, _ celsius: Double?) -> some View {
+        if let celsius, celsius.isFinite {
+            VStack(spacing: 8) {
+                ring(celsius / 100, value: OrbitEnergyFormat.temperature(celsius), caption: "of 100 °C", tint: heat(celsius),
+                     spoken: "\(title), \(Int(celsius.rounded())) degrees Celsius", scale: 0.78)
+                Text(title).font(.subheadline.weight(.semibold)).accessibilityHidden(true)
+            }
         }
     }
 
@@ -580,10 +738,20 @@ struct MonthlySummaryView: View {
         Group {
             eyebrow("Temperatures", icon: "thermometer.medium", tint: tint)
             Text("How hot it got").font(.title2.weight(.bold))
-            statGrid {
-                if summary.peakCPUTemp != nil { statTile("Hottest CPU", OrbitEnergyFormat.temperature(summary.peakCPUTemp), icon: "cpu", tint: tint) }
-                if summary.peakGPUTemp != nil { statTile("Hottest GPU", OrbitEnergyFormat.temperature(summary.peakGPUTemp), icon: "rectangle.3.group.fill", tint: tint) }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    Spacer(minLength: 0)
+                    temperatureGauge("Hottest CPU", summary.peakCPUTemp)
+                    temperatureGauge("Hottest GPU", summary.peakGPUTemp)
+                    Spacer(minLength: 0)
+                }
+                VStack(spacing: 14) {
+                    temperatureGauge("Hottest CPU", summary.peakCPUTemp)
+                    temperatureGauge("Hottest GPU", summary.peakGPUTemp)
+                }
+                .frame(maxWidth: .infinity)
             }
+            .padding(.vertical, 4)
             if let hottest = summary.hottestGame, let peak = hottest.peakGPUTemp {
                 Text("\(hottest.name) pushed the GPU the hardest, up to \(OrbitEnergyFormat.temperature(peak))\(hottest.averageGPUTemp.map { ", \(OrbitEnergyFormat.temperature($0)) on average" } ?? "").")
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -601,13 +769,19 @@ struct MonthlySummaryView: View {
             VStack(alignment: .leading, spacing: 4) {
                 bigNumber(OrbitEnergyFormat.energy(energy.kWh), spoken: OrbitEnergyFormat.energy(energy.kWh).replacingOccurrences(of: "kWh", with: "kilowatt hours"), tint: tint)
                 if energy.cost != nil, energy.currency != nil {
-                    Text("about \(OrbitEnergyFormat.cost(energy.cost, currency: energy.currency, kWh: energy.kWh)) of electricity")
+                    Text("\(OrbitEnergyFormat.approximateCost(energy.cost, currency: energy.currency, kWh: energy.kWh, pricePerKWh: summary.averagePricePerKWh)) of electricity")
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 }
             }
             if let gaming = energy.gamingKWh, energy.kWh > 0 {
-                Text("\(OrbitEnergyFormat.energy(gaming)) of it while gaming (\(OrbitEnergyFormat.percent(min(1, gaming / energy.kWh)))).")
+                let share = min(1, gaming / energy.kWh)
+                centred {
+                    ring(share, value: OrbitEnergyFormat.percent(share), caption: "while gaming", tint: tint,
+                         spoken: "\(OrbitEnergyFormat.percent(share)) of it while gaming")
+                }
+                Text("\(OrbitEnergyFormat.energy(gaming)) of it while gaming; the rest was the desktop, videos and idle time.")
                     .font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("An estimate from the PC's power sensors, the rest of the PC and your electricity price. See Tools › Electricity Cost for the details.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -620,11 +794,9 @@ struct MonthlySummaryView: View {
         if let previous = summary.previous {
             let previousName = OrbitMonthID(previous.month)?.name() ?? "last month"
             eyebrow("Versus \(previousName)", icon: "arrow.left.arrow.right", tint: tint)
-            if let change = summary.playChange {
-                Text(change.sentence(versus: previousName)).font(.title2.weight(.bold))
+            if let headline = summary.versusHeadline(previousName: previousName) {
+                Text(headline).font(.title2.weight(.bold))
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Your first month with Orbit counting").font(.title2.weight(.bold))
             }
             comparisonBars(title: "Play time", current: summary.playSeconds, previous: previous.playSeconds,
                            currentText: OrbitEnergyFormat.duration(summary.playSeconds), previousText: OrbitEnergyFormat.duration(previous.playSeconds),

@@ -197,8 +197,8 @@ struct OrbitProUnlockView: View {
         ("desktopcomputer", "Unlimited PCs", "Save and switch between every PC you own."),
         ("chart.xyaxis.line", "Session graphs", "History of FPS, temperatures and power."),
         ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64."),
-        ("bolt.fill", "Electricity cost", "What your PC costs to run each month, at your electricity price."),
-        ("calendar", "Monthly summary", "Play time, top games, records and energy for every month.")
+        ("bolt.fill", "Electricity cost", "What your PC costs to run each month, at your electricity price. On iPhone, iPad and Mac."),
+        ("calendar", "Monthly summary", "Play time, top games, records and energy for every month. On iPhone, iPad and Mac.")
     ]
 
     var body: some View {
