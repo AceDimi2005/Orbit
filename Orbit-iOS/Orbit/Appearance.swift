@@ -757,6 +757,23 @@ struct OrbitProPaywallView: View {
                             }
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.secondary)
+
+                            #if DEBUG
+                            // Development builds only: TestFlight and App Store builds are Release and don't have it.
+                            Toggle(isOn: Binding(get: { store.isDebugUnlockOn },
+                                                 set: { on in Task { await store.setDebugUnlock(on) } })) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Unlock Orbit Pro on this device")
+                                        .font(.footnote.weight(.semibold))
+                                    Text("Development build only, for testing. TestFlight and App Store builds don't have this switch.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .tint(.yellow)
+                            .padding(12)
+                            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            #endif
                         }
                     }
                     .frame(maxWidth: 560)

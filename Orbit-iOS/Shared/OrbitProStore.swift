@@ -166,6 +166,18 @@ final class OrbitProStore: ObservableObject {
     // MARK: - Testing support
 
     #if DEBUG
+    /// Development builds only (installed from Xcode, never TestFlight or the App Store): everything in Orbit Pro on
+    /// this device without a purchase, for testing. Widgets, Siri and the Watch follow through the shared cache.
+    @Published private(set) var isDebugUnlockOn = UserDefaults.standard.object(forKey: "orbit.pro.debugOverride") as? Bool == true
+
+    /// Off removes the override, so StoreKit decides again (a real purchase stays unlocked).
+    func setDebugUnlock(_ on: Bool) async {
+        if on { UserDefaults.standard.set(true, forKey: "orbit.pro.debugOverride") }
+        else { UserDefaults.standard.removeObject(forKey: "orbit.pro.debugOverride") }
+        isDebugUnlockOn = on
+        await refreshEntitlements()
+    }
+
     /// Resets in-memory state so a test can start from a clean StoreKit session.
     func resetForTesting() {
         updatesTask?.cancel()
