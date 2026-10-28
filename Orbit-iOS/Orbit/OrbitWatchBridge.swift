@@ -265,6 +265,9 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
                 // boot here would exceed WatchConnectivity's interactive deadline.
                 try await WakeOnLANService.sendMagicPacket(macAddress: vm.pcMAC, pcIP: ip,
                     targetBroadcastIP: vm.wolTargetIP, subnetMask: vm.subnetMask, port: UInt16(vm.wolPort))
+            } else if cmd == OrbitWatchPresentationRelay.command {
+                // The Watch's Present page (F8): slide show actions and state reads, over one reused client.
+                return await OrbitWatchPresentationRelay.forward(message, vm: vm, pcID: pcID, deadline: deadline)
             } else {
                 let client = try vm.companionClient()
                 let path: String
@@ -321,6 +324,12 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         } catch { return ["status": "failed", "message": error.localizedDescription] }
     }
 
+    #if DEBUG
+    /// Self-tests (`ORBIT_PRESENT_SELFTEST` `watch:` steps): a Watch PC command through the same checks and
+    /// forwarding as a real one, without a paired Watch.
+    func selfTestForward(_ message: [String: Any]) async -> [String: Any] { await forwardPCCommand(message) }
+    #endif
+
     /// `POST /api/deck/buttons/{id}/run` for a Watch "runDeck" command; returns the PC's `detail` sentence.
     private func runDeckButton(client: OrbitAPIClient, path: String) async throws -> String? {
         do {
@@ -369,17 +378,21 @@ final class OrbitWatchBridge: NSObject, ObservableObject {
         case "requestSync":
             let payload = buildSyncPayload()
             replyHandler?(payload)
-        case "wake", "powerAction", "volume", "launchGame", "runDeck":
+        case "wake", "powerAction", "volume", "launchGame", "runDeck", OrbitWatchPresentationRelay.command:
             Task {
                 #if canImport(UIKit)
-                // A deck button may take up to 12 s; keep an iPhone that WatchConnectivity woke in the
-                // background running until the Watch has its answer.
-                let backgroundTask = cmd == "runDeck" ? UIApplication.shared.beginBackgroundTask(withName: "OrbitRunDeck") : .invalid
+                // A deck button may take up to 12 s, a slide change up to 9 s (often with the iPhone locked in
+                // a pocket); keep an iPhone that WatchConnectivity woke in the background running until the
+                // Watch has its answer.
+                let backgroundTask = cmd == "runDeck" || cmd == OrbitWatchPresentationRelay.command
+                    ? UIApplication.shared.beginBackgroundTask(withName: "OrbitRunDeck") : .invalid
                 defer { if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) } }
                 #endif
                 let result = await forwardPCCommand(message)
                 replyHandler?(result)
-                if result["status"] as? String == "failed", let failure = result["message"] as? String {
+                // The Present page reads the slide show every few seconds; only commands go to the status line.
+                let isStateRead = cmd == OrbitWatchPresentationRelay.command && message["action"] as? String == OrbitWatchPresentationRelay.stateAction
+                if !isStateRead, result["status"] as? String == "failed", let failure = result["message"] as? String {
                     vm.statusLog = "Watch: \(failure)"
                 }
             }

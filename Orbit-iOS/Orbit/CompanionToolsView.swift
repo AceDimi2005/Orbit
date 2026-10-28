@@ -30,6 +30,9 @@ struct CompanionToolsView: View {
                             NavigationLink { DeckView(vm: vm) } label: {
                                 toolTile("Buttons", subtitle: "One-tap shortcuts, OBS & media", icon: "square.grid.3x2.fill", tint: .pink)
                             }
+                            NavigationLink { PresentationView(vm: vm) } label: {
+                                toolTile("Presentation", subtitle: "Slides, notes & timer", icon: "rectangle.inset.filled.and.person.filled", tint: .yellow)
+                            }
                             NavigationLink { ClipboardView(vm: vm) } label: {
                                 toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
                             }
@@ -362,6 +365,18 @@ struct AppleWatchCompanionHelpView: View {
                             "Power On (Wake-on-LAN) works both directly over Watch Wi-Fi and through your iPhone.",
                             "Trigger Shut Down, Sleep, Restart, or Lock Workstation with confirmation and wrist haptics.",
                             "Use Desktop Shortcuts on your wrist: Show Desktop, Task View, Alt+Tab, Screenshot, and Toggle HDR."
+                        ]
+                    )
+
+                    featureCard(
+                        title: "Presentation Remote",
+                        subtitle: "Change slides from your wrist",
+                        icon: "rectangle.inset.filled.and.person.filled",
+                        tint: .yellow,
+                        points: [
+                            "Swipe to the Present page: tap for the next slide, or turn the Digital Crown one step forward or back.",
+                            "See slide x of y and your talk time. Under More, turn on a tap on your wrist every few minutes (with Silent Mode on, it makes no sound).",
+                            "It works through your iPhone, or straight to the PC over the Watch's Wi-Fi."
                         ]
                     )
 

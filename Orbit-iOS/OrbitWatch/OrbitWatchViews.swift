@@ -50,6 +50,7 @@ struct OrbitWatchRootView: View {
             WatchCockpitPage(vm: vm).tag(0)
             WatchPowerDeckPage(vm: vm).tag(1)
             WatchDeckPage(vm: vm, deck: vm.deck).tag(WatchDeckStore.tab)
+            WatchPresentPage(vm: vm, store: vm.presentation).tag(WatchPresentationStore.tab)
             WatchMotionCursorPage(vm: vm).tag(2)
             WatchMediaAndGamesPage(vm: vm).tag(3)
         }

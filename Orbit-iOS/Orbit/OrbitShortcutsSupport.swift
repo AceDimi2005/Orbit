@@ -26,6 +26,7 @@ struct OrbitShortcutsHelpSections: View {
         Row(title: "Get PC Reading", detail: "Returns a number: temperature (°C), load (%), power (W) or FPS.", icon: "thermometer.medium"),
         Row(title: "Get PC Status", detail: "Returns one sentence about the PC, and says so when it's off.", icon: "desktopcomputer"),
         Row(title: "Sleep PC When Downloads Finish", detail: "Sleeps or shuts down the PC after its Steam, Epic or GOG downloads.", icon: "arrow.down.circle"),
+        Row(title: "Control Slide Show", detail: "Next or previous slide, start or end the show, or a black screen, in PowerPoint or any presenter.", icon: "rectangle.inset.filled.and.person.filled"),
         Row(title: "Power On, Sleep, Shut Down, Restart PC", detail: "Power actions, with Orbit Pro.", icon: "power")
     ]
 
@@ -50,7 +51,7 @@ struct OrbitShortcutsHelpSections: View {
         } header: {
             Text("Shortcuts actions")
         } footer: {
-            Text("In the Shortcuts app, tap +, then search for Orbit. Leave the PC empty to use your default PC. Typing, copying, links and games ask you to unlock your iPhone first. Siri also knows \"Lock my PC with Orbit\" and \"How is my PC doing in Orbit\".")
+            Text("In the Shortcuts app, tap +, then search for Orbit. Leave the PC empty to use your default PC. Typing, copying, links and games ask you to unlock your iPhone first. Siri also knows \"Lock my PC with Orbit\", \"How is my PC doing in Orbit\" and \"Next slide with Orbit\".")
         }
         .orbitRow()
 
@@ -120,7 +121,8 @@ enum OrbitShortcutsParameters {
 /// pointed at a real PC by accident: use it with a pretend PC only. `read` only reads; `all` also
 /// changes the volume, types, copies, opens a link, launches an app, locks and sets a downloads rule;
 /// `offline` expects a PC that doesn't answer; `older` expects an agent without `powerAfter`;
-/// `downloads` only sets a downloads rule (sleep, 30 s countdown) and prints what the action says.
+/// `downloads` only sets a downloads rule (sleep, 30 s countdown) and prints what the action says;
+/// `presentation` runs Control Slide Show actions (next, previous, black, last, first, end, start).
 enum OrbitIntentsSelfTest {
     static func run(mode: String) -> Never {
         let semaphore = DispatchSemaphore(value: 0)
@@ -162,6 +164,13 @@ enum OrbitIntentsSelfTest {
             return
         case "downloads":
             await check("sleep when downloads finish") { try await OrbitPCActions.sleepWhenDownloadsFinish(.sleep, delaySeconds: 30, pc: pc) }
+            print("SELFTEST done")
+            return
+        case "presentation":
+            // Pretend PC with its fake PowerPoint open (`POST /powerpoint {"open":true,"running":true}`).
+            for action: OrbitPresentationIntentAction in [.next, .next, .previous, .black, .black, .last, .next, .first, .end, .start] {
+                await check("slide show \(action.rawValue)") { try await OrbitPresentationIntentRunner.perform(action, pc: pc) }
+            }
             print("SELFTEST done")
             return
         case "older":

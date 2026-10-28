@@ -110,7 +110,8 @@ private struct OrbitWatchHTTPClientTests {
         try await acknowledgementIsRequired()
         try await malformedRequestsAreRejectedBeforeSending()
         try await deckButtonsRunOnceWithPlainErrors()
-        print("PASS: Watch HTTP target validation, HTTPS pin selection, immutable destination, exact cursor fields, explicit legacy HTTP, bounded legacy fallback, auth/desktop errors, refused redirects, no timeout replay, PC acknowledgement and deck button runs")
+        try await presentationActionsRunOnceWithPlainErrors()
+        print("PASS: Watch HTTP target validation, HTTPS pin selection, immutable destination, exact cursor fields, explicit legacy HTTP, bounded legacy fallback, auth/desktop errors, refused redirects, no timeout replay, PC acknowledgement, deck button runs and slide show actions")
     }
 
     static func invalidConnectionsNeverReachTheNetwork() throws {
@@ -316,6 +317,105 @@ extension OrbitWatchHTTPClientTests {
             MockWatchURLProtocol.store.prepare([MockHTTPResult(error: URLError(code))])
             do {
                 _ = try await client().runDeckButton(id: id)
+                preconditionFailure("Transport error must fail without replay")
+            } catch let error as URLError { precondition(error.code == code) }
+            precondition(MockWatchURLProtocol.store.requests.count == 1)
+        }
+    }
+}
+
+extension OrbitWatchHTTPClientTests {
+    /// `GET /api/presentation` and `POST /api/presentation/{action}`: pinned HTTPS, only the agent's action
+    /// names, a JSON body only for goto, plain errors for older agents and refusals, and nothing replayed.
+    static func presentationActionsRunOnceWithPlainErrors() async throws {
+        let state = "{\"app\":\"powerpoint\",\"running\":true,\"slide\":3,\"slides\":12}"
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data(state.utf8))])
+        let read = try await client().presentationState()
+        precondition(String(decoding: read, as: UTF8.self) == state)
+        var request = MockWatchURLProtocol.store.requests.only
+        precondition(request.httpMethod == "GET" && request.url?.path == "/api/presentation" && request.url?.query == nil)
+        precondition(request.url?.scheme == "https" && request.url?.port == 8766)
+        precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer paired-test-token")
+
+        let reply = "{\"status\":\"done\",\"action\":\"next\",\"via\":\"powerpoint\",\"keys\":[],\"detail\":\"Went to the next slide.\",\"presentation\":null}"
+        for action in ["next", "previous", "first", "last", "start", "startCurrent", "end", "black", "white"] {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data(reply.utf8))])
+            _ = try await client().presentationAction(action, slide: 4)
+            request = MockWatchURLProtocol.store.requests.only
+            precondition(request.httpMethod == "POST" && request.url?.path == "/api/presentation/\(action)")
+            precondition(request.httpBody == nil && request.httpBodyStream == nil, "only goto carries a body")
+            precondition(request.url?.query == nil)
+        }
+
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data(reply.utf8))])
+        _ = try await client().presentationAction("goto", slide: 7)
+        request = MockWatchURLProtocol.store.requests.only
+        precondition(request.url?.path == "/api/presentation/goto")
+        precondition(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let sent = request.httpBody ?? request.httpBodyStream.map { stream -> Data in
+            stream.open()
+            defer { stream.close() }
+            var bytes = Data()
+            var buffer = [UInt8](repeating: 0, count: 256)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bytes.append(buffer, count: count)
+            }
+            return bytes
+        }
+        precondition(sent == Data("{\"slide\":7}".utf8), "goto body: \(String(decoding: sent ?? Data(), as: UTF8.self))")
+
+        MockWatchURLProtocol.store.prepare([])
+        for (action, slide) in [("jump", 1), ("../action/shutdown", 1), ("Next", 1), ("goto", 0), ("goto", 10_001), ("", 1)] {
+            do {
+                _ = try await client().presentationAction(action, slide: slide)
+                preconditionFailure("Unsafe presentation action was accepted: \(action)")
+            } catch let error as OrbitWatchHTTPError { precondition(error == .invalidRequest) }
+        }
+        do {
+            _ = try await client().presentationAction("goto")
+            preconditionFailure("goto without a slide was accepted")
+        } catch let error as OrbitWatchHTTPError { precondition(error == .invalidRequest) }
+        precondition(MockWatchURLProtocol.store.requests.isEmpty)
+
+        let cases: [(Int, String, OrbitWatchHTTPError)] = [
+            (404, "{\"detail\":\"Not Found\"}", .presentationUnavailable),
+            (404, "{}", .presentationUnavailable),
+            (409, "{\"detail\":\"No PowerPoint slide show is running. Start the slide show first.\"}",
+             .presentationRejected("No PowerPoint slide show is running. Start the slide show first.")),
+            (503, "{\"detail\":\" PowerPoint is busy. Close any open dialog in PowerPoint and try again. \"}",
+             .presentationRejected("PowerPoint is busy. Close any open dialog in PowerPoint and try again.")),
+            (426, "{\"detail\":\"This needs Orbit's encrypted connection.\"}", .presentationRejected("This needs Orbit's encrypted connection.")),
+            (401, "{\"detail\":\"Invalid Orbit token\"}", .http(401, "Invalid Orbit token")),
+            (405, "{\"detail\":\"Method Not Allowed\"}", .http(405, "Method Not Allowed")),
+            (500, "Internal Server Error", .http(500, nil)),
+        ]
+        for (status, body, expected) in cases {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(status: status, body: Data(body.utf8))])
+            do {
+                _ = try await client().presentationAction("next")
+                preconditionFailure("HTTP \(status) must fail")
+            } catch let error as OrbitWatchHTTPError {
+                precondition(error == expected, "HTTP \(status): \(error)")
+                precondition(!(error.errorDescription ?? "").isEmpty)
+            }
+            precondition(MockWatchURLProtocol.store.requests.count == 1)
+        }
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(status: 404, body: Data("{\"detail\":\"Not Found\"}".utf8))])
+        do {
+            _ = try await client().presentationState()
+            preconditionFailure("An older agent must fail")
+        } catch let error as OrbitWatchHTTPError { precondition(error == .presentationUnavailable) }
+
+        // A busy PowerPoint can take seconds: actions wait like deck runs, without a second request.
+        MockWatchURLProtocol.store.prepare([MockHTTPResult(body: Data(reply.utf8), delay: 4.5)])
+        _ = try await client().presentationAction("next")
+        precondition(MockWatchURLProtocol.store.requests.count == 1)
+        for code in [URLError.timedOut, URLError.networkConnectionLost] {
+            MockWatchURLProtocol.store.prepare([MockHTTPResult(error: URLError(code))])
+            do {
+                _ = try await client().presentationAction("next")
                 preconditionFailure("Transport error must fail without replay")
             } catch let error as URLError { precondition(error.code == code) }
             precondition(MockWatchURLProtocol.store.requests.count == 1)

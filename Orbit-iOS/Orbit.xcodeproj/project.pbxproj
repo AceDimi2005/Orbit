@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A30000000000000000000105 /* OrbitWatchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000128 /* OrbitWatchPresentation.swift */; };
+		A20000000000000000000119 /* OrbitWatchPresentationRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */; };
+		A20000000000000000000118 /* PresentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000126 /* PresentationView.swift */; };
+		A20000000000000000000117 /* OrbitPresentationIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000125 /* OrbitPresentationIntents.swift */; };
+		A30000000000000000000104 /* OrbitPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000124 /* OrbitPresentationModels.swift */; };
+		A20000000000000000000116 /* OrbitPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000124 /* OrbitPresentationModels.swift */; };
 		A60000000000000000000107 /* OrbitMacEnergyViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000123 /* OrbitMacEnergyViews.swift */; };
 		A20000000000000000000115 /* MonthlySummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* MonthlySummaryView.swift */; };
 		A20000000000000000000114 /* EnergyCostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* EnergyCostView.swift */; };
@@ -261,6 +267,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000128 /* OrbitWatchPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentation.swift; sourceTree = "<group>"; };
+		B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentationRelay.swift; sourceTree = "<group>"; };
+		B20000000000000000000126 /* PresentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationView.swift; sourceTree = "<group>"; };
+		B20000000000000000000125 /* OrbitPresentationIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPresentationIntents.swift; sourceTree = "<group>"; };
+		B20000000000000000000124 /* OrbitPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPresentationModels.swift; sourceTree = "<group>"; };
 		B20000000000000000000123 /* OrbitMacEnergyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacEnergyViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000122 /* MonthlySummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonthlySummaryView.swift; sourceTree = "<group>"; };
 		B20000000000000000000121 /* EnergyCostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyCostView.swift; sourceTree = "<group>"; };
@@ -506,6 +517,8 @@
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
 				B20000000000000000000121 /* EnergyCostView.swift */,
 				B20000000000000000000122 /* MonthlySummaryView.swift */,
+				B20000000000000000000126 /* PresentationView.swift */,
+				B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -569,6 +582,8 @@
 				B2000000000000000000011D /* OrbitBrandMark.swift */,
 				B2000000000000000000011F /* OrbitEnergy.swift */,
 				B20000000000000000000120 /* OrbitSummaryShareCard.swift */,
+				B20000000000000000000124 /* OrbitPresentationModels.swift */,
+				B20000000000000000000125 /* OrbitPresentationIntents.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -593,6 +608,7 @@
 				B30000000000000000000006 /* Info.plist */,
 				B30000000000000000000007 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000011B /* OrbitWatchDeck.swift */,
+				B20000000000000000000128 /* OrbitWatchPresentation.swift */,
 			);
 			path = OrbitWatch;
 			sourceTree = "<group>";
@@ -953,6 +969,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000119 /* OrbitWatchPresentationRelay.swift in Sources */,
+				A20000000000000000000118 /* PresentationView.swift in Sources */,
+				A20000000000000000000117 /* OrbitPresentationIntents.swift in Sources */,
+				A20000000000000000000116 /* OrbitPresentationModels.swift in Sources */,
 				A20000000000000000000115 /* MonthlySummaryView.swift in Sources */,
 				A20000000000000000000114 /* EnergyCostView.swift in Sources */,
 				A20000000000000000000113 /* OrbitSummaryShareCard.swift in Sources */,
@@ -1035,6 +1055,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000105 /* OrbitWatchPresentation.swift in Sources */,
+				A30000000000000000000104 /* OrbitPresentationModels.swift in Sources */,
 				A30000000000000000000103 /* OrbitBrandMark.swift in Sources */,
 				A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */,
 				A30000000000000000000101 /* OrbitWatchDeck.swift in Sources */,
