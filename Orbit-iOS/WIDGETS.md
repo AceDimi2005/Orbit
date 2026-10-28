@@ -17,16 +17,16 @@ Personal Team are limite de instalare și semnare; aplicația trebuie de regulă
 
 | Widget | Conținut | Dimensiuni |
 | --- | --- | --- |
-| **PC overview** | CPU, GPU, RAM și VRAM | Mic, mediu, mare |
-| **Gaming snapshot** | FPS măsurat, VRAM utilizată, încărcare și temperatură GPU | Mic, mediu |
-| **CPU & GPU power** | Putere CPU package și GPU în wați | Mic, mediu |
-| **CPU & GPU temperatures** | Temperaturile CPU și GPU | Mic, mediu |
-| **PC cooling** | Ventilatoare CPU/GPU și lichid de răcire | Mic, mediu |
-| **Storage activity** | Transfer citire/scriere al discurilor | Mic, mediu |
-| **Network activity** | Transfer download/upload | Mic, mediu |
-| **Choose a PC metric** | Un indicator ales: CPU, GPU, RAM, VRAM în procente sau GB, putere CPU/GPU, temperatură CPU/GPU ori FPS | Mic, mediu, Lock Screen circular sau dreptunghiular |
+| **PC Overview** | CPU, GPU, RAM, VRAM, temperaturi și putere | Mic, mediu, mare |
+| **Gaming Snapshot** | FPS măsurat, VRAM, încărcare GPU și temperaturi | Mic, mediu, mare |
+| **CPU & GPU Power** | Putere CPU package și GPU în wați | Mic, mediu |
+| **Temperatures** | Temperaturile CPU, GPU și ale lichidului de răcire | Mic, mediu |
+| **PC Cooling** | Ventilatoare CPU/GPU și lichid de răcire | Mic, mediu |
+| **Storage Activity** | Transfer citire/scriere al discurilor | Mic, mediu |
+| **Network Activity** | Transfer download/upload | Mic, mediu |
+| **Single PC Metric** | Un indicator ales dintre 18: CPU, GPU, RAM, VRAM în procente sau GB, putere CPU/GPU, temperaturi CPU/GPU și lichid, frecvență CPU, ventilatoare, citire/scriere disc, download/upload ori FPS | Mic, mediu, mare, Lock Screen circular sau dreptunghiular |
 
-Poți adăuga mai multe instanțe, fiecare cu altă metrică sau alt PC. Există în continuare widgeturi cu scurtături către aplicație și controale. **Wake PC** deschide controalele și nu trimite automat o comandă.
+Poți adăuga mai multe instanțe, fiecare cu altă metrică sau alt PC. Mai există **Buttons** (4 sau 8 dintre butoanele tale Orbit), **Orbit Power & Quick Controls** (Power On prin Wake-on-LAN, Sleep și Shut Down, plus scurtături, pe Home Screen și Lock Screen) și, pe iOS 18+, butoane în Control Center. Butoanele de alimentare cer Orbit Pro și trimit comanda direct, fără să deschidă aplicația.
 
 Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lipsă apar cu „—”. FPS apare când RTSS raportează cadre recente pentru joc. Agentul detectează automat RTSS pe PC, fără CSV. PresentMon rămâne alternativă; sursa sa poate fi **application FPS** (`MsBetweenPresents`) sau **CPU frame FPS** (`FrameTime` v2). Citirile nu garantează FPS-ul ecranului, al cadrelor generate sau al streamingului.
 
@@ -35,17 +35,17 @@ Puterea CPU/GPU nu reprezintă consumul total al PC-ului la priză. Senzorii lip
 1. Asociază PC-ul în aplicația Orbit. Aplicația pregătește automat accesul de monitorizare pentru widgeturi.
 2. Adaugă widgetul pe Home Screen. PC-ul asociat este disponibil în lista **PC**; nu introduci IP, port sau token.
 3. Prin **Edit Widget**, alege alt PC asociat, o metrică și o temă; implicită este **Noir** (fundal negru, un singur accent). Opțiunea **Use one accent colour** înlocuiește culorile separate ale metricilor cu accentul ales la celelalte teme.
-4. Dacă accesul necesită refacere, deschide **Tools → Widgets → Refresh widget access** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
+4. Dacă accesul necesită refacere, deschide **Tools → Widgets & Siri → Sync Widget Credentials** în timp ce PC-ul este conectat. Un PC șters din aplicație este eliminat și din lista disponibilă widgeturilor.
 
-Widgeturile se conectează prin **HTTPS**, pe portul securizat al profilului, și verifică exact certificatul PC-ului deja asociat. Redirecturile nu sunt urmate. În Keychain-ul grupului comun este păstrat exclusiv tokenul **read-only** pentru `GET /api/widget/status`; tokenul principal de control rămâne în Keychain-ul privat al aplicației. Numele, adresa și amprenta certificatului sunt partajate separat pentru configurare. Datele de acces nu apar în câmpurile Edit Widget.
+Widgeturile se conectează prin **HTTPS**, pe portul securizat al profilului, la adresa PC-ului și, dacă nu răspunde, la Secondary IP, și verifică exact certificatul PC-ului deja asociat. Redirecturile nu sunt urmate. Pentru citiri, în Keychain-ul grupului comun este păstrat tokenul **read-only** pentru `GET /api/widget/status`. Aplicația pune acolo și tokenul principal de control, pentru butoanele care trimit comenzi (alimentare și **Buttons**), extensia Share și Shortcuts. Numele, adresa, Secondary IP și amprenta certificatului sunt partajate separat pentru configurare. Datele de acces nu apar în câmpurile Edit Widget.
 
-Widgeturile nu pot trimite comenzi, accesa fișiere sau închide procese. Un widget configurat explicit pentru un PC rămâne la acel PC când schimbi computerul activ în aplicație. Dacă nu are o selecție explicită, folosește PC-ul implicit partajat de aplicație. Configurația dashboardului nu înlocuiește layoutul ales pentru widget.
+Widgeturile de monitorizare nu pot accesa fișiere sau închide procese; singura lor comandă este **Power On** (Wake-on-LAN, Orbit Pro), când PC-ul nu răspunde. Un widget configurat explicit pentru un PC rămâne la acel PC când schimbi computerul activ în aplicație. Dacă nu are o selecție explicită, folosește PC-ul implicit partajat de aplicație. Configurația dashboardului nu înlocuiește layoutul ales pentru widget.
 
 Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcode; aplicația nu pretinde că accesul a fost partajat dacă salvarea în Keychain eșuează. După o instalare nouă, deblochează telefonul cel puțin o dată pentru accesul la aceste date. Conexiunile locale ale widgeturilor pot depinde și de permisiunea **Local Network** acordată aplicației.
 
 ## Actualizare și expirare
 
-**Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Aplicația salvează după fiecare citire reușită un instantaneu în App Group (`Orbit.WidgetSnapshot.v1.<id PC>`) și reîmprospătează widgeturile cel mult o dată pe minut; un widget care găsește un instantaneu mai nou de două minute îl afișează direct, fără conexiune proprie. Altfel solicită o nouă citire după **15 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. După **15 minute** de la măsurătoare, valorile sunt marcate ca expirate și ascunse. PC-ul oprit, agentul indisponibil sau lipsa accesului la rețea produc un mesaj de indisponibilitate. Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
+**Widgeturile de monitorizare** afișează capturi periodice, împreună cu ora măsurătorii furnizată de agent. Aplicația salvează după fiecare citire reușită un instantaneu în App Group (`Orbit.WidgetSnapshot.v1.<id PC>`) și reîmprospătează widgeturile cel mult o dată pe minut; un widget care găsește un instantaneu mai nou de două minute îl afișează direct, fără conexiune proprie. Altfel widgetul citește singur PC-ul (adresa lui, apoi Secondary IP) și solicită o nouă citire după **10 minute**, dar iOS poate întârzia actualizarea; frecvența nu este garantată. La **3 minute** după măsurătoare, valorile rămân afișate estompat, cu ora lor. Dacă PC-ul oprit, agentul indisponibil sau rețeaua nu permit o citire nouă, widgetul păstrează ultima citire, estompată, până la **24 de ore**, în loc de liniuțe. Fără o citire din ultimele 24 de ore, sau când accesul trebuie refăcut, apare un mesaj de indisponibilitate (cu **Power On** când PC-ul nu răspunde). Deschiderea Orbit permite verificarea conexiunii și citirea telemetriei curente.
 
 **Live Activity** este separată de widgeturi. În **Tools → Live Activity** poți porni sau opri sesiunea și alege:
 
@@ -55,7 +55,7 @@ Dacă apare mesajul despre App Group, verifică semnarea ambelor ținte în Xcod
 - Accentul, afișarea numelui jocului și a orei ultimei actualizări.
 - Intervalul de actualizare în foreground: **5, 10 sau 15 secunde**.
 
-Insula extinsă și stilul Detailed oferă un buton real **Stop**, fără deschiderea aplicației; stilul Detailed afișează și temperaturile CPU/GPU. La trecerea în fundal, ultimele valori rămân afișate până la expirare (trei intervale), apoi iOS marchează activitatea ca învechită și apare **Paused · tap to refresh**. Orbit programează un **Background App Refresh** (`com.dimitrie.orbit.refresh`, `UIBackgroundModes: fetch`) cât timp activitatea rulează; când sistemul îl acordă, aplicația citește o dată telemetria și actualizează activitatea și instantaneul widgeturilor. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
+Pe Lock Screen, stilul Standard arată trei metrici ale profilului, Minimal una singură, mare, iar Detailed adaugă temperaturile CPU/GPU și un rând de butoane: **Sleep** și **Shut Down** (Orbit Pro), deschiderea aplicației și ✕, care oprește activitatea fără să deschidă aplicația. Insula extinsă are aceleași trei metrici și butoane. Cât PC-ul e oprit sau nu răspunde, activitatea arată ora ultimei citiri și **Power On** (Orbit Pro). Pe iOS 18+ activitatea apare și în Smart Stack pe Apple Watch și în CarPlay. La trecerea în fundal, ultimele valori rămân afișate; după trei intervale fără o citire nouă iOS marchează activitatea ca învechită, iar valorile rămân estompate, cu ora lor și **Last reading · open Orbit to refresh**, în loc de liniuțe. Orbit programează un **Background App Refresh** (`com.dimitrie.orbit.refresh`, `UIBackgroundModes: fetch`) cât timp activitatea rulează; când sistemul îl acordă, aplicația citește o dată telemetria și actualizează activitatea și instantaneul widgeturilor. Datele offline sau senzorii indisponibili nu sunt prezentate ca valori curente. Preferințele se aplică la următoarea actualizare a activității.
 
 iOS poate suspenda aplicația; alegerea unui interval mai scurt nu acordă rulare continuă în fundal. Nu există promisiunea unor actualizări în timp real cu aplicația suspendată. Dynamic Island apare doar pe modele compatibile, iar iOS controlează prezentarea ei.
 
@@ -65,7 +65,7 @@ Tema implicită este **Noir** (fundal negru, suprafețe plate, un singur accent)
 
 ## Dacă lipsesc temperaturile sau FPS
 
-Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.1.0**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
+Verifică întâi datele în aplicația principală, la **Tools → Monitoring sources**. Acolo vezi versiunea agentului (cea actuală: **4.5.1**), sursa senzorilor CPU/GPU, adaptorul de rețea și motivul indisponibilității FPS. Un widget nu poate crea senzori sau porni programele de monitorizare pe PC.
 
 Configurarea recomandată este **MSI Afterburner + RTSS**, lăsate pornite pe PC. În **Afterburner → Settings → Monitoring**, activează graficele dorite și apasă **Apply**. În RTSS, alege **Application detection level → Low** pentru joc, apoi pornește jocul. Agentul citește automat datele locale; nu ai nevoie de CSV sau alt token între Afterburner și Orbit. Vezi [pașii Windows](../Orbit-Windows-Agent/README.md#msi-afterburner--rtss-recomandat) sau **Tools → Settings → Set up FPS** în aplicație. Senzorii depind de hardware și de graficele expuse; jocurile care blochează RTSS pot rămâne incompatibile.
 
@@ -81,7 +81,7 @@ Permisiunea **Local Network** și semnarea gratuită nu garantează trimiterea d
 
 Orbit încearcă și trimiterea UDP unicast direct la adresa IPv4 a PC-ului, operație care nu cere entitlement-ul multicast. Această variantă poate depinde de placa de rețea, configurația routerului și păstrarea asocierii IP–MAC în rețea când PC-ul doarme; nu înlocuiește garantat broadcastul. Confirmarea că un pachet a fost acceptat de sistem nu confirmă că PC-ul s-a trezit. Aplicația așteaptă răspunsul agentului pentru confirmare.
 
-Pentru WoL broadcast fiabil pe dispozitiv fizic trebuie evaluată aprobarea Apple pentru Multicast Networking sau o soluție de releu WoL deja disponibilă pe router/un dispozitiv permanent pornit. Acestea nu sunt incluse în proiect. Testarea în simulator nu dovedește că broadcastul va funcționa pe iPhone. Această limitare nu afectează widgeturile, Live Activity locală sau monitorizarea și controlul prin conexiune directă la agent.
+Pentru WoL broadcast fiabil pe dispozitiv fizic trebuie evaluată aprobarea Apple pentru Multicast Networking sau un releu WoL pe router ori pe un dispozitiv permanent pornit. Orbit trimite pachetul și spre un astfel de releu, dacă îl completezi în **My PCs → Wake-on-LAN and legacy settings → Wake relay**; aprobarea Apple și releul în sine nu fac parte din proiect. Testarea în simulator nu dovedește că broadcastul va funcționa pe iPhone. Această limitare nu afectează widgeturile, Live Activity locală sau monitorizarea și controlul prin conexiune directă la agent.
 
 ## Surse Apple
 
