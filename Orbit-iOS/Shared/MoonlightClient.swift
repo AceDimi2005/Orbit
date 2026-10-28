@@ -917,6 +917,8 @@ final class MoonlightHostCoordinator: ObservableObject {
     private var artworkTasks: Set<Int> = []
     /// The paired client identity, read from the Keychain once per pairing instead of before every request.
     private var cachedIdentity: (id: String, identity: MoonlightClientIdentity)?
+    /// For a `detachedCopy`: the coordinator it was copied from (a screen showing the same host).
+    private weak var origin: MoonlightHostCoordinator?
 
     var isConfigured: Bool { !pcID.isEmpty && !address.isEmpty }
     var isPaired: Bool { record?.isPaired == true }
@@ -987,6 +989,26 @@ final class MoonlightHostCoordinator: ObservableObject {
         let host = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let bare = !host.isEmpty && host.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "-") }
         return bare && host.caseInsensitiveCompare(primary) != .orderedSame ? host : ""
+    }
+
+    /// The PC profile this coordinator is configured for ("" before `configure`).
+    var configuredPCID: String { pcID }
+
+    /// Another coordinator for the same host (PC profile, addresses and ports) that starts with what this one knows:
+    /// for work that must stay with this PC even if this coordinator is configured for another one meanwhile.
+    /// It keeps the Secondary IP and starts on the address this one uses now.
+    /// When the copy quits an app, this one (while it still shows that host) reads Sunshine again too.
+    func detachedCopy() -> MoonlightHostCoordinator {
+        let copy = MoonlightHostCoordinator()
+        copy.configure(pcID: pcID, address: address, secondaryAddress: secondaryAddress, preferSecondary: isUsingSecondary,
+                       httpPort: httpPort, httpsPort: httpsPort)
+        copy.info = info
+        copy.apps = apps
+        copy.reachable = reachable
+        copy.lastError = lastError
+        copy.lastRefreshed = lastRefreshed
+        copy.origin = self
+        return copy
     }
 
     /// Updates the ports reported by the Orbit agent (`/api/sunshine/info`) without dropping state.
@@ -1225,6 +1247,8 @@ final class MoonlightHostCoordinator: ObservableObject {
             guard version == generation else { return }
             lastError = nil
             await refresh()
+            // The screen this copy was made from shows the same host: it would still show the app as running.
+            if let origin, origin.pcID == pcID, origin.address == address { await origin.refresh() }
         } catch {
             guard version == generation else { return }
             lastError = (error as? MoonlightError)?.message ?? error.localizedDescription

@@ -224,12 +224,15 @@ final class MoonlightStreamController: ObservableObject {
         /// "Unlock PC": the password asked for before the stream started, typed automatically once it
         /// runs. Shared by every copy of the request and cleared after typing or when the stream fails.
         let signIn: MoonlightSignInSecret?
+        /// This stream shows the PC's virtual second screen (iPhone, iPad and Mac): ending it turns the
+        /// second screen off again (`OrbitSecondScreenSession`), and the Mac always opens it in full screen.
+        var secondScreen = false
 
         /// `target` defaults to this device's screen (the Mac: the display in front).
         @MainActor
         init(host: MoonlightHostCoordinator, app: MoonlightApp, pcName: String, settings: MoonlightStreamSettings,
              target: MoonlightStreamTarget? = nil, quitRunningApp: Bool = false, promptUnlock: Bool = false,
-             signIn: MoonlightSignInSecret? = nil) {
+             signIn: MoonlightSignInSecret? = nil, secondScreen: Bool = false) {
             self.host = host
             self.app = app
             self.pcName = pcName
@@ -238,6 +241,7 @@ final class MoonlightStreamController: ObservableObject {
             self.quitRunningApp = quitRunningApp
             self.promptUnlock = promptUnlock || signIn != nil
             self.signIn = signIn
+            self.secondScreen = secondScreen
         }
     }
 
@@ -390,7 +394,8 @@ final class MoonlightStreamController: ObservableObject {
     func streamRunningAppInstead() {
         guard let busyError, let request, let running = request.host.apps.first(where: { $0.id == busyError.runningAppID }) else { return }
         self.request = Request(host: request.host, app: running, pcName: request.pcName, settings: request.settings, target: request.target,
-                               quitRunningApp: false, promptUnlock: request.promptUnlock, signIn: request.signIn)
+                               quitRunningApp: false, promptUnlock: request.promptUnlock, signIn: request.signIn,
+                               secondScreen: request.secondScreen)
         retry()
     }
 

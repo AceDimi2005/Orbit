@@ -1122,6 +1122,8 @@ struct GameLibraryView: View {
     @State private var showsPairing = false
     @State private var showsStreamSettings = false
     @State private var showsUnlockPrompt = false
+    /// A stream waiting on Second Screen (running here, or left on for this PC).
+    @State private var secondScreenCheck: OrbitSecondScreenStreamCheck?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.orbitTheme) private var theme
 
@@ -1209,13 +1211,16 @@ struct GameLibraryView: View {
             }
         }
         .task(id: sunshineKey) { await syncSunshine() }
+        .task(id: vm.streamDisplayContext.identity) { await OrbitSecondScreenSession.shared.checkIfLeftOn(context: vm.streamDisplayContext) }
+        .secondScreenStreamGuard($secondScreenCheck, context: vm.streamDisplayContext, host: sunshine)
         .sheet(isPresented: $showsPairing) {
             MoonlightPairingView(host: sunshine, pcName: vm.selectedPCName, accent: theme.accent, automation: pairingAutomation) { showsPairing = false }
                 .presentationDetents([.large])
                 .presentationBackground(theme.background)
         }
         .sheet(isPresented: $showsStreamSettings) {
-            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
+            MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC,
+                                        displaySetup: vm.streamDisplayContext) { showsStreamSettings = false }
                 .presentationBackground(theme.background)
         }
         // "Unlock PC": the password first, then the stream. The stream is launched as soon as the password
@@ -1233,6 +1238,7 @@ struct GameLibraryView: View {
     private var libraryContent: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
+                SecondScreenLeftOnBanner(vm: vm, host: sunshine)
                 if !vm.metrics.isOnline {
                     OrbitNotice(title: "PC Offline", message: "Connect or wake your PC to stream or launch Sunshine apps.", icon: "wifi.slash", tint: .orange)
                 } else if !vm.isDemoMode {
@@ -1421,7 +1427,11 @@ struct GameLibraryView: View {
     }
 
     private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil, present: Bool = true) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, signIn: signIn), present: present)
+        let begin = { stream.begin(.init(host: sunshine, app: app, pcName: vm.selectedPCName, settings: streamSettings.settings, signIn: signIn), present: present) }
+        // Never in place of a second screen's stream; ask first while this PC still shows the extra display.
+        // A password typed for Unlock goes with the stream if it starts, and is released with the check if not.
+        if let check = OrbitSecondScreenStreamCheck(pcID: vm.streamDisplayContext.pcID, start: begin) { secondScreenCheck = check; return }
+        begin()
     }
 }
 

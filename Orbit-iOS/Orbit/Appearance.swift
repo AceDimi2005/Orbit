@@ -700,6 +700,12 @@ struct OrbitProPaywallView: View {
                                 title: "iPhone as a Webcam",
                                 subtitle: "Use your iPhone or iPad camera in Zoom, Teams, Discord, OBS and browsers on your PC."
                             )
+                            proFeatureRow(
+                                icon: "rectangle.on.rectangle",
+                                tint: .blue,
+                                title: "Second Screen",
+                                subtitle: "Use your iPad, iPhone or Mac as an extra display for your PC, with touch on iPad and iPhone."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

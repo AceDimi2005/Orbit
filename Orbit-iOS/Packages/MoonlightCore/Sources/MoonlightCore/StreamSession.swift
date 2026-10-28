@@ -182,13 +182,13 @@ public final class MoonlightStreamSession: ObservableObject {
         LiInitializeAudioCallbacks(&box.audioCallbacks)
         box.audioCallbacks.`init` = { _, configuration, _, _ in
             guard let configuration, let core = MoonlightSessionCore.current else { return -1 }
-            return core.headless ? 0 : core.audio.initialize(configuration.pointee)
+            return core.silent ? 0 : core.audio.initialize(configuration.pointee)
         }
-        box.audioCallbacks.start = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.start() } }
-        box.audioCallbacks.stop = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.stop() } }
-        box.audioCallbacks.cleanup = { if let core = MoonlightSessionCore.current, !core.headless { core.audio.cleanup() } }
+        box.audioCallbacks.start = { if let core = MoonlightSessionCore.current, !core.silent { core.audio.start() } }
+        box.audioCallbacks.stop = { if let core = MoonlightSessionCore.current, !core.silent { core.audio.stop() } }
+        box.audioCallbacks.cleanup = { if let core = MoonlightSessionCore.current, !core.silent { core.audio.cleanup() } }
         box.audioCallbacks.decodeAndPlaySample = { data, length in
-            if let core = MoonlightSessionCore.current, !core.headless { core.audio.decodeAndPlay(data, length: length) }
+            if let core = MoonlightSessionCore.current, !core.silent { core.audio.decodeAndPlay(data, length: length) }
         }
         box.audioCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION
 
@@ -207,7 +207,8 @@ public final class MoonlightStreamSession: ObservableObject {
             MoonlightSessionCore.current?.log(String(cString: message))
         }
 
-        let core = MoonlightSessionCore(session: self, renderer: renderer, box: box, framePacing: settings.framePacing, headless: headless)
+        let core = MoonlightSessionCore(session: self, renderer: renderer, box: box, framePacing: settings.framePacing, headless: headless,
+                                        silent: headless || settings.muteLocalAudio)
         self.core = core
         MoonlightSessionCore.setCurrent(core)
         if !headless {
@@ -438,17 +439,19 @@ final class MoonlightKeepAwake: @unchecked Sendable {
 }
 
 #if os(iOS) || os(tvOS)
-/// Counts the holds so a stream that ends late cannot turn the idle timer back on under a newer stream.
+/// Counts the holds so a stream that ends late cannot turn the idle timer back on under a newer stream. The apps
+/// take a hold of their own too (for example while waiting for the PC to finish a slow change), so that ending
+/// it never lets the screen lock under a running stream. Every `hold()` needs exactly one `letGo()`.
 @MainActor
-enum MoonlightIdleTimer {
+public enum MoonlightIdleTimer {
     private static var holds = 0
 
-    static func hold() {
+    public static func hold() {
         holds += 1
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
-    static func letGo() {
+    public static func letGo() {
         holds = max(0, holds - 1)
         if holds == 0 { UIApplication.shared.isIdleTimerDisabled = false }
     }
@@ -479,16 +482,20 @@ final class MoonlightSessionCore: @unchecked Sendable {
     let framePacing: Bool
     /// No decoding, audio or controllers; frames are acknowledged and dropped.
     let headless: Bool
+    /// The host's audio is received but not played here (headless sessions, `muteLocalAudio`).
+    let silent: Bool
     private let lock = NSLock()
     private var renderThread: MoonlightRenderThread?
     private var failureMessage: String?
 
-    init(session: MoonlightStreamSession, renderer: MoonlightVideoRenderer, box: MoonlightConnectionBox, framePacing: Bool, headless: Bool = false) {
+    init(session: MoonlightStreamSession, renderer: MoonlightVideoRenderer, box: MoonlightConnectionBox, framePacing: Bool, headless: Bool = false,
+         silent: Bool = false) {
         self.session = session
         self.renderer = renderer
         self.box = box
         self.framePacing = framePacing
         self.headless = headless
+        self.silent = headless || silent
     }
 
     private func onMain(_ body: @escaping @MainActor (MoonlightStreamSession) -> Void) {

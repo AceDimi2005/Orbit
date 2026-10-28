@@ -1,3 +1,4 @@
+import MoonlightCore
 import SwiftUI
 import UIKit
 
@@ -554,14 +555,14 @@ final class OrbitPresentationStore: ObservableObject {
 
     private func updateIdleTimer() {
         let presenting = visibleViews > 0 && (state?.running == true || timer.isRunning)
-        if presenting {
-            // Checked again on every read: a stream that ended meanwhile turns the idle timer back on.
+        // One count shared with streams, Second Screen and the webcam (`MoonlightIdleTimer`): whichever ends first
+        // can't let the screen lock under the others, so a stream that ends mid-talk keeps the screen on.
+        if presenting, !holdsIdleTimer {
             holdsIdleTimer = true
-            if !UIApplication.shared.isIdleTimerDisabled { UIApplication.shared.isIdleTimerDisabled = true }
-        } else if holdsIdleTimer {
+            MoonlightIdleTimer.hold()
+        } else if !presenting, holdsIdleTimer {
             holdsIdleTimer = false
-            // A stream keeps the screen on by itself; only let go when none is showing.
-            if !MoonlightStreamController.shared.isPresented { UIApplication.shared.isIdleTimerDisabled = false }
+            MoonlightIdleTimer.letGo()
         }
     }
 

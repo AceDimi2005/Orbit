@@ -199,7 +199,8 @@ struct OrbitProUnlockView: View {
         ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64."),
         ("bolt.fill", "Electricity cost", "What your PC costs to run each month, at your electricity price. On iPhone, iPad and Mac."),
         ("calendar", "Monthly summary", "Play time, top games, records and energy for every month. On iPhone, iPad and Mac."),
-        ("web.camera.fill", "iPhone as a webcam", "Use your iPhone or iPad camera in apps on your PC.")
+        ("web.camera.fill", "iPhone as a webcam", "Use your iPhone or iPad camera in apps on your PC."),
+        ("rectangle.on.rectangle", "Second Screen", "Use your iPad, iPhone or Mac as an extra display for your PC.")
     ]
 
     var body: some View {

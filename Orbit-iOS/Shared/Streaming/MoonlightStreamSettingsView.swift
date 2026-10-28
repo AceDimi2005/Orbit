@@ -217,7 +217,13 @@ struct MoonlightStreamSettingsView: View {
     @ObservedObject var store: MoonlightStreamSettingsStore
     var accent: Color
     var hostSupportsHEVC: Bool? = nil
+    /// The selected PC: with it, Fill Screen shows the PC's readiness and can set the PC up (agents with
+    /// the `streamDisplay` feature). Without it, the setup page only lists the steps.
+    var displaySetup: OrbitStreamDisplayContext? = nil
     var onDone: () -> Void
+    @StateObject private var fillSetup = OrbitFillScreenSetupModel()
+    /// The Fill the Screen page is open (its Sunshine login form takes Return on the Mac).
+    @State private var fillPageOpen = false
 
     private var settings: Binding<MoonlightStreamSettings> { $store.settings }
     private var pixelSize: MoonlightStreamSize { store.settings.pixelSize(hostSupportsHEVC: hostSupportsHEVC) }
@@ -248,13 +254,28 @@ struct MoonlightStreamSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                #if os(macOS)
+                // A sheet's confirmation button takes Return before a text field does: on the Fill the Screen page,
+                // Done steps aside so Return in the Sunshine login form saves the login instead of closing the sheet.
+                if fillPageOpen {
+                    ToolbarItem(placement: .cancellationAction) { Button("Done") { onDone() } }
+                } else {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone() } }
+                }
+                #else
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone() } }
+                #endif
             }
         }
         .tint(accent)
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 620)
         #endif
+        .task(id: fillSetupKey) {
+            // Read the PC's readiness once Fill Screen is chosen (and again for another PC).
+            fillSetup.configure(displaySetup)
+            if store.settings.aspect == .native { await fillSetup.load() }
+        }
     }
 
     private var videoSection: some View {
@@ -302,10 +323,21 @@ struct MoonlightStreamSettingsView: View {
             }
             .pickerStyle(.segmented)
             if store.settings.aspect == .native {
-                NavigationLink {
-                    MoonlightFillScreenHelpView(size: pixelSize, optimizeGameSettings: store.settings.optimizeGameSettings, accent: accent)
-                } label: {
-                    Label("Set up the PC to fill the screen", systemImage: "questionmark.circle")
+                if displaySetup?.hasPC == true, fillSetup.availability != .olderAgent {
+                    NavigationLink {
+                        MoonlightFillScreenSetupView(model: fillSetup, size: pixelSize, refreshRate: store.settings.frameRate,
+                                                     optimizeGameSettings: settings.optimizeGameSettings, accent: accent)
+                            .onAppear { fillPageOpen = true }
+                            .onDisappear { fillPageOpen = false }
+                    } label: {
+                        MoonlightFillScreenStatusRow(model: fillSetup, size: pixelSize.displaySize, refreshRate: store.settings.frameRate)
+                    }
+                } else {
+                    NavigationLink {
+                        MoonlightFillScreenHelpView(size: pixelSize, optimizeGameSettings: store.settings.optimizeGameSettings, accent: accent)
+                    } label: {
+                        Label("Set up the PC to fill the screen", systemImage: "questionmark.circle")
+                    }
                 }
             }
         } header: {
@@ -314,6 +346,8 @@ struct MoonlightStreamSettingsView: View {
             Text(pictureFootnote)
         }
     }
+
+    private var fillSetupKey: String { "\(displaySetup?.identity ?? "none")|\(store.settings.aspect.rawValue)" }
 
     private var pictureFootnote: String {
         switch store.settings.aspect {
@@ -427,68 +461,6 @@ struct MoonlightStreamSettingsView: View {
 
     private func bitrateText(_ kbps: Int) -> String {
         kbps % 1000 == 0 ? "\(kbps / 1000) Mbps" : String(format: "%.1f Mbps", Double(kbps) / 1000)
-    }
-}
-
-/// What Fill Screen needs on the PC, in plain steps. Sunshine only fills a non-16:9 screen when one of the
-/// PC's displays can switch to that exact size; otherwise it adds the bars itself.
-private struct MoonlightFillScreenHelpView: View {
-    let size: MoonlightStreamSize
-    let optimizeGameSettings: Bool
-    let accent: Color
-
-    /// Wraps at the space before the package id on a phone.
-    private static let installCommand = "winget install -e --id VirtualDrivers.Virtual-Display-Driver"
-    private static let driverURL = URL(string: "https://github.com/VirtualDrivers/Virtual-Display-Driver")!
-
-    var body: some View {
-        Form {
-            Section {
-                Text("Orbit asks the PC for a \(size.description) picture, the shape of this screen. Sunshine can only send a full picture in that shape when one of the PC's displays can switch to exactly that size. A normal monitor cannot, so Sunshine fits the 16:9 desktop into the frame and adds black bars itself. Nothing breaks: you simply still see bars.")
-            } header: {
-                Text("Why there are black bars")
-            }
-
-            Section {
-                step(1, "Install a virtual display on the PC, for example the free Virtual Display Driver. In Terminal on the PC:")
-                Text(Self.installCommand)
-                    .font(.footnote.monospaced())
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                step(2, "Add \(size.description) to the virtual display's resolutions, at the frame rate you stream at.")
-                step(3, "In Sunshine's web UI, under Audio/Video, choose the virtual display as the display to stream and let Sunshine change its resolution to the one the client asks for.")
-                step(4, optimizeGameSettings
-                     ? "Keep Optimize game settings on in Stream Settings: it is what lets Sunshine switch the display to this size."
-                     : "Turn on Optimize game settings in Stream Settings: without it Sunshine never switches the display to this size.")
-                Link(destination: Self.driverURL) {
-                    Label("Virtual Display Driver on GitHub", systemImage: "arrow.up.right.square")
-                }
-            } header: {
-                Text("Set up the PC")
-            } footer: {
-                Text("On the PC, the Orbit companion's tray menu (Set up full-screen streaming) walks through the same steps. Change Sunshine's settings between streams: Sunshine restarts to apply them.")
-            }
-        }
-        #if os(macOS)
-        .formStyle(.grouped)
-        #endif
-        .navigationTitle("Fill the Screen")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
-        .tint(accent)
-    }
-
-    private func step(_ number: Int, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(number)")
-                .font(.callout.weight(.bold).monospacedDigit())
-                .foregroundStyle(accent)
-                .frame(width: 18, alignment: .leading)
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
     }
 }
 

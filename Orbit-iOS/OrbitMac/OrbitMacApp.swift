@@ -112,6 +112,8 @@ struct OrbitMacApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .shift])
                     .disabled(!viewModel.metrics.isOnline || viewModel.isDemoMode)
                 Button("Stream Settings…") { viewModel.selectedSection = .library; viewModel.pendingStreamAction = .settings }
+                Button("Use This Mac as a Second Screen…") { viewModel.selectedSection = .library; viewModel.pendingStreamAction = .secondScreen }
+                    .disabled(viewModel.currentPC == nil && !viewModel.isDemoMode)
                 Divider()
                 Button(viewModel.isStreaming ? "Stop Desktop Preview" : "Start Desktop Preview") {
                     if viewModel.isStreaming { viewModel.stopPreview() } else { viewModel.selectedSection = .preview; viewModel.startPreview() }

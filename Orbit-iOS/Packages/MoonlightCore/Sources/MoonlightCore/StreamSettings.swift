@@ -136,6 +136,9 @@ public struct MoonlightStreamSettings: Codable, Equatable, Sendable {
     public var hdr = false
     public var audio: AudioLayout = .stereo
     public var playAudioOnHost = false
+    /// Plays none of the host's audio on this device (with `playAudioOnHost` the sound stays on the PC alone).
+    /// Set per stream (Orbit's second screen) and never saved with the settings.
+    public var muteLocalAudio = false
     /// Sunshine "optimize game settings" (SOPS): asks the host to apply the stream resolution.
     public var optimizeGameSettings = true
     /// Smooth presentation at the cost of up to one frame of latency.

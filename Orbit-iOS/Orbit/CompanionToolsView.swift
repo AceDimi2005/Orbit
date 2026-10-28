@@ -5,6 +5,7 @@ struct CompanionToolsView: View {
     @ObservedObject var vm: OrbitViewModel
     @ObservedObject private var proStore = OrbitProStore.shared
     @ObservedObject private var watchBridge = OrbitWatchBridge.shared
+    @ObservedObject private var secondScreen = OrbitSecondScreenSession.shared
     @State private var showsSettings = false
     @State private var showsDiscovery = false
     @State private var showsProPaywall = false
@@ -50,6 +51,14 @@ struct CompanionToolsView: View {
                             // iPhone as a PC webcam (Orbit Pro, Labs): WebcamView.swift.
                             NavigationLink { WebcamScreen(vm: vm) } label: {
                                 toolTile("Webcam", subtitle: "Your \(OrbitWebcamDevice.word) as a webcam", icon: "web.camera.fill", tint: .green, badge: "LABS")
+                            }
+                            NavigationLink {
+                                OrbitProGate(title: "Second Screen", message: "Using this iPhone or iPad as an extra display for your PC is part of Orbit Pro.") {
+                                    SecondScreenView(vm: vm)
+                                }
+                            } label: {
+                                toolTile("Second Screen", subtitle: "Extra display for your PC", icon: "rectangle.on.rectangle", tint: .blue,
+                                         badge: secondScreen.isStreaming || secondScreen.isActiveOnPC(vm.streamDisplayContext.pcID) ? "ON" : "LABS")
                             }
                         }
 
@@ -184,10 +193,13 @@ struct CompanionToolsView: View {
             .sheet(isPresented: $showsSettings) { SettingsView(vm: vm, isPresentedAsSheet: true) }
             .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
             .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
+            // The Second Screen tile says ON while the PC still has it on (also when another device turned it on).
+            .task(id: vm.streamDisplayContext.identity) { await secondScreen.checkIfLeftOn(context: vm.streamDisplayContext) }
             .sheet(isPresented: $showsStreamSettings) {
                 // Sized for the selected PC's codecs, as the library's sheet and the streams it starts are.
                 MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent,
-                                            hostSupportsHEVC: MoonlightHostStore.record(for: vm.selectedPCID)?.supportsHEVC) { showsStreamSettings = false }
+                                            hostSupportsHEVC: MoonlightHostStore.record(for: vm.selectedPCID)?.supportsHEVC,
+                                            displaySetup: vm.streamDisplayContext) { showsStreamSettings = false }
                     .presentationBackground(theme.background)
             }
         }

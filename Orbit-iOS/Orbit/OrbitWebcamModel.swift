@@ -1,4 +1,5 @@
 import AVFoundation
+import MoonlightCore
 import SwiftUI
 import UIKit
 
@@ -175,7 +176,8 @@ final class OrbitWebcamModel: ObservableObject {
     private var lastStatsAt = Date()
     private var slowSeconds = 0
     private var fastSeconds = 0
-    private var idleTimerBefore: Bool?
+    /// This screen holds `MoonlightIdleTimer` while it streams.
+    private var holdsScreenAwake = false
     private var thermalObserver: NSObjectProtocol?
     private var cameraStarted = false
 
@@ -865,12 +867,14 @@ final class OrbitWebcamModel: ObservableObject {
     // MARK: Screen
 
     private func keepScreenAwake(_ awake: Bool) {
-        if awake {
-            if idleTimerBefore == nil { idleTimerBefore = UIApplication.shared.isIdleTimerDisabled }
-            UIApplication.shared.isIdleTimerDisabled = true
-        } else if let before = idleTimerBefore {
-            UIApplication.shared.isIdleTimerDisabled = before
-            idleTimerBefore = nil
+        // One count shared with streams, Second Screen and the presentation remote (`MoonlightIdleTimer`), so the
+        // first of them to end can't let the screen lock under the others.
+        if awake, !holdsScreenAwake {
+            holdsScreenAwake = true
+            MoonlightIdleTimer.hold()
+        } else if !awake, holdsScreenAwake {
+            holdsScreenAwake = false
+            MoonlightIdleTimer.letGo()
         }
     }
 
