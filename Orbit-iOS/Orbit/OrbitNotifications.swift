@@ -821,6 +821,8 @@ enum OrbitLocalAlerts {
     }
 
     static func post(_ event: OrbitPCEvent, pcID: String, pcName: String, now: Date = Date()) async {
+        // "Your summary is ready" is about an Orbit Pro screen: without Pro it would only advertise it.
+        if event.kind == OrbitEnergyAPI.summaryReadyKind, await !OrbitProStore.shared.isProUnlocked { return }
         let content = UNMutableNotificationContent()
         content.title = event.title.isEmpty ? pcName : event.title
         // Same grouping and subtitle as the pushes the extension shows for this PC.
@@ -882,10 +884,19 @@ enum OrbitLocalAlerts {
 final class OrbitNotificationRouter: ObservableObject {
     static let shared = OrbitNotificationRouter()
     @Published var showsNotifications = false
+    /// A monthly summary to open (`orbit://summary?month=YYYY-MM&pc=<id>`, or a tapped `summary.ready` alert).
+    @Published var summaryRequest: OrbitSummaryRequest?
+    /// `orbit://energy`: the Electricity Cost screen.
+    @Published var showsEnergyCost = false
 
     func open(link: String?) {
         guard let link, let url = URL(string: link), url.scheme?.lowercased() == "orbit" else { return }
-        if url.host?.lowercased() == "notifications" { showsNotifications = true }
+        switch url.host?.lowercased() {
+        case "notifications": showsNotifications = true
+        case "summary": summaryRequest = OrbitSummaryRequest(url: url)
+        case "energy": showsEnergyCost = true
+        default: break
+        }
     }
 }
 
@@ -949,9 +960,15 @@ final class OrbitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         let pcID = info["pcID"] as? String
-        let link = info["link"] as? String
+        let kind = info["kind"] as? String
+        let ownLink = info["link"] as? String
+        let deliveredAt = response.notification.date
         let action = response.actionIdentifier
         Task { @MainActor in
+            // A "summary is ready" alert opens that month's summary (an Orbit Pro screen: without Pro, a pushed
+            // one keeps its own link, the notifications screen); every other alert keeps its own link.
+            let summaryLink = OrbitProStore.shared.isProUnlocked ? OrbitSummaryRequest.link(forKind: kind, pcID: pcID, deliveredAt: deliveredAt) : nil
+            let link = summaryLink ?? ownLink
             switch action {
             case OrbitEventFeed.cancelPowerAction:
                 let background = OrbitBackgroundTask(name: "Cancel PC power action")

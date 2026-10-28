@@ -105,6 +105,7 @@ struct MacSessionsView: View {
     private var pageLayout: some View {
         VStack(alignment: .leading, spacing: 16) {
             if vm.isDemoMode { demoNotice }
+            MacThisMonthCard()
             recordingCard
             if let error = vm.historyError {
                 MacNotice(title: "Session history problem", message: error, icon: "exclamationmark.triangle.fill", tint: .orange)

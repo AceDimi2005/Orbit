@@ -682,6 +682,18 @@ struct OrbitProPaywallView: View {
                                 title: "Unlimited Buttons",
                                 subtitle: "Go past the 6 free buttons: up to 64 one-tap shortcuts, OBS controls and app launchers per PC."
                             )
+                            proFeatureRow(
+                                icon: "bolt.fill",
+                                tint: .yellow,
+                                title: "Electricity Cost",
+                                subtitle: "See what your PC costs to run each month, per day and per game, at your local electricity price."
+                            )
+                            proFeatureRow(
+                                icon: "calendar",
+                                tint: .orange,
+                                title: "Monthly Summary",
+                                subtitle: "Your month in games: play time, top games, records, temperatures and energy, ready to share."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

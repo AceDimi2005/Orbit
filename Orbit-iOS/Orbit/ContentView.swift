@@ -81,6 +81,8 @@ struct ContentView: View {
         .sheet(isPresented: $notificationRouter.showsNotifications) {
             NavigationStack { NotificationsSettingsView(vm: vm, showsDoneButton: true) }
         }
+        .sheet(item: $notificationRouter.summaryRequest) { request in MonthlySummarySheet(vm: vm, request: request) }
+        .sheet(isPresented: $notificationRouter.showsEnergyCost) { EnergyCostSheet(vm: vm) }
         .onOpenURL { url in
             guard url.scheme?.lowercased() == "orbit" else { return }
             switch url.host?.lowercased() {
@@ -91,6 +93,7 @@ struct ContentView: View {
             case "settings": selectedTab = 3
             case "files": selectedTab = 4
             case "notifications": OrbitNotificationRouter.shared.showsNotifications = true
+            case "summary", "energy": OrbitNotificationRouter.shared.open(link: url.absoluteString)
             case "wake":
                 selectedTab = 0
                 Task { await vm.wakePC() }

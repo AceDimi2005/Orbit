@@ -196,10 +196,24 @@ struct OrbitProUnlockView: View {
         ("power.circle.fill", "Power widgets & Siri", "Wake, sleep and shut down from widgets, Control Center and Siri."),
         ("desktopcomputer", "Unlimited PCs", "Save and switch between every PC you own."),
         ("chart.xyaxis.line", "Session graphs", "History of FPS, temperatures and power."),
-        ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64.")
+        ("square.grid.3x2.fill", "Unlimited buttons", "More than 6 one-tap buttons per PC, up to 64."),
+        ("bolt.fill", "Electricity cost", "What your PC costs to run each month, at your electricity price. On iPhone, iPad and Mac."),
+        ("calendar", "Monthly summary", "Play time, top games, records and energy for every month. On iPhone, iPad and Mac.")
     ]
 
     var body: some View {
+        #if os(tvOS)
+        // The list grows with Pro: on a TV screen, scroll rather than cut off the buttons once it no longer fits.
+        ViewThatFits(in: .vertical) {
+            card
+            ScrollView { card }
+        }
+        #else
+        card
+        #endif
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 14) {
                 Image(systemName: "crown.fill")

@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A60000000000000000000107 /* OrbitMacEnergyViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000123 /* OrbitMacEnergyViews.swift */; };
+		A20000000000000000000115 /* MonthlySummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* MonthlySummaryView.swift */; };
+		A20000000000000000000114 /* EnergyCostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* EnergyCostView.swift */; };
+		A60000000000000000000106 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitSummaryShareCard.swift */; };
+		A20000000000000000000113 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitSummaryShareCard.swift */; };
+		A60000000000000000000105 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitEnergy.swift */; };
+		A20000000000000000000112 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitEnergy.swift */; };
 		A10000000000000000000108 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitActivityViews.swift */; };
 		A60000000000000000000104 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
 		A50000000000000000000102 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
@@ -254,6 +261,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000123 /* OrbitMacEnergyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacEnergyViews.swift; sourceTree = "<group>"; };
+		B20000000000000000000122 /* MonthlySummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonthlySummaryView.swift; sourceTree = "<group>"; };
+		B20000000000000000000121 /* EnergyCostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyCostView.swift; sourceTree = "<group>"; };
+		B20000000000000000000120 /* OrbitSummaryShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSummaryShareCard.swift; sourceTree = "<group>"; };
+		B2000000000000000000011F /* OrbitEnergy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitEnergy.swift; sourceTree = "<group>"; };
 		B2000000000000000000011E /* OrbitActivityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitActivityViews.swift; sourceTree = "<group>"; };
 		B2000000000000000000011D /* OrbitBrandMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitBrandMark.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
@@ -492,6 +504,8 @@
 				B20000000000000000000113 /* DeckEditorView.swift */,
 				B20000000000000000000114 /* DeckView.swift */,
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
+				B20000000000000000000121 /* EnergyCostView.swift */,
+				B20000000000000000000122 /* MonthlySummaryView.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -553,6 +567,8 @@
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
 				B2000000000000000000011D /* OrbitBrandMark.swift */,
+				B2000000000000000000011F /* OrbitEnergy.swift */,
+				B20000000000000000000120 /* OrbitSummaryShareCard.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -631,6 +647,7 @@
 				B60000000000000000000015 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000010F /* OrbitMacPCAlerts.swift */,
 				B20000000000000000000119 /* OrbitMacDeckView.swift */,
+				B20000000000000000000123 /* OrbitMacEnergyViews.swift */,
 			);
 			path = OrbitMac;
 			sourceTree = "<group>";
@@ -936,6 +953,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000115 /* MonthlySummaryView.swift in Sources */,
+				A20000000000000000000114 /* EnergyCostView.swift in Sources */,
+				A20000000000000000000113 /* OrbitSummaryShareCard.swift in Sources */,
+				A20000000000000000000112 /* OrbitEnergy.swift in Sources */,
 				A20000000000000000000111 /* OrbitBrandMark.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
@@ -1068,6 +1089,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000107 /* OrbitMacEnergyViews.swift in Sources */,
+				A60000000000000000000106 /* OrbitSummaryShareCard.swift in Sources */,
+				A60000000000000000000105 /* OrbitEnergy.swift in Sources */,
 				A60000000000000000000104 /* OrbitBrandMark.swift in Sources */,
 				A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */,
 				A60000000000000000000102 /* OrbitMacDeckView.swift in Sources */,
@@ -1222,7 +1246,7 @@
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
@@ -1260,7 +1284,7 @@
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves downloaded photos and videos from your PC to your iPhone Photo Library when requested.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
