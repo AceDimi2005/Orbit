@@ -235,10 +235,13 @@ struct OrbitIntentClient: Sendable {
     }
 
     /// Called once at app launch: copies `demoMode` into the App Group now and whenever it changes.
+    /// The copy runs on a background queue: opening the App Group is a round trip to the system that
+    /// would otherwise hold up the first frame, and every settings change would read it again.
     static func startMirroringDemoMode() {
-        mirrorDemoMode()
+        let queue = DispatchQueue(label: "com.dimitrie.orbit.demo-mode-mirror", qos: .utility)
+        queue.async { mirrorDemoMode() }
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: UserDefaults.standard, queue: nil) { _ in
-            mirrorDemoMode()
+            queue.async { mirrorDemoMode() }
         }
     }
 

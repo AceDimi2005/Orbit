@@ -77,6 +77,7 @@ struct ContentView: View {
             NavigationStack { WebcamScreen(vm: vm, showsDoneButton: true) }
         }
         .onAppear {
+            OrbitAfterFirstFrame.rootViewDidAppear()
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
             OrbitProStore.shared.start()
