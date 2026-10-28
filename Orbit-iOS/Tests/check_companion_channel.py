@@ -149,7 +149,9 @@ precondition(OrbitCompanionVersion.display(beta.latestVersion) == "4.6.0 beta 2"
 print("PASS: update channel in /api/status and /api/update/check (stable and beta, no downgrade), iPhone and Mac models, beta version display")
 ''')
     binary = temporary / "channel-check"
+    # Types the status models use from other shared files, on the branches that have them.
+    support = [str(path) for path in (ROOT / "Orbit-iOS/Shared/OrbitPowerCountdown.swift",) if path.exists()]
     subprocess.run(["swiftc", "-swift-version", "5", "-Onone",
-                    str(ROOT / "Orbit-iOS/Shared/OrbitCompanionVersion.swift"), str(temporary / "Models.swift"),
+                    str(ROOT / "Orbit-iOS/Shared/OrbitCompanionVersion.swift"), *support, str(temporary / "Models.swift"),
                     str(temporary / "main.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary), str(temporary)], check=True)
