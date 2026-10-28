@@ -299,7 +299,9 @@ struct EnergyCostView: View {
         .refreshable { await model.load() }
         // The scene phase is part of the id: a task only sees the phase it started with, and `orbit://energy`
         // opened while Orbit launches shows this before the app is active. Restarted once it is, it loads.
-        .task(id: "\(vm.connectionID)|\(scenePhase == .active)") {
+        // The address in use is too: with a Secondary IP the route can move without a new connection ID, and
+        // `configure` then takes a link for the new address while keeping the month on screen.
+        .task(id: "\(vm.connectionID)|\(vm.connectionHost())|\(scenePhase == .active)") {
             model.configure(vm)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {

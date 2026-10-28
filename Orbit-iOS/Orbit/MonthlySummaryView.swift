@@ -94,7 +94,12 @@ final class OrbitSummaryModel: ObservableObject {
     /// `pcID`: the PC an alert came from; when it isn't the selected one, its own saved connection is used.
     func configure(_ vm: OrbitViewModel, pcID: String?, initialMonth: OrbitMonthID?) {
         let key = "\(vm.isDemoMode)|\(pcID ?? vm.selectedPCID)|\(vm.connectionID)"
-        guard key != configuredFor else { return }
+        guard key != configuredFor else {
+            // Same PC and connection, maybe a new route (LAN address <-> Secondary IP): the next read goes to the
+            // address in use; the summary on screen stays.
+            if !isDemo, pcID == nil || pcID == vm.selectedPCID, link != nil { link = OrbitPCLink.current(vm) }
+            return
+        }
         configuredFor = key
         generation += 1
         isConfigured = true
@@ -235,7 +240,7 @@ struct MonthlySummaryView: View {
         }
         // The scene phase is part of the id: a task only sees the phase it started with, and an alert tapped
         // while Orbit launches opens this before the app is active. Restarted once it is, it loads.
-        .task(id: "\(vm.connectionID)|\(vm.isDemoMode)|\(shownPCID ?? "")|\(scenePhase == .active)") {
+        .task(id: "\(vm.connectionID)|\(vm.connectionHost())|\(vm.isDemoMode)|\(shownPCID ?? "")|\(scenePhase == .active)") {
             model.configure(vm, pcID: shownPCID, initialMonth: initialMonth)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
