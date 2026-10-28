@@ -9,364 +9,9 @@ import AppKit
 
 // Fill Screen setup on the PC (DESIGN F5), iPhone/iPad and Mac: Stream Settings reads the PC's readiness
 // from GET /api/stream/display and sets it up (POST …/modes with this screen's stream size, then …/fill).
-// The second screen (F9) reuses the context, the feature cache and the small views at the bottom.
+// The views are here; `OrbitFillScreenSetupModel` (Foundation only, so Tests/ can drive it) is in
+// Shared/OrbitStreamDisplayModels.swift. The second screen (F9) reuses the small views below.
 // Apple TV always streams 16:9 and has none of this.
-
-/// The PC a stream-display screen talks to. `makeClient` builds a pinned client for it when needed.
-struct OrbitStreamDisplayContext {
-    let pcID: String
-    let pcName: String
-    let isDemo: Bool
-    let isOnline: Bool
-    /// A PC is paired (or demo mode is on). Without one, Stream Settings only lists the steps.
-    let hasPC: Bool
-    let makeClient: @MainActor () throws -> OrbitAPIClient
-
-    /// Changes when the screens must forget what they read (another PC, demo mode, back online).
-    var identity: String { "\(pcID)|\(isDemo)|\(isOnline)|\(hasPC)" }
-}
-
-/// `GET /api/capabilities` per PC for these screens: 10 minutes, 2 minutes for an older agent (404).
-@MainActor
-enum OrbitStreamDisplayFeatureCache {
-    private static var entries: [String: (features: Set<String>?, at: Date)] = [:]
-
-    static func features(for pcID: String, client: OrbitAPIClient, force: Bool = false) async throws -> Set<String>? {
-        if !force, let entry = entries[pcID], Date().timeIntervalSince(entry.at) < (entry.features == nil ? 120 : 600) { return entry.features }
-        let found = try await OrbitStreamDisplayAPI.features(client)
-        entries[pcID] = (found, Date())
-        return found
-    }
-}
-
-/// Keeps the app working while the PC takes its time (someone walks over to approve an administrator
-/// prompt): iPhone/iPad keep the screen on and finish the request if Orbit goes to the background;
-/// the Mac keeps App Nap away.
-@MainActor
-final class OrbitLongRequestGuard {
-    #if os(iOS)
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
-    private var heldIdleTimer = false
-    #elseif os(macOS)
-    private var activity: NSObjectProtocol?
-    #endif
-
-    init(reason: String) {
-        #if os(iOS)
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: reason) { [weak self] in
-            // iOS calls this on the main thread when the time is up and expects the task to end right here.
-            MainActor.assumeIsolated { self?.endBackgroundTask() }
-        }
-        if !UIApplication.shared.isIdleTimerDisabled {
-            UIApplication.shared.isIdleTimerDisabled = true
-            heldIdleTimer = true
-        }
-        #elseif os(macOS)
-        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: reason)
-        #endif
-    }
-
-    func end() {
-        #if os(iOS)
-        if heldIdleTimer {
-            heldIdleTimer = false
-            UIApplication.shared.isIdleTimerDisabled = false
-        }
-        endBackgroundTask()
-        #elseif os(macOS)
-        if let activity { ProcessInfo.processInfo.endActivity(activity) }
-        activity = nil
-        #endif
-    }
-
-    #if os(iOS)
-    private func endBackgroundTask() {
-        guard backgroundTask != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(backgroundTask)
-        backgroundTask = .invalid
-    }
-    #endif
-}
-
-// MARK: - Model
-
-@MainActor
-final class OrbitFillScreenSetupModel: ObservableObject {
-    enum Availability: Equatable {
-        case unknown, checking, available, demo, offline
-        /// The PC's agent predates the setup (no `streamDisplay` feature, or no /api/capabilities at all).
-        case olderAgent
-        case failed(OrbitStreamDisplayProblem)
-    }
-
-    enum Work: Equatable {
-        case addingSize(OrbitDisplaySize)
-        case configuringSunshine
-        case changingMonitor
-        case turningOff
-        case reverting
-        case savingLogin
-
-        /// Adding a screen size can show an administrator prompt on the PC.
-        var waitsForPrompt: Bool { if case .addingSize = self { return true }; return false }
-    }
-
-    struct Outcome: Equatable {
-        var title: String
-        var message: String
-        var isError: Bool
-    }
-
-    @Published private(set) var availability: Availability = .unknown
-    @Published private(set) var status: OrbitStreamDisplayStatus?
-    @Published private(set) var work: Work?
-    @Published private(set) var isRefreshing = false
-    @Published var outcome: Outcome?
-    private(set) var context: OrbitStreamDisplayContext?
-    private var loadedAt: Date?
-    private var generation = 0
-
-    var pcName: String { context?.pcName ?? "your PC" }
-
-    /// Hands over the PC the settings belong to; another PC (or demo mode) starts from scratch.
-    func configure(_ context: OrbitStreamDisplayContext?) {
-        guard context?.identity != self.context?.identity else {
-            self.context = context
-            return
-        }
-        generation += 1
-        self.context = context
-        status = nil
-        outcome = nil
-        work = nil
-        loadedAt = nil
-        isRefreshing = false
-        availability = context == nil ? .unknown : (context!.isDemo ? .demo : (context!.isOnline ? .unknown : .offline))
-        if context?.isDemo == true { status = .demo() }
-    }
-
-    /// Reads the PC's readiness (at most every 20 s unless `force`).
-    func load(force: Bool = false) async {
-        guard let context else { return }
-        if context.isDemo { availability = .demo; if status == nil { status = .demo() }; return }
-        guard context.isOnline else { availability = .offline; return }
-        if !force, availability == .available, status != nil, let loadedAt, Date().timeIntervalSince(loadedAt) < 20 { return }
-        guard !isRefreshing else { return }
-        let version = generation
-        isRefreshing = true
-        defer { if version == generation { isRefreshing = false } }
-        if status == nil { availability = .checking }
-        do {
-            let client = try context.makeClient()
-            let features = try await OrbitStreamDisplayFeatureCache.features(for: context.pcID, client: client, force: force)
-            guard version == generation else { return }
-            guard let features, features.contains(OrbitStreamDisplayFeature.fill) else {
-                status = nil
-                availability = .olderAgent
-                return
-            }
-            let fetched = try await OrbitStreamDisplayAPI.status(client)
-            guard version == generation else { return }
-            status = fetched
-            availability = .available
-            loadedAt = Date()
-        } catch {
-            guard version == generation else { return }
-            let problem = OrbitStreamDisplayErrors.describe(error)
-            if status == nil { availability = .failed(problem) } else { outcome = Outcome(title: "Couldn't check again", message: problem.message, isError: true) }
-        }
-    }
-
-    var canChange: Bool {
-        guard work == nil, let status, let context else { return false }
-        return (context.isDemo || (context.isOnline && availability == .available)) && status.loginSaved
-    }
-
-    /// Something keeps "Set Up This PC" from working, in plain words (nil: it can run).
-    func setUpBlocker() -> String? {
-        guard let status else { return nil }
-        if !status.loginSaved { return "Save the Sunshine login first." }
-        if status.sunshineSupported == false { return "Update Sunshine on the PC first." }
-        if !status.driverUsable { return "Install the Virtual Display Driver on the PC first." }
-        return nil
-    }
-
-    /// "Set Up This PC": adds this screen's size to the virtual display when it is missing (maybe one
-    /// administrator prompt on the PC), then points Sunshine at the virtual display.
-    func setUp(size: OrbitDisplaySize, refreshRate: Int, onlyDisplay: Bool) async {
-        guard work == nil, let context else { return }
-        outcome = nil
-        if context.isDemo {
-            work = .addingSize(size)
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            work = .configuringSunshine
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            let listed = (status?.virtualDisplay.resolutions ?? []).compactMap(Self.size(fromKey:)) + [size]
-            status = .demo(listing: listed, rates: (status?.virtualDisplay.refreshRates ?? []) + [OrbitStreamDisplayAPI.clampedRefreshRate(refreshRate)],
-                           fillOn: true)
-            work = nil
-            outcome = Outcome(title: "Demo mode", message: "Nothing was sent to a PC. On your own PC this adds \(size) to the virtual display and points Sunshine at it.", isError: false)
-            return
-        }
-        guard setUpBlocker() == nil else { return }
-        let client: OrbitAPIClient
-        do { client = try context.makeClient() } catch { report(error); return }
-        let version = generation
-        let rate = OrbitStreamDisplayAPI.clampedRefreshRate(refreshRate)
-        let keepAwake = OrbitLongRequestGuard(reason: "Setting up the PC for full-screen streaming")
-        defer { keepAwake.end() }
-        do {
-            var restartNote: String?
-            var addedSize = false
-            if status?.lists(size, refreshRate: rate) != true {
-                work = .addingSize(size)
-                let added = try await OrbitStreamDisplayAPI.addMode(client, size: size, refreshRate: rate)
-                guard version == generation else { return }
-                addedSize = added.changed
-                if let display = added.display { status = display }
-                // The driver could not be restarted now: it reads its sizes again when it next starts.
-                if added.reload == "nextStart" { restartNote = OrbitStreamDisplayAPI.nextStartNote(size: size, pcName: context.pcName) }
-            }
-            work = .configuringSunshine
-            let result = try await OrbitStreamDisplayAPI.setFill(client, enabled: true, onlyDisplay: onlyDisplay)
-            guard version == generation else { return }
-            if let display = result.display { status = display }
-            loadedAt = Date()
-            work = nil
-            var message: String
-            if result.changed {
-                message = "Sunshine on \(context.pcName) now streams the virtual display in this screen's shape. Start a stream to try it."
-            } else if addedSize {
-                // Fill Screen was already on (set up from another device): only this screen's size was missing.
-                message = "\(context.pcName)'s virtual display now offers \(size) at \(rate) Hz, and Sunshine already streams it. Start a stream to try it."
-            } else {
-                message = "Everything was already set up on \(context.pcName)."
-            }
-            if result.sunshineReady == false { message += " Sunshine is still restarting: give it a few seconds." }
-            if let restartNote { message += " \(restartNote)" }
-            if let warning = result.cleanWarning { message += " \(warning)" }
-            let filled = status?.fillsScreen(size: size, refreshRate: rate) == true && restartNote == nil
-            outcome = Outcome(title: filled ? "\(context.pcName) fills this screen" : "Set up, with a note", message: message, isError: false)
-        } catch {
-            guard version == generation else { return }
-            work = nil
-            report(error, waitedForChange: true)
-            await refreshQuietly(client, version: version)
-        }
-    }
-
-    /// Changes "Turn off the PC's monitor while streaming" while Fill Screen is on.
-    func setOnlyDisplay(_ enabled: Bool) async {
-        await change(.changingMonitor, success: enabled ? "The PC's own monitor now turns off while you stream." : "The PC's own monitor stays on while you stream.") { client in
-            try await OrbitStreamDisplayAPI.setFill(client, enabled: true, onlyDisplay: enabled)
-        } demo: { status in
-            status.fill.onlyDisplay = enabled
-        }
-    }
-
-    /// "Turn Off": Sunshine streams the PC's monitor again (Orbit's keys go back to what they were).
-    func turnOff() async {
-        await change(.turningOff, success: "Fill Screen is off on \(pcName). Sunshine streams its main monitor again.") { client in
-            try await OrbitStreamDisplayAPI.setFill(client, enabled: false)
-        } demo: { status in
-            status = .demo(listing: status.virtualDisplay.resolutions.compactMap(Self.size(fromKey:)), rates: status.virtualDisplay.refreshRates, fillOn: false)
-        }
-    }
-
-    /// "Undo Orbit's changes": Fill Screen and the second screen off, Sunshine's settings from before Orbit.
-    func revert() async {
-        await change(.reverting, success: "Sunshine's display settings on \(pcName) are back to how they were before Orbit changed them.") { client in
-            try await OrbitStreamDisplayAPI.revert(client)
-        } demo: { status in
-            status = .demo(listing: status.virtualDisplay.resolutions.compactMap(Self.size(fromKey:)), rates: status.virtualDisplay.refreshRates, fillOn: false)
-        }
-    }
-
-    /// Saves Sunshine's web UI login on the PC (the same route the pairing screen uses).
-    func saveLogin(username: String, password: String) async -> Bool {
-        guard work == nil, let context else { return false }
-        outcome = nil
-        if context.isDemo {
-            outcome = Outcome(title: "Demo mode", message: "Nothing was sent to a PC.", isError: false)
-            return true
-        }
-        let version = generation
-        work = .savingLogin
-        defer { if version == generation { work = nil } }
-        do {
-            let automation = MoonlightPairingAutomation(canSubmitPIN: false, canStartSunshine: false, sunshineRunning: true, client: { try context.makeClient() })
-            try await automation.saveLogin(username: username, password: password)
-            guard version == generation else { return false }
-            work = nil
-            await load(force: true)
-            if let status, status.loginSaved, status.sunshineVersion == nil, let reason = status.reason {
-                // Saved on the PC, but Sunshine refused it (or did not answer).
-                outcome = Outcome(title: "Saved, but Sunshine didn't accept it", message: reason, isError: true)
-            } else {
-                outcome = Outcome(title: "Login saved", message: "Orbit can now change Sunshine's display settings on \(context.pcName).", isError: false)
-            }
-            return true
-        } catch {
-            guard version == generation else { return false }
-            report(error)
-            return false
-        }
-    }
-
-    private func change(_ kind: Work, success: String, request: @escaping (OrbitAPIClient) async throws -> OrbitStreamDisplayResult,
-                        demo: (inout OrbitStreamDisplayStatus) -> Void) async {
-        guard work == nil, let context else { return }
-        outcome = nil
-        if context.isDemo {
-            work = kind
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            if var current = status { demo(&current); status = current }
-            work = nil
-            outcome = Outcome(title: "Demo mode", message: "Nothing was sent to a PC.", isError: false)
-            return
-        }
-        let client: OrbitAPIClient
-        do { client = try context.makeClient() } catch { report(error); return }
-        let version = generation
-        let keepAwake = OrbitLongRequestGuard(reason: "Changing Sunshine's display settings")
-        defer { keepAwake.end() }
-        work = kind
-        do {
-            let result = try await request(client)
-            guard version == generation else { return }
-            if let display = result.display { status = display }
-            loadedAt = Date()
-            work = nil
-            var message = result.changed ? success : "Nothing needed to change on \(context.pcName)."
-            if result.sunshineReady == false { message += " Sunshine is still restarting: give it a few seconds." }
-            if let warning = result.cleanWarning { message += " \(warning)" }
-            outcome = Outcome(title: "Done", message: message, isError: false)
-        } catch {
-            guard version == generation else { return }
-            work = nil
-            report(error, waitedForChange: true)
-            await refreshQuietly(client, version: version)
-        }
-    }
-
-    private func report(_ error: Error, waitedForChange: Bool = false) {
-        let problem = OrbitStreamDisplayErrors.describe(error, waitedForChange: waitedForChange)
-        outcome = Outcome(title: problem.title, message: problem.message, isError: true)
-    }
-
-    /// After a failed change: show what the PC has now (a size may have been added before Sunshine refused).
-    private func refreshQuietly(_ client: OrbitAPIClient, version: Int) async {
-        guard let fetched = try? await OrbitStreamDisplayAPI.status(client), version == generation else { return }
-        status = fetched
-        loadedAt = Date()
-    }
-
-    nonisolated static func size(fromKey key: String) -> OrbitDisplaySize? {
-        let parts = key.split(separator: "x")
-        guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]) else { return nil }
-        return OrbitDisplaySize(width: width, height: height)
-    }
-}
 
 extension MoonlightStreamSize {
     var displaySize: OrbitDisplaySize { OrbitDisplaySize(width: width, height: height) }
@@ -462,6 +107,11 @@ struct OrbitSunshineLoginForm: View {
     var onSave: (_ username: String, _ password: String) async -> Bool
     @State private var username = ""
     @State private var password = ""
+    @FocusState private var focus: Field?
+
+    private enum Field { case username, password }
+
+    private var canSave: Bool { !username.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty && !isSaving }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -471,23 +121,27 @@ struct OrbitSunshineLoginForm: View {
                 .textInputAutocapitalization(.never)
                 .textContentType(.username)
                 #endif
+                .focused($focus, equals: .username)
+                .submitLabel(.next)
+                .onSubmit { focus = .password }
             SecureField("Sunshine password", text: $password)
                 #if os(iOS)
                 .textContentType(.password)
                 #endif
+                .focused($focus, equals: .password)
+                .submitLabel(.done)
+                .onSubmit(save)
             HStack(spacing: 10) {
-                Button {
-                    let name = username.trimmingCharacters(in: .whitespaces), secret = password
-                    Task {
-                        if await onSave(name, secret) { password = "" }
-                    }
-                } label: {
+                Button(action: save) {
                     HStack(spacing: 6) {
                         if isSaving { ProgressView().controlSize(.small) }
                         Text(isSaving ? "Saving…" : "Save on \(pcName)")
                     }
                 }
-                .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty || isSaving)
+                .disabled(!canSave)
+                // Return saves once both fields are filled in (the screens around the form give up their own
+                // Return button while it shows).
+                .keyboardShortcut(canSave ? .defaultAction : nil)
                 Spacer(minLength: 0)
             }
             Text("The login you use for Sunshine's web UI on the PC. It is stored on the PC next to Orbit's token, never on this device.")
@@ -495,6 +149,36 @@ struct OrbitSunshineLoginForm: View {
         }
         .textFieldStyle(.roundedBorder)
         .tint(accent)
+    }
+
+    private func save() {
+        guard canSave else { return }
+        let name = username.trimmingCharacters(in: .whitespaces), secret = password
+        Task {
+            if await onSave(name, secret) { password = "" }
+        }
+    }
+}
+
+/// "Start Sunshine on <PC>" under the Sunshine row when Sunshine is stopped and the companion can start it.
+struct OrbitStartSunshineButton: View {
+    let pcName: String
+    let isStarting: Bool
+    var accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isStarting { ProgressView().controlSize(.small) } else { Image(systemName: "play.circle.fill") }
+                Text(isStarting ? "Starting Sunshine…" : "Start Sunshine on \(pcName)")
+            }
+        }
+        .buttonStyle(.borderless)
+        .font(.callout)
+        .tint(accent)
+        .disabled(isStarting)
+        .accessibilityHint("Asks Orbit PC Companion to start Sunshine, then checks the PC again")
     }
 }
 
@@ -701,10 +385,17 @@ struct MoonlightFillScreenSetupView: View {
             ForEach(checks) { check in
                 VStack(alignment: .leading, spacing: 10) {
                     OrbitDisplayCheckRow(check: check)
-                    if check.kind == .login, check.state != .done {
+                    // Missing, or turned down by Sunshine (not while Sunshine is stopped: the login may be fine).
+                    if check.kind == .login, check.state == .missing {
                         OrbitSunshineLoginForm(pcName: pcName, isSaving: model.work == .savingLogin, accent: accent) { name, secret in
                             await model.saveLogin(username: name, password: secret)
                         }
+                    }
+                    if check.kind == .sunshine, status.sunshineStopped, model.context?.canStartSunshine == true {
+                        OrbitStartSunshineButton(pcName: pcName, isStarting: model.work == .startingSunshine, accent: accent) {
+                            Task { await model.startSunshine() }
+                        }
+                        .disabled(model.work != nil && model.work != .startingSunshine)
                     }
                     if check.kind == .driver, check.state != .done, status.offersInstallCommand {
                         OrbitDriverInstallCommand(command: status.driverInstallCommand, accent: accent)
@@ -862,6 +553,7 @@ struct MoonlightFillScreenSetupView: View {
         case .turningOff: return "Turning Fill Screen off on \(pcName)…"
         case .reverting: return "Putting Sunshine's settings back…"
         case .savingLogin: return "Saving the login on \(pcName)…"
+        case .startingSunshine: return "Starting Sunshine on \(pcName)…"
         }
     }
 
@@ -869,6 +561,8 @@ struct MoonlightFillScreenSetupView: View {
         switch work {
         case .configuringSunshine, .changingMonitor, .turningOff, .reverting:
             return "Sunshine restarts on the PC to use the new settings. This takes a few seconds."
+        case .startingSunshine:
+            return "Orbit checks the PC again as soon as Sunshine answers."
         case .addingSize, .savingLogin:
             return nil
         }

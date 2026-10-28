@@ -12,7 +12,8 @@ extension OrbitViewModel {
     var streamDisplayContext: OrbitStreamDisplayContext {
         let name = isDemoMode ? (metrics.hostname.isEmpty ? "Preview PC" : metrics.hostname) : selectedPCName
         return OrbitStreamDisplayContext(pcID: isDemoMode ? "demo" : selectedPCID, pcName: name.isEmpty ? "your PC" : name, isDemo: isDemoMode,
-                                         isOnline: metrics.isOnline, hasPC: isDemoMode || isConfigured, makeClient: { try self.companionClient() })
+                                         isOnline: metrics.isOnline, hasPC: isDemoMode || isConfigured, canStartSunshine: sunshineInfo?.canStart ?? false,
+                                         makeClient: { try self.companionClient() })
     }
 }
 
@@ -22,6 +23,7 @@ struct SecondScreenView: View {
     @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @StateObject private var sunshine = MoonlightHostCoordinator()
     @AppStorage(OrbitSecondScreenPosition.storageKey) private var positionRaw = OrbitSecondScreenPosition.right.rawValue
+    @AppStorage(OrbitSecondScreenScaleTip.dismissedKey) private var scaleTipDismissed = false
     @Environment(\.orbitTheme) private var theme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -82,7 +84,15 @@ struct SecondScreenView: View {
         }
         .navigationTitle("Second Screen")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: syncKey) { await reload(force: false) }
+        .task(id: syncKey) {
+            await reload(force: false)
+            // Stay current while the page is open (another device starting or ending a stream, say).
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard !Task.isCancelled else { break }
+                if !session.isBusy, !session.isStreaming, vm.metrics.isOnline, !vm.isDemoMode { await session.refresh(context: context, quiet: true) }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await reload(force: true) } }
         }
@@ -172,6 +182,25 @@ struct SecondScreenView: View {
         }
         if let hint = session.placementHint, sessionIsHere, isActiveOnPC || session.isStreaming {
             messageCard(title: "Put it on the \(status?.secondScreen.position ?? position.rawValue)", message: hint, icon: "arrow.left.and.right.square", tint: .cyan)
+        }
+        // Once, from the first start: Windows sizes text for a desktop monitor on the new display.
+        if !scaleTipDismissed, sessionIsHere, session.isStarting || session.isStreaming || isActiveOnPC {
+            HStack(alignment: .top, spacing: 12) {
+                OrbitIconBadge(systemName: "textformat.size", tint: .cyan, size: 34)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Text too small?").font(.subheadline.weight(.semibold))
+                    Text(OrbitSecondScreenScaleTip.message(device: "this \(deviceName)"))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button("Got It") { scaleTipDismissed = true }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderless)
+                        .tint(theme.accent)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .liquidGlass(cornerRadius: 18, tint: .cyan)
+            .accessibilityElement(children: .contain)
         }
     }
 
@@ -266,9 +295,17 @@ struct SecondScreenView: View {
     @ViewBuilder
     private func checkAction(_ check: OrbitDisplayCheck, status: OrbitStreamDisplayStatus) -> some View {
         switch check.kind {
-        case .login where check.state != .done:
+        case .login where check.state == .missing:
+            // Missing, or turned down by Sunshine (not while Sunshine is stopped: the login may be fine).
             OrbitSunshineLoginForm(pcName: pcName, isSaving: savingLogin, accent: theme.accent) { name, secret in
                 await saveLogin(username: name, password: secret)
+            }
+        case .sunshine where status.sunshineStopped && context.canStartSunshine:
+            OrbitStartSunshineButton(pcName: pcName, isStarting: session.isStartingSunshine, accent: theme.accent) {
+                Task {
+                    await session.startSunshine(context: context)
+                    await sunshine.refresh()
+                }
             }
         case .driver where check.state != .done && status.offersInstallCommand:
             OrbitDriverInstallCommand(command: status.driverInstallCommand, accent: theme.accent)
@@ -398,6 +435,8 @@ struct SecondScreenView: View {
             bullet("display.2", "Orbit adds a virtual display (the free Virtual Display Driver) at this \(deviceName)'s exact size and has Sunshine stream it, so it fills the screen.")
             bullet("hand.tap", "Touch works directly: tap to click and drag to move windows. A three-finger tap shows the stream controls.")
             bullet("rectangle.landscape.rotate", "Hold this \(deviceName) in landscape: Windows sees it as a landscape monitor.")
+            bullet("speaker.wave.2", "Sound keeps playing on \(pcName), as with any other monitor; this \(deviceName) stays quiet.")
+            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this \(deviceName)"))
             bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then \(status?.fill.enabled == true ? "fill the screen again, as Fill Screen is on" : "show the main monitor again").")
             bullet("flask", canUndo
                    ? "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, Undo Orbit's Changes below puts Sunshine's display settings back."
@@ -456,6 +495,79 @@ struct SecondScreenView: View {
     }
 }
 
+/// The Stream tab's warning while the PC still has the second screen on (left on by a stream that ended without turning
+/// it off, a closed app or another device): every stream from it then shows the extra display, not the main monitor.
+/// Turn Off is never Pro-gated: it only undoes Orbit's change.
+struct SecondScreenLeftOnBanner: View {
+    @ObservedObject var vm: OrbitViewModel
+    /// The Stream tab's Sunshine host: Turn Off closes a Desktop session left running with it.
+    let host: MoonlightHostCoordinator
+    @ObservedObject private var session = OrbitSecondScreenSession.shared
+    @Environment(\.orbitTheme) private var theme
+    /// Turn Off was selected here, for this PC: its progress and result show here too.
+    @State private var turnedOffFor: String?
+
+    private var context: OrbitStreamDisplayContext { vm.streamDisplayContext }
+    private var pcID: String { context.pcID }
+    private var mine: Bool { turnedOffFor == pcID && (session.sessionPCID == nil || session.sessionPCID == pcID) }
+
+    var body: some View {
+        if vm.metrics.isOnline || vm.isDemoMode {
+            if mine, case .stopping(let step) = session.phase {
+                card(title: "Turning off the second screen…", message: step, tint: .orange) { ProgressView().tint(.orange) }
+            } else if session.isLeftOn(pcID) {
+                card(title: "Second Screen is still on for \(context.pcName)",
+                     message: "Until it's turned off, streams from \(context.pcName) show its extra virtual display, not the main monitor.",
+                     tint: .orange) {
+                    OrbitIconBadge(systemName: "rectangle.on.rectangle", tint: .orange, size: 34)
+                } footer: {
+                    if mine, let problem = session.problem {
+                        Text("\(problem.title): \(problem.message)").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button {
+                        OrbitHaptics.press()
+                        turnedOffFor = pcID
+                        session.stop(context: context, host: host)
+                    } label: {
+                        Label("Turn Off", systemImage: "power").font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(OrbitGlassButtonStyle(tint: .orange))
+                    .disabled(!session.canTurnOff(pcID))
+                    .accessibilityHint("Turns the virtual display on \(context.pcName) off and puts Sunshine's display settings back")
+                }
+            } else if mine, let notice = session.notice, notice.kind != .note {
+                card(title: notice.kind == .demo ? "Demo mode" : "Second Screen is off", message: notice.message, tint: .mint) {
+                    OrbitIconBadge(systemName: notice.symbol, tint: .mint, size: 34)
+                } footer: {
+                    Button("OK") { turnedOffFor = nil }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderless)
+                        .tint(theme.accent)
+                }
+            }
+        }
+    }
+
+    private func card<Icon: View, Footer: View>(title: String, message: String, tint: Color, @ViewBuilder icon: () -> Icon,
+                                                @ViewBuilder footer: () -> Footer = { EmptyView() }) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            icon()
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.subheadline.weight(.semibold))
+                    Text(message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                footer()
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlass(cornerRadius: 18, tint: tint)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 #if DEBUG
 /// Screens of this feature without taps, for Simulator checks against a pretend PC (Debug builds only).
 ///
@@ -468,6 +580,11 @@ struct SecondScreenView: View {
 ///   pairs Orbit with Sunshine first (the companion types the PIN), `start` does what Start does, `close` closes the stream
 ///   as its Close button does, `off` is Turn Off, `revert` is Undo Orbit's Changes, `refresh` reads the PC again. Each
 ///   step prints the session's state.
+/// - `library`: the Stream tab (with Second Screen's left-on banner); `ORBIT_SELFTEST_ACTION=guard,off` (in order): `guard`
+///   asks to stream Desktop as tapping it does (the confirmation shows while the second screen is on), `off` is the
+///   banner's Turn Off.
+/// - `tools`: the Tools tab (the Second Screen tile's badge).
+/// - `fill` also takes `start`: Start Sunshine (with Sunshine stopped on the PC).
 /// `ORBIT_SELFTEST_SCROLL_Y=<points>|top|bottom` scrolls the screen there once it shows and after every step, for
 /// screenshots of the lower parts.
 enum OrbitStreamDisplaySelfTest {
@@ -536,6 +653,7 @@ private struct OrbitStreamDisplaySelfTestScreen: View {
                                              optimizeGameSettings: $store.settings.optimizeGameSettings, accent: theme.accent)
             }
             .task {
+                await vm.fetchSunshineApps()   // whether the companion can start Sunshine (`sunshineInfo`)
                 fill.configure(vm.streamDisplayContext)
                 await fill.load(force: true)
                 await OrbitStreamDisplaySelfTest.applyScroll()
@@ -552,6 +670,7 @@ private struct OrbitStreamDisplaySelfTestScreen: View {
                     case "only": await fill.setOnlyDisplay(true)
                     case "off": await fill.turnOff()
                     case "revert": await fill.revert()
+                    case "start": await fill.startSunshine()
                     default: break
                     }
                     let fills = fill.status?.fillsScreen(size: size, refreshRate: store.settings.frameRate) == true
@@ -559,8 +678,55 @@ private struct OrbitStreamDisplaySelfTestScreen: View {
                     await OrbitStreamDisplaySelfTest.applyScroll()
                 }
             }
+        case "library":
+            OrbitStreamDisplayLibrarySelfTestScreen(vm: vm)
+        case "tools":
+            CompanionToolsView(vm: vm)
+                .task {
+                    try? await Task.sleep(for: .seconds(5))   // the light read arrives
+                    print("selftest: tools · second screen on \(OrbitSecondScreenSession.shared.isActiveOnPC(vm.streamDisplayContext.pcID))")
+                    await OrbitStreamDisplaySelfTest.applyScroll()
+                }
         default:
             OrbitSecondScreenSelfTestScreen(vm: vm)
+        }
+    }
+}
+
+/// The Stream tab with scripted steps (`OrbitStreamDisplaySelfTest`, mode `library`).
+private struct OrbitStreamDisplayLibrarySelfTestScreen: View {
+    @ObservedObject var vm: OrbitViewModel
+    @StateObject private var host = MoonlightHostCoordinator()
+    @State private var check: OrbitSecondScreenStreamCheck?
+
+    var body: some View {
+        GameLibraryView(vm: vm)
+            .secondScreenStreamGuard($check, context: vm.streamDisplayContext, host: host)
+            .task { await run() }
+    }
+
+    private func run() async {
+        await vm.fetchSunshineApps()   // Sunshine's ports on this PC (`sunshineInfo`)
+        host.configure(pcID: vm.selectedPCID, address: vm.cleanHost(),
+                       httpPort: vm.sunshineInfo?.httpPort ?? 47989, httpsPort: vm.sunshineInfo?.httpsPort ?? 47984)
+        await host.refresh()
+        let session = OrbitSecondScreenSession.shared
+        try? await Task.sleep(for: .seconds(4))   // the library's own light read arrives
+        let pcID = vm.streamDisplayContext.pcID
+        print("selftest: library · left on \(session.isLeftOn(pcID)) · check \(session.checkNormalStream(pcID: pcID))")
+        for action in (ProcessInfo.processInfo.environment["ORBIT_SELFTEST_ACTION"] ?? "").split(separator: ",").map(String.init) {
+            try? await Task.sleep(for: .seconds(3))
+            switch action {
+            case "guard":
+                check = OrbitSecondScreenStreamCheck(pcID: pcID) { print("selftest: guard → Stream Anyway") }
+                print("selftest: guard → \(check.map { "\($0.check)" } ?? "go")")
+            case "off":
+                session.stop(context: vm.streamDisplayContext, host: host)
+                for _ in 0..<400 where session.isBusy { try? await Task.sleep(for: .milliseconds(500)) }
+                print("selftest: off → left on \(session.isLeftOn(pcID)) · problem \(session.problem.map { "\($0.title): \($0.message)" } ?? "none") · notice \(session.notice?.message ?? "none") · this screen's Sunshine shows \(host.runningAppTitle ?? "nothing") running")
+            default:
+                break
+            }
         }
     }
 }

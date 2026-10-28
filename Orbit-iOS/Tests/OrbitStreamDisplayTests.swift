@@ -1,7 +1,10 @@
 import Foundation
 
-// Checks for Shared/OrbitStreamDisplay.swift, run by Tests/check_stream_display.py:
-//   --unit                                    model, checks, bodies and error wording
+// Checks for Shared/OrbitStreamDisplay.swift and Shared/OrbitStreamDisplayModels.swift, run by
+// Tests/check_stream_display.py:
+//   --unit                                    model, checks, bodies and error wording, then the Fill Screen model
+//                                             and the Second Screen session driven against a scripted PC
+//                                             (OrbitStreamDisplayFlowChecks.swift)
 //   --live <port> <token> <fingerprint> <command…>   one request against the agent over pinned TLS,
 //                                             printing what the apps would see as JSON
 // Commands: features | status W H [R] | modes W H R | fill on|off|only W H | second on W H R left|right | second off W H | revert W H
@@ -20,8 +23,9 @@ struct OrbitStreamDisplayChecks {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.first == "--unit" {
             unitChecks()
+            await OrbitStreamDisplayFlowChecks.run()
             if failures > 0 { exit(1) }
-            print("PASS: stream display model, checks, request bodies and error wording")
+            print("PASS: stream display model, checks, request bodies and error wording; Fill Screen model and Second Screen session flows")
             return
         }
         if arguments.first == "--live", arguments.count >= 5 {
@@ -96,9 +100,37 @@ struct OrbitStreamDisplayChecks {
         var rejected = ready()
         rejected.sunshineVersion = nil
         rejected.sunshineSupported = nil
+        rejected.sunshineRunning = true
         rejected.reason = "Sunshine rejected the saved web UI login. Save it again in Orbit."
         let rejectedLogin = rejected.fillChecks(size: phone).first
-        expect(rejectedLogin?.state == .unknown && rejectedLogin?.detail == rejected.reason, "a saved login Sunshine refuses is not shown as done")
+        expect(rejectedLogin?.state == .missing && rejectedLogin?.detail == rejected.reason, "a saved login Sunshine refuses is asked for again")
+        expect(rejected.loginRejected && rejected.loginUnconfirmed && !rejected.sunshineStopped, "a refused login reads as refused")
+        expect(rejected.fillShortfall(size: phone, pcName: "PC") == "Sunshine on PC didn't accept the saved login.", "shortfall: refused login")
+        expect(rejected.secondScreenBlocker == "Save your Sunshine login again first: Sunshine didn't accept it.", "a refused login blocks the second screen")
+
+        // Sunshine stopped: the login may be fine, so nobody is asked to type it again.
+        var stopped = ready()
+        stopped.sunshineVersion = nil
+        stopped.sunshineSupported = nil
+        stopped.sunshineRunning = false
+        stopped.fillReady = false
+        stopped.reason = "Could not reach Sunshine's web UI on this PC. Make sure Sunshine is running, then try again."
+        let stoppedChecks = stopped.fillChecks(size: phone)
+        expect(stopped.sunshineStopped && !stopped.loginRejected && !stopped.loginUnconfirmed, "Sunshine stopped is told apart from a refused login")
+        expect(stoppedChecks[0].kind == .login && stoppedChecks[0].state == .unknown && stoppedChecks[0].detail?.contains("once Sunshine runs") == true,
+               "Sunshine stopped: the login row waits, without the form")
+        expect(stoppedChecks[1].kind == .sunshine && stoppedChecks[1].state == .missing && stoppedChecks[1].title == "Sunshine running on the PC",
+               "Sunshine stopped: the Sunshine row says so")
+        expect(stopped.fillShortfall(size: phone, pcName: "PC") == "Sunshine isn't running on PC.", "shortfall: Sunshine first")
+        expect(stopped.secondScreenBlocker == "Start Sunshine on the PC first.", "Sunshine stopped blocks the second screen")
+        expect(stopped.pcNote == nil, "Sunshine stopped has its own row, not a note")
+        // Sunshine runs, but its web UI does not answer the PC: neither the login's fault nor a stopped Sunshine.
+        var unreachable = stopped
+        unreachable.sunshineRunning = true
+        expect(!unreachable.sunshineStopped && unreachable.loginUnconfirmed && !unreachable.loginRejected, "an unreachable web UI is not a refused login")
+        expect(unreachable.fillChecks(size: phone)[0].state == .unknown && unreachable.fillChecks(size: phone)[0].detail == unreachable.reason,
+               "an unreachable web UI shows the PC's sentence without the form")
+        expect(unreachable.fillShortfall(size: phone, pcName: "PC") == "Orbit can't reach Sunshine's web UI on PC.", "shortfall: unreachable web UI")
 
         var old = ready()
         old.sunshineSupported = false
@@ -116,6 +148,13 @@ struct OrbitStreamDisplayChecks {
         sudo.virtualDisplay.installed = true
         sudo.virtualDisplay.driver = "sudovda"
         expect(sudo.offersInstallCommand && sudo.driverProblem?.contains("SudoVDA") == true, "SudoVDA: explain and offer VDD")
+        // Under the Start button the driver problem is a sentence of its own (the row above ends with the command).
+        for (label, status) in [("no driver", none), ("SudoVDA", sudo)] {
+            let blocker = status.secondScreenBlocker ?? ""
+            expect(blocker.hasSuffix(".") && !blocker.hasSuffix(":") && blocker.contains("The command is above"),
+                   "\(label): the Start caption is a full sentence")
+        }
+        expect(none.driverProblem?.hasSuffix(":") == true, "the driver row still leads into the command")
         var disabled = ready()
         disabled.virtualDisplay.deviceStatus = "disabled"
         expect(!disabled.driverUsable && !disabled.offersInstallCommand && disabled.driverProblem?.contains("Device Manager") == true,
@@ -197,6 +236,45 @@ struct OrbitStreamDisplayChecks {
         expect(unknown.secondScreenChecks.last?.state == .unknown, "an unknown stream state is not shown as done")
         expect(ready().secondScreenChecks.last?.state == .done && ready().secondScreenBlocker == nil, "an idle, ready PC can start")
 
+        // Messages after a change.
+        var secondOn = ready()
+        secondOn.secondScreen.active = true
+        expect(OrbitStreamDisplayMessages.fillOff(display: secondOn, pcName: "PC").contains("Second Screen is still on"),
+               "Fill Screen off while the second screen stays on says streams still show the extra display")
+        expect(OrbitStreamDisplayMessages.fillOff(display: ready(), pcName: "PC") == "Fill Screen is off on PC. Sunshine streams its main monitor again.",
+               "Fill Screen off")
+        var offResult = OrbitStreamDisplayResult()
+        offResult.changed = true
+        var fillUnder = ready()
+        fillUnder.fill.enabled = true
+        offResult.display = fillUnder
+        expect(OrbitStreamDisplayMessages.secondScreenOff(offResult, before: nil, pcName: "PC").contains("back to Fill Screen"), "second screen off with Fill Screen on")
+        offResult.display = ready()
+        offResult.warning = "Sunshine keeps the display it uses now."
+        expect(OrbitStreamDisplayMessages.secondScreenOff(offResult, before: nil, pcName: "PC")
+               == "The second screen is off. Sunshine on PC streams the main monitor again. Sunshine keeps the display it uses now.",
+               "second screen off, with the PC's caveat")
+        expect(OrbitSecondScreenScaleTip.message(device: "this iPhone").contains("Scale to 200%"), "the scale tip names the setting")
+
+        // Reads that belong to one PC.
+        var reads = OrbitStatusReads()
+        expect(reads.select("A") && !reads.select("A"), "selecting the same PC again changes nothing")
+        let first = reads.begin()
+        expect(first != nil && reads.isReading && reads.begin() == nil, "one read at a time unless forced")
+        let forced = reads.begin(force: true)
+        expect(forced != nil, "a forced read starts next to it")
+        if let first, let forced {
+            reads.applied(forced)
+            expect(!reads.isNewest(first) && reads.isCurrent(first), "an older answer never replaces a newer one")
+            expect(reads.select("B") && !reads.isReading && !reads.isCurrent(first), "another PC: earlier reads no longer count")
+            reads.end(first)
+            expect(!reads.isReading, "an earlier PC's read ending changes nothing")
+            let next = reads.begin()
+            expect(next != nil, "the next PC's first read starts at once")
+        }
+        expect(OrbitStreamDisplayErrors.isCancellation(URLError(.cancelled)) && OrbitStreamDisplayErrors.isCancellation(CancellationError())
+               && !OrbitStreamDisplayErrors.isCancellation(URLError(.timedOut)), "cancelled requests are told apart")
+
         // Demo data.
         let demo = OrbitStreamDisplayStatus.demo(listing: [phone], fillOn: true)
         expect(demo.fillsScreen(size: phone) && demo.fillsScreen(size: phone, refreshRate: 120), "demo: set up after Set Up This PC")
@@ -205,6 +283,12 @@ struct OrbitStreamDisplayChecks {
         expect(OrbitStreamDisplayStatus.demo(listing: [phone, phone]).virtualDisplay.resolutions.filter { $0 == phone.key }.count == 1, "demo: sizes listed once")
         expect(!OrbitStreamDisplayStatus.demo().fillsScreen(size: phone), "demo: not set up at first")
         expect(OrbitStreamDisplayStatus.demo(secondScreenOn: true, position: "left").secondScreen.position == "left", "demo second screen")
+        let demoOn = OrbitStreamDisplayStatus.demo(fillOn: true).demoWithSecondScreen(true, position: "left")
+        expect(demoOn.secondScreen.active && demoOn.secondScreen.position == "left" && demoOn.config.configurationOption == "ensure_active",
+               "demo: the second screen turns on")
+        let demoOff = demoOn.demoWithSecondScreen(false)
+        expect(!demoOff.secondScreen.active && demoOff.fill.enabled && demoOff.config.configurationOption == "ensure_primary",
+               "demo: turning it off goes back to Fill Screen")
 
         // Errors in plain words.
         let conflict = OrbitStreamDisplayErrors.describe(OrbitError(message: "Someone is streaming from this PC right now.", statusCode: 409))
@@ -251,6 +335,9 @@ struct OrbitStreamDisplayChecks {
             "savedConfig": status.savedConfig.available,
             "reason": status.reason as Any,
             "pcNote": status.pcNote as Any,
+            "sunshineRunning": status.sunshineRunning as Any,
+            "sunshineStopped": status.sunshineStopped,
+            "loginRejected": status.loginRejected,
             "resolutions": status.virtualDisplay.resolutions,
         ]
         if let size {
@@ -295,31 +382,33 @@ struct OrbitStreamDisplayChecks {
     static func live(port: Int, token: String, fingerprint: String, command: [String]) async {
         do {
             let client = try OrbitAPIClient(host: "127.0.0.1", port: port, token: token, fingerprint: fingerprint)
+            // Through the service the screens use (Shared/OrbitStreamDisplay.swift), so its mapping is checked too.
+            let pc: any OrbitStreamDisplayService = OrbitStreamDisplayHTTPService(client: client)
             switch command.first {
             case "features":
-                let features = try await OrbitStreamDisplayAPI.features(client)
+                let features = try await pc.features()
                 emit(json: features.map { ["features": $0.sorted()] } ?? ["olderAgent": true])
             case "status":
-                let status = try await OrbitStreamDisplayAPI.status(client)
+                let status = try await pc.status()
                 emit(json: summary(status, size: command.count >= 3 ? size(command[1], command[2]) : nil, rate: command.count >= 4 ? Int(command[3]) : nil))
             case "modes":
                 guard command.count >= 4, let target = size(command[1], command[2]), let rate = Int(command[3]) else { exit(2) }
-                emit(json: resultJSON(try await OrbitStreamDisplayAPI.addMode(client, size: target, refreshRate: rate), size: target, rate: rate))
+                emit(json: resultJSON(try await pc.addMode(size: target, refreshRate: rate), size: target, rate: rate))
             case "fill":
                 guard command.count >= 4 else { exit(2) }
-                let result = try await OrbitStreamDisplayAPI.setFill(client, enabled: command[1] != "off", onlyDisplay: command[1] == "only")
+                let result = try await pc.setFill(enabled: command[1] != "off", onlyDisplay: command[1] == "only")
                 emit(json: resultJSON(result, size: size(command[2], command[3])))
             case "second":
                 if command.count >= 6, command[1] == "on", let target = size(command[2], command[3]), let rate = Int(command[4]) {
-                    let result = try await OrbitStreamDisplayAPI.setSecondScreen(client, enabled: true, size: target, refreshRate: rate, position: command[5])
+                    let result = try await pc.setSecondScreen(enabled: true, size: target, refreshRate: rate, position: command[5])
                     emit(json: resultJSON(result, size: target))
                 } else if command.count >= 4, command[1] == "off" {
-                    let result = try await OrbitStreamDisplayAPI.setSecondScreen(client, enabled: false, size: nil, refreshRate: 60, position: "right")
+                    let result = try await pc.setSecondScreen(enabled: false, size: nil, refreshRate: 60, position: "right")
                     emit(json: resultJSON(result, size: size(command[2], command[3])))
                 } else { exit(2) }
             case "revert":
                 guard command.count >= 3 else { exit(2) }
-                emit(json: resultJSON(try await OrbitStreamDisplayAPI.revert(client), size: size(command[1], command[2])))
+                emit(json: resultJSON(try await pc.revert(), size: size(command[1], command[2])))
             default:
                 exit(2)
             }

@@ -1,8 +1,12 @@
-"""Check Fill Screen setup and Second Screen (Shared/OrbitStreamDisplay.swift) against the agent.
+"""Check Fill Screen setup and Second Screen (Shared/OrbitStreamDisplay.swift, Shared/OrbitStreamDisplayModels.swift)
+against the agent.
 
-1. Compiles Shared/OrbitStreamDisplay.swift with the production OrbitAPIClient.swift and OrbitError.swift
-   plus Tests/OrbitStreamDisplayTests.swift, and runs the model checks (`--unit`): lenient decoding,
-   request bodies, the readiness checks and their wording, plain-words errors.
+1. Compiles Shared/OrbitStreamDisplay.swift and Shared/OrbitStreamDisplayModels.swift with the production
+   OrbitAPIClient.swift and OrbitError.swift plus Tests/OrbitStreamDisplayTests.swift and
+   Tests/OrbitStreamDisplayFlowChecks.swift, and runs the model checks (`--unit`): lenient decoding, request
+   bodies, the readiness checks and their wording, plain-words errors; then the Fill Screen model and the Second
+   Screen session against a scripted PC (start, stop, failures, PC switches during reads, cancelled reads, the
+   Desktop quit rule, normal streams while a second screen runs or was left on, demo mode).
 2. When the agent has orbit_stream_display.py and its Python dependencies are installed (run with the
    agent's venv), serves the real `/api/stream/display` router over loopback TLS, backed by the agent
    tests' fakes for Sunshine, the Virtual Display Driver and Windows (nothing on this Mac is touched),
@@ -33,9 +37,11 @@ def compile_checks(directory):
     subprocess.run([
         "swiftc", "-parse-as-library",
         str(ROOT / "Orbit-iOS/Shared/OrbitStreamDisplay.swift"),
+        str(ROOT / "Orbit-iOS/Shared/OrbitStreamDisplayModels.swift"),
         str(ROOT / "Orbit-iOS/Orbit/OrbitAPIClient.swift"),
         str(ROOT / "Orbit-iOS/Shared/OrbitError.swift"),
         str(ROOT / "Orbit-iOS/Tests/OrbitStreamDisplayTests.swift"),
+        str(ROOT / "Orbit-iOS/Tests/OrbitStreamDisplayFlowChecks.swift"),
         "-o", str(binary),
     ], check=True)
     return binary
@@ -139,10 +145,33 @@ def agent_round_trip(binary, directory):
             check(refused.get("error", {}).get("status") == 428 and refused["error"]["title"] == "Sunshine login needed"
                   and "login" in refused["error"]["message"], "fill without a login is 428 in plain words", refused)
 
+            # Login saved, Sunshine stopped: the login may be fine, so the app asks to start Sunshine, not for the login.
+            sunshine.login = True
+            ps.sunshine_running = False
+            sunshine.unreachable = True
+            status = run(port, "status", *PHONE)
+            check(status["sunshineRunning"] is False and status["sunshineStopped"] and not status["loginRejected"]
+                  and status["checks"][:2] == ["login=unknown", "sunshine=missing"]
+                  and status["shortfall"] == "Sunshine isn't running on Test-PC."
+                  and status["secondScreenBlocker"] == "Start Sunshine on the PC first.", "Sunshine stopped is not a login problem", status)
+            ps.sunshine_running = True
+            sunshine.unreachable = False
+
+            # Sunshine runs but turns the saved login down: the app asks for it again.
+            original_config = sunshine.config
+
+            def rejecting():
+                raise sd.DisplaySetupError(428, sd.LOGIN_REJECTED)
+
+            sunshine.config = rejecting
+            status = run(port, "status", *PHONE)
+            check(status["loginRejected"] and not status["sunshineStopped"] and status["checks"][0] == "login=missing"
+                  and status["shortfall"] == "Sunshine on Test-PC didn't accept the saved login.", "a refused login is asked for again", status)
+            sunshine.config = original_config
+
             # Login saved, but Sunshine's log does not list the virtual display (Sunshine started before the
             # driver): no row of its own explains that, so the PC's sentence is the app's note. It does not block
             # the second screen, whose start restarts Sunshine once to find the display.
-            sunshine.login = True
             original_log = sunshine.log_text
             sunshine.log_text = fakes.LOG_NO_VDD
             status = run(port, "status", *PHONE)
@@ -244,7 +273,8 @@ def agent_round_trip(binary, directory):
         older.close()
 
     print("PASS: the app's stream display requests work against the agent over pinned TLS: status, sizes, Fill Screen, "
-          "the 428/409 sentences, a running app, Second Screen on/move/off, revert, no driver and an older agent")
+          "the 428/409 sentences, Sunshine stopped vs a refused login, a running app, Second Screen on/move/off, revert, "
+          "no driver and an older agent")
 
 
 def main():

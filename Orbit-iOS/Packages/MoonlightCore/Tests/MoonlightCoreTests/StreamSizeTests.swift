@@ -56,6 +56,19 @@ final class StreamSizeTests: XCTestCase {
         XCTAssertTrue(json.contains(#""aspect":"native""#), json)
     }
 
+    func testMutingThisDeviceIsSetPerStreamAndNeverSaved() throws {
+        // Orbit's second screen keeps the PC's sound on the PC and plays none of it here, for that stream only.
+        var settings = Settings()
+        XCTAssertFalse(settings.muteLocalAudio)
+        settings.playAudioOnHost = true
+        settings.muteLocalAudio = true
+        let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
+        XCTAssertFalse(json.contains("muteLocalAudio"), json)
+        let saved = try JSONDecoder().decode(Settings.self, from: Data(json.utf8))
+        XCTAssertFalse(saved.muteLocalAudio, "a later stream with the saved settings plays its audio again")
+        XCTAssertTrue(saved.playAudioOnHost)
+    }
+
     // MARK: 16:9
 
     func testWidescreenPresetsAreSixteenByNineOnEveryScreen() {

@@ -51,6 +51,20 @@ final class StreamLifecycleTests: XCTestCase {
         XCTAssertNil(gamepad.valueChangedHandler)
     }
 
+    // MARK: Audio
+
+    @MainActor
+    func testAMutedOrHeadlessStreamPlaysNoAudioHere() {
+        let session = MoonlightStreamSession()
+        func core(headless: Bool, silent: Bool) -> MoonlightSessionCore {
+            MoonlightSessionCore(session: session, renderer: session.renderer, box: MoonlightConnectionBox(), framePacing: false,
+                                 headless: headless, silent: silent)
+        }
+        XCTAssertFalse(core(headless: false, silent: false).silent, "a normal stream plays its audio")
+        XCTAssertTrue(core(headless: false, silent: true).silent, "muteLocalAudio: received, not played")
+        XCTAssertTrue(core(headless: true, silent: false).silent, "a headless sign-in stream never plays audio")
+    }
+
     // MARK: Mac keyboard chords
 
     #if os(macOS)

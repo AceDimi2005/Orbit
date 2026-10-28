@@ -5,7 +5,7 @@ import Foundation
 // and the checks the apps show from it.
 //
 // Foundation only. Compiled into the iPhone/iPad and Mac apps, and by Tests/check_stream_display.py next
-// to OrbitAPIClient.swift and OrbitError.swift, so keep it free of other app types.
+// to OrbitAPIClient.swift, OrbitError.swift and OrbitStreamDisplayModels.swift, so keep it free of other app types.
 
 enum OrbitStreamDisplayFeature {
     /// Fill Screen setup: GET /api/stream/display, POST …/modes, …/fill, …/revert.
@@ -340,6 +340,164 @@ enum OrbitStreamDisplayAPI {
     }
 }
 
+// MARK: - The PC, as the screens use it
+
+/// Everything the Fill Screen setup and Second Screen ask of the PC. `OrbitStreamDisplayHTTPService` talks to the
+/// companion; the checks in Tests/ replace it with a scripted PC.
+protocol OrbitStreamDisplayService: AnyObject, Sendable {
+    /// GET /api/capabilities: the feature strings, or nil for an agent older than capabilities (404).
+    func features() async throws -> Set<String>?
+    func status() async throws -> OrbitStreamDisplayStatus
+    func addMode(size: OrbitDisplaySize, refreshRate: Int) async throws -> OrbitStreamDisplayResult
+    func setFill(enabled: Bool, onlyDisplay: Bool) async throws -> OrbitStreamDisplayResult
+    func setSecondScreen(enabled: Bool, size: OrbitDisplaySize?, refreshRate: Int, position: String) async throws -> OrbitStreamDisplayResult
+    func revert() async throws -> OrbitStreamDisplayResult
+    /// Saves Sunshine's web UI login on the PC (POST /api/sunshine/credentials, the route pairing uses).
+    func saveSunshineLogin(username: String, password: String) async throws
+    /// Starts Sunshine on the PC (POST /api/sunshine/start).
+    func startSunshine() async throws
+}
+
+final class OrbitStreamDisplayHTTPService: OrbitStreamDisplayService, @unchecked Sendable {
+    let client: OrbitAPIClient
+
+    init(client: OrbitAPIClient) { self.client = client }
+
+    func features() async throws -> Set<String>? { try await OrbitStreamDisplayAPI.features(client) }
+    func status() async throws -> OrbitStreamDisplayStatus { try await OrbitStreamDisplayAPI.status(client) }
+
+    func addMode(size: OrbitDisplaySize, refreshRate: Int) async throws -> OrbitStreamDisplayResult {
+        try await OrbitStreamDisplayAPI.addMode(client, size: size, refreshRate: refreshRate)
+    }
+
+    func setFill(enabled: Bool, onlyDisplay: Bool) async throws -> OrbitStreamDisplayResult {
+        try await OrbitStreamDisplayAPI.setFill(client, enabled: enabled, onlyDisplay: onlyDisplay)
+    }
+
+    func setSecondScreen(enabled: Bool, size: OrbitDisplaySize?, refreshRate: Int, position: String) async throws -> OrbitStreamDisplayResult {
+        try await OrbitStreamDisplayAPI.setSecondScreen(client, enabled: enabled, size: size, refreshRate: refreshRate, position: position)
+    }
+
+    func revert() async throws -> OrbitStreamDisplayResult { try await OrbitStreamDisplayAPI.revert(client) }
+
+    func saveSunshineLogin(username: String, password: String) async throws {
+        struct Login: Encodable { let username: String; let password: String }
+        struct Saved: Decodable { let status: String }
+        let _: Saved = try await client.send("/api/sunshine/credentials", body: Login(username: username, password: password))
+    }
+
+    func startSunshine() async throws {
+        _ = try await client.data("/api/sunshine/start", method: "POST")
+    }
+}
+
+/// The PC a stream-display screen talks to. `service()` builds a pinned client for it when needed.
+struct OrbitStreamDisplayContext {
+    let pcID: String
+    let pcName: String
+    let isDemo: Bool
+    let isOnline: Bool
+    /// A PC is paired (or demo mode is on). Without one, Stream Settings only lists the steps.
+    let hasPC: Bool
+    /// The companion can start Sunshine on the PC (`/api/sunshine/info` `canStart`).
+    var canStartSunshine = false
+    let makeClient: @MainActor () throws -> OrbitAPIClient
+    /// Replaces the companion's HTTP API (the checks in Tests/ use a scripted PC).
+    var makeService: (@MainActor () throws -> any OrbitStreamDisplayService)? = nil
+
+    init(pcID: String, pcName: String, isDemo: Bool, isOnline: Bool, hasPC: Bool, canStartSunshine: Bool = false,
+         makeClient: @escaping @MainActor () throws -> OrbitAPIClient, makeService: (@MainActor () throws -> any OrbitStreamDisplayService)? = nil) {
+        self.pcID = pcID
+        self.pcName = pcName
+        self.isDemo = isDemo
+        self.isOnline = isOnline
+        self.hasPC = hasPC
+        self.canStartSunshine = canStartSunshine
+        self.makeClient = makeClient
+        self.makeService = makeService
+    }
+
+    /// Changes when the screens must forget what they read (another PC, demo mode, back online).
+    var identity: String { "\(pcID)|\(isDemo)|\(isOnline)|\(hasPC)" }
+
+    @MainActor
+    func service() throws -> any OrbitStreamDisplayService {
+        if let makeService { return try makeService() }
+        return OrbitStreamDisplayHTTPService(client: try makeClient())
+    }
+}
+
+/// `GET /api/capabilities` per PC for these screens: 10 minutes, 2 minutes for an older agent (404).
+@MainActor
+enum OrbitStreamDisplayFeatureCache {
+    private static var entries: [String: (features: Set<String>?, at: Date)] = [:]
+
+    static func features(for pcID: String, service: any OrbitStreamDisplayService, force: Bool = false) async throws -> Set<String>? {
+        if !force, let entry = entries[pcID], Date().timeIntervalSince(entry.at) < (entry.features == nil ? 120 : 600) { return entry.features }
+        let found = try await service.features()
+        entries[pcID] = (found, Date())
+        return found
+    }
+
+    /// For the checks in Tests/.
+    static func forget() { entries = [:] }
+}
+
+/// Which PC a screen's reads belong to and which reads are still running, so a slow read for one PC never lands
+/// on the next PC's screen, and never keeps the next PC's first read from starting.
+struct OrbitStatusReads: Equatable {
+    struct Token: Equatable {
+        fileprivate let generation: Int
+        fileprivate let id: Int
+    }
+
+    private(set) var pcID: String?
+    private var generation = 0
+    private var nextID = 0
+    private var running: Set<Int> = []
+    /// The newest read whose answer was shown.
+    private var appliedID = 0
+
+    /// A read for the current PC is running.
+    var isReading: Bool { !running.isEmpty }
+
+    /// Reads now belong to `pcID`. True when that is another PC than before: the caller forgets what it showed,
+    /// and reads still running for the earlier PC no longer count.
+    mutating func select(_ pcID: String) -> Bool {
+        guard pcID != self.pcID else { return false }
+        self.pcID = pcID
+        generation += 1
+        running = []
+        return true
+    }
+
+    /// Starts a read for the current PC: nil when one already runs (unless `force`).
+    mutating func begin(force: Bool = false) -> Token? {
+        if isReading, !force { return nil }
+        nextID += 1
+        running.insert(nextID)
+        return Token(generation: generation, id: nextID)
+    }
+
+    /// The read still belongs to the current PC.
+    func isCurrent(_ token: Token) -> Bool { token.generation == generation }
+
+    /// The read belongs to the current PC and no read started after it has been shown yet: a slow, older answer
+    /// never replaces a newer one.
+    func isNewest(_ token: Token) -> Bool { token.generation == generation && token.id > appliedID }
+
+    /// The read's answer is shown.
+    mutating func applied(_ token: Token) {
+        guard token.generation == generation else { return }
+        appliedID = max(appliedID, token.id)
+    }
+
+    mutating func end(_ token: Token) {
+        guard token.generation == generation else { return }
+        running.remove(token.id)
+    }
+}
+
 // MARK: - Checks shown in the apps
 
 /// One line of "what this needs", already worded for the screen.
@@ -385,6 +543,20 @@ extension OrbitStreamDisplayStatus {
     /// Something is running in Sunshine right now, so it cannot restart.
     var isBusy: Bool { streamActive == true || appRunning == true }
 
+    /// Sunshine isn't running on the PC (the PC found no Sunshine process, so it could not read its settings).
+    var sunshineStopped: Bool { sunshineRunning == false && sunshineVersion == nil }
+
+    /// A login is saved, but Orbit could not read Sunshine's settings with it although Sunshine runs.
+    var loginUnconfirmed: Bool { loginSaved && sunshineVersion == nil && !sunshineStopped }
+
+    /// Sunshine turned the saved login down, so it has to be saved again. The PC words that as a rejected
+    /// login; its other reasons (the web UI unreachable, or refusing requests from the PC) are not the login's fault.
+    var loginRejected: Bool {
+        guard loginUnconfirmed else { return false }
+        guard let text = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return true }
+        return text.localizedCaseInsensitiveContains("login")
+    }
+
     /// The PC's own reason when no other row explains it: the login, Sunshine and the driver are fine, yet
     /// Fill Screen is not ready (Sunshine does not list the virtual display yet, the driver's settings file is
     /// missing, …). Problems that have a row of their own (login, Sunshine, driver) are left out.
@@ -407,12 +579,30 @@ extension OrbitStreamDisplayStatus {
         return "Install the free Virtual Display Driver on the PC. In Terminal on the PC:"
     }
 
+    /// The driver problem as a sentence of its own, for under the Start button (the driver row above it shows the
+    /// install command).
+    var driverBlocker: String? {
+        if driverUsable { return nil }
+        if virtualDisplay.driver == "sudovda" {
+            return "Install the free Virtual Display Driver on the PC first: Orbit doesn't work with SudoVDA. The command is above."
+        }
+        if virtualDisplay.installed, virtualDisplay.deviceStatus == "disabled" {
+            return "Turn the Virtual Display Driver back on in Device Manager on the PC first."
+        }
+        if let error = virtualDisplay.settingsError, !error.isEmpty { return error }
+        return "Install the free Virtual Display Driver on the PC first. The command is above."
+    }
+
     /// True when the driver row should offer the install command.
     var offersInstallCommand: Bool {
         !driverUsable && (virtualDisplay.driver == nil || virtualDisplay.driver == "sudovda" || !virtualDisplay.installed)
     }
 
     private func sunshineCheck() -> OrbitDisplayCheck {
+        if sunshineStopped {
+            return OrbitDisplayCheck(kind: .sunshine, title: "Sunshine running on the PC",
+                                     detail: "Sunshine isn't running on the PC. Start it there, then check again.", state: .missing)
+        }
         let version = sunshineVersion.map { "Sunshine \($0)" }
         switch sunshineSupported {
         case true?:
@@ -426,17 +616,22 @@ extension OrbitStreamDisplayStatus {
         }
     }
 
-    /// Saved and accepted (Orbit read Sunshine's settings with it), saved but not working, or missing.
+    /// Saved and accepted (Orbit read Sunshine's settings with it), missing or turned down by Sunshine (`.missing`:
+    /// the screens offer the login form), or not known yet (Sunshine stopped or its web UI unreachable).
     private var loginCheck: OrbitDisplayCheck {
+        let title = "Sunshine login saved on the PC"
         if !loginSaved {
-            return OrbitDisplayCheck(kind: .login, title: "Sunshine login saved on the PC",
+            return OrbitDisplayCheck(kind: .login, title: title,
                                      detail: "Orbit uses Sunshine's web UI login to change its display settings. It stays on the PC.", state: .missing)
         }
-        if sunshineVersion == nil {
-            return OrbitDisplayCheck(kind: .login, title: "Sunshine login saved on the PC",
-                                     detail: reason ?? "Orbit couldn't sign in to Sunshine's web UI with it.", state: .unknown)
+        if sunshineVersion != nil { return OrbitDisplayCheck(kind: .login, title: title, detail: nil, state: .done) }
+        if sunshineStopped {
+            return OrbitDisplayCheck(kind: .login, title: title, detail: "Saved. Orbit checks it once Sunshine runs.", state: .unknown)
         }
-        return OrbitDisplayCheck(kind: .login, title: "Sunshine login saved on the PC", detail: nil, state: .done)
+        if loginRejected {
+            return OrbitDisplayCheck(kind: .login, title: title, detail: reason ?? "Sunshine didn't accept the saved login. Save it again.", state: .missing)
+        }
+        return OrbitDisplayCheck(kind: .login, title: title, detail: reason ?? "Orbit couldn't sign in to Sunshine's web UI with it.", state: .unknown)
     }
 
     private var driverCheck: OrbitDisplayCheck {
@@ -479,6 +674,9 @@ extension OrbitStreamDisplayStatus {
     func fillShortfall(size: OrbitDisplaySize, refreshRate: Int? = nil, pcName: String) -> String? {
         if fillsScreen(size: size, refreshRate: refreshRate) { return nil }
         if !loginSaved { return "Orbit needs your Sunshine login to set up \(pcName)." }
+        if sunshineStopped { return "Sunshine isn't running on \(pcName)." }
+        if loginRejected { return "Sunshine on \(pcName) didn't accept the saved login." }
+        if loginUnconfirmed { return "Orbit can't reach Sunshine's web UI on \(pcName)." }
         if sunshineSupported == false { return "Sunshine on \(pcName) is too old to switch displays." }
         if !driverUsable {
             return virtualDisplay.installed && virtualDisplay.deviceStatus == "disabled"
@@ -495,8 +693,10 @@ extension OrbitStreamDisplayStatus {
     /// itself (Sunshine not listing the driver yet) do not block; a running app or stream is shown apart.
     var secondScreenBlocker: String? {
         if !loginSaved { return "Save your Sunshine login on the PC first." }
+        if sunshineStopped { return "Start Sunshine on the PC first." }
+        if loginRejected { return "Save your Sunshine login again first: Sunshine didn't accept it." }
         if sunshineSupported == false { return "Update Sunshine on the PC to 2025.118 or newer." }
-        if !driverUsable { return driverProblem }
+        if !driverUsable { return driverBlocker }
         return nil
     }
 
@@ -523,6 +723,45 @@ extension OrbitStreamDisplayStatus {
     }
 }
 
+// MARK: - Messages after a change
+
+enum OrbitStreamDisplayMessages {
+    /// After Fill Screen is turned off (`display`: the PC's state afterwards).
+    static func fillOff(display: OrbitStreamDisplayStatus?, pcName: String) -> String {
+        if display?.secondScreen.active == true {
+            // The second screen keeps Sunshine on the virtual display (as an extra monitor) until it is turned off.
+            return "Fill Screen is off on \(pcName). Second Screen is still on, so streams show the extra display until you turn it off."
+        }
+        return "Fill Screen is off on \(pcName). Sunshine streams its main monitor again."
+    }
+
+    /// After the second screen is turned off; `before`: the PC's state before (Fill Screen may stay on underneath).
+    static func secondScreenOff(_ result: OrbitStreamDisplayResult, before: OrbitStreamDisplayStatus?, pcName: String) -> String {
+        let fillStaysOn = (result.display ?? before)?.fill.enabled == true
+        var message: String
+        if !result.changed {
+            message = "The second screen is off."
+        } else if fillStaysOn {
+            message = "The second screen is off. Sunshine on \(pcName) is back to Fill Screen for your streams."
+        } else {
+            message = "The second screen is off. Sunshine on \(pcName) streams the main monitor again."
+        }
+        if let warning = result.cleanWarning { message += " \(warning)" }
+        return message
+    }
+}
+
+/// Windows sizes text on the new display as for a desktop monitor, so it looks tiny on a phone, tablet or laptop screen.
+enum OrbitSecondScreenScaleTip {
+    /// Set once the tip was dismissed (it shows from the first start until then).
+    static let dismissedKey = "orbit.secondScreen.scaleTipDismissed"
+
+    /// `device`: "this iPhone", "this iPad", "this Mac".
+    static func message(device: String) -> String {
+        "Windows may size text on the new display for a desktop monitor, so it looks tiny on \(device). In Windows Settings › System › Display, select the new display and set Scale to 200%, or the largest it offers. Windows remembers it."
+    }
+}
+
 // MARK: - Plain-words errors
 
 struct OrbitStreamDisplayProblem: Equatable, Sendable {
@@ -538,6 +777,13 @@ enum OrbitStreamDisplayErrors {
         #else
         return "Update it from Settings › Check for PC Companion Update."
         #endif
+    }
+
+    /// The request was cancelled (the screen went away, or asked again): nothing went wrong on the PC, so
+    /// nothing is shown.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
     }
 
     /// `waitedForChange`: the request was one of the slow changes (an administrator prompt, a restart).
@@ -612,8 +858,30 @@ extension OrbitStreamDisplayStatus {
         }
         status.secondScreen.active = secondScreenOn
         status.secondScreen.position = secondScreenOn ? position : nil
+        status.secondScreen.placement = secondScreenOn ? "done" : nil
         status.fillReady = true
         status.installCommand = defaultInstallCommand
+        return status
+    }
+
+    /// Demo mode: the same sample PC with the second screen turned on (on `position`) or off again.
+    func demoWithSecondScreen(_ on: Bool, position: String = "right") -> OrbitStreamDisplayStatus {
+        var status = self
+        status.secondScreen.active = on
+        status.secondScreen.position = on ? position : nil
+        status.secondScreen.placement = on ? "done" : nil
+        if on {
+            status.config.outputName = virtualDisplay.deviceId
+            status.config.configurationOption = "ensure_active"
+            status.config.resolutionOption = "auto"
+            status.savedConfig.available = true
+        } else if fill.enabled {
+            status.config.configurationOption = fill.onlyDisplay ? "ensure_only_display" : "ensure_primary"
+            status.config.refreshRateOption = "auto"
+        } else {
+            status.config = SunshineConfig()
+            status.savedConfig.available = false
+        }
         return status
     }
 }

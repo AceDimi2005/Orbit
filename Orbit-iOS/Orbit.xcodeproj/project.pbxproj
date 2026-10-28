@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A60000000000000000000108 /* OrbitStreamDisplayModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* OrbitStreamDisplayModels.swift */; };
+		A20000000000000000000115 /* OrbitStreamDisplayModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000122 /* OrbitStreamDisplayModels.swift */; };
 		A60000000000000000000107 /* OrbitMacSecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000121 /* OrbitMacSecondScreenView.swift */; };
 		A20000000000000000000114 /* SecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* SecondScreenView.swift */; };
 		A60000000000000000000106 /* OrbitSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitSecondScreen.swift */; };
@@ -255,6 +257,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000122 /* OrbitStreamDisplayModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitStreamDisplayModels.swift; sourceTree = "<group>"; };
 		B20000000000000000000121 /* OrbitMacSecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacSecondScreenView.swift; sourceTree = "<group>"; };
 		B20000000000000000000120 /* SecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecondScreenView.swift; sourceTree = "<group>"; };
 		B2000000000000000000011F /* OrbitSecondScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSecondScreen.swift; sourceTree = "<group>"; };
@@ -557,6 +560,7 @@
 				B20000000000000000000117 /* OrbitDeckIntents.swift */,
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
 				B2000000000000000000011D /* OrbitStreamDisplay.swift */,
+				B20000000000000000000122 /* OrbitStreamDisplayModels.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -943,6 +947,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000115 /* OrbitStreamDisplayModels.swift in Sources */,
 				A20000000000000000000114 /* SecondScreenView.swift in Sources */,
 				A20000000000000000000113 /* OrbitSecondScreen.swift in Sources */,
 				A20000000000000000000112 /* OrbitStreamDisplaySetup.swift in Sources */,
@@ -1073,6 +1078,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A60000000000000000000108 /* OrbitStreamDisplayModels.swift in Sources */,
 				A60000000000000000000107 /* OrbitMacSecondScreenView.swift in Sources */,
 				A60000000000000000000106 /* OrbitSecondScreen.swift in Sources */,
 				A60000000000000000000105 /* OrbitStreamDisplaySetup.swift in Sources */,

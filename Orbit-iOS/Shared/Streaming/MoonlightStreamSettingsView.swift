@@ -222,6 +222,8 @@ struct MoonlightStreamSettingsView: View {
     var displaySetup: OrbitStreamDisplayContext? = nil
     var onDone: () -> Void
     @StateObject private var fillSetup = OrbitFillScreenSetupModel()
+    /// The Fill the Screen page is open (its Sunshine login form takes Return on the Mac).
+    @State private var fillPageOpen = false
 
     private var settings: Binding<MoonlightStreamSettings> { $store.settings }
     private var pixelSize: MoonlightStreamSize { store.settings.pixelSize(hostSupportsHEVC: hostSupportsHEVC) }
@@ -252,7 +254,17 @@ struct MoonlightStreamSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                #if os(macOS)
+                // A sheet's confirmation button takes Return before a text field does: on the Fill the Screen page,
+                // Done steps aside so Return in the Sunshine login form saves the login instead of closing the sheet.
+                if fillPageOpen {
+                    ToolbarItem(placement: .cancellationAction) { Button("Done") { onDone() } }
+                } else {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone() } }
+                }
+                #else
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { onDone() } }
+                #endif
             }
         }
         .tint(accent)
@@ -315,6 +327,8 @@ struct MoonlightStreamSettingsView: View {
                     NavigationLink {
                         MoonlightFillScreenSetupView(model: fillSetup, size: pixelSize, refreshRate: store.settings.frameRate,
                                                      optimizeGameSettings: settings.optimizeGameSettings, accent: accent)
+                            .onAppear { fillPageOpen = true }
+                            .onDisappear { fillPageOpen = false }
                     } label: {
                         MoonlightFillScreenStatusRow(model: fillSetup, size: pixelSize.displaySize, refreshRate: store.settings.frameRate)
                     }

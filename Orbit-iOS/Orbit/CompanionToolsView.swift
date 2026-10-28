@@ -172,6 +172,8 @@ struct CompanionToolsView: View {
             .sheet(isPresented: $showsSettings) { SettingsView(vm: vm, isPresentedAsSheet: true) }
             .sheet(isPresented: $showsDiscovery) { PCDiscoveryView(vm: vm) }
             .sheet(isPresented: $showsProPaywall) { OrbitProPaywallView() }
+            // The Second Screen tile says ON while the PC still has it on (also when another device turned it on).
+            .task(id: vm.streamDisplayContext.identity) { await secondScreen.checkIfLeftOn(context: vm.streamDisplayContext) }
             .sheet(isPresented: $showsStreamSettings) {
                 // Sized for the selected PC's codecs, as the library's sheet and the streams it starts are.
                 MoonlightStreamSettingsView(store: streamSettings, accent: theme.accent,

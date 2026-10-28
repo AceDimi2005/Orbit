@@ -11,45 +11,84 @@ extension OrbitMacViewModel {
     /// The selected PC, for the Fill Screen setup in Stream Settings and for Second Screen.
     var streamDisplayContext: OrbitStreamDisplayContext {
         OrbitStreamDisplayContext(pcID: isDemoMode ? "demo" : (currentPC?.id ?? ""), pcName: selectedPCName.isEmpty ? "your PC" : selectedPCName,
-                                  isDemo: isDemoMode, isOnline: metrics.isOnline, hasPC: isDemoMode || currentPC != nil, makeClient: { try self.client() })
+                                  isDemo: isDemoMode, isOnline: metrics.isOnline, hasPC: isDemoMode || currentPC != nil,
+                                  canStartSunshine: sunshineInfo?.canStart ?? false, makeClient: { try self.client() })
     }
 }
 
-/// The Stream page's entry point.
+/// The Stream page's entry point. It also warns while the PC still has the second screen on although this Mac does
+/// not stream it (left on by a stream that ended without turning it off, a quit app or another device): every stream
+/// from it then shows the extra display. Turn Off there is never Pro-gated: it only undoes Orbit's change.
 struct MacSecondScreenCard: View {
-    let pcName: String
-    /// `OrbitMacViewModel.streamDisplayContext.pcID`: shows "On" when that PC reports the second screen on.
-    var pcID: String = ""
+    let context: OrbitStreamDisplayContext
+    /// The Stream page's Sunshine host: Turn Off closes a Desktop session left running with it.
+    let host: MoonlightHostCoordinator
     var onOpen: () -> Void
     @ObservedObject private var session = OrbitSecondScreenSession.shared
     @Environment(\.macTheme) private var theme
 
+    private var pcName: String { context.pcName }
+    private var pcID: String { context.pcID }
+    private var leftOn: Bool { session.isLeftOn(pcID) && (context.isOnline || context.isDemo) }
+    private var stoppingHere: Bool {
+        if case .stopping = session.phase, session.sessionPCID == pcID { return true }
+        return false
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            MacIconBadge(systemName: "rectangle.on.rectangle", tint: .blue, size: 38, filled: session.isStreaming)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text("Second Screen").font(.subheadline.weight(.semibold))
-                    MacLabsBadge()
-                    if session.isStreaming {
-                        MacStatusPill(text: "On", tint: .mint, pulsing: true)
-                    } else if session.isBusy {
-                        MacStatusPill(text: "Working…", tint: theme.accent, pulsing: true)
-                    } else if session.isActiveOnPC(pcID) {
-                        MacStatusPill(text: "On", tint: .mint)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                MacIconBadge(systemName: "rectangle.on.rectangle", tint: leftOn ? .orange : .blue, size: 38, filled: session.isStreaming || leftOn)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text("Second Screen").font(.subheadline.weight(.semibold))
+                        MacLabsBadge()
+                        if session.isStreaming {
+                            MacStatusPill(text: "On", tint: .mint, pulsing: true)
+                        } else if session.isBusy {
+                            MacStatusPill(text: "Working…", tint: theme.accent, pulsing: true)
+                        } else if session.isActiveOnPC(pcID) {
+                            MacStatusPill(text: "On", tint: leftOn ? .orange : .mint)
+                        }
                     }
+                    Text("Use this Mac as an extra display for \(pcName): Windows gets a new monitor next to its own, shown here in full screen.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Use this Mac as an extra display for \(pcName): Windows gets a new monitor next to its own, shown here in full screen.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button(action: onOpen) { Label("Set Up…", systemImage: "rectangle.on.rectangle") }
+                    .buttonStyle(MacHoverButtonStyle(tint: .blue))
+                    .help("Use this Mac as a second screen for \(pcName) (Orbit Pro, Labs)")
             }
-            Spacer(minLength: 8)
-            Button(action: onOpen) { Label("Set Up…", systemImage: "rectangle.on.rectangle") }
-                .buttonStyle(MacHoverButtonStyle(tint: .blue))
-                .help("Use this Mac as a second screen for \(pcName) (Orbit Pro, Labs)")
+            if stoppingHere {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Turning off the second screen on \(session.sessionPCName)…").font(.caption).foregroundStyle(.secondary)
+                }
+            } else if leftOn {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Still on for \(pcName)").font(.caption.weight(.semibold))
+                        Text("Until it's turned off, streams from \(pcName) show its extra virtual display, not the main monitor.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if let problem = session.problem, session.sessionPCID == nil || session.sessionPCID == pcID {
+                            Text("\(problem.title): \(problem.message)").font(.caption).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Button { session.stop(context: context, host: host) } label: { Label("Turn Off", systemImage: "power") }
+                        .buttonStyle(MacHoverButtonStyle(tint: .orange))
+                        .disabled(!session.canTurnOff(pcID))
+                        .help("Turns the virtual display on \(pcName) off and puts Sunshine's display settings back")
+                }
+                .accessibilityElement(children: .contain)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .macGlass(cornerRadius: 18, tint: .blue)
+        .macGlass(cornerRadius: 18, tint: leftOn ? .orange : .blue)
+        .task(id: context.identity) { await session.checkIfLeftOn(context: context) }
     }
 }
 
@@ -77,6 +116,7 @@ struct MacSecondScreenSheet: View {
     @ObservedObject private var store = OrbitProStore.shared
     @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @AppStorage(OrbitSecondScreenPosition.storageKey) private var positionRaw = OrbitSecondScreenPosition.right.rawValue
+    @AppStorage(OrbitSecondScreenScaleTip.dismissedKey) private var scaleTipDismissed = false
     @Environment(\.macTheme) private var theme
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -127,7 +167,17 @@ struct MacSecondScreenSheet: View {
         }
         .frame(width: 640, height: 700)
         .background(theme.background)
-        .task(id: context.identity) { await reload(force: false) }
+        .task(id: context.identity) {
+            await reload(force: false)
+            // Stay current while the sheet is open (another device starting or ending a stream, say).
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard !Task.isCancelled else { break }
+                if store.isProUnlocked, !session.isBusy, !session.isStreaming, vm.metrics.isOnline, !vm.isDemoMode {
+                    await session.refresh(context: context, quiet: true)
+                }
+            }
+        }
         .confirmationDialog("Turn off the second screen?", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("Turn Off", role: .destructive) { session.stop(context: context, host: host) }
             Button("Cancel", role: .cancel) {}
@@ -148,6 +198,11 @@ struct MacSecondScreenSheet: View {
         }
     }
 
+    /// The Sunshine login form is on screen (the login is missing, or Sunshine turned it down).
+    private var showsLoginForm: Bool {
+        store.isProUnlocked && showsSetup && status?.secondScreenChecks.contains { $0.kind == .login && $0.state == .missing } == true
+    }
+
     // MARK: Header and status
 
     private var header: some View {
@@ -163,7 +218,9 @@ struct MacSecondScreenSheet: View {
                 .disabled(session.isRefreshing || !store.isProUnlocked)
             Button("Done", action: onClose)
                 .buttonStyle(MacHoverButtonStyle(tint: theme.accent, prominent: true))
-                .keyboardShortcut(.defaultAction)
+                // Return belongs to the Sunshine login form while it shows (AppKit gives the default button Return
+                // before a text field), so typing a password and pressing Return saves it instead of closing the sheet.
+                .keyboardShortcut(showsLoginForm ? nil : .defaultAction)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -210,6 +267,24 @@ struct MacSecondScreenSheet: View {
         }
         if let hint = session.placementHint, sessionIsHere, isActiveOnPC || session.isStreaming {
             message("Put it on the \(status?.secondScreen.position ?? position.rawValue)", hint, icon: "arrow.left.and.right.square", tint: .cyan)
+        }
+        // Once, from the first start: Windows sizes text for a desktop monitor on the new display.
+        if !scaleTipDismissed, sessionIsHere, session.isStarting || session.isStreaming || isActiveOnPC {
+            HStack(alignment: .top, spacing: 12) {
+                MacIconBadge(systemName: "textformat.size", tint: .cyan, size: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Text too small?").font(.subheadline.weight(.semibold))
+                    Text(OrbitSecondScreenScaleTip.message(device: "this Mac"))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Got It") { scaleTipDismissed = true }
+                    .buttonStyle(MacHoverButtonStyle(tint: .cyan))
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .macGlass(cornerRadius: 16, tint: .cyan)
+            .accessibilityElement(children: .contain)
         }
     }
 
@@ -305,12 +380,20 @@ struct MacSecondScreenSheet: View {
     @ViewBuilder
     private func checkAction(_ check: OrbitDisplayCheck, status: OrbitStreamDisplayStatus) -> some View {
         switch check.kind {
-        case .login where check.state != .done:
+        case .login where check.state == .missing:
+            // Missing, or turned down by Sunshine (not while Sunshine is stopped: the login may be fine).
             OrbitSunshineLoginForm(pcName: pcName, isSaving: savingLogin, accent: theme.accent) { name, secret in
                 await saveLogin(username: name, password: secret)
             }
             .textFieldStyle(.roundedBorder)
             .frame(maxWidth: 380, alignment: .leading)
+        case .sunshine where status.sunshineStopped && context.canStartSunshine:
+            OrbitStartSunshineButton(pcName: pcName, isStarting: session.isStartingSunshine, accent: theme.accent) {
+                Task {
+                    await session.startSunshine(context: context)
+                    await host.refresh()
+                }
+            }
         case .driver where check.state != .done && status.offersInstallCommand:
             OrbitDriverInstallCommand(command: status.driverInstallCommand, accent: theme.accent)
         case .idle where status.appRunning == true && status.streamActive != true && host.isPaired:
@@ -439,6 +522,8 @@ struct MacSecondScreenSheet: View {
     private var howItWorks: some View {
         VStack(alignment: .leading, spacing: 8) {
             bullet("display.2", "Orbit adds a virtual display (the free Virtual Display Driver) at this display's size and has Sunshine stream it, so it fills the screen.")
+            bullet("speaker.wave.2", "Sound keeps playing on \(pcName), as with any other monitor; this Mac stays quiet.")
+            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this Mac"))
             bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then \(status?.fill.enabled == true ? "fill the screen again, as Fill Screen is on" : "show the main monitor again").")
             bullet("flask", canUndo
                    ? "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, Undo Orbit's Changes below puts Sunshine's display settings back."
