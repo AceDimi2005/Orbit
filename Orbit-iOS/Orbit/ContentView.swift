@@ -8,6 +8,7 @@ struct ContentView: View {
     /// A power action asked for by an `orbit://shutdown|sleep|restart` link, waiting for the user's OK.
     @State private var linkedPowerAction: String?
     @State private var isShowingPresentation = false
+    @State private var showsWebcamFromURL = false
     @StateObject private var vm = OrbitViewModel()
     @ObservedObject private var stream = MoonlightStreamController.shared
     @ObservedObject private var notificationRouter = OrbitNotificationRouter.shared
@@ -71,6 +72,10 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $isShowingPresentation) {
             NavigationStack { PresentationView(vm: vm, showsDoneButton: true) }
         }
+        // Full screen like a camera app: no swipe-down while streaming, and the dimmed screen covers everything.
+        .fullScreenCover(isPresented: $showsWebcamFromURL) {
+            NavigationStack { WebcamScreen(vm: vm, showsDoneButton: true) }
+        }
         .onAppear {
             vm.setAppActive(scenePhase == .active)
             if !vm.hasCompletedOnboarding { vm.showOnboarding = true }
@@ -94,6 +99,7 @@ struct ContentView: View {
             case "pro": isShowingProFromURL = true
             case "deck": deckLink = OrbitDeckLink(url: url, vm: vm)
             case "presentation": isShowingPresentation = true
+            case "webcam": if !OrbitWebcamModel.isOnScreen { showsWebcamFromURL = true }
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3

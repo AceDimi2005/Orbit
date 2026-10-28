@@ -694,6 +694,12 @@ struct OrbitProPaywallView: View {
                                 title: "Monthly Summary",
                                 subtitle: "Your month in games: play time, top games, records, temperatures and energy, ready to share."
                             )
+                            proFeatureRow(
+                                icon: "web.camera.fill",
+                                tint: .green,
+                                title: "iPhone as a Webcam",
+                                subtitle: "Use your iPhone or iPad camera in Zoom, Teams, Discord, OBS and browsers on your PC."
+                            )
                         }
                         .padding(18)
                         .liquidGlass(cornerRadius: 22, tint: .yellow)

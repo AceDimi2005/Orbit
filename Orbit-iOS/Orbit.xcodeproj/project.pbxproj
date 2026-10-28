@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A2000000000000000000011D /* OrbitWebcamPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000012C /* OrbitWebcamPipeline.swift */; };
+		A2000000000000000000011C /* WebcamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000012B /* WebcamView.swift */; };
+		A2000000000000000000011B /* OrbitWebcamModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000012A /* OrbitWebcamModel.swift */; };
+		A2000000000000000000011A /* OrbitWebcamCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000129 /* OrbitWebcamCapture.swift */; };
 		A30000000000000000000105 /* OrbitWatchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000128 /* OrbitWatchPresentation.swift */; };
 		A20000000000000000000119 /* OrbitWatchPresentationRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */; };
 		A20000000000000000000118 /* PresentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000126 /* PresentationView.swift */; };
@@ -267,6 +271,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000000000000000000012C /* OrbitWebcamPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamPipeline.swift; sourceTree = "<group>"; };
+		B2000000000000000000012B /* WebcamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebcamView.swift; sourceTree = "<group>"; };
+		B2000000000000000000012A /* OrbitWebcamModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamModel.swift; sourceTree = "<group>"; };
+		B20000000000000000000129 /* OrbitWebcamCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamCapture.swift; sourceTree = "<group>"; };
 		B20000000000000000000128 /* OrbitWatchPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentation.swift; sourceTree = "<group>"; };
 		B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchPresentationRelay.swift; sourceTree = "<group>"; };
 		B20000000000000000000126 /* PresentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationView.swift; sourceTree = "<group>"; };
@@ -519,6 +527,10 @@
 				B20000000000000000000122 /* MonthlySummaryView.swift */,
 				B20000000000000000000126 /* PresentationView.swift */,
 				B20000000000000000000127 /* OrbitWatchPresentationRelay.swift */,
+				B20000000000000000000129 /* OrbitWebcamCapture.swift */,
+				B2000000000000000000012A /* OrbitWebcamModel.swift */,
+				B2000000000000000000012B /* WebcamView.swift */,
+				B2000000000000000000012C /* OrbitWebcamPipeline.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -969,6 +981,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2000000000000000000011D /* OrbitWebcamPipeline.swift in Sources */,
+				A2000000000000000000011C /* WebcamView.swift in Sources */,
+				A2000000000000000000011B /* OrbitWebcamModel.swift in Sources */,
+				A2000000000000000000011A /* OrbitWebcamCapture.swift in Sources */,
 				A20000000000000000000119 /* OrbitWatchPresentationRelay.swift in Sources */,
 				A20000000000000000000118 /* PresentationView.swift in Sources */,
 				A20000000000000000000117 /* OrbitPresentationIntents.swift in Sources */,
@@ -1267,6 +1283,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Orbit uses the camera only on its Webcam screen, to show a preview and send the picture to your Windows PC over your local network, so apps there can use your iPhone or iPad as a webcam.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";
@@ -1305,6 +1322,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Orbit/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Orbit uses the camera only on its Webcam screen, to show a preview and send the picture to your Windows PC over your local network, so apps there can use your iPhone or iPad as a webcam.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Orbit uses your local network to discover your Windows PC, display live hardware telemetry, send Wake-on-LAN commands, and sync your paired PC to Apple TV.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Orbit saves photos and videos you download from your PC, and monthly summary pictures you choose to save, to your Photo Library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Orbit uses Siri and Shortcuts so you can power on, sleep, or shut down your PC by voice.";

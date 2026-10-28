@@ -41,8 +41,13 @@ final class OrbitAPIClient: @unchecked Sendable {
     }
     deinit { session.invalidateAndCancel() }
 
+    /// Why the last connection was refused by the certificate pin, in plain words (nil when it wasn't).
+    /// WebSocket tasks report a refused pin only as a cancelled task, so their callers read this.
+    var pinFailureMessage: String? { authentication.failureMessage }
+
     private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
-        let isWebSocket = (path == "/ws/stream" || path == "/ws/input")
+        // Exact WebSocket paths only: the desktop preview, the cursor and the phone's camera (wss, token in the header).
+        let isWebSocket = (path == "/ws/stream" || path == "/ws/input" || path == "/ws/camera")
         guard path.hasPrefix("/api/") || isWebSocket else { throw OrbitError(message: "Invalid PC request.") }
         guard !pairingOnly || path.hasPrefix("/api/pair/") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
         var components = URLComponents()
@@ -136,6 +141,8 @@ final class OrbitAPIClient: @unchecked Sendable {
     }
     func webSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/stream")) }
     func inputWebSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/input")) }
+    /// `WS /ws/camera` on the encrypted port: the token travels only in the Authorization header.
+    func cameraWebSocket() throws -> URLSessionWebSocketTask { session.webSocketTask(with: try request("/ws/camera")) }
 }
 
 private class OrbitPinnedDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
