@@ -89,7 +89,7 @@ struct ContentView: View {
             switch url.host?.lowercased() {
             case "pro": isShowingProFromURL = true
             case "deck": deckLink = OrbitDeckLink(url: url, vm: vm)
-            case "webcam": showsWebcamFromURL = true
+            case "webcam": if !OrbitWebcamModel.isOnScreen { showsWebcamFromURL = true }
             case "remote": selectedTab = 2
             case "library": selectedTab = 1
             case "settings": selectedTab = 3

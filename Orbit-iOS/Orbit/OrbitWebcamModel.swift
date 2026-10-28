@@ -126,6 +126,11 @@ final class OrbitWebcamModel: ObservableObject {
         didSet { UserDefaults.standard.set(lens.rawValue, forKey: OrbitWebcamPreferences.lensKey); applyCaptureSettings() }
     }
 
+    /// Webcam screens on screen right now. `orbit://webcam` opens no second one while one shows: two
+    /// screens would run two capture sessions that interrupt each other.
+    private static var screensOnScreen = 0
+    static var isOnScreen: Bool { screensOnScreen > 0 }
+
     let camera = OrbitWebcamCamera()
     /// Which built-in cameras exist (looked up once: a lookup per redraw costs a device discovery).
     let hasBothCameras: Bool
@@ -162,6 +167,8 @@ final class OrbitWebcamModel: ObservableObject {
     /// How long the camera socket may stay silent: the PC answers the hello at once and then sends
     /// {"connected":…} every 5 s.
     private static let silenceTimeout: Double = 15
+    /// The PC holds the setup's answer for up to 90 s (then 202). A request timeout longer than the
+    /// session's 20 s applies as well: URLSession uses the request's own `timeoutInterval`.
     private static let setupTimeout: TimeInterval = 120
 
     init() {
@@ -210,6 +217,7 @@ final class OrbitWebcamModel: ObservableObject {
 
     func appear(_ vm: OrbitViewModel) {
         configure(vm)
+        if !isVisible { Self.screensOnScreen += 1 }
         isVisible = true
         observeThermalState()
         startCameraIfAllowed()
@@ -217,6 +225,7 @@ final class OrbitWebcamModel: ObservableObject {
     }
 
     func disappear() {
+        if isVisible { Self.screensOnScreen = max(0, Self.screensOnScreen - 1) }
         isVisible = false
         if phase.isActive {
             // Shown when the screen comes back (another tab, for example): the camera only runs here.
@@ -248,9 +257,17 @@ final class OrbitWebcamModel: ObservableObject {
             // iOS turns the camera off for apps that aren't on screen: end the stream cleanly
             // instead of sending a frozen picture.
             if self.phase.isActive {
+                // iOS suspends Orbit a moment after it leaves the screen, and a socket closed then reaches
+                // the PC only when Orbit comes back: until then apps on the PC would show the last picture.
+                // A few seconds of background time let the close go out now.
+                let backgroundTime = OrbitBackgroundTask(name: "Orbit webcam: closing the camera connection")
                 stopStreaming(note: Note(title: "Streaming stopped",
                                          message: "Orbit left the screen, and iOS turns the camera off for apps that aren't on screen. Tap Start Streaming to go on.",
                                          icon: "moon.zzz.fill", kind: .warning))
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    backgroundTime.end()
+                }
             }
             isDimmed = false
             stopCamera()
@@ -340,15 +357,18 @@ final class OrbitWebcamModel: ObservableObject {
     /// and scales the smaller frames up, so apps on the PC keep the camera open.
     private func thermalStateChanged() {
         let state = ProcessInfo.processInfo.thermalState
-        var hot = state == .serious || state == .critical
-        #if DEBUG
-        // `ORBIT_WEBCAM_FORCE_HOT=1` (Debug): behave as if the device were hot, for checks in the Simulator.
-        if ProcessInfo.processInfo.environment["ORBIT_WEBCAM_FORCE_HOT"] == "1" { hot = true }
-        #endif
+        let hot = state == .serious || state == .critical || Self.forcesHeat
         guard hot != isThermalLimited else { return }
         isThermalLimited = hot
         applyCaptureSettings()
     }
+
+    #if DEBUG
+    /// `ORBIT_WEBCAM_FORCE_HOT=1` (Debug): behave as if the device were hot, for checks in the Simulator.
+    private static var forcesHeat: Bool { ProcessInfo.processInfo.environment["ORBIT_WEBCAM_FORCE_HOT"] == "1" }
+    #else
+    private static let forcesHeat = false
+    #endif
 
     private func updatePipelineFormat() {
         let format = streamFormat ?? OrbitWebcamFormat(width: resolution.width, height: resolution.height, fps: frameRate)
@@ -464,6 +484,9 @@ final class OrbitWebcamModel: ObservableObject {
         setupAwaitsPoll = false
         setupMessage = nil; setupError = nil
         OrbitHaptics.tap()
+        // Ask the PC every 2 s from now on (not at the next regular poll), so "Approve the Windows prompt"
+        // shows as soon as the PC opens it. The answer to the request itself comes only after that prompt.
+        startPolling()
         Task {
             do {
                 let data = try await link.client.data("/api/webcam/install", method: "POST", timeout: Self.setupTimeout)
@@ -500,6 +523,7 @@ final class OrbitWebcamModel: ObservableObject {
         setupAwaitsPoll = false
         setupMessage = nil; setupError = nil
         OrbitHaptics.tap()
+        startPolling()
         Task {
             do {
                 let data = try await link.client.data("/api/webcam/uninstall", method: "POST", timeout: Self.setupTimeout)

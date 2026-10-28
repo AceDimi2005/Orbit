@@ -372,7 +372,8 @@ struct WebcamView: View {
             noteCard(title: "Running cooler", message: "Your \(device) is hot, so Orbit sends 720p at 15 fps until it cools down. Apps on the PC keep the camera.",
                      icon: "thermometer.sun.fill", tint: .orange)
         }
-        if model.isDemo {
+        // While streaming, the status row under Stop already says it.
+        if model.isDemo && !model.phase.isActive {
             noteCard(title: "Demo mode", message: "The preview and the encoder work, but nothing is sent to a PC. Pair your PC to use this \(device) as its webcam.",
                      icon: "sparkles", tint: .orange)
         }
