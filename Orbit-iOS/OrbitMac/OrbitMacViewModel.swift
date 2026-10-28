@@ -190,6 +190,8 @@ final class OrbitMacViewModel: ObservableObject {
 
     // MARK: Agent updates
     @Published var agentLatestVersion: String?
+    /// "stable" or "beta" from the last update check (agent 4.5.2+).
+    @Published var agentUpdateChannel: String?
     @Published var agentUpdateAvailable = false
     @Published var agentUpdateMessage: String?
     @Published var isCheckingUpdate = false
@@ -432,7 +434,7 @@ final class OrbitMacViewModel: ObservableObject {
         streamError = nil
         closeInputSocket()
         pendingVolume = nil; volumeWorker?.cancel(); volumeWorker = nil
-        agentUpdateAvailable = false; agentLatestVersion = nil; agentUpdateMessage = nil
+        agentUpdateAvailable = false; agentLatestVersion = nil; agentUpdateChannel = nil; agentUpdateMessage = nil
         deck.reset()
         wasOnline = false
         reportedTailscaleAddresses = []; lanProbeRunning = false
@@ -892,16 +894,24 @@ final class OrbitMacViewModel: ObservableObject {
         isCheckingUpdate = true
         agentUpdateMessage = nil
         defer { isCheckingUpdate = false }
-        struct Reply: Decodable { let currentVersion: String?; let latestVersion: String?; let updateAvailable: Bool?; let releaseTitle: String? }
+        struct Reply: Decodable { let currentVersion: String?; let latestVersion: String?; let updateAvailable: Bool?; let releaseTitle: String?; let channel: String? }
         if isDemoMode { agentLatestVersion = metrics.agentVersion; agentUpdateAvailable = false; agentUpdateMessage = "Up to date (demo)."; return }
         guard metrics.isOnline else { agentUpdateMessage = "Connect to your PC first, or check github.com/AceDimi2005/Orbit."; return }
         do {
             let info: Reply = try await client().get("/api/update/check")
             agentLatestVersion = info.latestVersion
+            agentUpdateChannel = info.channel
             agentUpdateAvailable = info.updateAvailable == true
-            agentUpdateMessage = info.updateAvailable == true
-                ? "Update \(info.latestVersion ?? "") is available on GitHub."
-                : "PC Companion is up to date (\(info.currentVersion ?? metrics.agentVersion ?? "—"))."
+            let installed = info.currentVersion ?? metrics.agentVersion ?? "—"
+            if info.updateAvailable == true {
+                let kind = OrbitCompanionVersion.isPrerelease(info.latestVersion) ? "Beta build" : "Update"
+                agentUpdateMessage = "\(kind) \(OrbitCompanionVersion.display(info.latestVersion) ?? "") is available on GitHub."
+            } else if OrbitCompanionVersion.isPrerelease(installed) && !OrbitCompanionVersion.isBetaChannel(info.channel) {
+                // Beta updates were turned off on the PC: it keeps this build until a newer stable one.
+                agentUpdateMessage = "The PC runs beta build \(OrbitCompanionVersion.display(installed) ?? installed). Beta updates are off, so it stays on it until a newer stable version is out."
+            } else {
+                agentUpdateMessage = "PC Companion is up to date (\(OrbitCompanionVersion.display(installed) ?? installed))."
+            }
         } catch {
             agentUpdateMessage = "Could not check for updates: \(error.localizedDescription)"
         }
@@ -916,7 +926,7 @@ final class OrbitMacViewModel: ObservableObject {
             let result: Reply = try await client().send("/api/update/apply", body: MacHistoryEmptyBody())
             agentUpdateAvailable = false
             agentUpdateMessage = result.status == "updated"
-                ? "Updated to \(result.latestVersion ?? "latest"). Restart the PC Companion from the Windows tray."
+                ? "Updated to \(OrbitCompanionVersion.display(result.latestVersion) ?? "latest"). Restart the PC Companion from the Windows tray."
                 : "Already running the latest version."
         } catch {
             agentUpdateMessage = "Update failed: \(error.localizedDescription)"

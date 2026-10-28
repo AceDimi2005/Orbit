@@ -16,6 +16,8 @@ struct OrbitError: LocalizedError {
 struct MacPCMetrics: Codable {
     var hostname: String = "Your PC"
     var agentVersion: String? = nil
+    /// Agent 4.5.2+: "stable" or "beta", the PC's "Beta updates" tray setting (OrbitCompanionVersion).
+    var updateChannel: String? = nil
     var sensorSource: String? = nil
     var sensorStatus: String? = nil
     var gpuSource: String? = nil

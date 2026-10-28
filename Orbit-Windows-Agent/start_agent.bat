@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title Orbit PC Companion 4.5.1
+title Orbit PC Companion 4.5.2
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (

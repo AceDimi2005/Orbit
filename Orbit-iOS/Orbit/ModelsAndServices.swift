@@ -10,6 +10,8 @@ import Security
 struct PCMetrics: Codable {
     var hostname: String = "Your PC"
     var agentVersion: String? = nil
+    /// Agent 4.5.2+: "stable" or "beta", the PC's "Beta updates" tray setting (OrbitCompanionVersion).
+    var updateChannel: String? = nil
     var sensorSource: String? = nil
     var sensorStatus: String? = nil
     var gpuSource: String? = nil
@@ -427,6 +429,8 @@ final class OrbitViewModel: ObservableObject {
     @Published var isCheckingAgentUpdate = false
     @Published var agentUpdateAvailable = false
     @Published var agentLatestVersion: String?
+    /// "stable" or "beta" from the last update check (agent 4.5.2+).
+    @Published var agentUpdateChannel: String?
     @Published var agentUpdateMessage: String?
     /// Requests go to the selected PC's secondary address (for example its Tailscale address) because its
     /// LAN address does not answer. Shown as "Remote"; Wake-on-LAN never follows it.
@@ -1246,6 +1250,8 @@ final class OrbitViewModel: ObservableObject {
             let latestVersion: String?
             let updateAvailable: Bool?
             let releaseTitle: String?
+            /// Agent 4.5.2+: "stable" or "beta".
+            let channel: String?
         }
         if isDemoMode {
             agentLatestVersion = metrics.agentVersion ?? "4.1.0"
@@ -1261,11 +1267,17 @@ final class OrbitViewModel: ObservableObject {
             let data = try await request("/api/update/check")
             let info = try JSONDecoder().decode(UpdateCheckResponse.self, from: data)
             agentLatestVersion = info.latestVersion
+            agentUpdateChannel = info.channel
             agentUpdateAvailable = info.updateAvailable == true
+            let installed = info.currentVersion ?? metrics.agentVersion ?? "4.1.0"
             if info.updateAvailable == true {
-                agentUpdateMessage = "Update \(info.latestVersion ?? "") available on GitHub!"
+                let kind = OrbitCompanionVersion.isPrerelease(info.latestVersion) ? "Beta build" : "Update"
+                agentUpdateMessage = "\(kind) \(OrbitCompanionVersion.display(info.latestVersion) ?? "") available on GitHub!"
+            } else if OrbitCompanionVersion.isPrerelease(installed) && !OrbitCompanionVersion.isBetaChannel(info.channel) {
+                // Beta updates were turned off on the PC: it keeps this build until a newer stable one.
+                agentUpdateMessage = "PC Companion runs beta build \(OrbitCompanionVersion.display(installed) ?? installed). Beta updates are off, so it stays on it until a newer stable version is out."
             } else {
-                agentUpdateMessage = "PC Companion is up to date (\(info.currentVersion ?? metrics.agentVersion ?? "4.1.0"))."
+                agentUpdateMessage = "PC Companion is up to date (\(OrbitCompanionVersion.display(installed) ?? installed))."
             }
         } catch {
             agentUpdateMessage = "Could not check for updates: \(error.localizedDescription)"
@@ -1285,7 +1297,7 @@ final class OrbitViewModel: ObservableObject {
             let result = try JSONDecoder().decode(ApplyResponse.self, from: data)
             agentUpdateAvailable = false
             if result.status == "updated" {
-                agentUpdateMessage = "Updated to \(result.latestVersion ?? "latest"). Restart the PC Companion from the Windows tray."
+                agentUpdateMessage = "Updated to \(OrbitCompanionVersion.display(result.latestVersion) ?? "latest"). Restart the PC Companion from the Windows tray."
             } else {
                 agentUpdateMessage = "Already running the latest version."
             }

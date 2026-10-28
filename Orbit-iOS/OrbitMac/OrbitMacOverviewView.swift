@@ -88,7 +88,10 @@ struct MacOverviewView: View {
                             MacStatChip(label: "Up", value: vm.metrics.formattedUptime)
                         }
                         if let version = vm.metrics.agentVersion {
-                            MacStatChip(label: "Agent", value: version)
+                            // A beta build of the companion reads "4.6.0 β1" (OrbitCompanionVersion).
+                            MacStatChip(label: "Agent", value: OrbitCompanionVersion.compact(version) ?? version)
+                                .help(OrbitCompanionVersion.isPrerelease(version)
+                                      ? "Beta build \(OrbitCompanionVersion.display(version) ?? version) of the PC Companion" : "PC Companion \(version)")
                         }
                         if let source = vm.metrics.sensorSource, !source.isEmpty {
                             MacStatChip(label: "Sensors", value: source)

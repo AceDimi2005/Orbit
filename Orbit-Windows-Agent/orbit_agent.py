@@ -74,7 +74,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.5.1"
+AGENT_VERSION = "4.5.2"
 set_agent_version(AGENT_VERSION)
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
@@ -493,10 +493,16 @@ def status_snapshot():
         return result
 
 
+def update_channel():
+    """"stable" or "beta" (the tray's Beta updates item), for the apps next to the version."""
+    from orbit_updater import current_channel
+    return current_channel()
+
+
 @app.get("/api/status")
 def get_status(authorization: str = Header(None)):
     verify_token(authorization)
-    return status_snapshot()
+    return {**status_snapshot(), "updateChannel": update_channel()}
 
 
 @app.post("/api/widget/pairing")
@@ -1471,6 +1477,7 @@ def tray_status_snapshot():
         active_game = STATE.get("activeGame")
     return {
         "agentVersion": AGENT_VERSION,
+        "updateChannel": update_channel(),
         "hostname": network.get("hostname") or socket.gethostname(),
         "ipAddress": network.get("ipAddress") or "",
         "agentPort": AGENT_PORT,

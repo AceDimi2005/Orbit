@@ -33,6 +33,8 @@
 		A60000000000000000000106 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitSummaryShareCard.swift */; };
 		A20000000000000000000113 /* OrbitSummaryShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitSummaryShareCard.swift */; };
 		A60000000000000000000105 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitEnergy.swift */; };
+		A2000000000000000000BE7A /* OrbitCompanionVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000BE7A /* OrbitCompanionVersion.swift */; };
+		A6000000000000000000BE7A /* OrbitCompanionVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000BE7A /* OrbitCompanionVersion.swift */; };
 		A20000000000000000000112 /* OrbitEnergy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* OrbitEnergy.swift */; };
 		A10000000000000000000108 /* OrbitActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitActivityViews.swift */; };
 		A60000000000000000000104 /* OrbitBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitBrandMark.swift */; };
@@ -301,6 +303,7 @@
 		B20000000000000000000121 /* EnergyCostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyCostView.swift; sourceTree = "<group>"; };
 		B20000000000000000000120 /* OrbitSummaryShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSummaryShareCard.swift; sourceTree = "<group>"; };
 		B2000000000000000000011F /* OrbitEnergy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitEnergy.swift; sourceTree = "<group>"; };
+		B2000000000000000000BE7A /* OrbitCompanionVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitCompanionVersion.swift; sourceTree = "<group>"; };
 		B2000000000000000000011E /* OrbitActivityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitActivityViews.swift; sourceTree = "<group>"; };
 		B2000000000000000000011D /* OrbitBrandMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitBrandMark.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
@@ -610,6 +613,7 @@
 				B2000000000000000000011C /* OrbitRemoteDeck.swift */,
 				B2000000000000000000011D /* OrbitBrandMark.swift */,
 				B2000000000000000000011F /* OrbitEnergy.swift */,
+				B2000000000000000000BE7A /* OrbitCompanionVersion.swift */,
 				B20000000000000000000120 /* OrbitSummaryShareCard.swift */,
 				B20000000000000000000124 /* OrbitPresentationModels.swift */,
 				B20000000000000000000125 /* OrbitPresentationIntents.swift */,
@@ -1020,6 +1024,7 @@
 				A20000000000000000000114 /* EnergyCostView.swift in Sources */,
 				A20000000000000000000113 /* OrbitSummaryShareCard.swift in Sources */,
 				A20000000000000000000112 /* OrbitEnergy.swift in Sources */,
+				A2000000000000000000BE7A /* OrbitCompanionVersion.swift in Sources */,
 				A20000000000000000000111 /* OrbitBrandMark.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
@@ -1162,6 +1167,7 @@
 				A60000000000000000000107 /* OrbitMacEnergyViews.swift in Sources */,
 				A60000000000000000000106 /* OrbitSummaryShareCard.swift in Sources */,
 				A60000000000000000000105 /* OrbitEnergy.swift in Sources */,
+				A6000000000000000000BE7A /* OrbitCompanionVersion.swift in Sources */,
 				A60000000000000000000104 /* OrbitBrandMark.swift in Sources */,
 				A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */,
 				A60000000000000000000102 /* OrbitMacDeckView.swift in Sources */,

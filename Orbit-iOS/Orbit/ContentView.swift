@@ -451,7 +451,8 @@ struct DashboardView: View {
                 heroStat("Link", value: vm.usingSecondaryAddress ? "Remote" : (vm.hasSecureConnection ? "Secure" : "HTTP"),
                          icon: vm.usingSecondaryAddress ? "point.3.connected.trianglepath.dotted" : (vm.hasSecureConnection ? "lock.fill" : "lock.open.fill"))
                 heroStatDivider
-                heroStat("Agent", value: vm.metrics.agentVersion ?? "—")
+                // A beta build of the companion reads "4.6.0 β1" (OrbitCompanionVersion).
+                heroStat("Agent", value: OrbitCompanionVersion.compact(vm.metrics.agentVersion) ?? "—")
             }
             .padding(.vertical, 9)
             .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -2271,10 +2272,12 @@ struct SettingsView: View {
                                                 tint: vm.metrics.isOnline && !vm.isDemoMode ? (vm.metrics.sessionLocked == true ? .yellow : .mint) : .orange,
                                                 pulsing: vm.metrics.isOnline && !vm.isDemoMode)
                                 if vm.metrics.isOnline, let version = vm.metrics.agentVersion {
-                                    Text("Agent \(version)")
+                                    // "Agent 4.6.0 beta 1" for a beta build of the companion.
+                                    Text("Agent \(OrbitCompanionVersion.display(version) ?? version)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
                                 }
                             }
                         }
@@ -2443,9 +2446,13 @@ struct SettingsView: View {
 
     private var pcCompanionUpdateSection: some View {
         Section {
-            LabeledContent("Installed Agent", value: vm.metrics.agentVersion ?? "—")
+            LabeledContent("Installed Agent", value: OrbitCompanionVersion.display(vm.metrics.agentVersion) ?? "—")
+            if let channel = companionUpdateChannel {
+                // Set on the PC (tray menu > Beta updates); on Apple devices TestFlight is the beta channel.
+                LabeledContent("Updates on PC", value: OrbitCompanionVersion.isBetaChannel(channel) ? "Beta" : "Stable")
+            }
             if let latest = vm.agentLatestVersion {
-                LabeledContent("Latest on GitHub", value: latest)
+                LabeledContent("Latest on GitHub", value: OrbitCompanionVersion.display(latest) ?? latest)
             }
             Button {
                 Task { await vm.checkPCCompanionUpdate() }
@@ -2491,8 +2498,18 @@ struct SettingsView: View {
             }
         } header: {
             Text("PC Companion Updates (GitHub)")
+        } footer: {
+            if companionUpdateChannel != nil {
+                Text("To get PC Companion beta builds first, turn on Beta updates in the Orbit menu in the Windows taskbar. Turning it off keeps the PC on its build until a newer stable version is out.")
+            }
         }
         .orbitRow()
+    }
+
+    /// "stable" or "beta" (agent 4.5.2+): from the PC's live status, else from the last update check.
+    private var companionUpdateChannel: String? {
+        guard vm.metrics.isOnline, !vm.isDemoMode else { return nil }
+        return vm.metrics.updateChannel ?? vm.agentUpdateChannel
     }
 
     private var connectionSection: some View {

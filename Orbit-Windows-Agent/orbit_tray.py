@@ -88,13 +88,24 @@ ID_OPEN_LOG = 1005
 ID_EXIT = 1006
 ID_CHECK_UPDATES = 1007
 ID_TOGGLE_BOOT = 1008
+ID_BETA_UPDATES = 1009  # checkable: this PC's update channel, stable or beta (orbit_updater)
 ID_STREAM_DISPLAY_SETUP = 1021  # "Set up full-screen streaming…" (orbit_stream_display)
 ID_ELECTRICITY_PRICE = 1061
 
 BOOT_TASK_NAME = "Orbit PC Companion (boot)"
 
+IDOK = 1
 IDYES = 6
 IDNO = 7
+
+BETA_NOTICE_TITLE = "Orbit PC Companion · Beta updates"
+BETA_NOTICE_TEXT = (
+    "Beta updates bring new Orbit features to this PC first, before everyone else gets them. "
+    "Beta builds can have bugs.\n\n"
+    "You can turn beta updates off again in this menu at any time. This PC then keeps the build it "
+    "has until a newer stable version comes out; it never goes back to an older one.\n\n"
+    "Turn on beta updates and check for one now?"
+)
 
 
 class _GUID(ctypes.Structure):
@@ -529,7 +540,8 @@ class OrbitTrayIcon:
     def __init__(self, *, status_provider, on_stop, startup_manager=None,
                  token_provider=None, update_checker=None, update_installer=None,
                  release_page_opener=None, icon_path=ICON_PATH, log_path=None,
-                 notify_on_start=False, apis=None, boot_task=None, power_listener=None):
+                 notify_on_start=False, apis=None, boot_task=None, power_listener=None,
+                 settings_store=None):
         self.status_provider = status_provider
         self.on_stop = on_stop
         # power_listener("suspend" | "resume" | "session-ending"), called on the tray thread (the
@@ -541,6 +553,9 @@ class OrbitTrayIcon:
         self.update_checker = update_checker
         self.update_installer = update_installer
         self.release_page_opener = release_page_opener
+        # Where the update channel is saved (None: the agent's settings.json).
+        self.settings_store = settings_store
+        self._beta_toggle_lock = threading.Lock()
         self.icon_path = Path(icon_path)
         self.log_path = Path(log_path) if log_path is not None else default_log_path()
         self.notify_on_start = bool(notify_on_start)
@@ -589,9 +604,19 @@ class OrbitTrayIcon:
         except Exception:
             return False
 
+    def update_channel(self):
+        """"stable" or "beta" from the agent settings."""
+        from orbit_updater import current_channel
+        return current_channel(self.settings_store)
+
+    @staticmethod
+    def _shown_version(info):
+        from orbit_updater import display_version
+        return display_version(info.get("agentVersion") or "4.1.0")
+
     def format_tooltip(self):
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
+        version = self._shown_version(info)
         ip_address = info.get("ipAddress") or "No LAN IP"
         secure_port = info.get("securePort") or 8766
         game = info.get("activeGame")
@@ -602,11 +627,12 @@ class OrbitTrayIcon:
     def build_menu_items(self):
         """Return ordered menu item descriptors for inspection and native rendering."""
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
+        version = self._shown_version(info)
         ip_address = info.get("ipAddress") or "No active LAN adapter"
         secure_port = info.get("securePort") or 8766
         game = info.get("activeGame")
         startup_enabled = self.startup.is_enabled()
+        beta_updates = self.update_channel() == "beta"
 
         items = [
             {"id": 0, "label": f"Orbit PC Companion {version}", "enabled": False, "checked": False},
@@ -625,6 +651,7 @@ class OrbitTrayIcon:
             })
         items.extend([
             {"id": ID_CHECK_UPDATES, "label": "Check for updates...", "enabled": True, "checked": False},
+            {"id": ID_BETA_UPDATES, "label": "Beta updates", "enabled": True, "checked": beta_updates},
             {"id": ID_SHOW_DETAILS, "label": "Connection details...", "enabled": True, "checked": False},
             {"id": ID_COPY_TOKEN, "label": "Copy manual pairing token", "enabled": bool(self.token_provider), "checked": False},
             {"id": ID_STREAM_DISPLAY_SETUP, "label": "Set up full-screen streaming…", "enabled": True, "checked": False},
@@ -680,6 +707,9 @@ class OrbitTrayIcon:
         if command_id == ID_CHECK_UPDATES:
             self.check_for_updates_async()
             return "update_check_started"
+        if command_id == ID_BETA_UPDATES:
+            self.toggle_beta_updates_async()
+            return "beta_toggle_started"
         if command_id == ID_SHOW_DETAILS:
             self.show_connection_details()
             return "details_shown"
@@ -727,23 +757,82 @@ class OrbitTrayIcon:
                     "You can see and change it in Orbit on your iPhone: Tools > Electricity Cost.")
         self._async_message_box(text, title, 0x00040040)
 
+    def toggle_beta_updates(self):
+        """Turns beta updates on or off (synchronous; dialogs block until answered).
+
+        On: the first time, a short explanation with OK/Cancel; then the channel is saved and an
+        update check runs. Off: saved at once; this PC keeps its build until a newer stable one."""
+        from orbit_updater import (
+            CHANNEL_BETA,
+            CHANNEL_STABLE,
+            beta_notice_shown,
+            is_prerelease,
+            mark_beta_notice_shown,
+            set_channel,
+        )
+
+        if not self._beta_toggle_lock.acquire(blocking=False):
+            return {"status": "busy"}
+        try:
+            store = self.settings_store
+            if self.update_channel() == CHANNEL_BETA:
+                set_channel(CHANNEL_STABLE, store)
+                info = self.status_provider() or {}
+                if is_prerelease(info.get("agentVersion") or ""):
+                    message = (f"This PC keeps beta build {self._shown_version(info)} until a newer stable version "
+                               "comes out. It never goes back to an older one.")
+                else:
+                    message = "This PC gets stable updates only again."
+                self.show_notification("Beta updates are off", message)
+                return {"status": "beta_off"}
+            if not beta_notice_shown(store):
+                choice = self._show_message_box_sync(BETA_NOTICE_TEXT, BETA_NOTICE_TITLE,
+                                                     0x00040041)  # MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST
+                if choice != IDOK:
+                    return {"status": "cancelled"}
+                mark_beta_notice_shown(store)
+            set_channel(CHANNEL_BETA, store)
+            return {"status": "beta_on", "update": self.perform_update_check()}
+        except Exception as error:
+            LOGGER.exception("Could not change the update channel")
+            self._show_message_box_sync(
+                f"Could not change the update channel:\n{error}",
+                "Orbit PC Companion · Beta updates",
+                0x00040030,
+            )
+            return {"status": "error", "error": str(error)}
+        finally:
+            self._beta_toggle_lock.release()
+
+    def toggle_beta_updates_async(self):
+        thread = threading.Thread(target=self.toggle_beta_updates, daemon=True, name="orbit-tray-beta")
+        thread.start()
+        return thread
+
     def perform_update_check(self):
         """Run a synchronous GitHub update check and handle the interactive dialog."""
         from orbit_updater import (
             GITHUB_RELEASES_PAGE,
             check_for_updates,
+            display_version,
             download_and_apply_update,
+            is_prerelease,
+            normalize_channel,
             open_releases_page,
         )
 
         info = self.status_provider() or {}
         current_version = info.get("agentVersion") or "4.1.0"
+        current_shown = display_version(current_version)
         checker = self.update_checker or check_for_updates
         installer = self.update_installer or download_and_apply_update
         opener = self.release_page_opener or open_releases_page
 
         try:
-            result = checker(current_version)
+            if self.update_checker is None:
+                result = check_for_updates(current_version, channel=self.update_channel())
+            else:
+                result = checker(current_version)
         except Exception as error:
             LOGGER.warning("GitHub update check failed: %s", error)
             response = self._show_message_box_sync(
@@ -760,18 +849,26 @@ class OrbitTrayIcon:
             return {"status": "error", "error": str(error)}
 
         latest_version = result.get("latestVersion") or current_version
+        latest_shown = display_version(latest_version)
         release_url = result.get("releaseUrl") or GITHUB_RELEASES_PAGE
         download_url = result.get("downloadUrl")
         notes = (result.get("releaseNotes") or "").strip()
         notes_preview = f"\n\nRelease notes:\n{notes[:360]}" if notes else ""
+        beta = normalize_channel(result.get("channel")) == "beta"
+        channel_line = "\nUpdates: Beta (turn off with Beta updates in this menu)" if beta else ""
 
         if not result.get("updateAvailable"):
-            self.show_notification(
-                "Orbit PC Companion is up to date",
-                f"You are running the latest public version ({current_version}).",
-            )
+            if beta:
+                summary = f"You are running the newest Orbit PC Companion for the beta channel ({current_shown})."
+            elif is_prerelease(current_version):
+                # Beta updates are off: no downgrade, the beta build stays until a newer stable one.
+                summary = (f"You are running beta build {current_shown}. Beta updates are off, so this PC keeps "
+                           f"it until a newer stable version comes out (the newest now is {latest_shown}).")
+            else:
+                summary = f"You are running the latest public version ({current_shown})."
+            self.show_notification("Orbit PC Companion is up to date", summary)
             self._show_message_box_sync(
-                f"You are running the latest public version of Orbit PC Companion ({current_version}).\n\n"
+                f"{summary}\n\n"
                 f"GitHub Repository: github.com/{result.get('repository', 'AceDimi2005/Orbit')}",
                 "Orbit PC Companion · Up to Date",
                 0x00040040,
@@ -782,8 +879,9 @@ class OrbitTrayIcon:
         if can_self_update:
             prompt = (
                 f"A new version of Orbit PC Companion is available on GitHub!\n\n"
-                f"Installed version: {current_version}\n"
-                f"Latest version: {latest_version}"
+                f"Installed version: {current_shown}\n"
+                f"Latest version: {latest_shown}"
+                f"{channel_line}"
                 f"{notes_preview}\n\n"
                 "Click Yes to download and install the update automatically,\n"
                 "No to open the GitHub release page in your browser,\n"
@@ -793,8 +891,9 @@ class OrbitTrayIcon:
         else:
             prompt = (
                 f"A new version of Orbit PC Companion is available on GitHub!\n\n"
-                f"Installed version: {current_version}\n"
-                f"Latest version: {latest_version}"
+                f"Installed version: {current_shown}\n"
+                f"Latest version: {latest_shown}"
+                f"{channel_line}"
                 f"{notes_preview}\n\n"
                 "Would you like to open the GitHub release page to download it?"
             )
@@ -806,10 +905,10 @@ class OrbitTrayIcon:
                 updated = installer(download_url)
                 self.show_notification(
                     "Orbit PC Companion Updated",
-                    f"Updated {len(updated)} files to version {latest_version}. Restart Orbit to use the new version.",
+                    f"Updated {len(updated)} files to version {latest_shown}. Restart Orbit to use the new version.",
                 )
                 self._show_message_box_sync(
-                    f"Orbit PC Companion has been updated to version {latest_version} ({len(updated)} files updated).\n\n"
+                    f"Orbit PC Companion has been updated to version {latest_shown} ({len(updated)} files updated).\n\n"
                     "Please restart Orbit PC Companion to finish applying the update.",
                     "Orbit PC Companion · Update Installed",
                     0x00040040,
@@ -859,19 +958,21 @@ class OrbitTrayIcon:
 
     def show_connection_details(self):
         info = self.status_provider() or {}
-        version = info.get("agentVersion") or "4.1.0"
+        version = self._shown_version(info)
         hostname = info.get("hostname") or "PC"
         ip_address = info.get("ipAddress") or "No active LAN adapter"
         port = info.get("agentPort") or 8765
         secure_port = info.get("securePort") or 8766
         fingerprint = info.get("fingerprint") or "Unavailable"
         startup_state = "Enabled" if self.startup.is_enabled() else "Disabled"
+        updates = "Beta" if self.update_channel() == "beta" else "Stable"
         message = (
             f"Orbit PC Companion {version}\n\n"
             f"PC Name: {hostname}\n"
             f"LAN IP Address: {ip_address}\n"
             f"Encrypted HTTPS Port: {secure_port} (HTTP: {port})\n"
-            f"Run at Windows Startup: {startup_state}\n\n"
+            f"Run at Windows Startup: {startup_state}\n"
+            f"Updates: {updates}\n\n"
             f"Certificate SHA-256:\n{fingerprint}\n\n"
             "In Orbit on iPhone, tap Find my PC to pair with a one-use 6-digit code."
         )

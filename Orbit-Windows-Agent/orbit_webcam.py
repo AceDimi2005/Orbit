@@ -11,7 +11,8 @@ Files: `webcam/softcam64.dll` and `webcam/softcam32.dll` next to this module, SH
 different, setup downloads it from raw.githubusercontent.com/<owner>/<repo>/<ref>/
 Orbit-Windows-Agent/webcam/ (a host orbit_updater already trusts): first from this agent's release
 tag `pc-v<version>` (it never moves, so a later Softcam rebuild on main cannot break an older agent),
-then from main. A download is used only when its SHA-256 matches the pin.
+then from main. A beta build (4.6.0b1) tries the beta branch before main, and a stable build on the
+beta update channel tries it after main. A download is used only when its SHA-256 matches the pin.
 
 Setup needs administrator rights once, because DirectShow filters are COM servers registered
 machine-wide (HKLM) and load inside every camera app of every user, 64-bit and 32-bit:
@@ -734,7 +735,8 @@ def runtime_message(runtime):
 
 # Getting verified DLLs -------------------------------------------------------------------------
 
-_RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+")
+# 4.5.2 or a pre-release of it in the canonical form (4.6.0a1, 4.6.0b1, 4.6.0rc1; see orbit_updater).
+_RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
 
 
 def _agent_version():
@@ -744,12 +746,30 @@ def _agent_version():
         return ""
 
 
+def _update_channel():
+    try:
+        import orbit_updater
+        return orbit_updater.current_channel()
+    except Exception:
+        return "stable"
+
+
 def download_refs():
     """Where in the repository to download the DLLs from: this agent's release tag first (a tag
     never moves, so these exact files stay there even after main switches to a newer Softcam
-    build), then main for builds that have no release yet."""
+    build), then the branch this build most likely came from. The pins belong to the running
+    build, so a beta build (4.6.0b1) looks on the beta branch before main; a stable build looks
+    on main, and on the beta channel also on beta afterwards."""
+    import orbit_updater
     version = _agent_version()
-    return ([f"pc-v{version}"] if _RELEASE_VERSION.fullmatch(version) else []) + ["main"]
+    canonical = _RELEASE_VERSION.fullmatch(version) is not None
+    refs = [f"pc-v{version}"] if canonical else []
+    if canonical and orbit_updater.is_prerelease(version):
+        return refs + ["beta", "main"]
+    refs.append("main")
+    if _update_channel() == orbit_updater.CHANNEL_BETA:
+        refs.append("beta")
+    return refs
 
 
 def download_url(name, ref="main"):

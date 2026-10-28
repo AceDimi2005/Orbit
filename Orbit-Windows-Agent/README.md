@@ -1,6 +1,6 @@
 # Orbit Agent pentru Windows
 
-Agentul **4.5.1** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **4.5.2** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
 ## Pornire, instalare și conectare
 
@@ -31,12 +31,25 @@ Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repor
 
 ## Actualizare și diagnosticare
 
-Această versiune a agentului raportează **4.5.1**. Poți verifica și aplica actualizări direct din:
+Această versiune a agentului raportează **4.5.2**. Poți verifica și aplica actualizări direct din:
 - **System Tray pe PC** → click pe pictograma Orbit → **Check for updates...**
 - **Aplicația iOS** → **Tools → Settings → PC Companion Update → Check for Updates on GitHub**
 - **Linie de comandă:** `OrbitCompanion.exe --check-updates` sau `python orbit_agent.py --check-updates`
 
 Actualizarea automată descarcă ultima versiune publică din `https://github.com/AceDimi2005/Orbit`, actualizează fișierele companionului și păstrează intacte `.orbit-token`, `.orbit-widget-token` și folderul **`%LOCALAPPDATA%\Orbit`** cu certificatul și istoricul.
+
+### Actualizări beta
+
+În meniul din System Tray, **Beta updates** (bifabil, imediat sub **Check for updates...**) alege de unde primește PC-ul actualizări:
+
+- **Oprit (implicit, stabil):** versiunea din ramura `main` și Releases de pe GitHub care nu sunt marcate pre-release.
+- **Pornit (beta):** în plus, ramura `beta` și pre-release-urile de pe GitHub. Funcțiile noi ajung aici mai întâi și pot avea buguri. Arhiva se descarcă din `refs/heads/beta`.
+
+Prima dată când îl pornești, apare o scurtă explicație (**OK** pornește beta, **Cancel** lasă totul cum era), apoi Orbit caută imediat o actualizare. Alegerea se salvează în **`%LOCALAPPDATA%\Orbit\settings.json`** (secțiunea `updates`) și rămâne după actualizări și reporniri.
+
+Când oprești **Beta updates**, PC-ul **nu revine** la o versiune mai veche: păstrează build-ul beta instalat până apare o versiune stabilă mai nouă (de exemplu, de pe 4.6.0b2 trece direct la 4.6.0). **Connection details...** arată canalul (**Updates: Stable/Beta**). Aplicațiile Orbit primesc canalul în `/api/status` (`updateChannel`) și în răspunsul verificării de actualizări (`channel`); iPhone-ul și Mac-ul afișează un build beta ca **4.6.0 β1** și canalul în ecranul de actualizare al companionului. Aplicațiile Apple nu au comutator de canal: pe iPhone, iPad, Apple Watch, Apple TV și Mac, canalul beta este TestFlight.
+
+**Numerotarea versiunilor** (PEP 440): `4.6.0` este stabilă; `4.6.0a1`, `4.6.0b1`, `4.6.0rc1` sunt alpha 1, beta 1 și release candidate 1 pentru 4.6.0 și se afișează „4.6.0 beta 1”. Pentru același număr, stabila e cea mai nouă: 4.5.2 < 4.6.0a1 < 4.6.0b1 < 4.6.0b2 < 4.6.0rc1 < 4.6.0. O versiune pre-release ajunsă din greșeală pe `main` nu este oferită PC-urilor stabile. Driverul webcam (Softcam) se descarcă, pentru un build beta, întâi din ramura `beta`, apoi din `main`, tot cu SHA-256 fix.
 
 În Orbit, **Tools → Monitoring Sources** afișează versiunea raportată de agent, sursa senzorilor CPU/GPU, interfețele de rețea și sursa FPS.
 
@@ -116,7 +129,7 @@ Conexiunea este **locală și automată**, prin memoria partajată a programelor
 1. Descarcă [MSI Afterburner de pe pagina oficială MSI](https://www.msi.com/Landing/afterburner/graphics-cards). La instalare, include **RivaTuner Statistics Server (RTSS)**. Pornește ambele programe în aceeași sesiune Windows ca agentul.
 2. În **Afterburner → Settings → Monitoring**, bifează graficele dorite în **Active hardware monitoring graphs**, de exemplu **CPU temperature**, **GPU temperature**, **GPU usage**, **Memory usage**, **Framerate** și **Frametime**, în funcție de ce apare pe PC-ul tău. Apasă **Apply**. Graficul trebuie să aibă o valoare curentă în Afterburner. **Show in On-Screen Display** este opțional pentru afișarea pe PC. Vezi [ghidul MSI pentru monitorizare](https://www.msi.com/blog/msi-afterburner-on-screen-display/).
 3. Deschide RTSS din system tray și setează **Application detection level → Low** pentru joc. Pentru o verificare vizuală, poți activa temporar **Show own statistics**; nu este nevoie să lași overlay-ul vizibil pe ecran pentru Orbit.
-4. Actualizează agentul complet la **4.5.1**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
+4. Actualizează agentul complet la **4.5.2**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
 5. În Orbit, verifică **Tools → Monitoring sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă cardul **Game frame rate** din **Customize dashboard**. **Tools → Settings → Set up FPS** include acești pași.
 
 **Dacă nu apare o valoare:** verifică întâi că ea există în Afterburner sau în statisticile RTSS. Unele jocuri, API-uri grafice ori sisteme anti-cheat blochează detectarea RTSS; integrarea nu garantează compatibilitatea cu fiecare joc. Pentru un executabil nerecunoscut, setează `ORBIT_GAME_PROCESSES` înainte de pornirea agentului. Datele vechi nu sunt afișate ca măsurători noi după oprirea sursei sau a jocului. PresentMon rămâne o alternativă pentru FPS, descrisă mai jos.

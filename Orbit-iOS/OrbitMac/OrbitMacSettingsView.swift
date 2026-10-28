@@ -703,7 +703,7 @@ private struct MacSettingsConnectionTab: View {
     /// is only shown while the agent is actually reachable.
     private var agentVersionText: String {
         guard vm.metrics.isOnline, let version = vm.metrics.agentVersion, !version.isEmpty else { return "—" }
-        return version
+        return OrbitCompanionVersion.display(version) ?? version
     }
 
     private func load(force: Bool = false) {
@@ -791,7 +791,12 @@ private struct MacSettingsAboutTab: View {
     /// Live value only; the last reading lingers in `metrics` after the PC goes offline.
     private var installedAgentVersion: String {
         guard vm.metrics.isOnline, let version = vm.metrics.agentVersion, !version.isEmpty else { return "—" }
-        return version
+        return OrbitCompanionVersion.display(version) ?? version
+    }
+    /// "stable" or "beta" (agent 4.5.2+): from the PC's live status, else from the last update check.
+    private var companionUpdateChannel: String? {
+        guard vm.metrics.isOnline, !vm.isDemoMode else { return nil }
+        return vm.metrics.updateChannel ?? vm.agentUpdateChannel
     }
 
     var body: some View {
@@ -847,7 +852,11 @@ private struct MacSettingsAboutTab: View {
     private var agentSection: some View {
         Section {
             LabeledContent("Installed on PC", value: installedAgentVersion)
-            LabeledContent("Latest release", value: vm.agentLatestVersion ?? "—")
+            if let channel = companionUpdateChannel {
+                // Set on the PC (tray menu > Beta updates); on Apple devices TestFlight is the beta channel.
+                LabeledContent("Updates on PC", value: OrbitCompanionVersion.isBetaChannel(channel) ? "Beta" : "Stable")
+            }
+            LabeledContent("Latest release", value: OrbitCompanionVersion.display(vm.agentLatestVersion) ?? "—")
             HStack(spacing: 10) {
                 Button { Task { await vm.checkAgentUpdate() } } label: { Label("Check for Agent Update", systemImage: "arrow.triangle.2.circlepath") }
                     .keyboardShortcut("u", modifiers: .command)
@@ -874,7 +883,7 @@ private struct MacSettingsAboutTab: View {
             Text("Windows agent")
         } footer: {
             Text(vm.metrics.isOnline || vm.isDemoMode
-                 ? "The agent checks GitHub for its own latest release; nothing is downloaded until you confirm."
+                 ? "The agent checks GitHub for its own latest release; nothing is downloaded until you confirm. To get beta builds first, turn on Beta updates in the Orbit menu in the Windows taskbar; turning it off keeps the PC on its build until a newer stable version is out."
                  : "Connect to your PC to check its agent version, or download the companion from GitHub below.")
         }
     }

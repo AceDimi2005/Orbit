@@ -5,7 +5,7 @@ name: Companion tests
 # Windows API that changes something: nothing touches power, the screen or the network beyond pip.
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     paths:
       - "Orbit-Windows-Agent/**"
       - ".github/workflows/companion-tests.yml"

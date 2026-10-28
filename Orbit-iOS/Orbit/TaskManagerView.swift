@@ -395,7 +395,7 @@ struct MonitoringSourcesView: View {
                         pulsing: vm.metrics.isOnline && !vm.isDemoMode
                     )
                 }
-                LabeledContent("Version", value: vm.metrics.agentVersion ?? "Not connected")
+                LabeledContent("Version", value: OrbitCompanionVersion.display(vm.metrics.agentVersion) ?? "Not connected")
                 if vm.metrics.telemetryAvailable == false {
                     Text("Agent reachable, waiting for telemetry sample.")
                         .font(.caption).foregroundStyle(.orange)
