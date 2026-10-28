@@ -46,7 +46,7 @@ struct CompanionToolsView: View {
                             }
                             // iPhone as a PC webcam (Orbit Pro, Labs): WebcamView.swift.
                             NavigationLink { WebcamScreen(vm: vm) } label: {
-                                toolTile("Webcam", subtitle: "Your \(OrbitWebcamDevice.word) as a webcam", icon: "web.camera.fill", tint: .green, badge: "BETA")
+                                toolTile("Webcam", subtitle: "Your \(OrbitWebcamDevice.word) as a webcam", icon: "web.camera.fill", tint: .green, badge: "LABS")
                             }
                         }
 

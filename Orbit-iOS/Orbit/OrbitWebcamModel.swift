@@ -4,13 +4,29 @@ import UIKit
 
 // iPhone as a PC webcam (DESIGN F10), the connection side: the PC's webcam status and setup
 // (`GET /api/webcam`, `POST /api/webcam/install|uninstall`) and the camera WebSocket (`WS /ws/camera`).
-// The JSON types and the frame pipeline are in `OrbitWebcamPipeline.swift`. Contract: `orbit_webcam.py`.
+// The JSON types, the decisions (setup flow, reconnects, what keeps Start disabled) and the frame
+// pipeline are in `OrbitWebcamPipeline.swift`. Contract: `orbit_webcam.py`.
 
 /// Settings kept between visits.
 enum OrbitWebcamPreferences {
     static let resolutionKey = "orbit.webcam.resolution"
     static let fpsKey = "orbit.webcam.fps"
     static let lensKey = "orbit.webcam.lens"
+    /// Per PC: a removal may have left webcam files there, so "Remove" stays offered.
+    static func filesLeftKey(_ pcID: String) -> String { "orbit.webcam.filesLeft.\(pcID)" }
+}
+
+extension OrbitPCLink {
+    /// The selected PC on its saved local-network address only, never a secondary (VPN) address: the
+    /// camera's picture stays on the local network, as the camera permission text and the privacy policy
+    /// say. Built fresh for each request, so it always follows the selected PC's current settings.
+    @MainActor
+    static func localNetwork(_ vm: OrbitViewModel) -> OrbitPCLink? {
+        guard !vm.isDemoMode, vm.hasSecureConnection, !vm.selectedPCID.isEmpty,
+              let client = try? OrbitAPIClient(host: vm.cleanHost(), port: vm.securePort, token: vm.apiToken,
+                                               fingerprint: vm.certificateFingerprint) else { return nil }
+        return OrbitPCLink(id: vm.selectedPCID, name: vm.selectedPCName, client: client)
+    }
 }
 
 // MARK: - Camera socket
@@ -50,14 +66,6 @@ final class OrbitWebcamSocket: OrbitWebcamFrameSink, @unchecked Sendable {
     var handshakeStatus: Int? { (task.response as? HTTPURLResponse)?.statusCode }
 }
 
-/// Why the camera stream ended, in plain words.
-struct OrbitWebcamStreamEnd: Error {
-    let message: String
-    /// The PC said why (its `error`/`code` message): don't reconnect on our own.
-    let fromPC: Bool
-    var code: String? = nil
-}
-
 // MARK: - Model
 
 /// The webcam screen's state for the selected PC. Demo mode runs the camera and the encoder but never
@@ -93,9 +101,11 @@ final class OrbitWebcamModel: ObservableObject {
     @Published private(set) var status: OrbitWebcamPCStatus?
     @Published private(set) var statusError: String?
     @Published private(set) var isLoadingStatus = false
-    @Published private(set) var setupPhase: SetupPhase = .idle
-    @Published private(set) var setupMessage: String?
-    @Published private(set) var setupError: String?
+    /// The webcam's own requests to the PC's local-network address got no answer (see `localNetwork`).
+    @Published private(set) var localNetworkUnreachable = false
+    @Published private(set) var setup = OrbitWebcamSetupFlow()
+    /// A removal may have left webcam files on this PC (kept per PC), so "Remove" stays offered.
+    @Published private(set) var filesMayBeLeft = false
     @Published private(set) var clipboardMessage: String?
     // Streaming
     @Published private(set) var phase: StreamPhase = .idle
@@ -104,6 +114,8 @@ final class OrbitWebcamModel: ObservableObject {
     @Published private(set) var sentFPS: Double = 0
     @Published private(set) var megabitsPerSecond: Double = 0
     @Published private(set) var streamFormat: OrbitWebcamFormat?
+    /// The frames going out are portrait (the device held upright): the PC shows them pillarboxed.
+    @Published private(set) var capturesPortrait = false
     /// Why streaming stopped or can't continue (cleared by the next start).
     @Published private(set) var streamNote: Note?
     /// This device stopped streaming a moment ago and the PC may still count it in `clients`.
@@ -111,6 +123,8 @@ final class OrbitWebcamModel: ObservableObject {
     // Camera
     @Published private(set) var cameraState: OrbitWebcamCamera.State = .idle
     @Published private(set) var cameraAccess: AVAuthorizationStatus = .notDetermined
+    /// iOS refused the other camera; the previous one runs again.
+    @Published private(set) var lensNote: Note?
     @Published private(set) var isThermalLimited = false
     @Published var isDimmed = false {
         didSet { camera.setPreviewEnabled(!isDimmed) }
@@ -123,8 +137,13 @@ final class OrbitWebcamModel: ObservableObject {
         didSet { UserDefaults.standard.set(frameRate, forKey: OrbitWebcamPreferences.fpsKey); applyCaptureSettings() }
     }
     @Published var lens: OrbitWebcamLens {
-        didSet { UserDefaults.standard.set(lens.rawValue, forKey: OrbitWebcamPreferences.lensKey); applyCaptureSettings() }
+        didSet {
+            UserDefaults.standard.set(lens.rawValue, forKey: OrbitWebcamPreferences.lensKey)
+            if !isRevertingLens { lensNote = nil }
+            applyCaptureSettings()
+        }
     }
+    private var isRevertingLens = false
 
     /// Webcam screens on screen right now. `orbit://webcam` opens no second one while one shows: two
     /// screens would run two capture sessions that interrupt each other.
@@ -139,7 +158,9 @@ final class OrbitWebcamModel: ObservableObject {
     private(set) var isDemo = false
     private(set) var pcName = "your PC"
     private(set) var pcID = ""
+    /// The PC's local-network link as of the last request; `currentLink()` builds a fresh one each time.
     private var link: OrbitPCLink?
+    private var linkProvider: (@MainActor () -> OrbitPCLink?)?
     private var isOnline = false
     private var hasSecureConnection = false
     private var isVisible = false
@@ -157,13 +178,7 @@ final class OrbitWebcamModel: ObservableObject {
     private var idleTimerBefore: Bool?
     private var thermalObserver: NSObjectProtocol?
     private var cameraStarted = false
-    /// The setup/removal request came back with 202 (or got lost), so the status poll decides how it
-    /// ended. Until then a poll must not end it: it may land before the PC even started the setup.
-    private var setupAwaitsPoll = false
 
-    /// Reconnects after a dropped connection: the PC keeps the camera for 5 s, so apps that use it
-    /// barely notice a quick reconnect.
-    private static let reconnectDelays: [Double] = [0.5, 1.5, 3, 5]
     /// How long the camera socket may stay silent: the PC answers the hello at once and then sends
     /// {"connected":…} every 5 s.
     private static let silenceTimeout: Double = 15
@@ -183,6 +198,7 @@ final class OrbitWebcamModel: ObservableObject {
         lens = (savedLens == .front ? hasFront : hasBack) ? savedLens : (hasBack && !hasFront ? .back : .front)
         cameraAccess = AVCaptureDevice.authorizationStatus(for: .video)
         camera.onState = { [weak self] state in self?.cameraStateChanged(state) }
+        camera.onSwitchFailed = { [weak self] lens, message in self?.lensSwitchFailed(lens, message: message) }
         camera.setFrameHandler { [pipeline] buffer, time in pipeline.handle(buffer, time: time) }
     }
 
@@ -190,25 +206,28 @@ final class OrbitWebcamModel: ObservableObject {
 
     /// The screen appeared, or the selected PC / connection changed.
     func configure(_ vm: OrbitViewModel) {
-        let newLink = OrbitPCLink.current(vm)
+        linkProvider = { [weak vm] in vm.flatMap { OrbitPCLink.localNetwork($0) } }
+        let newLink = OrbitPCLink.localNetwork(vm)
         let changed = vm.isDemoMode != isDemo || newLink?.id != link?.id || vm.connectionID != generation
         isOnline = vm.metrics.isOnline
         hasSecureConnection = vm.hasSecureConnection
         pcName = vm.isDemoMode ? "Demo PC" : vm.selectedPCName
+        link = newLink
         guard changed || !isVisible else { return }
         if phase.isActive {
-            let message = newLink?.id != link?.id || vm.isDemoMode != isDemo
+            let message = vm.selectedPCID != pcID || vm.isDemoMode != isDemo
                 ? "You switched to another PC."
                 : "The connection to \(pcName) changed. Tap Start Streaming to go on."
             stopStreaming(note: Note(title: "Streaming stopped", message: message, icon: "arrow.left.arrow.right", kind: .info))
         }
         generation = vm.connectionID
         isDemo = vm.isDemoMode
-        link = newLink
         pcID = vm.isDemoMode ? "" : vm.selectedPCID
         features = .unknown; featuresError = nil
         status = nil; statusError = nil
-        setupPhase = .idle; setupAwaitsPoll = false; setupMessage = nil; setupError = nil; clipboardMessage = nil
+        localNetworkUnreachable = false
+        setup.reset(); clipboardMessage = nil
+        filesMayBeLeft = !pcID.isEmpty && UserDefaults.standard.bool(forKey: OrbitWebcamPreferences.filesLeftKey(pcID))
         if isDemo {
             features = .available(agentVersion: nil, features: ["webcam"])
             status = .demo
@@ -233,6 +252,7 @@ final class OrbitWebcamModel: ObservableObject {
                                      icon: "pause.circle.fill", kind: .info))
         }
         isDimmed = false
+        lensNote = nil
         pollTask?.cancel(); pollTask = nil
         stopCamera()
         if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
@@ -273,6 +293,8 @@ final class OrbitWebcamModel: ObservableObject {
             stopCamera()
             pollTask?.cancel(); pollTask = nil
         case .active:
+            // iOS may have invalidated the hardware JPEG session while Orbit was away.
+            resetEncoderSoon()
             if isVisible {
                 startCameraIfAllowed()
                 startPolling()
@@ -288,7 +310,6 @@ final class OrbitWebcamModel: ObservableObject {
         if isThermalLimited { return OrbitWebcamCaptureSettings(lens: lens, resolution: .hd720, fps: 15) }
         return OrbitWebcamCaptureSettings(lens: lens, resolution: resolution, fps: frameRate)
     }
-
 
     func requestCameraAccess() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -343,6 +364,19 @@ final class OrbitWebcamModel: ObservableObject {
         OrbitHaptics.selection()
     }
 
+    /// iOS refused the camera for `failed`: the previous one runs again, so the choice goes back to it.
+    private func lensSwitchFailed(_ failed: OrbitWebcamLens, message: String) {
+        let other: OrbitWebcamLens = failed == .front ? .back : .front
+        if lens == failed {
+            isRevertingLens = true
+            lens = other
+            isRevertingLens = false
+        }
+        lensNote = Note(title: "Couldn't switch to the \(failed.title.lowercased()) camera", message: message + " The \(other.title.lowercased()) camera stays on.",
+                        icon: "arrow.triangle.2.circlepath.camera", kind: .warning)
+        OrbitHaptics.error()
+    }
+
     // MARK: Heat
 
     private func observeThermalState() {
@@ -381,25 +415,59 @@ final class OrbitWebcamModel: ObservableObject {
         }
     }
 
+    /// A fresh VideoToolbox session for the next frames (waits for a frame being encoded, so off the
+    /// main thread).
+    private func resetEncoderSoon() {
+        let pipeline = pipeline
+        DispatchQueue.global(qos: .userInitiated).async { pipeline.resetEncoder() }
+    }
+
     // MARK: Status from the PC
 
     var supportsWebcam: Bool { features.has("webcam") }
 
-    /// What keeps a real PC from being used now (nil when it can be); demo mode never has one.
-    var pcProblem: (title: String, message: String, icon: String)? {
-        if isDemo { return nil }
-        if pcID.isEmpty { return ("Pair a PC first", "Find and pair your Windows PC in My PCs, then come back to use this \(OrbitWebcamDevice.word) as its webcam.", "desktopcomputer") }
-        if !hasSecureConnection || link == nil { return ("Needs the encrypted connection", "Pair \(pcName) again in My PCs. The camera only travels over Orbit's encrypted connection.", "lock.trianglebadge.exclamationmark") }
-        if !isOnline { return ("\(pcName) is offline", "Wake the PC or check that Orbit PC Companion is running, then try again.", "wifi.slash") }
-        if features == .olderAgent || (features.isKnown && !supportsWebcam) {
-            return ("Update Orbit PC Companion", "The agent on \(pcName) doesn't have the webcam yet. Update it from Settings › Check for PC Companion Update, then come back.", "arrow.down.circle.fill")
-        }
+    private var situation: OrbitWebcamSituation {
+        OrbitWebcamSituation(isDemo: isDemo, pcName: pcName, device: OrbitWebcamDevice.word, hasPC: !pcID.isEmpty,
+                             hasSecureLink: hasSecureConnection && link != nil, isOnline: isOnline,
+                             localNetworkUnreachable: localNetworkUnreachable, featuresKnown: features.isKnown,
+                             featuresFailed: featuresError != nil, supportsWebcam: supportsWebcam, canUseCamera: canUseCamera,
+                             cameraFailure: cameraFailure, setupRunning: setup.isRunning, status: status, statusFailed: statusError != nil)
+    }
+
+    private var cameraFailure: String? {
+        if case .failed(let message) = cameraState { return message }
         return nil
+    }
+
+    /// What keeps a real PC from being used now (nil when it can be); demo mode never has one.
+    var pcProblem: OrbitWebcamReadiness.Problem? { OrbitWebcamReadiness.pcProblem(situation) }
+
+    var setupPhase: SetupPhase {
+        switch setup.operation {
+        case .install?: return .installing
+        case .remove?: return .removing
+        case nil: return .idle
+        }
+    }
+
+    var setupMessage: String? { setup.message }
+    var setupError: String? { setup.error }
+
+    /// "Remove Webcam from PC…" is offered while anything of the webcam may be on the PC.
+    var offersRemoval: Bool {
+        guard !isDemo, let status, !status.isUnsupportedPC else { return false }
+        return status.isSetUp || status.installed == true || status.registered == true || filesMayBeLeft
     }
 
     func refresh() async {
         guard !isDemo else { return }
         await loadStatus(force: true)
+    }
+
+    /// The selected PC's local-network link, built fresh (nil without a paired, encrypted PC).
+    private func currentLink() -> OrbitPCLink? {
+        if let linkProvider { link = linkProvider() }
+        return link
     }
 
     private func startPolling() {
@@ -417,7 +485,7 @@ final class OrbitWebcamModel: ObservableObject {
     /// One status poll; returns the seconds until the next one (sooner while a setup runs).
     private func pollOnce() async -> Double {
         await loadStatus(force: false)
-        let busy = setupPhase != .idle || status?.isBusy == true
+        let busy = setup.isRunning || status?.isBusy == true
         return busy ? 2 : (phase.isActive ? 5 : 8)
     }
 
@@ -444,32 +512,52 @@ final class OrbitWebcamModel: ObservableObject {
         return clients > 0
     }
 
-    private func loadStatus(force: Bool) async {
-        guard !isDemo, let link, isOnline, hasSecureConnection else { return }
+    /// Reads the PC's webcam status; returns it when this read worked.
+    @discardableResult
+    private func loadStatus(force: Bool) async -> OrbitWebcamPCStatus? {
+        guard !isDemo, isOnline, hasSecureConnection, let link = currentLink() else { return nil }
         let version = generation
         isLoadingStatus = true
         defer { if version == generation { isLoadingStatus = false } }
         do {
             let found = try await OrbitFeatureStore.shared.features(for: link, maxAge: force ? 0 : 120)
-            guard version == generation else { return }
+            guard version == generation else { return nil }
             features = found
             featuresError = nil
         } catch {
-            guard version == generation else { return }
+            guard version == generation else { return nil }
             featuresError = OrbitPlainError.describe(error)
-            return
+            noteReachability(error)
+            return nil
         }
-        guard supportsWebcam else { return }
+        guard supportsWebcam else { return nil }
         do {
             let reply: OrbitWebcamPCStatus = try await link.client.get("/api/webcam")
-            guard version == generation else { return }
+            guard version == generation else { return nil }
             status = reply
             statusError = nil
+            localNetworkUnreachable = false
             if let name = reply.cameraName, !name.isEmpty, !phase.isActive { cameraName = name }
-            finishSetupIfDone(reply)
+            setupEnded(setup.polled(reply, pcName: pcName, cameraName: cameraName))
+            return reply
         } catch {
-            guard version == generation else { return }
+            guard version == generation else { return nil }
             statusError = OrbitPlainError.describe(error)
+            noteReachability(error)
+            return nil
+        }
+    }
+
+    /// The webcam talks to the PC's local-network address only. No answer there, while Orbit still
+    /// reaches the PC, means this device is on another network (or the PC's address changed).
+    private func noteReachability(_ error: Error) {
+        guard let code = (error as? URLError)?.code else { return }
+        switch code {
+        case .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .networkConnectionLost,
+             .notConnectedToInternet, .internationalRoamingOff, .dataNotAllowed:
+            localNetworkUnreachable = true
+        default:
+            break
         }
     }
 
@@ -478,132 +566,67 @@ final class OrbitWebcamModel: ObservableObject {
     /// `POST /api/webcam/install`: one Windows administrator prompt on the PC. The PC answers within
     /// 90 s (202 while the prompt is still open), so the request may wait up to 2 minutes.
     func installOnPC() {
-        guard !isDemo, let link, setupPhase == .idle else { return }
+        guard !isDemo, let link = currentLink(), setup.begin(.install, current: status) else { return }
+        runSetup(link: link, path: "/api/webcam/install")
+    }
+
+    /// `POST /api/webcam/uninstall`: same single prompt.
+    func removeFromPC() {
+        guard !isDemo, let link = currentLink(), setup.begin(.remove, current: status) else { return }
+        if phase.isActive { stopStreaming(note: nil) }
+        runSetup(link: link, path: "/api/webcam/uninstall")
+    }
+
+    private func runSetup(link: OrbitPCLink, path: String) {
         let version = generation
-        setupPhase = .installing
-        setupAwaitsPoll = false
-        setupMessage = nil; setupError = nil
         OrbitHaptics.tap()
         // Ask the PC every 2 s from now on (not at the next regular poll), so "Approve the Windows prompt"
         // shows as soon as the PC opens it. The answer to the request itself comes only after that prompt.
         startPolling()
         Task {
             do {
-                let data = try await link.client.data("/api/webcam/install", method: "POST", timeout: Self.setupTimeout)
+                let data = try await link.client.data(path, method: "POST", timeout: Self.setupTimeout)
                 guard version == generation else { return }
                 let reply = try JSONDecoder().decode(OrbitWebcamPCStatus.self, from: data)
                 status = reply
-                switch reply.status {
-                case "waitingForApproval":
-                    // Still waiting for the person at the PC: the status poll finishes it.
-                    setupAwaitsPoll = true
-                    startPolling()
-                case "alreadyInstalled":
-                    setupPhase = .idle
-                    setupMessage = "The webcam was already set up on \(pcName)."
-                    OrbitHaptics.success()
-                default:
-                    setupPhase = .idle
-                    setupMessage = "The webcam is set up on \(pcName). Apps that were already open need a restart to find the \"\(reply.cameraName ?? cameraName)\" camera."
-                    OrbitHaptics.success()
-                }
+                setupEnded(setup.answered(reply, pcName: pcName, cameraName: cameraName))
             } catch {
                 guard version == generation else { return }
-                await setupRequestFailed(error, removing: false)
-            }
-        }
-    }
-
-    /// `POST /api/webcam/uninstall`: same single prompt.
-    func removeFromPC() {
-        guard !isDemo, let link, setupPhase == .idle else { return }
-        if phase.isActive { stopStreaming(note: nil) }
-        let version = generation
-        setupPhase = .removing
-        setupAwaitsPoll = false
-        setupMessage = nil; setupError = nil
-        OrbitHaptics.tap()
-        startPolling()
-        Task {
-            do {
-                let data = try await link.client.data("/api/webcam/uninstall", method: "POST", timeout: Self.setupTimeout)
-                guard version == generation else { return }
-                let reply = try JSONDecoder().decode(OrbitWebcamPCStatus.self, from: data)
-                status = reply
-                switch reply.status {
-                case "waitingForApproval":
-                    setupAwaitsPoll = true
-                    startPolling()
-                case "notInstalled":
-                    setupPhase = .idle
-                    setupMessage = "The webcam wasn't set up on \(pcName), so there was nothing to remove."
-                default:
-                    setupPhase = .idle
-                    setupMessage = reply.filesLeft == true
-                        ? "The webcam was removed from \(pcName). Some of its files are still in use; restart the PC and remove it again to delete them."
-                        : "The webcam was removed from \(pcName)."
-                    OrbitHaptics.success()
+                if let orbit = error as? OrbitError, orbit.statusCode != nil {
+                    // The PC's own sentence (declined prompt, missing Visual C++ runtime with the winget
+                    // commands, ARM, not signed in, download or registration problems).
+                    setupEnded(setup.refused(orbit.message))
+                    await loadStatus(force: false)
+                    return
                 }
-            } catch {
+                // The answer got lost on the way (Wi-Fi, a timeout): the setup may still run on the PC, or
+                // have finished there. Ask it.
+                let now = await loadStatus(force: false)
                 guard version == generation else { return }
-                await setupRequestFailed(error, removing: true)
+                setupEnded(setup.answerLost(OrbitPlainError.describe(error), status: now, pcName: pcName, cameraName: cameraName))
             }
+            if setup.awaitsPoll { startPolling() }
         }
     }
 
-    private func setupRequestFailed(_ error: Error, removing: Bool) async {
-        if let orbit = error as? OrbitError, orbit.statusCode != nil {
-            // The PC's own sentence (declined prompt, missing Visual C++ runtime with the winget
-            // commands, ARM, not signed in, download or registration problems).
-            setupPhase = .idle
-            setupError = orbit.message
-            OrbitHaptics.error()
-            await loadStatus(force: false)
-            return
+    /// An operation ended: the haptic, and whether files may be left on the PC.
+    private func setupEnded(_ ending: OrbitWebcamSetupFlow.Ending?) {
+        guard let ending else { return }
+        if let left = setup.filesMayBeLeft, !pcID.isEmpty {
+            filesMayBeLeft = left
+            UserDefaults.standard.set(left, forKey: OrbitWebcamPreferences.filesLeftKey(pcID))
         }
-        // The answer got lost on the way (Wi-Fi, a timeout): the setup may still be running on the
-        // PC, so ask it.
-        await loadStatus(force: false)
-        if status?.isBusy == true {
-            setupAwaitsPoll = true
-            startPolling()
-            return
-        }
-        setupPhase = .idle
-        if let pcError = status?.installError, !pcError.isEmpty {
-            setupError = pcError
-        } else if status?.isSetUp == true, !removing {
-            setupMessage = "The webcam is set up on \(pcName)."
-        } else {
-            setupError = (removing ? "Couldn't remove the webcam. " : "Couldn't set up the webcam. ") + OrbitPlainError.describe(error)
-        }
-        OrbitHaptics.error()
-    }
-
-    /// Ends a setup or removal that the PC finished while Orbit was polling (after a 202).
-    private func finishSetupIfDone(_ reply: OrbitWebcamPCStatus) {
-        guard setupPhase != .idle, setupAwaitsPoll, !reply.isBusy else { return }
-        let removing = setupPhase == .removing
-        setupPhase = .idle
-        setupAwaitsPoll = false
-        if let error = reply.installError, !error.isEmpty {
-            setupError = error
-            OrbitHaptics.error()
-        } else if removing {
-            setupMessage = reply.isSetUp ? nil : "The webcam was removed from \(pcName)."
-            if reply.isSetUp { setupError = "Windows still lists the webcam on \(pcName). Try removing it again." }
-        } else if reply.isSetUp {
-            setupMessage = "The webcam is set up on \(pcName). Apps that were already open need a restart to find the \"\(reply.cameraName ?? cameraName)\" camera."
-            OrbitHaptics.success()
-        } else {
-            setupError = reply.reason ?? "The setup on \(pcName) didn't finish. Try again."
+        switch ending {
+        case .success: OrbitHaptics.success()
+        case .failure: OrbitHaptics.error()
+        case .quiet: break
         }
     }
 
     /// Puts the winget commands for the Visual C++ runtime on the PC's clipboard, ready to paste
     /// into Terminal there.
     func sendRuntimeCommandsToPC() {
-        guard let link, let commands = status?.runtime?.commands, !commands.isEmpty else { return }
+        guard let link = currentLink(), let commands = status?.runtime?.commands, !commands.isEmpty else { return }
         let text = commands.joined(separator: "\r\n")
         clipboardMessage = nil
         Task {
@@ -629,35 +652,24 @@ final class OrbitWebcamModel: ObservableObject {
     // MARK: Streaming
 
     /// Why Start can't be used now (nil when it can).
-    var startBlocker: String? {
-        if !canUseCamera { return "Allow camera access first." }
-        if case .failed(let message) = cameraState { return message }
-        if isDemo { return nil }
-        if let problem = pcProblem { return problem.title + "." }
-        if !features.isKnown { return featuresError == nil ? "Checking what \(pcName) can do…" : "Couldn't reach \(pcName)." }
-        if setupPhase != .idle || status?.isBusy == true { return "Wait for the setup on \(pcName) to finish." }
-        if status?.isUnsupportedPC == true { return "\(pcName) can't run the webcam." }
-        if let status, !status.isSetUp { return "Set up the webcam on \(pcName) first." }
-        return nil
-    }
+    var startBlocker: String? { OrbitWebcamReadiness.startBlocker(situation) }
 
     var announcedFormat: OrbitWebcamFormat {
-        var format = OrbitWebcamFormat(width: resolution.width, height: resolution.height, fps: frameRate)
-        if let status, !status.accepts(width: format.width, height: format.height, fps: format.fps) {
-            format = OrbitWebcamFormat(width: 1280, height: 720, fps: min(frameRate, status.limits?.maxFPS ?? 30))
-        }
-        return format
+        OrbitWebcamFormat.announced(width: resolution.width, height: resolution.height, fps: frameRate, status: status)
     }
 
     func startStreaming() {
-        guard !phase.isActive, startBlocker == nil, isDemo || link != nil else { return }
+        guard !phase.isActive, startBlocker == nil else { return }
+        guard isDemo || currentLink() != nil else { return }
         streamNote = nil
         appConnected = false
+        capturesPortrait = false
         streamGeneration += 1
         let format = announcedFormat
         streamFormat = format
         updatePipelineFormat()
         pipeline.currentQuality = OrbitWebcamPipeline.bestQuality
+        camera.setSendsFrames(true)
         keepScreenAwake(true)
         startStats()
         OrbitHaptics.press()
@@ -666,10 +678,9 @@ final class OrbitWebcamModel: ObservableObject {
             pipeline.setSink(OrbitWebcamDiscardSink())
             return
         }
-        guard let link else { return }
         phase = .connecting
         let token = streamGeneration
-        streamTask = Task { [weak self] in await self?.run(link: link, format: format, token: token) }
+        streamTask = Task { [weak self] in await self?.run(format: format, token: token) }
     }
 
     func stopStreaming() {
@@ -679,13 +690,17 @@ final class OrbitWebcamModel: ObservableObject {
 
     private func stopStreaming(note: Note?) {
         let wasConnected = phase.isActive && !isDemo
+        let wasActive = phase.isActive
         streamGeneration += 1
         streamTask?.cancel(); streamTask = nil
         pipeline.setSink(nil)
         socket?.close(); socket = nil
+        camera.setSendsFrames(false)
+        if wasActive { resetEncoderSoon() }
         if wasConnected { refreshStatusSoon() }
         phase = .idle
         appConnected = false
+        capturesPortrait = false
         streamFormat = nil
         isDimmed = false
         updatePipelineFormat()
@@ -695,46 +710,49 @@ final class OrbitWebcamModel: ObservableObject {
     }
 
     /// Connects, streams until the connection ends, and reconnects after a dropped connection.
-    private func run(link: OrbitPCLink, format: OrbitWebcamFormat, token: Int) async {
-        var attempt = 0
+    private func run(format: OrbitWebcamFormat, token: Int) async {
+        var policy = OrbitWebcamReconnectPolicy()
         var isRetry = false
         while token == streamGeneration, !Task.isCancelled {
-            let (end, streamed) = await connectAndStream(link: link, format: format, token: token, isRetry: isRetry)
+            // A fresh link for every connection: it follows the PC's current settings.
+            guard let link = currentLink() else {
+                stopStreaming(note: Note(title: "Streaming stopped", message: "Pair \(pcName) again in My PCs. The camera only travels over Orbit's encrypted connection.",
+                                         icon: "lock.trianglebadge.exclamationmark", kind: .error))
+                OrbitHaptics.error()
+                return
+            }
+            let (end, streamedFor) = await connectAndStream(link: link, format: format, token: token, isRetry: isRetry)
             guard token == streamGeneration, !Task.isCancelled else { return }
             pipeline.setSink(nil)
             socket?.close(); socket = nil
             guard let end else { return }
-            // A connection that streamed earns a fresh set of quick retries (a long call may see
-            // several short Wi-Fi drops); only failures in a row use them up.
-            if streamed { attempt = 0 }
             isRetry = true
-            if end.fromPC || attempt >= Self.reconnectDelays.count || !isVisible {
+            switch policy.ended(fromPC: end.fromPC, streamedFor: streamedFor, isOnline: isOnline, isVisible: isVisible,
+                                now: ProcessInfo.processInfo.systemUptime) {
+            case .reconnect(let delay, let attempt):
+                phase = .reconnecting(attempt: attempt)
+                try? await Task.sleep(for: .seconds(delay))
+            case .stop(.offline):
+                stopBecauseOffline()
+                return
+            case .stop(let reason):
                 let title = end.fromPC ? "Streaming stopped by \(pcName)" : "Streaming stopped"
+                let message = reason == .keepsDropping ? OrbitWebcamStreamEnd.keepsDropping(pcName: pcName) : end.message
                 // This also asks the PC for its status again a moment later (from a fresh task: this
                 // one is cancelled now), so "removed from this PC" shows the setup button again.
-                stopStreaming(note: Note(title: title, message: end.message, icon: "exclamationmark.triangle.fill", kind: .error))
+                stopStreaming(note: Note(title: title, message: message, icon: "exclamationmark.triangle.fill", kind: .error))
                 OrbitHaptics.error()
                 return
             }
-            // Two quick retries failed and Orbit can't reach the PC at all either: it went to sleep or
-            // left the network, so stop instead of showing "Reconnecting…" for another minute. (A short
-            // Wi-Fi drop is still ridden out: it rarely outlasts the first two retries.)
-            if !isOnline && attempt >= 2 {
-                stopBecauseOffline()
-                return
-            }
-            phase = .reconnecting(attempt: attempt + 1)
-            try? await Task.sleep(for: .seconds(Self.reconnectDelays[attempt]))
-            attempt += 1
         }
     }
 
-    /// One connection. Returns why it ended (nil when it was closed on purpose) and whether the PC
-    /// got as far as "ready".
-    private func connectAndStream(link: OrbitPCLink, format: OrbitWebcamFormat, token: Int, isRetry: Bool) async -> (OrbitWebcamStreamEnd?, Bool) {
+    /// One connection. Returns why it ended (nil when it was closed on purpose) and how long it streamed
+    /// after the PC said "ready" (nil when it never did).
+    private func connectAndStream(link: OrbitPCLink, format: OrbitWebcamFormat, token: Int, isRetry: Bool) async -> (OrbitWebcamStreamEnd?, Double?) {
         let socket: OrbitWebcamSocket
         do { socket = try OrbitWebcamSocket(client: link.client) }
-        catch { return (OrbitWebcamStreamEnd(message: OrbitPlainError.describe(error), fromPC: true), false) }
+        catch { return (OrbitWebcamStreamEnd(message: OrbitPlainError.describe(error), fromPC: true), nil) }
         self.socket = socket
         // The PC answers the hello with "ready" (or why it can't) within a couple of seconds, and then
         // says {"connected":…} at least every 5 s. Silence for longer than `silenceTimeout` means the
@@ -752,17 +770,17 @@ final class OrbitWebcamModel: ObservableObject {
             }
         }
         defer { watchdog.cancel() }
-        var ready = false
+        var readyAt: Date?
         var pcFailure: OrbitWebcamStreamEnd?
         do {
             try await socket.open(format)
             while true {
                 let message = try await socket.next()
-                guard token == streamGeneration else { return (nil, ready) }
+                guard token == streamGeneration else { return (nil, nil) }
                 lastHeardAt = Date()
                 switch message {
                 case .ready(let width, let height, let fps, let name):
-                    ready = true
+                    if readyAt == nil { readyAt = Date() }
                     if let name, !name.isEmpty { cameraName = name }
                     // The PC's camera format is the one that counts (it matches the hello today).
                     if width > 0, height > 0, fps > 0, OrbitWebcamFormat(width: width, height: height, fps: fps) != streamFormat {
@@ -775,44 +793,21 @@ final class OrbitWebcamModel: ObservableObject {
                 case .connected(let connected):
                     if connected && !appConnected { OrbitHaptics.success() }
                     appConnected = connected
-                case .failure(let code, let message):
+                case .failure:
                     // The PC closes right after saying why.
-                    pcFailure = OrbitWebcamStreamEnd(message: message, fromPC: true, code: code)
+                    pcFailure = OrbitWebcamStreamEnd.said(message)
                 case .other:
                     break
                 }
             }
         } catch {
-            guard token == streamGeneration, !Task.isCancelled else { return (nil, ready) }
-            if let pcFailure { return (pcFailure, ready) }
-            return (OrbitWebcamStreamEnd(message: describe(error, socket: socket, ready: ready), fromPC: !ready && isRefusal(socket)), ready)
+            guard token == streamGeneration, !Task.isCancelled else { return (nil, nil) }
+            let streamedFor = readyAt.map { Date().timeIntervalSince($0) }
+            if let pcFailure { return (pcFailure, streamedFor) }
+            return (OrbitWebcamStreamEnd.lost(pcName: pcName, handshakeStatus: socket.handshakeStatus, pinFailure: socket.client.pinFailureMessage,
+                                              ready: readyAt != nil, cancelled: (error as? URLError)?.code == .cancelled),
+                    streamedFor)
         }
-    }
-
-    private func isRefusal(_ socket: OrbitWebcamSocket) -> Bool {
-        if let status = socket.handshakeStatus, status >= 400 { return true }
-        return socket.client.pinFailureMessage != nil
-    }
-
-    private func describe(_ error: Error, socket: OrbitWebcamSocket, ready: Bool) -> String {
-        if let pin = socket.client.pinFailureMessage { return pin }
-        switch socket.handshakeStatus {
-        case 401, 403: return "\(pcName) refused the camera connection. Pair the PC again in My PCs."
-        case 404: return "The agent on \(pcName) doesn't have the webcam yet. Update Orbit PC Companion."
-        case 426: return "The webcam needs Orbit's encrypted connection. Pair \(pcName) again in My PCs."
-        default: break
-        }
-        if !ready {
-            // No WebSocket handshake at all: the PC didn't answer (asleep, another network, firewall).
-            guard socket.handshakeStatus == 101 else {
-                return "Couldn't reach \(pcName). Check that the PC is awake, on the same network, and that Orbit PC Companion is running."
-            }
-            if (error as? URLError)?.code == .cancelled {
-                return "\(pcName) didn't get the camera ready in time. Try again."
-            }
-            return "\(pcName) closed the camera connection before it was ready. Try again, or restart Orbit PC Companion on the PC."
-        }
-        return "Lost the connection to \(pcName). Check that the PC is awake and on the same network."
     }
 
     // MARK: Numbers on screen
@@ -844,11 +839,12 @@ final class OrbitWebcamModel: ObservableObject {
         let stats = pipeline.takeStats()
         #if DEBUG
         if ProcessInfo.processInfo.environment["ORBIT_WEBCAM_SELFTEST"] != nil {
-            print("webcam-selftest: stats frames \(stats.frames) bytes \(stats.bytes) dropped \(stats.dropped) failed \(stats.failed) · \(pipeline.debugState)")
+            print("webcam-selftest: stats frames \(stats.frames) bytes \(stats.bytes) dropped \(stats.dropped) failed \(stats.failed) portrait \(stats.portrait.map { "\($0)" } ?? "-") · \(pipeline.debugState)")
         }
         #endif
         sentFPS = Double(stats.frames) / seconds
         megabitsPerSecond = Double(stats.bytes) * 8 / seconds / 1_000_000
+        if let portrait = stats.portrait, portrait != capturesPortrait { capturesPortrait = portrait }
         guard phase == .streaming else { return }
         let target = Double(isThermalLimited ? min(15, streamFormat?.fps ?? 15) : (streamFormat?.fps ?? frameRate))
         if stats.dropped > 0 && sentFPS < target * 0.75 {
@@ -918,6 +914,9 @@ final class OrbitWebcamModel: ObservableObject {
             startStreaming()
             await waitUntil(20) { phase == .streaming || phase == .idle }
         case "stop": stopStreaming()
+        case "frames":
+            // Frames that reached the pipeline so far (they flow only while streaming).
+            print("webcam-selftest: frames · \(pipeline.debugState)")
         case "lens": switchLens()
         case "dim": isDimmed = true
         case "undim": isDimmed = false
@@ -934,9 +933,16 @@ final class OrbitWebcamModel: ObservableObject {
             if step.hasPrefix("wait:"), let seconds = Double(step.dropFirst(5)) {
                 try? await Task.sleep(for: .seconds(seconds))
             } else if step.hasPrefix("waitfor:") {
-                // waitfor:connected / waitfor:idle
+                // waitfor:connected / waitfor:idle / waitfor:streaming
                 let what = step.dropFirst(8)
-                await waitUntil(60) { what == "connected" ? appConnected : (what == "idle" ? phase == .idle : false) }
+                await waitUntil(60) {
+                    switch what {
+                    case "connected": return appConnected
+                    case "idle": return phase == .idle
+                    case "streaming": return phase == .streaming
+                    default: return false
+                    }
+                }
             } else {
                 print("webcam-selftest: unknown step \(step)")
             }
@@ -945,8 +951,8 @@ final class OrbitWebcamModel: ObservableObject {
 
     private func printSelfTestState(after step: String) {
         let pc = status.map { "installed \($0.installed ?? false) registered \($0.registered ?? false) clients \($0.clients ?? -1) busy \($0.isBusy) reason \($0.reason ?? "none")" } ?? "status none (\(statusError ?? featuresError ?? "-"))"
-        print("webcam-selftest: after \(step) · phase \(phase) · app connected \(appConnected) · \(String(format: "%.1f fps %.2f Mbps", sentFPS, megabitsPerSecond)) · format \(streamFormat.map { "\($0.width)x\($0.height)@\($0.fps)" } ?? "-") · hot \(isThermalLimited) · encoder \(pipeline.usesHardwareEncoder ? "VideoToolbox" : "CoreImage") · quality \(pipeline.currentQuality) · lens \(lens.rawValue) · dimmed \(isDimmed) · camera \(cameraState)")
-        print("webcam-selftest:   pc: \(pc) · setup message \(setupMessage ?? "-") · setup error \(setupError ?? "-") · clipboard \(clipboardMessage ?? "-") · note \(streamNote.map { "\($0.title): \($0.message)" } ?? "-") · blocker \(startBlocker ?? "-")")
+        print("webcam-selftest: after \(step) · phase \(phase) · app connected \(appConnected) · \(String(format: "%.1f fps %.2f Mbps", sentFPS, megabitsPerSecond)) · format \(streamFormat.map { "\($0.width)x\($0.height)@\($0.fps)" } ?? "-") · portrait \(capturesPortrait) · hot \(isThermalLimited) · encoder \(pipeline.usesHardwareEncoder ? "VideoToolbox" : "CoreImage") · quality \(pipeline.currentQuality) · lens \(lens.rawValue) · dimmed \(isDimmed) · camera \(cameraState)")
+        print("webcam-selftest:   pc: \(pc) · setup message \(setupMessage ?? "-") · setup error \(setupError ?? "-") · files left \(filesMayBeLeft) · offers removal \(offersRemoval) · lan unreachable \(localNetworkUnreachable) · clipboard \(clipboardMessage ?? "-") · note \(streamNote.map { "\($0.title): \($0.message)" } ?? "-") · lens note \(lensNote.map { $0.message } ?? "-") · blocker \(startBlocker ?? "-")")
     }
     #endif
 }

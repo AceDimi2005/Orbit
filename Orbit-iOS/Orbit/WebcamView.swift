@@ -134,7 +134,7 @@ struct WebcamView: View {
                     } label: {
                         Label("Refresh PC Status", systemImage: "arrow.clockwise")
                     }
-                    if model.status?.isSetUp == true || model.status?.installed == true {
+                    if model.offersRemoval {
                         Button(role: .destructive) {
                             confirmsRemoval = true
                         } label: {
@@ -303,6 +303,9 @@ struct WebcamView: View {
 
             if model.phase.isActive {
                 appConnectionRow
+                if model.phase == .streaming && model.capturesPortrait {
+                    portraitRow
+                }
                 HStack(spacing: 10) {
                     Button {
                         model.isDimmed = true
@@ -354,11 +357,30 @@ struct WebcamView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Held upright, the PC's 16:9 camera shows a narrow column between black bars.
+    private var portraitRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            OrbitIconBadge(systemName: "rectangle.landscape.rotate", tint: .yellow, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Turn your \(device) sideways for a full-width picture")
+                    .font(.subheadline.weight(.semibold))
+                Text("Held upright, apps on \(pcName) show you in a narrow strip with black bars on both sides.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     // MARK: Notes
 
     @ViewBuilder
     private var notes: some View {
         if let note = model.streamNote {
+            noteCard(title: note.title, message: note.message, icon: note.icon, tint: tint(for: note.kind))
+        }
+        if let note = model.lensNote {
             noteCard(title: note.title, message: note.message, icon: note.icon, tint: tint(for: note.kind))
         }
         if case .interrupted(let message) = model.cameraState {
@@ -661,7 +683,7 @@ struct WebcamView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 OrbitSectionHeader("Works with", icon: "checkmark.seal.fill")
-                Text("LABS · BETA")
+                Text("LABS")
                     .font(.system(size: 9, weight: .heavy))
                     .tracking(0.8)
                     .foregroundStyle(.black.opacity(0.85))
@@ -669,7 +691,7 @@ struct WebcamView: View {
                     .padding(.vertical, 3)
                     .background(Color.yellow, in: Capsule())
                     .padding(.top, 6)
-                    .accessibilityLabel("Labs feature, beta")
+                    .accessibilityLabel("Labs feature")
             }
             FlowChips(items: ["Chrome", "Edge", "Teams", "Discord", "Zoom", "OBS"])
             Text("Apps that use DirectShow cameras see your \(device) as \"\(model.cameraName)\". Choose it in the app's camera settings. The Windows Camera app and Microsoft Store apps can't see it. Video only: keep using the PC's microphone. Apps that were open during setup need a restart to find the camera.")

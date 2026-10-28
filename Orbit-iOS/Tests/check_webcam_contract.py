@@ -5,8 +5,10 @@
      that waits for the Windows prompt and Windows on ARM. The PC is emulated with copies of the real,
      hash-pinned Softcam DLLs in a temporary folder and an in-memory registry; nothing on this Mac is
      touched and nothing is installed.
-   * `POST /api/webcam/install` (200 and 202) and `POST /api/webcam/uninstall` through the real router
-     (FastAPI TestClient, HTTPS, main token).
+   * `POST /api/webcam/install` (202 while the Windows prompt is open, 200, a prompt declined after the 202,
+     403) and `POST /api/webcam/uninstall` (202 and the status polled meanwhile and after, 200 with and
+     without files left behind, nothing installed) through the real router and Installer (FastAPI
+     TestClient, HTTPS, main token).
    * Text messages of the real `WS /ws/camera` handler: ready, connected false/true, and the errors
      badHello, replaced (a second phone) and notInstalled.
 2. Orbit/OrbitWebcamPipeline.swift is compiled with Tests/OrbitWebcamTests.swift, which decodes and parses
@@ -155,14 +157,26 @@ def build_fixtures(webcam, work, fixtures):
 
         # The routes, as the app calls them.
         approved = threading.Event()
+        removal_approved = threading.Event()
+        removal_approved.set()
+        mode = {"install": "approve", "uninstall": "approve"}
+
+        def decline(*args):
+            raise webcam.ElevationDeclined()
 
         def install(progress):
             progress("waitingForApproval")
             approved.wait(10)  # the person at the PC hasn't answered the prompt yet
+            if mode["install"] == "decline":
+                webcam._elevate(decline, webcam.platform_layout(), "", "set up")  # the agent's own 403 sentence
             emulate_pc(webcam, registry, folder)
             return "installed"
 
         def uninstall(progress):
+            if mode["uninstall"] == "nothing":
+                return "notInstalled"  # nothing of Orbit's webcam on the PC: no prompt
+            progress("waitingForApproval")
+            removal_approved.wait(10)
             registry.clear()
             return "uninstalled"
 
@@ -180,21 +194,58 @@ def build_fixtures(webcam, work, fixtures):
         app.include_router(webcam.create_webcam_router(verify, require_https, lambda: None, lambda value: value == f"Bearer {TOKEN}",
                                                        boot_mode=lambda: False, manager=manager, installer=installer))
         client = TestClient(app, base_url="https://testserver")
-        with patch.object(webcam, "INSTALL_WAIT_SECONDS", 0.3):
-            reply = client.post("/api/webcam/install", headers=AUTH)
-            assert reply.status_code == 202, (reply.status_code, reply.text)
-            write("install-202.json", reply.json())
-            approved.set()
+
+        def finished():
             for _ in range(100):
-                if not installer.installing:
-                    break
+                if not installer.installing and not installer.uninstalling:
+                    return
                 time.sleep(0.05)
-            reply = client.post("/api/webcam/install", headers=AUTH)
-            assert reply.status_code == 200, (reply.status_code, reply.text)
-            write("install-200.json", reply.json())
-        reply = client.post("/api/webcam/uninstall", headers=AUTH)
-        assert reply.status_code == 200, (reply.status_code, reply.text)
-        write("uninstall-200.json", reply.json())
+            raise AssertionError("the setup or removal did not finish")
+
+        def post(path, expected, name=None):
+            reply = client.post(path, headers=AUTH)
+            assert reply.status_code == expected, (path, reply.status_code, reply.text)
+            if name:
+                write(name, reply.json())
+            return reply
+
+        def get_status(name):
+            reply = client.get("/api/webcam", headers=AUTH)
+            assert reply.status_code == 200, reply.text
+            write(name, reply.json())
+
+        with patch.object(webcam, "INSTALL_WAIT_SECONDS", 0.3):
+            # Setup: the Windows prompt stays open past the agent's wait (202), then it is approved.
+            post("/api/webcam/install", 202, "install-202.json")
+            approved.set()
+            finished()
+            post("/api/webcam/install", 200, "install-200.json")
+            # Removal the same way: 202, polled while the prompt is open, then approved.
+            removal_approved.clear()
+            post("/api/webcam/uninstall", 202, "uninstall-202.json")
+            get_status("status-removing.json")
+            removal_approved.set()
+            finished()
+            get_status("status-removed.json")
+            # Removals answered at once: nothing left behind, files left behind (a webcam DLL still
+            # loaded), and nothing of the webcam on the PC at all.
+            emulate_pc(webcam, registry, folder)
+            post("/api/webcam/uninstall", 200, "uninstall-200.json")
+            emulate_pc(webcam, registry, folder)
+            with patch.object(webcam, "webcam_files_left", lambda: True):
+                post("/api/webcam/uninstall", 200, "uninstall-200-files-left.json")
+            mode["uninstall"] = "nothing"
+            post("/api/webcam/uninstall", 200, "uninstall-200-not-installed.json")
+            mode["uninstall"] = "approve"
+            # A setup whose Windows prompt is declined after the 202, then asked for again (403).
+            approved.clear()
+            mode["install"] = "decline"
+            post("/api/webcam/install", 202)
+            approved.set()
+            finished()
+            get_status("status-install-declined.json")
+            write("install-403.json", post("/api/webcam/install", 403).json())
+            mode["install"] = "approve"
 
         # The camera socket, set up again.
         emulate_pc(webcam, registry, folder)
@@ -247,14 +298,17 @@ def check_output(webcam, output):
         parsed = webcam.parse_hello((output / name).read_text())
         assert parsed == expected, f"{name}: the agent read {parsed}"
 
-    def color(pixel, name):
-        b, g, r = pixel
-        return {"red": r > 180 and g < 80 and b < 80, "blue": b > 180 and r < 80 and g < 80,
-                "green": g > 180 and r < 80 and b < 80, "yellow": r > 180 and g > 180 and b < 80,
-                "black": r < 40 and g < 40 and b < 40, "grey": 90 < r < 170 and 90 < g < 170 and 90 < b < 170}[name]
+    # True colours, not just the right hue: VideoToolbox once wrote BT.709 values into the JPEG (which
+    # every decoder reads as BT.601), so pure red reached the PC as (232, 0, 3) and green as (19, 255, 7),
+    # and Core Image brightened mid-grey from 128 to 139 for the camera's BT.709-tagged frames.
+    colors = {"red": (255, 0, 0), "blue": (0, 0, 255), "green": (0, 255, 0), "yellow": (255, 255, 0),
+              "black": (0, 0, 0), "grey": (128, 128, 128)}
+    tolerance = 8
 
     width, height = 1280, 720
-    for name in ("landscape", "portrait", "downscaled"):
+    names = [shape + source + encoder for shape in ("landscape", "portrait", "downscaled")
+             for source in ("", "-camera") for encoder in ("", "-ci")]
+    for name in names:
         data = (output / f"{name}.jpg").read_bytes()
         assert webcam.is_jpeg(data), f"{name}: not JPEG"
         with webcam.Image.open(io.BytesIO(data)) as image:
@@ -264,10 +318,12 @@ def check_output(webcam, output):
 
         def at(x, y):
             offset = (int(y) * width + int(x)) * 3
-            return tuple(bgr[offset:offset + 3])
+            b, g, r = bgr[offset:offset + 3]
+            return r, g, b
 
         # The picture's area: all of it, or the centred 9:16 column when the phone was upright.
-        inner = height * 9 / 16 if name == "portrait" else width
+        portrait = name.startswith("portrait")
+        inner = height * 9 / 16 if portrait else width
         left, right = (width - inner) / 2, (width + inner) / 2
         band = min(inner, height) * 0.1
         checks = {"top is red (upright)": (at(width / 2, band / 2), "red"),
@@ -275,11 +331,12 @@ def check_output(webcam, output):
                   "left is green (unmirrored)": (at(left + band / 2, height / 2), "green"),
                   "right is yellow": (at(right - band / 2, height / 2), "yellow"),
                   "middle is grey": (at(width / 2, height / 2), "grey")}
-        if name == "portrait":
+        if portrait:
             checks["pillarbox left is black"] = (at(left / 2, height / 2), "black")
             checks["pillarbox right is black"] = (at((right + width) / 2, height / 2), "black")
         for label, (pixel, expected) in checks.items():
-            assert color(pixel, expected), f"{name}: {label} failed, found BGR {pixel}"
+            off = max(abs(found - wanted) for found, wanted in zip(pixel, colors[expected]))
+            assert off <= tolerance, f"{name}: {label} failed, found RGB {pixel} (expected {colors[expected]})"
 
 
 def main():
@@ -306,7 +363,8 @@ def main():
             raise SystemExit(f"OrbitWebcamTests failed ({result.returncode})")
         check_output(webcam, output)
         print("PASS: the agent parses the app's hello (720p30, 1080p15) and turns its JPEGs (landscape, upright phone, "
-              "bigger capture) into upright, unmirrored 1280x720 frames, pillarboxed for an upright phone")
+              "bigger capture; drawn BGRA and camera-style 4:2:0 BT.709 frames; VideoToolbox and Core Image) into upright, "
+              "unmirrored 1280x720 frames with true colours, pillarboxed for an upright phone")
 
 
 if __name__ == "__main__":

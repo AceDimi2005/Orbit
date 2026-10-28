@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import SwiftUI
 import UIKit
+import VideoToolbox
 
 // iPhone as a PC webcam (DESIGN F10), the camera side: capture and preview. The PC side
 // (`orbit_webcam.py`) takes upright, unmirrored JPEG frames over `WS /ws/camera`; JPEG encoding is in
@@ -36,7 +37,8 @@ struct OrbitWebcamCaptureSettings: Equatable {
 
 /// One AVCaptureSession for the webcam screen. Frames come out upright for the way the device is held
 /// (landscape frames when it is sideways) and never mirrored; only the preview is mirrored for the front
-/// camera, like a mirror. Everything that touches the session runs on `sessionQueue`.
+/// camera, like a mirror. Frames for the PC are the camera's own 4:2:0 YCbCr (no conversion to BGRA), and
+/// they flow only while something is sent. Everything that touches the session runs on `sessionQueue`.
 ///
 /// In Debug builds without a camera (the Simulator), a synthetic source draws test frames instead, so
 /// the whole pipeline can be checked end to end. Release builds never contain it.
@@ -52,6 +54,8 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     let previewLayer: AVCaptureVideoPreviewLayer
     /// Called on the main queue.
     var onState: ((State) -> Void)?
+    /// iOS refused the camera for this lens; the previous camera runs again (main queue).
+    var onSwitchFailed: ((OrbitWebcamLens, String) -> Void)?
 
     private let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
@@ -63,6 +67,7 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     // sessionQueue only.
     private var applied: OrbitWebcamCaptureSettings?
     private var wantsRunning = false
+    private var sendsFrames = false
     private var restartedAfterError = false
     private var captureAngle: CGFloat?
     /// The camera whose rotation is followed (set before the main queue builds its coordinator).
@@ -143,9 +148,7 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         sessionQueue.async { [self] in
             wantsRunning = true
             restartedAfterError = false
-            guard configure(settings) else { return }
-            if !session.isRunning { session.startRunning() }
-            if session.isRunning { report(.running) }
+            apply(settings)
         }
     }
 
@@ -156,7 +159,19 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         #endif
         sessionQueue.async { [self] in
             guard wantsRunning, settings != applied else { return }
-            _ = configure(settings)
+            apply(settings)
+        }
+    }
+
+    /// Frames for the PC flow only while something is sent (the preview has its own connection and
+    /// runs either way), so previewing costs no frames that would only be thrown away.
+    func setSendsFrames(_ sends: Bool) {
+        #if DEBUG
+        if let synthetic { synthetic.sendsFrames = sends; return }
+        #endif
+        sessionQueue.async { [self] in
+            sendsFrames = sends
+            output.connection(with: .video)?.isEnabled = sends
         }
     }
 
@@ -182,34 +197,70 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
     // MARK: Session (sessionQueue)
 
+    /// Configures and runs the session. Reports `.running` after every change that worked, so a camera
+    /// that failed before (a refused lens switch) shows as working again.
+    private func apply(_ settings: OrbitWebcamCaptureSettings) {
+        guard configure(settings) else { return }
+        if !session.isRunning { session.startRunning() }
+        if session.isRunning && !session.isInterrupted { report(.running) }
+    }
+
     private func configure(_ settings: OrbitWebcamCaptureSettings) -> Bool {
         guard let device = Self.device(for: settings.lens) else {
+            applied = nil
             report(.failed("This \(deviceWord) has no \(settings.lens.title.lowercased()) camera."))
             return false
         }
         session.beginConfiguration()
         if input?.device.uniqueID != device.uniqueID {
-            if let input { session.removeInput(input) }
+            let previous = input
+            if let previous { session.removeInput(previous) }
             input = nil
+            // iOS refuses a camera that can't do the session's current size (1080p, with the 720p front
+            // camera of some iPads): add it at a size every camera has, and ask for the chosen one below.
+            if session.canSetSessionPreset(.high) { session.sessionPreset = .high }
             do {
                 let newInput = try AVCaptureDeviceInput(device: device)
-                guard session.canAddInput(newInput) else { throw OrbitError(message: "The camera can't be used right now.") }
+                guard session.canAddInput(newInput) else { throw OrbitError(message: "iOS can't use it right now.") }
                 session.addInput(newInput)
                 input = newInput
             } catch {
+                // Put the previous camera back, so the preview and the PC keep a picture, and forget what was
+                // applied, so the next change configures everything again.
+                var restored: AVCaptureDevice?
+                if let previous, session.canAddInput(previous) {
+                    session.addInput(previous)
+                    input = previous
+                    restored = previous.device
+                    if let preset = applied?.resolution.preset, session.canSetSessionPreset(preset) { session.sessionPreset = preset }
+                    configureOutputConnection()
+                }
                 session.commitConfiguration()
-                report(.failed("The camera could not start. \(error.localizedDescription)"))
+                if let restored, let fps = applied?.fps { setFrameRate(fps, on: restored) }
+                applied = nil
+                let message = "The \(settings.lens.title.lowercased()) camera could not start. \(error.localizedDescription)"
+                if restored != nil {
+                    let lens = settings.lens
+                    DispatchQueue.main.async { [weak self] in self?.onSwitchFailed?(lens, message) }
+                } else {
+                    report(.failed(message))
+                }
                 return false
             }
         }
         if !session.outputs.contains(output) {
-            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            // The camera's own 4:2:0 YCbCr: VideoToolbox's JPEG encoder and Core Image take it as it is
+            // (BGRA would cost a conversion there and back for every frame).
+            let yuv = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            let format = output.availableVideoPixelFormatTypes.contains(yuv) ? yuv : kCVPixelFormatType_32BGRA
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: format]
             // Frames that arrive while the previous one is still being handled are dropped by
             // AVFoundation: nothing queues up behind a slow network.
             output.alwaysDiscardsLateVideoFrames = true
             output.setSampleBufferDelegate(self, queue: videoQueue)
             if session.canAddOutput(output) { session.addOutput(output) }
         }
+        // The chosen size when this camera has it, otherwise the closest one it has.
         if session.canSetSessionPreset(settings.resolution.preset) {
             session.sessionPreset = settings.resolution.preset
         } else if session.canSetSessionPreset(.hd1280x720) {
@@ -220,15 +271,7 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         if session.isMultitaskingCameraAccessSupported, !session.isMultitaskingCameraAccessEnabled {
             session.isMultitaskingCameraAccessEnabled = true
         }
-        if let connection = output.connection(with: .video) {
-            // The PC gets the true picture; apps on the PC mirror their own self-view.
-            if connection.isVideoMirroringSupported {
-                connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = false
-            }
-            if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
-            if let captureAngle, connection.isVideoRotationAngleSupported(captureAngle) { connection.videoRotationAngle = captureAngle }
-        }
+        configureOutputConnection()
         session.commitConfiguration()
         setFrameRate(settings.fps, on: device)
         applied = settings
@@ -238,6 +281,19 @@ final class OrbitWebcamCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDel
             DispatchQueue.main.async { [weak self] in self?.followRotation(of: device) }
         }
         return true
+    }
+
+    /// The frames for the PC (each camera brings a new connection): flowing only while something is sent,
+    /// never mirrored (the PC gets the true picture; apps there mirror their own self-view), upright.
+    private func configureOutputConnection() {
+        guard let connection = output.connection(with: .video) else { return }
+        connection.isEnabled = sendsFrames
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = false
+        }
+        if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
+        if let captureAngle, connection.isVideoRotationAngleSupported(captureAngle) { connection.videoRotationAngle = captureAngle }
     }
 
     /// Locks the frame rate (a session preset resets it, so this runs after every change).
@@ -386,7 +442,8 @@ final class OrbitWebcamPreviewHostView: UIView {
 /// turns it on for a Debug build on a device). Each frame is drawn upright: a red band on top, blue at
 /// the bottom, green on the left and yellow on the right, with "ORBIT" and a frame counter, so the
 /// PC's copy shows at a glance whether it arrived upright and unmirrored. Frames are portrait while the
-/// interface is portrait, like a camera held upright.
+/// interface is portrait, like a camera held upright, and reach the pipeline as the camera hands them
+/// over: 4:2:0 YCbCr, full range, tagged BT.709.
 final class OrbitWebcamSyntheticSource: @unchecked Sendable {
     static var isEnabled: Bool {
         #if targetEnvironment(simulator)
@@ -406,15 +463,25 @@ final class OrbitWebcamSyntheticSource: @unchecked Sendable {
     // Video queue only.
     private var pool: CVPixelBufferPool?
     private var poolSize = (width: 0, height: 0)
+    private var yuvPool: CVPixelBufferPool?
+    private var yuvPoolSize = (width: 0, height: 0)
+    private var transfer: VTPixelTransferSession?
     private var frameIndex = 0
     /// The parts of a frame that never move, drawn once per size and lens.
     private var background: (key: String, image: CGImage)?
     private var previewing = true
+    private var sending = false
     private var orientationObserver: NSObjectProtocol?
 
     var previewEnabled: Bool {
         get { lock.lock(); defer { lock.unlock() }; return previewing }
         set { lock.lock(); previewing = newValue; lock.unlock() }
+    }
+
+    /// Like the camera: frames for the PC only while something is sent (the preview runs either way).
+    var sendsFrames: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return sending }
+        set { lock.lock(); sending = newValue; lock.unlock() }
     }
 
     init(queue: DispatchQueue) {
@@ -475,7 +542,7 @@ final class OrbitWebcamSyntheticSource: @unchecked Sendable {
         lock.lock()
         let settings = self.settings
         let isPortrait = portrait
-        let handler = deliver
+        let handler = sending ? deliver : nil
         let showPreview = previewing
         lock.unlock()
         guard let settings else { return }
@@ -483,8 +550,9 @@ final class OrbitWebcamSyntheticSource: @unchecked Sendable {
         frameIndex += 1
         // The on-screen preview needs far fewer pictures than the PC: about 10 a second.
         let wantsPreview = showPreview && frameIndex % max(1, settings.fps / 10) == 0
+        guard handler != nil || wantsPreview else { return }
         guard let (buffer, preview) = draw(width: width, height: height, lens: settings.lens, preview: wantsPreview) else { return }
-        handler?(buffer, CMClockGetTime(CMClockGetHostTimeClock()))
+        if let handler { handler(cameraLike(buffer), CMClockGetTime(CMClockGetHostTimeClock())) }
         if let preview {
             DispatchQueue.main.async { [weak self] in
                 CATransaction.begin()
@@ -534,6 +602,37 @@ final class OrbitWebcamSyntheticSource: @unchecked Sendable {
         caption.draw(at: CGPoint(x: band * 1.5, y: band * 1.4))
         UIGraphicsPopContext()
         return (buffer, preview ? cg.makeImage() : nil)
+    }
+
+    /// The drawn frame as the camera would hand it over (the drawn BGRA one if the conversion fails).
+    private func cameraLike(_ bgra: CVPixelBuffer) -> CVPixelBuffer {
+        let width = CVPixelBufferGetWidth(bgra), height = CVPixelBufferGetHeight(bgra)
+        if transfer == nil {
+            var created: VTPixelTransferSession?
+            VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &created)
+            if let created {
+                VTSessionSetProperty(created, key: kVTPixelTransferPropertyKey_DestinationYCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
+                VTSessionSetProperty(created, key: kVTPixelTransferPropertyKey_DestinationColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
+                VTSessionSetProperty(created, key: kVTPixelTransferPropertyKey_DestinationTransferFunction, value: kCVImageBufferTransferFunction_ITU_R_709_2)
+            }
+            transfer = created
+        }
+        if yuvPool == nil || yuvPoolSize != (width, height) {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()
+            ]
+            var created: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &created)
+            yuvPool = created
+            yuvPoolSize = (width, height)
+        }
+        var yuv: CVPixelBuffer?
+        guard let transfer, let yuvPool,
+              CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, yuvPool, &yuv) == kCVReturnSuccess, let yuv,
+              VTPixelTransferSessionTransferImage(transfer, from: bgra, to: yuv) == noErr else { return bgra }
+        return yuv
     }
 
     private static func context(_ data: UnsafeMutableRawPointer?, width: Int, height: Int, bytesPerRow: Int) -> CGContext? {

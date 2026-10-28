@@ -7,10 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A20000000000000000000114 /* OrbitWebcamPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000120 /* OrbitWebcamPipeline.swift */; };
-		A20000000000000000000113 /* WebcamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011F /* WebcamView.swift */; };
-		A20000000000000000000112 /* OrbitWebcamModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011E /* OrbitWebcamModel.swift */; };
-		A20000000000000000000111 /* OrbitWebcamCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011D /* OrbitWebcamCapture.swift */; };
+		A2000000000000000000CA04 /* OrbitWebcamPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000CA04 /* OrbitWebcamPipeline.swift */; };
+		A2000000000000000000CA03 /* WebcamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000CA03 /* WebcamView.swift */; };
+		A2000000000000000000CA02 /* OrbitWebcamModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000CA02 /* OrbitWebcamModel.swift */; };
+		A2000000000000000000CA01 /* OrbitWebcamCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000CA01 /* OrbitWebcamCapture.swift */; };
 		A30000000000000000000102 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
 		A60000000000000000000103 /* OrbitRemoteDeck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000011C /* OrbitRemoteDeck.swift */; };
@@ -251,10 +251,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		B20000000000000000000120 /* OrbitWebcamPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamPipeline.swift; sourceTree = "<group>"; };
-		B2000000000000000000011F /* WebcamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebcamView.swift; sourceTree = "<group>"; };
-		B2000000000000000000011E /* OrbitWebcamModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamModel.swift; sourceTree = "<group>"; };
-		B2000000000000000000011D /* OrbitWebcamCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamCapture.swift; sourceTree = "<group>"; };
+		B2000000000000000000CA04 /* OrbitWebcamPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamPipeline.swift; sourceTree = "<group>"; };
+		B2000000000000000000CA03 /* WebcamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebcamView.swift; sourceTree = "<group>"; };
+		B2000000000000000000CA02 /* OrbitWebcamModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamModel.swift; sourceTree = "<group>"; };
+		B2000000000000000000CA01 /* OrbitWebcamCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWebcamCapture.swift; sourceTree = "<group>"; };
 		B2000000000000000000011C /* OrbitRemoteDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitRemoteDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011B /* OrbitWatchDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWatchDeck.swift; sourceTree = "<group>"; };
 		B2000000000000000000011A /* OrbitTVDeck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVDeck.swift; sourceTree = "<group>"; };
@@ -491,10 +491,10 @@
 				B20000000000000000000113 /* DeckEditorView.swift */,
 				B20000000000000000000114 /* DeckView.swift */,
 				B20000000000000000000118 /* OrbitWatchDeckSync.swift */,
-				B2000000000000000000011D /* OrbitWebcamCapture.swift */,
-				B2000000000000000000011E /* OrbitWebcamModel.swift */,
-				B2000000000000000000011F /* WebcamView.swift */,
-				B20000000000000000000120 /* OrbitWebcamPipeline.swift */,
+				B2000000000000000000CA01 /* OrbitWebcamCapture.swift */,
+				B2000000000000000000CA02 /* OrbitWebcamModel.swift */,
+				B2000000000000000000CA03 /* WebcamView.swift */,
+				B2000000000000000000CA04 /* OrbitWebcamPipeline.swift */,
 			);
 			path = Orbit;
 			sourceTree = "<group>";
@@ -937,10 +937,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A20000000000000000000114 /* OrbitWebcamPipeline.swift in Sources */,
-				A20000000000000000000113 /* WebcamView.swift in Sources */,
-				A20000000000000000000112 /* OrbitWebcamModel.swift in Sources */,
-				A20000000000000000000111 /* OrbitWebcamCapture.swift in Sources */,
+				A2000000000000000000CA04 /* OrbitWebcamPipeline.swift in Sources */,
+				A2000000000000000000CA03 /* WebcamView.swift in Sources */,
+				A2000000000000000000CA02 /* OrbitWebcamModel.swift in Sources */,
+				A2000000000000000000CA01 /* OrbitWebcamCapture.swift in Sources */,
 				A20000000000000000000110 /* OrbitWatchDeckSync.swift in Sources */,
 				A2000000000000000000010F /* OrbitDeckIntents.swift in Sources */,
 				A2000000000000000000010E /* OrbitDeck.swift in Sources */,

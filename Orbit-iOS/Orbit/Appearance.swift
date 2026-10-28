@@ -685,7 +685,7 @@ struct OrbitProPaywallView: View {
                             proFeatureRow(
                                 icon: "web.camera.fill",
                                 tint: .green,
-                                title: "iPhone as a Webcam (Beta)",
+                                title: "iPhone as a Webcam",
                                 subtitle: "Use your iPhone or iPad camera in Zoom, Teams, Discord, OBS and browsers on your PC."
                             )
                         }
