@@ -11,7 +11,7 @@ import UserNotifications
 /// Keychain storage for per-PC pairing tokens (one generic-password item per PC id).
 ///
 /// Items live in the data-protection keychain, which belongs to the app itself (team + bundle
-/// id) and never shows the "OrbitMac wants to use your confidential information" password
+/// id) and never shows the "Orbit wants to use your confidential information" password
 /// prompt. Tokens that an earlier version stored in the login keychain are moved over on first
 /// read, so the prompt can appear one last time at most.
 enum MacTokenStore {

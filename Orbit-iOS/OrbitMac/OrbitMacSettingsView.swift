@@ -589,7 +589,7 @@ private struct MacSettingsConnectionTab: View {
             Text("Paired PC")
         } footer: {
             if pc.isSecure {
-                Text("Orbit for Mac only talks to your PC over the encrypted, certificate-pinned channel on the secure port. Unencrypted legacy connections are never used.")
+                Text("Orbit only talks to your PC over the encrypted, certificate-pinned channel on the secure port. Unencrypted legacy connections are never used.")
             } else {
                 Text("This profile has no valid certificate fingerprint, so Orbit cannot connect. Pair again from My PCs to pin the agent's certificate.")
                     .foregroundStyle(.orange)
@@ -820,7 +820,7 @@ private struct MacSettingsAboutTab: View {
                     .frame(width: 64, height: 64)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Orbit for Mac")
+                    Text("Orbit")
                         .font(.title3.weight(.bold))
                     Text("Version \(appVersion) (\(buildNumber))")
                         .font(.callout)

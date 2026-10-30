@@ -10,7 +10,7 @@ struct OrbitMacApp: App {
 
     init() {
         #if DEBUG
-        // `ORBIT_IDENTITY_SELFTEST=1 OrbitMac.app/Contents/MacOS/OrbitMac` prints the Keychain state of the
+        // `ORBIT_IDENTITY_SELFTEST=1 Orbit.app/Contents/MacOS/Orbit` prints the Keychain state of the
         // Sunshine client identity from inside the sandboxed, signed app and exits.
         let environment = ProcessInfo.processInfo.environment
         if let mode = environment["ORBIT_SUNSHINE_SELFTEST"] { MacSunshineSelfTest.run(mode: mode) }
@@ -243,7 +243,7 @@ struct MacMenuBarLabel: View {
 }
 
 #if DEBUG
-/// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file|agent OrbitMac.app/Contents/MacOS/OrbitMac` runs the
+/// `ORBIT_SUNSHINE_SELFTEST=status|pair|stream|file|agent Orbit.app/Contents/MacOS/Orbit` runs the
 /// Sunshine steps for the selected PC (or `ORBIT_PC_ID`) from inside the signed, sandboxed app
 /// with the same code the UI uses, prints every result and exits. `pair` lets the agent type the
 /// PIN (Sunshine web UI login saved on the PC); `stream` runs a headless stream of the Desktop app
