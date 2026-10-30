@@ -904,7 +904,7 @@ struct MacDeckCommands: View {
 #if DEBUG
 // MARK: - Snapshot for reviews
 
-/// `ORBIT_DECK_SNAPSHOT=/path/buttons.png OrbitMac.app/Contents/MacOS/OrbitMac -mac.demoMode YES -mac.savedPCs.v1 ''`
+/// `ORBIT_DECK_SNAPSHOT=/path/buttons.png Orbit.app/Contents/MacOS/Orbit -mac.demoMode YES -mac.savedPCs.v1 ''`
 /// renders the Buttons page, its edit mode and the menu bar popover to PNG files and exits, without a
 /// window or a network call. `ORBIT_DECK_SNAPSHOT_DECK=deck.json` (a `GET /api/deck` reply) and
 /// `ORBIT_DECK_SNAPSHOT_PC=name` show a real deck as if that PC were online.
