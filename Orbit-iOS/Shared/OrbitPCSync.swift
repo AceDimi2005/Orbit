@@ -42,16 +42,46 @@ protocol OrbitSyncedKeyValueStore: AnyObject {
 
 extension NSUbiquitousKeyValueStore: OrbitSyncedKeyValueStore {}
 
+/// "Sync with iCloud" in Settings on iPhone/iPad, Mac and Apple TV; on unless the user turns it off. While it is
+/// off this device neither reads nor writes Orbit's iCloud key-value storage: saved PCs (OrbitPCCloudSync) and
+/// settings (OrbitSettingsSync.swift) stay on the device. It is a setting of this device and never syncs itself.
+/// Without an iCloud account nothing changes for the user: the key-value store then simply keeps its data locally.
+enum OrbitCloudSyncSwitch {
+    static let key = "orbit.iCloudSync.enabled"
+    /// Posted (on the caller's thread) after `set(_:)` changed the switch.
+    static let changedNotification = Notification.Name("OrbitCloudSyncSwitchChanged")
+    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+
+    static var isOn: Bool { (defaults.object(forKey: key) as? Bool) ?? true }
+
+    static func set(_ on: Bool) {
+        guard on != isOn else { return }
+        defaults.set(on, forKey: key)
+        NotificationCenter.default.post(name: changedNotification, object: nil)
+    }
+}
+
 /// iCloud sync of saved PCs. Every device publishes the union of what iCloud holds and what it
 /// has locally: the same PC (same agent certificate, or the same id) keeps the newer copy, a PC
 /// removed on one device disappears everywhere once the removal is newer than the last edit,
 /// and nothing is written when the merged result already matches iCloud, so devices never
 /// bounce updates back and forth.
+///
+/// Only the PC's own access token travels with it (the agent's API token, as since Orbit 1.0). The
+/// Sunshine client identities and pairings (`MoonlightIdentityStore`, `MoonlightHostStore`) are made per
+/// device and per PC and never leave the device's Keychain: a PC that arrives from iCloud still pairs
+/// for streaming on each device, and one that arrives without a token is not imported (pair it there).
 enum OrbitPCCloudSync {
     static let itemsKey = "orbit.syncedPCs.v1"
     static let removedKey = "orbit.syncedPCs.removed.v1"
+    /// Local defaults key: PCs removed while the iCloud switch was off (identity → time), published once it's on.
+    static let pendingRemovalsKey = "orbit.syncedPCs.pendingRemovals.v1"
     nonisolated(unsafe) static var store: OrbitSyncedKeyValueStore = NSUbiquitousKeyValueStore.default
     nonisolated(unsafe) static var now: () -> Double = { Date().timeIntervalSince1970 }
+    /// Whether iCloud may be read and written (the "Sync with iCloud" switch).
+    nonisolated(unsafe) static var isEnabled: () -> Bool = { OrbitCloudSyncSwitch.isOn }
+    /// Where removals made while sync is off wait (this device's defaults).
+    nonisolated(unsafe) static var localDefaults: UserDefaults = .standard
 
     /// `fp:<sha256>` when the item carries a valid agent certificate fingerprint, else `id:<uuid>`.
     static func identity(of item: OrbitSyncedPCItem) -> String {
@@ -97,13 +127,29 @@ enum OrbitPCCloudSync {
 
     // MARK: Reading
 
+    /// iCloud's saved PCs; none while the iCloud switch is off.
     static func cloudItems(from store: OrbitSyncedKeyValueStore = store) -> [OrbitSyncedPCItem] {
-        guard let data = store.data(forKey: itemsKey), let items = try? JSONDecoder().decode([OrbitSyncedPCItem].self, from: data) else { return [] }
+        guard isEnabled(), let data = store.data(forKey: itemsKey), let items = try? JSONDecoder().decode([OrbitSyncedPCItem].self, from: data) else { return [] }
         return items.map(normalized)
     }
 
-    /// Identity → time of removal, for PCs deleted on another device.
+    /// Identity → time of removal, for PCs deleted on another device, plus the ones this device removed
+    /// while the iCloud switch was off (so they don't come back from iCloud before they are published).
     static func removed(from store: OrbitSyncedKeyValueStore = store) -> [String: Double] {
+        var removed = pendingRemovals()
+        guard isEnabled(), let data = store.data(forKey: removedKey),
+              let cloud = try? JSONDecoder().decode([String: Double].self, from: data) else { return removed }
+        for (key, time) in cloud { removed[key] = max(removed[key] ?? 0, time) }
+        return removed
+    }
+
+    /// Removals made on this device while the iCloud switch was off.
+    static func pendingRemovals() -> [String: Double] {
+        (localDefaults.dictionary(forKey: pendingRemovalsKey) as? [String: Double]) ?? [:]
+    }
+
+    /// iCloud's removals alone, as stored.
+    private static func cloudRemoved(from store: OrbitSyncedKeyValueStore) -> [String: Double] {
         guard let data = store.data(forKey: removedKey), let removed = try? JSONDecoder().decode([String: Double].self, from: data) else { return [:] }
         return removed
     }
@@ -153,15 +199,27 @@ enum OrbitPCCloudSync {
     // MARK: Publishing
 
     /// Merges `local` into iCloud and writes only when something changed. `removing` lists the
-    /// identities of PCs the user just deleted on this device. Returns true after a write.
+    /// identities of PCs the user just deleted on this device. Returns true after a write. While the
+    /// iCloud switch is off nothing is written; the removals wait on this device for the next publish.
     @discardableResult
     static func publish(local: [OrbitSyncedPCItem], removing: [String] = [], to store: OrbitSyncedKeyValueStore = store) -> Bool {
         let timestamp = now()
-        var removed = removed(from: store)
+        let pending = pendingRemovals()
+        guard isEnabled() else {
+            guard !removing.isEmpty else { return false }
+            var waiting = pending
+            for key in removing { waiting[key] = timestamp }
+            localDefaults.set(waiting, forKey: pendingRemovalsKey)
+            return false
+        }
+        let stored = cloudRemoved(from: store)
+        var removed = stored
+        for (key, time) in pending { removed[key] = max(removed[key] ?? 0, time) }
         for key in removing { removed[key] = timestamp }
-        let removedChanged = removed != self.removed(from: store)
+        let removedChanged = removed != stored
         let cloud = cloudItems(from: store)
         let merged = merge(cloud: cloud, local: local, removed: removed)
+        if !pending.isEmpty { localDefaults.removeObject(forKey: pendingRemovalsKey) }
         if !removedChanged, equivalent(merged, cloud) { return false }
         guard let data = try? JSONEncoder().encode(merged) else { return false }
         store.set(data, forKey: itemsKey)

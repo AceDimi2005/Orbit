@@ -198,11 +198,12 @@ enum OrbitProLockdown {
         let defaults = UserDefaults.standard
         if let raw = defaults.string(forKey: "orbit.theme"), OrbitTheme(rawValue: raw)?.isPro == true {
             defaults.set(OrbitTheme.noir.rawValue, forKey: "orbit.theme")
-            NSUbiquitousKeyValueStore.default.set(OrbitTheme.noir.rawValue, forKey: "orbit.theme")
         }
         if let raw = defaults.string(forKey: "orbit.activity.accent"), OrbitTheme(rawValue: raw)?.isPro == true {
             defaults.set(OrbitTheme.noir.rawValue, forKey: "orbit.activity.accent")
         }
+        // Only this device lost Pro: its fallback to Noir must not reach the user's other devices through iCloud.
+        OrbitSettingsSync.shared.adoptLocalValues(forKeys: ["orbit.theme", "orbit.activity.accent"])
         if let raw = defaults.string(forKey: "orbit.appIcon"), OrbitAppIcon(rawValue: raw)?.isPro == true {
             defaults.set(OrbitAppIcon.classic.rawValue, forKey: "orbit.appIcon")
         }
@@ -211,6 +212,52 @@ enum OrbitProLockdown {
            OrbitAppIcon(rawValue: current)?.isPro == true {
             UIApplication.shared.setAlternateIconName(nil)
         }
+    }
+}
+
+// MARK: - iCloud settings sync (Shared/OrbitSettingsSync.swift)
+
+extension OrbitSettingsSync {
+    /// A theme name this app knows, and Orbit Pro on this device for the Pro themes.
+    nonisolated static func isUsableTheme(_ value: Any) -> Bool {
+        guard let raw = value as? String, let theme = OrbitTheme(rawValue: raw) else { return false }
+        return !theme.isPro || OrbitProEntitlement.cachedIsUnlocked
+    }
+
+    /// What the iPhone and iPad apps sync between each other. "theme", "reduceGlow" and "monochromeMetrics"
+    /// are shared with the Mac app, which keeps them under its own keys. Overview cards and renamed components
+    /// are stored per PC (by the PC's MAC address or name), so each PC keeps its own layout on every device.
+    static var iOSSettings: [OrbitSyncedSetting] {
+        [
+            OrbitSyncedSetting("theme", local: "orbit.theme", .string, isUsable: { isUsableTheme($0) }),
+            OrbitSyncedSetting("ios.style", local: "orbit.style", .string, isUsable: { OrbitVisualStyle(rawValue: $0 as? String ?? "") != nil }),
+            OrbitSyncedSetting("monochromeMetrics", local: "orbit.monochromeMetrics", .bool),
+            OrbitSyncedSetting("reduceGlow", local: "orbit.reduceGlow", .bool),
+            OrbitSyncedSetting("ios.haptics", local: "orbit.haptics", .bool),
+            OrbitSyncedSetting("ios.activity.style", local: "orbit.activity.style", .string,
+                               isUsable: { ["standard", "minimal", "detailed"].contains($0 as? String ?? "") }),
+            OrbitSyncedSetting("ios.activity.primaryMetric", local: "orbit.activity.primaryMetric", .string,
+                               isUsable: { ["automatic", "cpu", "gpu", "ram", "fps", "cpuPower", "gpuPower", "vram"].contains($0 as? String ?? "") }),
+            OrbitSyncedSetting("ios.activity.accent", local: "orbit.activity.accent", .string, isUsable: { isUsableTheme($0) }),
+            OrbitSyncedSetting("ios.activity.interval", local: "orbit.activity.interval", .int, isUsable: { [5, 10, 15].contains($0 as? Int ?? 0) }),
+            OrbitSyncedSetting("ios.activity.showGame", local: "orbit.activity.showGame", .bool),
+            OrbitSyncedSetting("ios.activity.showTimestamp", local: "orbit.activity.showTimestamp", .bool),
+            OrbitSyncedSetting("ios.files.keepOriginalPhotos", local: "orbit.files.keepOriginalPhotos", .bool),
+        ]
+    }
+
+    static var iOSFamilies: [OrbitSyncedSettingFamily] {
+        [
+            // `dashboardLayout.v1.<MAC, PC name or host:port>`: DashboardConfiguration JSON. Demo mode's stays here.
+            OrbitSyncedSettingFamily(cloud: "ios.dashboard.", local: "dashboardLayout.v1.", .data, excluding: ["preview"]),
+            // `hardwareOverrides.<MAC, PC name or host>`: component names typed in Hardware Specifications.
+            OrbitSyncedSettingFamily(cloud: "ios.componentNames.", local: "hardwareOverrides.", .stringDictionary, excluding: ["preview"]),
+        ]
+    }
+
+    func startOnIPhoneOrIPad() {
+        start(settings: Self.iOSSettings, families: Self.iOSFamilies,
+              origin: UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone")
     }
 }
 
@@ -471,7 +518,6 @@ struct AppearanceSettingsView: View {
             } else {
                 OrbitHaptics.selection()
                 withAnimation(.snappy) { theme = item }
-                NSUbiquitousKeyValueStore.default.set(item.rawValue, forKey: "orbit.theme")
             }
         } label: {
             VStack(spacing: 7) {
@@ -837,7 +883,7 @@ struct OrbitPrivacyPolicyView: View {
                 Section("Credentials & Keychain Security") {
                     Label("Encrypted iOS Keychain Storage", systemImage: "lock.shield.fill")
                         .font(.subheadline.weight(.semibold))
-                    Text("Pairing tokens are negotiated using SRP-6a (Secure Remote Password) and AES-GCM encryption, and are stored exclusively in your iPhone's hardware-backed Keychain.")
+                    Text("Pairing tokens are negotiated using SRP-6a (Secure Remote Password) and AES-GCM encryption, and are stored in your device's hardware-backed Keychain. With Sync with iCloud on (Settings), your saved PCs, including each PC's access token, and your Orbit settings are also kept in your private iCloud storage so your other devices signed in to your Apple Account can use them. Sunshine streaming identities never leave the device.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

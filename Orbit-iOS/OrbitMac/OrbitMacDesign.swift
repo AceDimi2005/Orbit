@@ -11,6 +11,47 @@ enum MacProLockdown {
         if let raw = UserDefaults.standard.string(forKey: "mac.theme"), MacTheme(rawValue: raw)?.isPro == true {
             UserDefaults.standard.set(MacTheme.noir.rawValue, forKey: "mac.theme")
         }
+        // Only this Mac lost Pro: its fallback to Noir must not reach the user's other devices through iCloud.
+        OrbitSettingsSync.shared.adoptLocalValues(forKeys: ["mac.theme"])
+    }
+}
+
+// MARK: - iCloud settings sync (Shared/OrbitSettingsSync.swift)
+
+extension OrbitSettingsSync {
+    /// What the Mac app syncs. "theme", "reduceGlow" and "monochromeMetrics" are shared with the iPhone and iPad
+    /// (same theme names); the rest are Mac preferences shared between the user's Macs. Whether this Mac shows
+    /// alerts at all, stream and pointer settings, and the selected PC stay on each Mac.
+    static var macSettings: [OrbitSyncedSetting] {
+        let theme = OrbitSyncedSetting("theme", local: "mac.theme", .string, isUsable: { value in
+            guard let raw = value as? String, let theme = MacTheme(rawValue: raw) else { return false }
+            return !theme.isPro || OrbitProEntitlement.cachedIsUnlocked
+        })
+        var settings = [
+            theme,
+            OrbitSyncedSetting("reduceGlow", local: "mac.reduceGlow", .bool),
+            OrbitSyncedSetting("monochromeMetrics", local: "mac.monochromeMetrics", .bool),
+            OrbitSyncedSetting("mac.dashboardMetrics", .stringArray, isUsable: { value in
+                let names = value as? [String] ?? []
+                return !names.isEmpty && names.contains { MacMetric(rawValue: $0) != nil }
+            }),
+            OrbitSyncedSetting("mac.menuBarEnabled", .bool),
+            OrbitSyncedSetting("mac.menuBarMetric", .string, isUsable: { ["cpu", "gpu", "ram", "fps", "temp", "none"].contains($0 as? String ?? "") }),
+            OrbitSyncedSetting("mac.refreshInterval", .double, isUsable: { (1...10).contains($0 as? Double ?? 0) }),
+            OrbitSyncedSetting("mac.processesAutoRefresh", .bool),
+            OrbitSyncedSetting("mac.processesInterval", .int, isUsable: { [2, 5, 10].contains($0 as? Int ?? 0) }),
+            OrbitSyncedSetting("mac.previewAutoStart", .bool),
+            OrbitSyncedSetting("mac.previewAlwaysOnTop", .bool),
+            OrbitSyncedSetting("mac.clipboardMono", .bool),
+            OrbitSyncedSetting("mac.notifyOnline", .bool),
+        ]
+        // Which kinds of PC alerts this Mac shows (Settings › General › PC alerts).
+        settings += MacPCAlertPrefs.choices.map { OrbitSyncedSetting(MacPCAlertPrefs.key($0.category), .bool) }
+        return settings
+    }
+
+    func startOnMac() {
+        start(settings: Self.macSettings, families: [], origin: "Mac")
     }
 }
 

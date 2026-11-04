@@ -905,8 +905,9 @@ extension OrbitMacViewModel {
             isSyncingFromiPhone = true
             iPhoneSyncMessage = "Looking for your paired PC on iPhone (iCloud & local network)…"
         }
-        NSUbiquitousKeyValueStore.default.synchronize()
-        if let data = NSUbiquitousKeyValueStore.default.data(forKey: "orbit.syncedPCs.v1"),
+        // iCloud first (unless "Sync with iCloud" is off here), then the iPhone on the local network.
+        if OrbitCloudSyncSwitch.isOn { NSUbiquitousKeyValueStore.default.synchronize() }
+        if OrbitCloudSyncSwitch.isOn, let data = NSUbiquitousKeyValueStore.default.data(forKey: "orbit.syncedPCs.v1"),
            let items = try? JSONDecoder().decode([MacSyncedPCItem].self, from: data), !items.isEmpty {
             importSyncedItems(items, source: "iCloud")
             isSyncingFromiPhone = false

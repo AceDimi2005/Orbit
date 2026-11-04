@@ -241,6 +241,10 @@ final class OrbitMacViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in await self?.syncFromiPhone(silent: true) }
         }
+        NotificationCenter.default.addObserver(forName: OrbitSettingsSync.appliedNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reloadSyncedSettings() }
+        }
+        OrbitSettingsSync.shared.startOnMac()
         syncAddressRoute()
         // Wi-Fi, Ethernet or a VPN came or went: on the secondary path, try the LAN address again right away.
         pathMonitor.pathUpdateHandler = { [weak self] _ in
@@ -519,6 +523,29 @@ final class OrbitMacViewModel: ObservableObject {
     func setAppActive(_ active: Bool) {
         appActive = active
         if active { startPolling() }
+        if active { OrbitSettingsSync.shared.appBecameActive() }
+    }
+
+    /// Settings from iCloud arrived (OrbitSettingsSync.swift): the menu bar and dashboard choices are copied
+    /// into this model, so read them again. `@AppStorage` views follow by themselves.
+    func reloadSyncedSettings() {
+        let defaults = UserDefaults.standard
+        let enabled = (defaults.object(forKey: "mac.menuBarEnabled") as? Bool) ?? true
+        if enabled != menuBarEnabled { menuBarEnabled = enabled }
+        let metric = defaults.string(forKey: "mac.menuBarMetric") ?? "cpu"
+        if metric != menuBarMetric { menuBarMetric = metric }
+        let parsed = (defaults.stringArray(forKey: "mac.dashboardMetrics") ?? []).compactMap(MacMetric.init(rawValue:))
+        let metrics = parsed.isEmpty ? MacMetric.defaultDashboard : parsed
+        if metrics != dashboardMetrics { dashboardMetrics = metrics }
+    }
+
+    /// The "Sync with iCloud" switch. Turning it back on sends what changed here meanwhile (PCs removed while it
+    /// was off included) and takes iCloud's settings and PCs.
+    func setCloudSync(_ on: Bool) {
+        OrbitCloudSyncSwitch.set(on)
+        guard on else { return }
+        persistSavedPCs()
+        Task { await syncFromiPhone(silent: true) }
     }
 
     func startPolling() {

@@ -86,7 +86,11 @@ struct ContentView: View {
             vm.setAppActive(phase == .active)
             if phase == .active { OrbitProStore.shared.refreshIfNeeded() }
         }
-        .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in OrbitProLockdown.enforce() }
+        .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in
+            OrbitProLockdown.enforce()
+            // A Pro theme chosen on another device waits in iCloud until Pro is unlocked here.
+            OrbitSettingsSync.shared.scheduleSync()
+        }
         .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in OrbitProLockdown.enforce() }
         .sheet(isPresented: $isShowingProFromURL) { OrbitProPaywallView() }
         .sheet(isPresented: $notificationRouter.showsNotifications) {
@@ -2307,6 +2311,7 @@ struct SettingsView: View {
     @State private var isShowingPrivacy = false
     @State private var isShowingAcknowledgements = false
     @State private var editingConnection: SavedPC?
+    @AppStorage(OrbitCloudSyncSwitch.key) private var iCloudSyncOn = true
     @FocusState private var focusedField: Bool
 
     var body: some View {
@@ -2397,6 +2402,17 @@ struct SettingsView: View {
                     NavigationLink { AppleWatchCompanionHelpView(vm: vm) } label: {
                         settingsRow("Apple Watch", icon: "applewatch.radiowaves.left.and.right", tint: .green)
                     }
+                }
+                .orbitRow()
+
+                Section {
+                    Toggle(isOn: Binding(get: { iCloudSyncOn }, set: { vm.setCloudSync($0) })) {
+                        settingsRow("Sync with iCloud", icon: "icloud.fill", tint: .cyan)
+                    }
+                } header: {
+                    Text("iCloud")
+                } footer: {
+                    Text("Keeps your saved PCs, theme, overview cards and Live Activity settings the same on your devices signed in to your Apple Account. Button Deck, electricity cost, monthly summaries and session history are stored on the PC, so every device already sees the same ones. Each device still pairs with Sunshine on its own for streaming. When this is off, Orbit keeps everything on this device.")
                 }
                 .orbitRow()
 

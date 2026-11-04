@@ -31,6 +31,9 @@ struct OrbitMacApp: App {
             print("synchronize: \(synced); keys: \(store.dictionaryRepresentation.keys.sorted())")
             print("synced PCs: \(items.count)" + items.map { " · \($0.name) \($0.address) origin=\($0.origin ?? "legacy") token=\($0.apiToken.isEmpty ? "no" : "yes")" }.joined())
             print("removed: \(OrbitPCCloudSync.removed())")
+            let settings = store.dictionary(forKey: OrbitSettingsSyncEngine.cloudKey) ?? [:]
+            print("iCloud sync switch: \(OrbitCloudSyncSwitch.isOn ? "on" : "off"); synced settings: \(settings.count)")
+            for key in settings.keys.sorted() { print("  \(key) = \(OrbitSettingEntry(plist: settings[key])?.description ?? "?")") }
             exit(0)
         case "export":
             print((try? MoonlightIdentityStore.currentCertificatePEM()) ?? "no identity")
@@ -72,7 +75,11 @@ struct OrbitMacApp: App {
                     if phase == .active { OrbitProStore.shared.refreshIfNeeded() }
                 }
                 .onAppear { OrbitProStore.shared.start() }
-                .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in MacProLockdown.enforce() }
+                .onReceive(OrbitProStore.shared.$isProUnlocked) { _ in
+                    MacProLockdown.enforce()
+                    // A Pro theme chosen on another device waits in iCloud until Pro is unlocked here.
+                    OrbitSettingsSync.shared.scheduleSync()
+                }
                 .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in MacProLockdown.enforce() }
                 .onOpenURL { url in handle(url) }
         }

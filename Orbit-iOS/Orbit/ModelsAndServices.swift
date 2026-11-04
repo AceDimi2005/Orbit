@@ -521,6 +521,7 @@ final class OrbitViewModel: ObservableObject {
     private var lastSpecsAttempt: Date = .distantPast
     private var lastBonjourRediscovery: Date = .distantPast
     private var cloudObserver: NSObjectProtocol?
+    private var settingsSyncObserver: NSObjectProtocol?
     private var hasSynced = false
     private var isRefreshing = false
     private var appActive = true
@@ -571,16 +572,36 @@ final class OrbitViewModel: ObservableObject {
         startMonitoringLoop()
     }
     /// Imports the PCs the Mac and Apple TV published to iCloud, keeps listening for their changes, and
-    /// publishes this iPhone's PCs to iCloud, the App Group and the local network.
+    /// publishes this iPhone's PCs to iCloud, the App Group and the local network. Settings sync starts here too.
     private func startProfileSync() {
         NSUbiquitousKeyValueStore.default.synchronize()
         cloudObserver = NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
                                                                object: NSUbiquitousKeyValueStore.default, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.importCloudProfiles() }
         }
+        settingsSyncObserver = NotificationCenter.default.addObserver(forName: OrbitSettingsSync.appliedNotification, object: nil,
+                                                                      queue: .main) { [weak self] note in
+            let keys = note.userInfo?["keys"] as? [String] ?? []
+            Task { @MainActor in self?.settingsArrivedFromCloud(keys) }
+        }
         // The Watch may already have this iPhone's list from before the import.
         if importCloudProfiles() > 0 { OrbitWatchBridge.shared.pushStateToWatch(force: true) }
         OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+        OrbitSettingsSync.shared.startOnIPhoneOrIPad()
+    }
+    /// The overview cards and component names are copied into the model; read them again when iCloud changed them.
+    private func settingsArrivedFromCloud(_ keys: [String]) {
+        if keys.contains(where: { $0.hasPrefix("hardwareOverrides.") }) { loadOverrides() }
+        if keys.contains(where: { $0.hasPrefix("dashboardLayout.v1.") }) { loadDashboardConfiguration() }
+    }
+    /// The "Sync with iCloud" switch. Turning it back on sends what changed here meanwhile (PCs removed while it
+    /// was off included) and takes iCloud's settings and PCs.
+    func setCloudSync(_ on: Bool) {
+        OrbitCloudSyncSwitch.set(on)
+        guard on else { statusLog = "iCloud sync is off on this device"; return }
+        NSUbiquitousKeyValueStore.default.synchronize()
+        OrbitAppleTVSyncBroadcaster.shared.publishCurrentProfiles()
+        if importCloudProfiles() > 0 { OrbitWatchBridge.shared.pushStateToWatch(force: true) }
     }
     private static var demoGames: [SunshineGame] {
         [SunshineGame(id: "demo", title: "Example game", genre: "Simulated preview", iconSymbol: "gamecontroller.fill", accentHex: "5EDBD5")]
@@ -717,6 +738,7 @@ final class OrbitViewModel: ObservableObject {
     func setAppActive(_ active: Bool) {
         appActive = active
         OrbitEventPoller.shared.setAppActive(active)
+        if active { OrbitSettingsSync.shared.appBecameActive() }
         if active { startMonitoringLoop(); if isShowingStreamView { startLiveScreenFeed() } } else {
             monitoringTask?.cancel(); monitoringTask = nil; stopScreenFeed()
             activity.enterBackground()

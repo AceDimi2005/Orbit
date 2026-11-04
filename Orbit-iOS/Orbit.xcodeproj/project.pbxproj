@@ -130,6 +130,8 @@
 		A20000000000000000000080 /* MoonlightClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000080 /* MoonlightClient.swift */; };
 		A20000000000000000000081 /* MoonlightViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000081 /* MoonlightViews.swift */; };
 		A20000000000000000000085 /* OrbitPCSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000085 /* OrbitPCSync.swift */; };
+		A9000000000000000000C5A2 /* OrbitSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C5A1 /* OrbitSettingsSync.swift */; };
+		A9000000000000000000C5A3 /* OrbitSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000C5A1 /* OrbitSettingsSync.swift */; };
 		A2000000000000000000008A /* OrbitAppIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000008A /* OrbitAppIcons.swift */; };
 		A2000000000000000000008B /* OrbitError.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000008B /* OrbitError.swift */; };
 		A20000000000000000000089 /* OrbitProStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000089 /* OrbitProStore.swift */; };
@@ -379,6 +381,7 @@
 		B20000000000000000000080 /* MoonlightClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightClient.swift; sourceTree = "<group>"; };
 		B20000000000000000000081 /* MoonlightViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000085 /* OrbitPCSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPCSync.swift; sourceTree = "<group>"; };
+		B2000000000000000000C5A1 /* OrbitSettingsSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSettingsSync.swift; sourceTree = "<group>"; };
 		B2000000000000000000008A /* OrbitAppIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitAppIcons.swift; sourceTree = "<group>"; };
 		B2000000000000000000008B /* OrbitError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitError.swift; sourceTree = "<group>"; };
 		B20000000000000000000087 /* OrbitProEntitlement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitProEntitlement.swift; sourceTree = "<group>"; };
@@ -604,6 +607,7 @@
 				B20000000000000000000080 /* MoonlightClient.swift */,
 				B20000000000000000000081 /* MoonlightViews.swift */,
 				B20000000000000000000085 /* OrbitPCSync.swift */,
+				B2000000000000000000C5A1 /* OrbitSettingsSync.swift */,
 				B2000000000000000000008A /* OrbitAppIcons.swift */,
 				B20000000000000000000087 /* OrbitProEntitlement.swift */,
 				B20000000000000000000089 /* OrbitProStore.swift */,
@@ -1019,6 +1023,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C5A2 /* OrbitSettingsSync.swift in Sources */,
 				A20000000000000000000122 /* SecondScreenView.swift in Sources */,
 				A20000000000000000000121 /* OrbitSecondScreen.swift in Sources */,
 				A20000000000000000000120 /* OrbitStreamDisplaySetup.swift in Sources */,
@@ -1178,6 +1183,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000C5A3 /* OrbitSettingsSync.swift in Sources */,
 				A6000000000000000000010C /* OrbitMacSecondScreenView.swift in Sources */,
 				A6000000000000000000010B /* OrbitSecondScreen.swift in Sources */,
 				A6000000000000000000010A /* OrbitStreamDisplaySetup.swift in Sources */,

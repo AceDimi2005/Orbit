@@ -2022,7 +2022,18 @@ struct TVPCsAndPairingTab: View {
     @ViewBuilder
     private var savedPCsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            TVSectionHeader("Saved Workstations", subtitle: vm.savedPCs.isEmpty ? nil : "\(vm.savedPCs.count) saved • the active PC is used for every tab")
+            TVSectionHeader("Saved Workstations",
+                            subtitle: (vm.savedPCs.isEmpty ? "" : "\(vm.savedPCs.count) saved • the active PC is used for every tab • ")
+                                + (vm.isCloudSyncOn ? "synced with your iPhone, iPad and Mac through iCloud" : "iCloud sync is off on this Apple TV")) {
+                // Saved PCs follow the user's other devices through iCloud; off keeps them on this Apple TV only.
+                Button {
+                    vm.setCloudSync(!vm.isCloudSyncOn)
+                } label: {
+                    Label(vm.isCloudSyncOn ? "iCloud Sync: On" : "iCloud Sync: Off", systemImage: vm.isCloudSyncOn ? "icloud.fill" : "icloud.slash")
+                }
+                .buttonStyle(TVActionPillStyle(tint: TVPalette.accent, isProminent: vm.isCloudSyncOn))
+            }
+            .focusSection()
 
             if vm.savedPCs.isEmpty {
                 Button {

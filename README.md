@@ -231,6 +231,12 @@ Canalul de actualizări al companionului: `/api/status` și `/api/update/check` 
 python Orbit-iOS/Tests/check_companion_channel.py
 ```
 
+Sincronizarea prin iCloud a setărilor și comutatorul „Sync with iCloud”: un iPhone, un iPad și un Mac simulați pe un iCloud în memorie (cea mai nouă modificare câștigă pe fiecare setare, ștergeri cu tombstones, teme Pro doar cu Orbit Pro, comutatorul oprit nu citește și nu scrie nimic în iCloud):
+
+```sh
+python Orbit-iOS/Tests/check_settings_sync.py
+```
+
 Verificări complete pe macOS, cu Swift și dependențele agentului: transfer HTTPS și asociere prin PIN între clientul Swift real și serverul Python. Folosesc certificate și date temporare; prima verificare SRP descarcă și compilează pachetele Swift fixate în proiect.
 
 ```sh
@@ -487,6 +493,12 @@ The companion's update channel: `/api/status` and `/api/update/check` on the sta
 
 ```sh
 python Orbit-iOS/Tests/check_companion_channel.py
+```
+
+iCloud settings sync and the "Sync with iCloud" switch: an iPhone, an iPad and a Mac simulated over an in-memory iCloud (newest edit wins per setting, removals as tombstones, Pro themes only with Orbit Pro, the switch off reads and writes nothing in iCloud):
+
+```sh
+python Orbit-iOS/Tests/check_settings_sync.py
 ```
 
 End-to-end checks on macOS with Swift and the agent dependencies: HTTPS transfers and PIN pairing between the production Swift client and Python server. They use temporary certificates and data; the first SRP check resolves and builds the pinned Swift packages.

@@ -72,6 +72,7 @@ private struct MacSettingsGeneralTab: View {
     @AppStorage("mac.autoOpenMoonlight") private var autoOpenMoonlight = false
     @AppStorage(MacStreamBackend.storageKey) private var streamBackendRaw = MacStreamBackend.orbit.rawValue
     @AppStorage(MacStreamWindowController.fullScreenKey) private var streamFullScreen = true
+    @AppStorage(OrbitCloudSyncSwitch.key) private var iCloudSyncOn = true
     @State private var launchAtLogin = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
@@ -88,6 +89,7 @@ private struct MacSettingsGeneralTab: View {
             notificationSection
             MacPCAlertsSettingsSection()
             controlSection
+            iCloudSection
             dataSection
         }
         .formStyle(.grouped)
@@ -208,6 +210,16 @@ private struct MacSettingsGeneralTab: View {
             Text("Pointer speed scales trackpad movement sent to the PC from the Remote section. "
                  + (streamFullScreen ? "Streams in Orbit open in full screen on the display you start them from. " : "Streams in Orbit open in a window. ")
                  + "Control-Option-Shift-F switches between full screen and a window, and the Mac stays awake while a stream plays.")
+        }
+    }
+
+    private var iCloudSection: some View {
+        Section {
+            Toggle("Sync with iCloud", isOn: Binding(get: { iCloudSyncOn }, set: { vm.setCloudSync($0) }))
+        } header: {
+            Text("iCloud")
+        } footer: {
+            Text("Keeps your saved PCs, theme and these preferences the same on your devices signed in to your Apple Account; the theme is shared with Orbit on iPhone and iPad. Button Deck, electricity cost, monthly summaries and session history are stored on the PC, so every device already sees the same ones. Each Mac still pairs with Sunshine on its own for streaming. When this is off, Orbit keeps everything on this Mac.")
         }
     }
 

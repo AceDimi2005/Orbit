@@ -287,6 +287,8 @@ final class OrbitTVViewModel: ObservableObject {
     @Published var savedPCs: [TVSavedPC] = []
     @Published var selectedPCID: String = UserDefaults.standard.string(forKey: "tv.selectedPCID") ?? ""
     @Published var isDemoMode: Bool = UserDefaults.standard.bool(forKey: "tv.demoMode")
+    /// "Sync with iCloud" on this Apple TV (saved PCs only: the Apple TV has no theme or layout settings).
+    @Published private(set) var isCloudSyncOn = OrbitCloudSyncSwitch.isOn
 
     @Published var metrics = TVPCMetrics()
     /// Windows' 30-second warning after Shut Down or Restart, with Cancel (OrbitPowerCountdown.swift).
@@ -937,9 +939,9 @@ final class OrbitTVViewModel: ObservableObject {
             iPhoneSyncStatusMessage = "Searching for your paired PC on iPhone (iCloud & Local Wi-Fi)…"
         }
 
-        // 1. Check iCloud Key-Value Store
-        NSUbiquitousKeyValueStore.default.synchronize()
-        if let icloudData = NSUbiquitousKeyValueStore.default.data(forKey: "orbit.syncedPCs.v1"),
+        // 1. Check iCloud Key-Value Store (unless "Sync with iCloud" is off on this Apple TV)
+        if OrbitCloudSyncSwitch.isOn { NSUbiquitousKeyValueStore.default.synchronize() }
+        if OrbitCloudSyncSwitch.isOn, let icloudData = NSUbiquitousKeyValueStore.default.data(forKey: "orbit.syncedPCs.v1"),
            let items = try? JSONDecoder().decode([TVSyncedPCItem].self, from: icloudData),
            !items.isEmpty {
             importSyncedPCItems(items, source: "iCloud / iPhone")
@@ -1278,6 +1280,16 @@ final class OrbitTVViewModel: ObservableObject {
         if selectedPCID.isEmpty, let first = savedPCs.first {
             selectedPCID = first.id
         }
+    }
+
+    /// The "Sync with iCloud" switch. Turning it back on sends what changed here meanwhile (PCs removed while it
+    /// was off included) and takes the PCs in iCloud.
+    func setCloudSync(_ on: Bool) {
+        OrbitCloudSyncSwitch.set(on)
+        isCloudSyncOn = on
+        guard on else { return }
+        persistSavedPCs()
+        Task { await syncFromiPhone(silent: true) }
     }
 
     /// Saves locally and publishes the result to iCloud (merged with the iPhone's and the Mac's copies).
