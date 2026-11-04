@@ -1,10 +1,16 @@
 # Orbit — PC companion
 
+<p align="center">
+  <a href="https://apps.apple.com/app/id6823919198"><img src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" alt="Download on the App Store" height="54"></a>
+</p>
+
 [Română](#romana) · [English](#english)
 
 <a id="romana"></a>
 
 ## Română
+
+**Orbit e în App Store** pentru iPhone, iPad, Apple Watch, Apple TV și Mac (o singură cumpărare pentru toate): https://apps.apple.com/app/id6823919198
 
 Orbit are două părți: aplicațiile Apple din `Orbit-iOS` (iPhone/iPad, Apple Watch, Apple TV și Mac) și agentul Windows din `Orbit-Windows-Agent`. Actualizează-le împreună.
 
@@ -262,6 +268,8 @@ Două workflow-uri rulează pe GitHub. Le poți porni și manual din tabul **Act
 ---
 
 ## English
+
+**Get Orbit on the App Store** for iPhone, iPad, Apple Watch, Apple TV and Mac (one purchase for all): https://apps.apple.com/app/id6823919198
 
 Orbit has two parts: the Apple apps in `Orbit-iOS` (iPhone/iPad, Apple Watch, Apple TV and Mac) and the Windows agent in `Orbit-Windows-Agent`. Update both together.
 
