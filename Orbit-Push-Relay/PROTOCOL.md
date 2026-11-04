@@ -18,7 +18,7 @@ Apple can see.
 
 | Item | Rule |
 |---|---|
-| Base URL | `DEFAULT_RELAY_URL` in `orbit_push.py`, overridden by the env var `ORBIT_PUSH_RELAY_URL`, then by settings `push.relayURL`. It has no trailing slash, for example `https://orbit-push-relay.example.workers.dev`. An empty URL disables the relay. The agent still records events, and the apps poll `/api/events`. |
+| Base URL | `DEFAULT_RELAY_URL` in `orbit_push.py`, overridden by the env var `ORBIT_PUSH_RELAY_URL`, then by settings `push.relayURL`. It has no trailing slash, for example `https://orbit-push-relay.example.workers.dev`. Orbit's relay is `https://orbit-push-relay.orbit-push-relay.workers.dev`. An override that is set but empty disables the relay. The agent still records events, and the apps poll `/api/events`. |
 | Scheme | **HTTPS only.** Secret-bearing routes over plain `http://` answer `426 https_required`. The only exception is `localhost`/`127.0.0.1`, for `wrangler dev`. |
 | Body | UTF-8 JSON, `Content-Type: application/json`. `hb`, `offline-expected` and `POST /v1/channels` also accept an empty body. |
 | Responses | Always JSON with `Cache-Control: no-store`. |

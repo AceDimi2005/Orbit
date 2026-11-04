@@ -196,9 +196,11 @@ The agent reads the relay URL in this order:
 1. **Settings `push.relayURL`**, for advanced users.
 2. **Environment variable `ORBIT_PUSH_RELAY_URL`**, per PC. Use it for testing:
    `setx ORBIT_PUSH_RELAY_URL https://orbit-push-relay.<subdomain>.workers.dev`, then restart the agent.
-3. **The built-in default `DEFAULT_RELAY_URL`** in `Orbit-Windows-Agent/orbit_push.py`. It is `""`
-   (disabled) until you set it to the URL above. This is what ships to every user, so change it only
-   when the relay is ready for everyone.
+3. **The built-in default `DEFAULT_RELAY_URL`** in `Orbit-Windows-Agent/orbit_push.py`: Orbit's relay,
+   `https://orbit-push-relay.orbit-push-relay.workers.dev` (since agent 4.6.0b3). This is what ships to
+   every user.
+
+A setting or environment variable that is present but empty turns the relay off.
 
 Use `https://` and no trailing slash.
 

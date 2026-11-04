@@ -12,9 +12,10 @@ Routes (main token, HTTPS only):
 - `GET /api/push/status` → `{"relayConfigured": bool, "devices": [{"deviceID", "deviceName", "registeredAt",
   "lastDeliveryAt", "lastError", "active"}], "relayError": null|"…", "lastHeartbeatAt": null|"ISO"}`
 
-The relay URL is `DEFAULT_RELAY_URL` (empty), overridden by `ORBIT_PUSH_RELAY_URL`, then by settings
-`push.relayURL`. While it is empty nothing is ever sent anywhere: events are only kept in the PC's
-event log for the apps to poll.
+The relay URL is `DEFAULT_RELAY_URL` (Orbit's own relay on Cloudflare), overridden by `ORBIT_PUSH_RELAY_URL`,
+then by settings `push.relayURL`. An override that is set but empty turns the relay off. Nothing reaches the
+relay until a phone turns notifications on and registers with this PC; with the relay off, events are only
+kept in the PC's event log for the apps to poll.
 
 Every event is encrypted separately for each phone with that phone's 32-byte key (AES-256-GCM, a fresh
 12-byte nonce, AAD = the UTF-8 deviceID, plaintext JSON space-padded to a multiple of 128 bytes, wire
@@ -59,7 +60,7 @@ import orbit_notify
 import orbit_settings
 
 LOGGER = logging.getLogger("orbit.push")
-DEFAULT_RELAY_URL = ""
+DEFAULT_RELAY_URL = "https://orbit-push-relay.orbit-push-relay.workers.dev"
 SETTINGS_SECTION = "push"
 HEARTBEAT_SECONDS = 300
 RECOVERY_INTERVAL_SECONDS = 600
@@ -388,8 +389,8 @@ class PushService:
         """(url, error): the configured relay URL ("" when disabled) and why it was refused."""
         candidate = DEFAULT_RELAY_URL
         environment = self._environ.get("ORBIT_PUSH_RELAY_URL")
-        if environment is not None and environment.strip():
-            candidate = environment
+        if environment is not None:
+            candidate = environment  # set but empty: relay off
         try:
             settings = self._settings if self._settings is not None else orbit_settings.shared_store()
             section = settings.get(SETTINGS_SECTION, {}) or {}

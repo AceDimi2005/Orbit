@@ -411,11 +411,16 @@ class ServiceTestCase(unittest.TestCase):
 
 
 class DisabledRelayTests(ServiceTestCase):
+    def test_the_default_relay_is_orbits_https_relay(self):
+        self.assertTrue(push.DEFAULT_RELAY_URL.startswith("https://"))
+        self.assertEqual(push.validate_relay_url(push.DEFAULT_RELAY_URL), push.DEFAULT_RELAY_URL)
+        service = self.service(environ={})
+        self.assertEqual(service.relay_url(), (push.DEFAULT_RELAY_URL, None))
+
     def test_nothing_is_sent_without_a_relay_url(self):
-        self.assertEqual(push.DEFAULT_RELAY_URL, "")
         opener = MagicMock()
         opener.open.side_effect = AssertionError("the network must not be used")
-        service = self.service(environ={}, opener=opener)
+        service = self.service(environ={"ORBIT_PUSH_RELAY_URL": ""}, opener=opener)
         self.assertEqual(self.register(service), {"status": "registered", "relay": "disabled"})
         self.assertFalse(service.dispatch(self.event(1)))
         for _ in range(5):
@@ -485,7 +490,7 @@ class RegistrationTests(ServiceTestCase):
         thread.join(3)
 
     def test_validation_and_device_limit(self):
-        service = self.service(environ={})
+        service = self.service(environ={"ORBIT_PUSH_RELAY_URL": ""})
         cases = [
             ("x", "JSON object"),
             ({"deviceID": "-bad", "apnsToken": TOKEN_A, "environment": "sandbox", "key": b64(KEY_A)}, "deviceID"),
