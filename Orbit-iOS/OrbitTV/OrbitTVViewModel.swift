@@ -1236,6 +1236,33 @@ final class OrbitTVViewModel: ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// Simulator checks against a pretend PC without pairing through the remote: `ORBIT_TV_TEST_PC` =
+    /// "name|host|securePort|fingerprint|token" saves that PC as paired and selects it. The token goes to the Keychain,
+    /// so build the app signed (unsigned simulator builds cannot write it).
+    func debugAddTestPC(_ spec: String) {
+        let parts = spec.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 5, let port = Int(parts[2]) else {
+            print("ORBIT_TV_TEST_PC: expected name|host|securePort|fingerprint|token")
+            return
+        }
+        var profile = savedPCs.first(where: { $0.address == parts[1] && $0.securePort == port }) ?? TVSavedPC(name: parts[0], address: parts[1])
+        profile.name = parts[0]
+        profile.securePort = port
+        profile.certificateFingerprint = OrbitAPIClient.normalizedFingerprint(parts[3])
+        profile.updatedAt = Date().timeIntervalSince1970
+        saveToken(parts[4], for: profile.id)
+        if let index = savedPCs.firstIndex(where: { $0.id == profile.id }) {
+            savedPCs[index] = profile
+        } else {
+            savedPCs.append(profile)
+        }
+        persistSavedPCs()
+        selectPC(profile)
+        print("ORBIT_TV_TEST_PC: \(profile.name) at \(profile.address):\(port), token stored \(!readToken(for: profile.id).isEmpty)")
+    }
+    #endif
+
     // MARK: - Keychain & Profile Storage
 
     private func loadSavedPCs() {

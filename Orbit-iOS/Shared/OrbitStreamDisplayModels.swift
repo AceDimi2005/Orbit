@@ -1,25 +1,27 @@
 import Combine
 import Foundation
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import MoonlightCore
 import UIKit
 #endif
 
-// The stateful parts of the Fill Screen setup (DESIGN F5) and Second Screen (F9) on iPhone/iPad and Mac: what the
-// screens show, the order of the PC calls and how they recover from failures, PC switches and cancelled reads.
+// The stateful parts of the Fill Screen setup (DESIGN F5, iPhone/iPad and Mac) and Second Screen (F9, also on
+// Apple TV): what the screens show, the order of the PC calls and how they recover from failures, PC switches and
+// cancelled reads.
 //
-// Foundation and Combine only (plus MoonlightCore's idle timer on iPhone/iPad), so Tests/check_stream_display.py
-// compiles this file and drives both models against a scripted PC. Sunshine hosts and the stream screen come in
-// through the small protocols below; their Moonlight adapters are in Streaming/OrbitSecondScreen.swift.
+// Foundation and Combine only (plus MoonlightCore's idle timer on iPhone/iPad and Apple TV), so
+// Tests/check_stream_display.py compiles this file and drives both models against a scripted PC. Sunshine hosts and
+// the stream screen come in through the small protocols below; their Moonlight adapters are in
+// Streaming/OrbitSecondScreen.swift.
 
 // MARK: - Slow changes
 
 /// Keeps the app working while the PC takes its time (someone walks over to approve an administrator
-/// prompt): iPhone/iPad keep the screen on and finish the request if Orbit goes to the background;
-/// the Mac keeps App Nap away.
+/// prompt): iPhone/iPad and Apple TV keep the screen on (no screen saver) and finish the request if Orbit goes
+/// to the background; the Mac keeps App Nap away.
 @MainActor
 final class OrbitLongRequestGuard {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var holdsIdleTimer = false
     #elseif os(macOS)
@@ -27,7 +29,7 @@ final class OrbitLongRequestGuard {
     #endif
 
     init(reason: String) {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: reason) { [weak self] in
             // iOS calls this on the main thread when the time is up and expects the task to end right here.
             MainActor.assumeIsolated { self?.endBackgroundTask() }
@@ -43,7 +45,7 @@ final class OrbitLongRequestGuard {
 
     /// Safe to call more than once.
     func end() {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         if holdsIdleTimer {
             holdsIdleTimer = false
             MoonlightIdleTimer.letGo()
@@ -55,7 +57,7 @@ final class OrbitLongRequestGuard {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     private func endBackgroundTask() {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)

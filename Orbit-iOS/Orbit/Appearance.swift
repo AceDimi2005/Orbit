@@ -704,7 +704,7 @@ struct OrbitProPaywallView: View {
                                 icon: "rectangle.on.rectangle",
                                 tint: .blue,
                                 title: "Second Screen",
-                                subtitle: "Use your iPad, iPhone or Mac as an extra display for your PC, with touch on iPad and iPhone."
+                                subtitle: "Use your iPad, iPhone, Mac or Apple TV as an extra display for your PC, with touch on iPad and iPhone."
                             )
                         }
                         .padding(18)

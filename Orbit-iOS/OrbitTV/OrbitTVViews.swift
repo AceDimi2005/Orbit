@@ -913,11 +913,18 @@ struct TVControlsAndGamesTab: View {
     @ObservedObject private var streamSettings = MoonlightStreamSettingsStore.shared
     @State private var showsStreamSettings = false
     @State private var showsUnlockPrompt = false
+    @State private var showsSecondScreen = false
+    /// A stream waiting on Second Screen (running here, or left on for this PC).
+    @State private var secondScreenCheck: OrbitSecondScreenStreamCheck?
 
     private var canStream: Bool { sunshine.isPaired && sunshine.reachable && vm.metrics.isOnline && !vm.isDemoMode }
 
     private func startStream(_ app: MoonlightApp, signIn: MoonlightSignInSecret? = nil, present: Bool = true) {
-        stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings, signIn: signIn), present: present)
+        let begin = { stream.begin(.init(host: sunshine, app: app, pcName: vm.metrics.hostname, settings: streamSettings.settings, signIn: signIn), present: present) }
+        // Never in place of a second screen's stream; ask first while this PC still shows the extra display.
+        // A password typed for Unlock goes with the stream if it starts, and is released with the check if not.
+        if let check = OrbitSecondScreenStreamCheck(pcID: vm.streamDisplayContext.pcID, start: begin) { secondScreenCheck = check; return }
+        begin()
     }
 
     /// Generates the PIN and has the Orbit agent type it into Sunshine (login saved from iPhone or Mac).
@@ -1054,6 +1061,7 @@ struct TVControlsAndGamesTab: View {
     }
 
     var body: some View {
+        ScrollViewReader { scroller in
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
                 TVDeckSection()
@@ -1216,10 +1224,26 @@ struct TVControlsAndGamesTab: View {
                 .padding(24)
                 .tvGlass(tint: TVPalette.accent)
                 .focusSection()
+
+                // Second Screen (Orbit Pro, Labs): OrbitTVSecondScreen.swift.
+                if vm.currentPC != nil || vm.isDemoMode {
+                    TVSecondScreenCard(host: sunshine) { showsSecondScreen = true }
+                        .id("secondScreenCard")
+                }
             }
             .sheet(isPresented: $showsStreamSettings) {
                 MoonlightStreamSettingsView(store: streamSettings, accent: TVPalette.accent, hostSupportsHEVC: sunshine.hostSupportsHEVC) { showsStreamSettings = false }
             }
+            // Full screen (a tvOS sheet is a small card). The second screen's stream starts with the page open: it shows
+            // once the page has gone.
+            .fullScreenCover(isPresented: $showsSecondScreen, onDismiss: { stream.presentPendingStream() }) {
+                TVSecondScreenSheet(host: sunshine, onPair: {
+                    showsSecondScreen = false
+                    if vm.sunshineInfo?.canSubmitPin == true { pairAutomatically() } else { sunshine.beginPairing() }
+                }, onStreamBegan: { showsSecondScreen = false }) { showsSecondScreen = false }
+                    .environmentObject(vm)
+            }
+            .secondScreenStreamGuard($secondScreenCheck, context: vm.streamDisplayContext, host: sunshine)
             // "Unlock PC": the password first; the stream launches right away and shows once this sheet has closed.
             .sheet(isPresented: $showsUnlockPrompt, onDismiss: { stream.presentPendingStream() }) {
                 MoonlightUnlockPromptSheet(host: sunshine, pcName: vm.metrics.hostname, accent: TVPalette.accent) { secret in
@@ -1230,6 +1254,12 @@ struct TVControlsAndGamesTab: View {
             .onAppear {
                 #if DEBUG
                 if UserDefaults.standard.string(forKey: "orbitStreamSettings") != nil { showsStreamSettings = true }
+                if let mode = TVSecondScreenSelfTest.mode {
+                    Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        if mode == "card" { withAnimation { scroller.scrollTo("secondScreenCard", anchor: .bottom) } } else { showsSecondScreen = true }
+                    }
+                }
                 #endif
             }
             .task(id: sunshineKey) { await syncSunshine() }
@@ -1239,6 +1269,7 @@ struct TVControlsAndGamesTab: View {
         }
         .onAppear {
             Task { await vm.refreshGames() }
+        }
         }
     }
 }

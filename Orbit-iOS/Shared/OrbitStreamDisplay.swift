@@ -4,7 +4,8 @@ import Foundation
 // `orbit_stream_display.py` on the PC (features `streamDisplay` and `secondScreen` in GET /api/capabilities)
 // and the checks the apps show from it.
 //
-// Foundation only. Compiled into the iPhone/iPad and Mac apps, and by Tests/check_stream_display.py next
+// Foundation only. Compiled into the iPhone/iPad, Mac and Apple TV apps (Apple TV: Second Screen only, it always
+// streams 16:9), and by Tests/check_stream_display.py next
 // to OrbitAPIClient.swift, OrbitError.swift and OrbitStreamDisplayModels.swift, so keep it free of other app types.
 
 enum OrbitStreamDisplayFeature {
@@ -774,6 +775,8 @@ enum OrbitStreamDisplayErrors {
     static var updateHint: String {
         #if os(macOS)
         return "Update it from Settings › About › Check for Agent Update."
+        #elseif os(tvOS)
+        return "Update it from Orbit on your iPhone (Settings › Check for PC Companion Update) or from its tray menu on the PC."
         #else
         return "Update it from Settings › Check for PC Companion Update."
         #endif

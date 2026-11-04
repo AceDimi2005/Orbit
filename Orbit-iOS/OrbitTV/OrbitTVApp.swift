@@ -21,6 +21,9 @@ struct OrbitTVApp: App {
                     // `SIMCTL_CHILD_ORBIT_TV_TAB=1 xcrun simctl launch <device> com.dimitrie.orbit`
                     let environment = ProcessInfo.processInfo.environment
                     if let tab = environment["ORBIT_TV_TAB"].flatMap(Int.init) { viewModel.selectedTab = tab }
+                    // A pretend PC saved as paired, and Controls › Second Screen (OrbitTVSecondScreen.swift).
+                    if let pc = environment["ORBIT_TV_TEST_PC"] { viewModel.debugAddTestPC(pc) }
+                    if TVSecondScreenSelfTest.mode != nil { viewModel.selectedTab = 1 }
                     // `ORBIT_TV_DEMO=1` turns demo mode on after the launch-time iPhone sync (which would turn it off).
                     if environment["ORBIT_TV_DEMO"] == "1" {
                         Task {

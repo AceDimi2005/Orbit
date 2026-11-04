@@ -10,12 +10,9 @@ import AppKit
 // Fill Screen setup on the PC (DESIGN F5), iPhone/iPad and Mac: Stream Settings reads the PC's readiness
 // from GET /api/stream/display and sets it up (POST …/modes with this screen's stream size, then …/fill).
 // The views are here; `OrbitFillScreenSetupModel` (Foundation only, so Tests/ can drive it) is in
-// Shared/OrbitStreamDisplayModels.swift. The second screen (F9) reuses the small views below.
-// Apple TV always streams 16:9 and has none of this.
-
-extension MoonlightStreamSize {
-    var displaySize: OrbitDisplaySize { OrbitDisplaySize(width: width, height: height) }
-}
+// Shared/OrbitStreamDisplayModels.swift. The second screen (F9) reuses the small views below on iPhone, iPad and
+// Mac. Apple TV always streams 16:9, so it has no Fill Screen setup; its Second Screen page draws its own rows in
+// the TV style (OrbitTV/OrbitTVSecondScreen.swift).
 
 // MARK: - Shared pieces
 

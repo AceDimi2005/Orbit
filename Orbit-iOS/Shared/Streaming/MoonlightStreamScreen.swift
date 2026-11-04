@@ -10,6 +10,10 @@ struct MoonlightStreamScreen: View {
     @StateObject private var handle = MoonlightSurfaceHandle()
     @State private var overlayVisible = true
     @State private var statsVisible = false
+    #if os(tvOS)
+    /// The stream this screen showed last: Menu on the Siri Remote dismisses the screen, which only flips `isPresented`.
+    @State private var shownRequestID: UUID?
+    #endif
 
     var body: some View {
         ZStack {
@@ -29,7 +33,15 @@ struct MoonlightStreamScreen: View {
         .persistentSystemOverlays(.hidden)
         #endif
         .onAppear { statsVisible = controller.request?.settings.showStatistics ?? false }
+        #if os(tvOS)
+        .onChange(of: controller.request?.id, initial: true) { _, id in if let id { shownRequestID = id } }
+        .onDisappear {
+            // Menu left the stream: end it too (a second screen then turns off), but never a stream requested since.
+            if controller.isPresented || (controller.request != nil && controller.request?.id == shownRequestID) { controller.end(quitApp: false) }
+        }
+        #else
         .onDisappear { if controller.isPresented { controller.end(quitApp: false) } }
+        #endif
     }
 }
 
@@ -272,7 +284,9 @@ private struct MoonlightSessionLayer: View {
             #elseif os(macOS)
             Text(handle.mouseCaptured ? "⌃⌥⇧Z releases the mouse and keyboard · ⌃⌥⇧F full screen · ⌃⌥⇧Q ends the stream" : "Click the video to capture mouse and keyboard · ⌃⌥⇧F full screen · ⌃⌥⇧Q or the ✕ button ends the stream")
             #else
-            Text("Touch surface moves the pointer · click selects · play/pause right-clicks · Menu leaves the stream")
+            Text(request.secondScreen
+                 ? "Touch surface moves the pointer · click selects · play/pause right-clicks · Menu stops the second screen"
+                 : "Touch surface moves the pointer · click selects · play/pause right-clicks · Menu leaves the stream")
             #endif
         }
         .font(.caption)

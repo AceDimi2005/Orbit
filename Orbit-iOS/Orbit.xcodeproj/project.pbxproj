@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A500000000000000000055C1 /* OrbitStreamDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000012D /* OrbitStreamDisplay.swift */; };
+		A500000000000000000055C2 /* OrbitStreamDisplayModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000012E /* OrbitStreamDisplayModels.swift */; };
+		A500000000000000000055C3 /* OrbitSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000130 /* OrbitSecondScreen.swift */; };
+		A500000000000000000055C4 /* OrbitTVSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B200000000000000000055C0 /* OrbitTVSecondScreen.swift */; };
 		A6000000000000000000010C /* OrbitMacSecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000132 /* OrbitMacSecondScreenView.swift */; };
 		A20000000000000000000122 /* SecondScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000131 /* SecondScreenView.swift */; };
 		A6000000000000000000010B /* OrbitSecondScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000130 /* OrbitSecondScreen.swift */; };
@@ -287,6 +291,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B200000000000000000055C0 /* OrbitTVSecondScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitTVSecondScreen.swift; sourceTree = "<group>"; };
 		B20000000000000000000132 /* OrbitMacSecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitMacSecondScreenView.swift; sourceTree = "<group>"; };
 		B20000000000000000000131 /* SecondScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecondScreenView.swift; sourceTree = "<group>"; };
 		B20000000000000000000130 /* OrbitSecondScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitSecondScreen.swift; sourceTree = "<group>"; };
@@ -676,6 +681,7 @@
 				B50000000000000000000006 /* Info.plist */,
 				B50000000000000000000007 /* PrivacyInfo.xcprivacy */,
 				B2000000000000000000011A /* OrbitTVDeck.swift */,
+				B200000000000000000055C0 /* OrbitTVSecondScreen.swift */,
 			);
 			path = OrbitTV;
 			sourceTree = "<group>";
@@ -1161,6 +1167,10 @@
 				A50000000000000000000082 /* MoonlightStreamLauncher.swift in Sources */,
 				A50000000000000000000083 /* MoonlightStreamScreen.swift in Sources */,
 				A50000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */,
+				A500000000000000000055C1 /* OrbitStreamDisplay.swift in Sources */,
+				A500000000000000000055C2 /* OrbitStreamDisplayModels.swift in Sources */,
+				A500000000000000000055C3 /* OrbitSecondScreen.swift in Sources */,
+				A500000000000000000055C4 /* OrbitTVSecondScreen.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

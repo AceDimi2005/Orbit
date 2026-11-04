@@ -1,16 +1,20 @@
-#if !os(tvOS)
 import Combine
 import Foundation
 import MoonlightCore
 import SwiftUI
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #endif
 
-// Second Screen (DESIGN F9) on iPhone/iPad and Mac, Moonlight side: the app-wide session wired to this device's
-// stream screen, Sunshine hosts as the session uses them, the stream settings a second screen streams with, the
-// entry points the screens call, and the guard for normal streams while a second screen runs or was left on.
+// Second Screen (DESIGN F9) on iPhone/iPad, Mac and Apple TV, Moonlight side: the app-wide session wired to this
+// device's stream screen, Sunshine hosts as the session uses them, the stream settings a second screen streams with,
+// the entry points the screens call, and the guard for normal streams while a second screen runs or was left on.
 // The session's logic itself is Foundation only: `OrbitSecondScreenSession` in Shared/OrbitStreamDisplayModels.swift.
+
+extension MoonlightStreamSize {
+    /// The stream's size as the PC's virtual display takes it.
+    var displaySize: OrbitDisplaySize { OrbitDisplaySize(width: width, height: height) }
+}
 
 extension OrbitSecondScreenSession {
     static let shared = OrbitSecondScreenSession(streams: MoonlightSecondScreenStreams())
@@ -73,16 +77,20 @@ extension OrbitSecondScreenSession {
 
     /// Start (or Show It Here) from a screen. The session streams through a Sunshine host of its own, a copy of the
     /// screen's: the screen can switch PCs meanwhile without redirecting the session. `onStreamBegan` runs right
-    /// after the stream is requested (the Mac opens its Stream window there).
+    /// after the stream is requested (the Mac opens its Stream window there). With `presentStream: false` the stream
+    /// screen waits for `MoonlightStreamController.presentPendingStream()`: Apple TV's Second Screen page covers the
+    /// app, so it closes in `onStreamBegan` and presents the stream once it has gone.
     func start(context: OrbitStreamDisplayContext, host: MoonlightHostCoordinator, baseSettings: MoonlightStreamSettings,
-               target: MoonlightStreamTarget, position: OrbitSecondScreenPosition, onStreamBegan: @escaping @MainActor () -> Void) {
+               target: MoonlightStreamTarget, position: OrbitSecondScreenPosition, presentStream: Bool = true,
+               onStreamBegan: @escaping @MainActor () -> Void) {
         guard context.isDemo || host.configuredPCID == context.pcID else { return }
         let settings = Self.streamSettings(from: baseSettings)
         let own = context.isDemo ? host : host.detachedCopy()
         let pcName = context.pcName
         startSession(context: context, host: own, size: target.size.displaySize, refreshRate: Self.refreshRate(for: settings), position: position) { appID in
             guard let app = own.apps.first(where: { $0.id == appID }) else { return false }
-            MoonlightStreamController.shared.begin(.init(host: own, app: app, pcName: pcName, settings: settings, target: target, secondScreen: true))
+            MoonlightStreamController.shared.begin(.init(host: own, app: app, pcName: pcName, settings: settings, target: target, secondScreen: true),
+                                                   present: presentStream)
             onStreamBegan()
             return true
         }
@@ -169,6 +177,8 @@ private struct OrbitSecondScreenStreamGuard: ViewModifier {
     private var thisDevice: String {
         #if os(macOS)
         return "Mac"
+        #elseif os(tvOS)
+        return "Apple TV"
         #else
         return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         #endif
@@ -184,6 +194,8 @@ private struct OrbitSecondScreenStreamGuard: ViewModifier {
         default:
             #if os(macOS)
             return "This Mac is a second screen for \(name). Stop it first: Control-Option-Shift-Q in the Stream window, or Turn Off in Second Screen."
+            #elseif os(tvOS)
+            return "This Apple TV is a second screen for \(name). Stop it first: press Menu on the Siri Remote to end the stream, or Turn Off in Controls › Second Screen."
             #else
             return "This \(thisDevice) is a second screen for \(name). Stop it first: tap with three fingers and end the stream, or Turn Off in Tools › Second Screen."
             #endif
@@ -224,4 +236,3 @@ extension View {
         modifier(OrbitSecondScreenStreamGuard(pending: pending, context: context, host: host))
     }
 }
-#endif
