@@ -19,7 +19,7 @@ Orbit communicates directly between your iPhone/iPad and your Windows PC over yo
   - Cloudflare and Apple process this delivery information only as service providers for sending the notifications.
 
 ## 3. On-Device Storage
-Connection profiles (PC name, local IP address, port, MAC address for Wake-on-LAN, and pairing status), appearance preferences, and widget configurations are stored strictly on your device using Apple's local `UserDefaults` and `App Group` container (`group.com.dimitrie.orbit`) so that Home Screen Widgets, Control Center Widgets, Live Activities, and Siri Shortcuts can communicate with your PC.
+Connection profiles (PC name, local IP address, port, MAC address for Wake-on-LAN, and pairing status), appearance preferences, and widget configurations are stored on your device using Apple's local `UserDefaults` and `App Group` container (`group.com.dimitrie.orbit`) so that Home Screen Widgets, Control Center Widgets, Live Activities, and Siri Shortcuts can communicate with your PC.
 
 If you are signed in to iCloud, your saved PC profiles (including each PC's pairing token, so your other devices can connect without pairing again) are synced between your own iPhone, iPad, Mac, and Apple TV through Apple's iCloud Key-Value Storage in your private iCloud account. This data is stored by Apple under your Apple Account; the developer has no access to it. You can turn this off for Orbit in your device's iCloud settings.
 
