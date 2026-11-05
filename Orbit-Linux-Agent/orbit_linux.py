@@ -167,6 +167,7 @@ def main():
         agent.STOP_EVENT.set()
         tray.close()
         worker.join(15)
+        agent.PLATFORM.webcam.manager.close()
         agent.PAIRING_MANAGER.close()
         agent.orbit_notify.set_notifier(None)
         try:

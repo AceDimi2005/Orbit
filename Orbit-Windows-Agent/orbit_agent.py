@@ -1440,12 +1440,17 @@ app.include_router(orbit_presentation.create_presentation_router(
 register_feature("presentation")
 
 # iPhone as a webcam: GET /api/webcam, POST /api/webcam/install, WS /ws/camera (orbit_webcam.py).
-app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_native_windows if PLATFORM is not None else require_windows, authorized,
-                                                     boot_mode=lambda: BOOT_MODE))
+if PLATFORM is not None:
+    from orbit_linux_webcam import LinuxWebcam
+    PLATFORM.webcam = LinuxWebcam()
+    app.include_router(PLATFORM.webcam.router(verify_token, require_https, authorized))
+else:
+    app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_windows, authorized,
+                                                       boot_mode=lambda: BOOT_MODE))
 register_feature("webcam")
 if PLATFORM is not None:
     from orbit_capabilities import unregister_feature
-    for feature in ("streamDisplay", "secondScreen", "webcam"):
+    for feature in ("streamDisplay", "secondScreen"):
         unregister_feature(feature)
 
     @app.get("/api/linux/desktop", dependencies=[Depends(verify_token), Depends(require_https)])

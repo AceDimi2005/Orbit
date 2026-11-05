@@ -1,5 +1,6 @@
 """Qt tray and consent-mediated capture; all Qt objects stay on the GUI thread."""
 import os
+import io
 from pathlib import Path
 import threading
 import time
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMenu, QMessageBox,
 class ScreenCapture(QObject):
     requested = Signal(bool)
 
-    def __init__(self):
+    def __init__(self, commands=None):
         super().__init__()
         self.condition = threading.Condition()
         self.wanted = False
@@ -23,6 +24,13 @@ class ScreenCapture(QObject):
         self.geometry = None
         self.last_encoded = 0.0
         self.screen = self.session = self.sink = None
+        from orbit_linux_backend import Commands
+        self.commands = commands or Commands()
+        self.selected_output = None
+        self.approved_output = None
+        self.output_name = None
+        self.generation = 0
+        self.consent = None
         self.requested.connect(self._activate)
 
     def start(self):
@@ -31,6 +39,8 @@ class ScreenCapture(QObject):
             self.latest = None
             self.error = None
             self.delivered = self.sequence
+            self.generation += 1
+            self.approved_output = self.output_name = None
         self.requested.emit(True)
 
     def stop(self):
@@ -38,17 +48,25 @@ class ScreenCapture(QObject):
             self.wanted = False
             self.latest = None
             self.geometry = None
+            self.approved_output = self.output_name = None
+            self.generation += 1
             self.condition.notify_all()
         self.requested.emit(False)
 
     @Slot(bool)
     def _activate(self, active):
         if not active:
+            if self.consent is not None:
+                self.consent.reject()
+                self.consent = None
             if self.screen is not None:
                 self.screen.setActive(False)
             return
         with self.condition:
             if not self.wanted:
+                return
+            if self.selected_output is not None:
+                self._request_native_consent(self.selected_output, self.generation)
                 return
         try:
             if self.screen is None:
@@ -77,6 +95,7 @@ class ScreenCapture(QObject):
         with self.condition:
             self.error = message or "Screen capture failed."
             self.latest = None
+            self.output_name = None
             self.condition.notify_all()
 
     def _frame(self, frame):
@@ -103,6 +122,8 @@ class ScreenCapture(QObject):
                 self.condition.notify_all()
 
     def frame(self, timeout):
+        if self.selected_output is not None:
+            return self._native_frame(timeout)
         deadline = time.monotonic() + timeout
         with self.condition:
             while self.wanted and not self.error:
@@ -115,6 +136,68 @@ class ScreenCapture(QObject):
                 self.condition.wait(remaining)
             raise RuntimeError(self.error or "Screen sharing stopped.")
 
+    def select_output(self, output):
+        self.stop()
+        with self.condition:
+            self.selected_output = output
+
+    def _request_native_consent(self, output, generation):
+        dialog = QMessageBox(QMessageBox.Icon.Question, "Share a screen with Orbit",
+                             f"Allow your paired phone to view {output}?\n\nDirect touch will control this screen. Stop sharing from the Orbit tray at any time.",
+                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setDefaultButton(QMessageBox.StandardButton.No)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.consent = dialog
+
+        def answered(result):
+            if self.consent is dialog:
+                self.consent = None
+            with self.condition:
+                if self.wanted and self.generation == generation:
+                    if result == QMessageBox.StandardButton.Yes:
+                        self.approved_output = output
+                    else:
+                        self.error = "Screen sharing was declined on the PC."
+                    self.condition.notify_all()
+
+        dialog.finished.connect(answered)
+        dialog.open()
+
+    def _native_frame(self, timeout):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            generation = self.generation
+            while self.wanted and not self.error and self.approved_output is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Waiting for screen sharing consent timed out.")
+                self.condition.wait(remaining)
+            if not self.wanted or self.error:
+                raise RuntimeError(self.error or "Screen sharing stopped.")
+            output = self.approved_output
+        # Runs on the stream worker, never the GUI thread. grim captures exactly
+        # this wl_output through the compositor; it never reads XWayland windows.
+        try:
+            data = self.commands.run("grim", "-o", output, "-t", "jpeg", "-q", "68", "-", timeout=5)
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as picture:
+                picture.thumbnail((1280, 720))
+                encoded = io.BytesIO()
+                picture.convert("RGB").save(encoded, "JPEG", quality=68)
+                data = encoded.getvalue()
+        except Exception as error:
+            message = "Native capture failed. Check that grim supports your compositor and the selected screen is connected."
+            with self.condition:
+                if generation == self.generation:
+                    self._failed(None, message)
+            raise RuntimeError(message) from error
+        with self.condition:
+            if not self.wanted or generation != self.generation:
+                raise RuntimeError("Screen sharing stopped.")
+            self.output_name = output
+        return data
+
 
 class Tray(QObject):
     pairing = Signal(str, str, object)
@@ -125,7 +208,7 @@ class Tray(QObject):
         super().__init__()
         self.agent, self.on_stop, self.startup, self.log_path = agent, on_stop, startup, log_path
         self.dialogs = []
-        self.capture = ScreenCapture()
+        self.capture = ScreenCapture(agent.PLATFORM.commands)
         agent.PLATFORM.capture = self.capture
         icon = QIcon(str(Path(__file__).with_name("orbit-linux.svg")))
         self.tray = QSystemTrayIcon(icon, self)
@@ -134,6 +217,9 @@ class Tray(QObject):
         self.menu.addAction("Connection details…", self.details)
         self.menu.addAction("Copy manual pairing token", lambda: QApplication.clipboard().setText(agent.API_TOKEN))
         self.menu.addAction("Desktop capabilities…", self.diagnostics)
+        if agent.PLATFORM.wayland:
+            sources = self.menu.addMenu("Screen preview source")
+            sources.aboutToShow.connect(lambda: self._screen_sources(sources))
         self.menu.addAction("Stop screen sharing", self.capture.stop)
         startup_action = self.menu.addAction("Start at login")
         startup_action.setCheckable(True)
@@ -153,6 +239,17 @@ class Tray(QObject):
             # GNOME without a tray extension (or a panel still starting) must not
             # leave an invisible process with no way to stop it.
             self.details(no_tray=True)
+
+    def _screen_sources(self, menu):
+        menu.clear()
+        native = self.agent.PLATFORM.use_wtype or self.agent.PLATFORM.pointer_backend == "wayland"
+        screens = QApplication.screens() if native else []
+        for label, output in [("Portal chooser", None)] + [(f"{screen.name()} (native, direct touch)", screen.name()) for screen in screens]:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.capture.selected_output == output)
+            action.setEnabled(output is None or self.agent.PLATFORM.commands.has("grim"))
+            action.triggered.connect(lambda checked=False, name=output: self.capture.select_output(name))
 
     def _startup(self, enabled):
         try:

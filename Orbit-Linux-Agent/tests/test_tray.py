@@ -12,7 +12,7 @@ sys.path[:0] = [str(ROOT / "Orbit-Linux-Agent"), str(ROOT / "Orbit-Windows-Agent
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 from orbit_linux import Startup
 from orbit_linux_tray import ScreenCapture, Tray
 
@@ -68,6 +68,53 @@ class CaptureTests(unittest.TestCase):
         self.capture.start()
         with self.assertRaises(TimeoutError):
             self.capture.frame(.01)
+
+    def test_native_screen_requires_local_consent_before_capture(self):
+        self.capture.commands = Mock()
+        self.capture.select_output("DP-2")
+        self.capture.start()
+        with self.assertRaises(TimeoutError):
+            self.capture.frame(.01)
+        self.capture.commands.run.assert_not_called()
+        self.assertIsNone(self.capture.output_name)
+        self.capture._request_native_consent("DP-2", self.capture.generation)
+        self.capture.consent.done(QMessageBox.StandardButton.No)
+        with self.assertRaisesRegex(RuntimeError, "declined"):
+            self.capture.frame(.01)
+        self.capture.commands.run.assert_not_called()
+
+    def test_native_frame_and_input_use_the_same_output(self):
+        from PIL import Image
+        data = io.BytesIO()
+        Image.new("RGB", (1920, 1080), "red").save(data, "JPEG")
+        self.capture.commands = Mock()
+        self.capture.commands.run.return_value = data.getvalue()
+        self.capture.select_output("DP-2")
+        self.capture.start()
+        self.capture._request_native_consent("DP-2", self.capture.generation)
+        self.capture.consent.done(QMessageBox.StandardButton.Yes)
+        result = self.capture.frame(.1)
+        self.assertEqual(self.capture.output_name, "DP-2")
+        self.assertEqual(self.capture.commands.run.call_args.args[:3], ("grim", "-o", "DP-2"))
+        with Image.open(io.BytesIO(result)) as picture:
+            self.assertEqual(picture.size, (1280, 720))
+        self.capture.stop()
+        self.assertIsNone(self.capture.output_name)
+
+    def test_stopped_native_capture_discards_inflight_frame(self):
+        from PIL import Image
+        data = io.BytesIO()
+        Image.new("RGB", (160, 120)).save(data, "JPEG")
+        def capture(*args, **kwargs):
+            self.capture.stop()
+            return data.getvalue()
+        self.capture.commands = Mock(run=capture)
+        self.capture.select_output("DP-2")
+        self.capture.start()
+        self.capture.approved_output = "DP-2"
+        with self.assertRaisesRegex(RuntimeError, "stopped"):
+            self.capture.frame(.1)
+        self.assertIsNone(self.capture.output_name)
 
 
 class TrayTests(unittest.TestCase):

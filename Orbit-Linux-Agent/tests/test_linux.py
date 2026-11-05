@@ -41,7 +41,7 @@ class Helpers:
 class BackendTests(unittest.TestCase):
     def setUp(self):
         self.helpers = Helpers(["wtype", "ydotool", "xdotool", "wl-copy", "wl-paste", "pactl"])
-        self.desktop = LinuxDesktop(self.helpers, {"WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":0", "XDG_CURRENT_DESKTOP": "Hyprland"})
+        self.desktop = LinuxDesktop(self.helpers, {"WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":0", "XDG_CURRENT_DESKTOP": "Hyprland", "ORBIT_POINTER_BACKEND": "ydotool"})
 
     def test_wayland_wins_over_xwayland(self):
         self.desktop.cursor(dx=7, dy=-4, drag="down")
@@ -134,7 +134,7 @@ class CatalogTests(unittest.TestCase):
             for root in (home, system):
                 (root / "applications").mkdir(parents=True)
             (system / "applications/app.desktop").write_text('[Desktop Entry]\nType=Application\nName=Test\nExec=printf "hello world"\n')
-            catalog = LinuxApps({"XDG_DATA_HOME": str(home), "XDG_DATA_DIRS": str(system), "XDG_CURRENT_DESKTOP": "Hyprland"})
+            catalog = LinuxApps({"XDG_DATA_HOME": str(home), "XDG_DATA_DIRS": str(system), "XDG_CURRENT_DESKTOP": "Hyprland", "ORBIT_POINTER_BACKEND": "ydotool"})
             apps = catalog.list()
             self.assertEqual(len(apps), 1)
             self.assertEqual(catalog.find(apps[0].id), apps[0])
@@ -179,6 +179,7 @@ class APITests(unittest.TestCase):
         self.agent.PLATFORM.commands = self.helpers
         self.agent.PLATFORM.use_wtype = True
         self.agent.PLATFORM.wayland = True
+        self.agent.PLATFORM.pointer_backend = "ydotool"
 
     def test_controls_require_main_token(self):
         for path in ("/api/action/sleep", "/api/input/mouse?dx=2", "/api/input/keyboard?text=test"):
@@ -208,12 +209,39 @@ class APITests(unittest.TestCase):
         features = response.json()["features"]
         self.assertIn("deck", features)
         self.assertIn("presentation", features)
-        self.assertFalse(set(features) & {"streamDisplay", "secondScreen", "webcam"})
+        self.assertIn("webcam", features)
+        self.assertFalse(set(features) & {"streamDisplay", "secondScreen"})
 
     def test_driver_routes_fail_before_platform_operations(self):
-        for path in ("/api/webcam", "/api/stream/display"):
+        for path in ("/api/stream/display",):
             response = self.client.get(path, headers=self.headers)
             self.assertEqual(response.status_code, 501, response.text)
+
+    def test_linux_webcam_status_and_privileged_setup(self):
+        response = self.client.get("/api/webcam", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["backend"], "v4l2loopback")
+        self.assertTrue(response.json()["setupManagedExternally"])
+        self.assertEqual(self.client.get("/api/webcam").status_code, 401)
+        for operation in ("install", "uninstall"):
+            self.assertEqual(self.client.post(f"/api/webcam/{operation}", headers=self.headers).status_code, 501)
+
+    def test_linux_camera_socket_uses_shared_worker_and_cleans_up(self):
+        from concurrent.futures import Future
+        manager = Mock(connected=False)
+        ready = Future()
+        ready.set_result({})
+        manager.start_sender.return_value = ready
+        camera = self.agent.PLATFORM.webcam
+        with patch.object(camera, "manager", manager), patch.object(camera, "readiness", return_value=None):
+            with self.client.websocket_connect("wss://testserver/ws/camera", headers=self.headers) as socket:
+                socket.send_json({"width": 1280, "height": 720, "fps": 30})
+                self.assertTrue(socket.receive_json()["ready"])
+                socket.send_bytes(b"\xff\xd8\xff\xe0frame\xff\xd9")
+            manager.start_sender.assert_called_once()
+            sender = manager.start_sender.call_args.args[0]
+            manager.stop_sender.assert_called_once_with(sender)
+            manager.submit_frame.assert_called_once()
 
     def test_linux_files_keep_credentials_and_code_protected(self):
         import orbit_files

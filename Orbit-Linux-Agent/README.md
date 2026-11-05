@@ -36,7 +36,9 @@ Install desktop helpers through your distribution:
 - `pactl` (PulseAudio utilities, also works with PipeWire's PulseAudio server),
   `playerctl`, `xdg-open`, `gio`, `loginctl` and `systemctl`.
 - Wayland: `wl-clipboard`, `wtype` on virtual-keyboard-capable compositors such as
-  Hyprland/Sway, and `ydotool` with a configured `ydotoold` for pointer input.
+  Hyprland/Sway, and `grim` for native monitor preview/direct touch. Native pointer
+  input uses PyWayland and the compositor's wlr virtual-pointer protocol.
+  `ydotool` with a configured `ydotoold` is the fallback on other compositors.
 - X11: `xdotool` and `xclip`.
 - Screen preview: Qt Multimedia's FFmpeg backend, PipeWire and
   `xdg-desktop-portal` with the backend for your compositor, for example
@@ -64,6 +66,8 @@ For Hyprland, configure the compositor's portal and PipeWire normally, and enabl
 StatusNotifier tray (for example Waybar's `tray` module). GNOME needs a compatible
 tray extension; without a tray Orbit keeps a connection-details window available.
 
+Hyprland/Sway native pointer input does not need `ydotoold`, `/dev/uinput` access,
+or an input group. On compositors without the virtual-pointer protocol,
 `ydotoold` uses `/dev/uinput`. Configure the distribution's daemon with a socket that
 only your desktop user can access and set `YDOTOOL_SOCKET` in the session environment
 if necessary. On NixOS, `programs.ydotool.enable` and membership in its configured
@@ -94,18 +98,72 @@ directory. Removing the TLS identity requires pairing again.
 ### Remote input
 
 On Hyprland/Sway, Unicode text and shortcuts use `wtype`; pointer movement, clicks,
-drag and scroll use `ydotool`. GNOME/KDE default to `ydotool` for keys too because the
+drag and scroll use a persistent native Wayland virtual pointer. Orbit detects the
+protocol when input first arrives and falls back to `ydotool` if it is unavailable.
+A failed operation is never replayed through another backend. GNOME/KDE default to `ydotool` for keys too because the
 virtual-keyboard protocol is not universal. Set `ORBIT_KEYBOARD_BACKEND=wtype` or
 `ydotool` to override keyboard selection on another compositor. `ydotool` text typing
 uses the system's key mapping; use Clipboard for non-ASCII text when `wtype` is not
-supported. X11 uses `xdotool` for keyboard and pointer input.
+supported. Set `ORBIT_POINTER_BACKEND=wayland` to require native input or `ydotool`
+to force the fallback; the default is `auto`. X11 uses `xdotool` for keyboard and pointer input.
 
-The native Wayland preview supports **relative trackpad input**. Direct-touch
-absolute positioning is explicitly refused: the ScreenCast portal does not expose
-the selected monitor's global input coordinates, so guessing could click a different
-screen. Use Sunshine for integrated full-desktop streaming/direct-touch input.
+For **direct touch on Hyprland/Sway**, choose a monitor under **Screen preview
+source** in the tray, start preview on the phone, then approve the local screen
+sharing dialog. `grim` captures that named output and the virtual pointer binds to
+the same `wl_output`, including its scale, rotation and position. No desktop-wide
+coordinate guessing is used. Output binding needs virtual-pointer v2 and wl_output
+v4. Disconnecting the monitor stops capture and refuses subsequent direct-touch input.
+The monitor choice is session-only; each stream requires local approval.
+
+**Portal chooser** remains the default and supports relative trackpad input across
+desktops. Qt does not expose the portal's selected output identity, so direct touch
+is refused in this mode. Native capture/input availability depends on compositor
+protocol support. Use Sunshine for full-desktop streaming at higher frame rates.
 X11 direct touch maps to the primary screen captured by Qt. Held drag buttons are
 released when the input connection closes, sharing stops or Orbit exits.
+
+### Use the phone as a Linux webcam
+
+Orbit receives the same authenticated JPEG camera stream as the Windows companion
+and sends it to a designated `v4l2loopback` device through `pyvirtualcam`. This works
+independently of Wayland/X11. It never selects a physical webcam or automatically
+takes over another application's loopback camera.
+
+Install your distribution's v4l2loopback kernel module, then configure a device
+named **Orbit Camera**. For example, on Debian/Ubuntu with matching kernel headers:
+
+```sh
+sudo apt install v4l2loopback-dkms
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Orbit Camera" exclusive_caps=1
+```
+
+Choose an unused video number and ensure your desktop user has read/write access
+to the resulting `/dev/video10` through the distribution's ACL or `video` group.
+If the module is already in use, follow its device-management instructions instead
+of unloading cameras used by other apps. For an existing loopback device with a
+different name, set `ORBIT_WEBCAM_DEVICE=/dev/videoN` in Orbit's environment.
+
+On NixOS, the equivalent module configuration is:
+
+```nix
+boot.extraModulePackages = [ config.boot.kernelPackages.v4l2loopback ];
+boot.kernelModules = [ "v4l2loopback" ];
+boot.extraModprobeConfig = ''
+  options v4l2loopback devices=1 video_nr=10 card_label="Orbit Camera" exclusive_caps=1
+'';
+```
+
+Start **Webcam** on the phone, then select **Orbit Camera** in OBS, your browser or
+your conferencing app. With `exclusive_caps=1`, it appears as a capture device only
+after Orbit starts sending. Sandboxed apps may need camera permission. Only video
+is transmitted; keep using the PC microphone. Linux does not reliably report which
+app opened the virtual camera, so the phone displays streaming status instead.
+Stop the stream before changing its resolution in an app already using the camera.
+
+Kernel setup/removal stays in the local package manager. The phone does not offer
+the Windows driver installer on Linux. See
+[v4l2loopback setup](https://github.com/v4l2loopback/v4l2loopback) and
+[pyvirtualcam](https://github.com/letmaik/pyvirtualcam) for distro-specific details.
 
 ## Compatibility and remaining parity work
 
@@ -129,28 +187,33 @@ Implemented through the shared agent plus Linux adapters:
   estimates, summaries and push relay integration.
 - Native/Flatpak Steam library/download discovery and the existing Sunshine API.
 - Consent-mediated Qt screen preview on Wayland; native Qt capture on X11.
+- Native Wayland pointer input and consent-mediated named-monitor direct touch on
+  Hyprland/Sway-compatible compositors, with bounded JPEG preview.
+- Phone webcam through a locally configured v4l2loopback camera, with Linux-aware
+  setup and streaming messages in the phone UI.
 
 Remaining work before claiming full parity:
 
-- Linux virtual webcam (`v4l2loopback`) and automatic setup/removal. Windows Softcam
-  binaries are never downloaded or installed by the Linux app.
+- Automatic Linux webcam kernel-module setup/removal. Streaming itself is implemented;
+  Windows Softcam binaries are never downloaded or installed by the Linux app.
 - Compositor-specific virtual second screens, display mode changes, fill-screen display
-  management, HDR toggling and display restoration. `streamDisplay`, `secondScreen`
-  and `webcam` are not advertised as capabilities by this version.
+  management, HDR toggling and display restoration. `streamDisplay` and `secondScreen`
+  are not advertised as capabilities by this version.
 - PowerPoint COM slide notes/thumbnails/metadata (Linux currently provides keys only).
 - Linux foreground-game identification, per-process GPU counters and FPS sources such
   as MangoHud; Windows WDDM/RTSS/Afterburner cannot supply these on Linux.
 - Epic/GOG native Linux launcher adapters, pre-login service/handover, and a Linux-specific
   updater. The Windows source-archive updater is rejected; update using the installer
   or package manager.
-- Direct-touch Wayland input associated with the portal's selected screen, without a
-  separately configured Sunshine session.
+- Direct touch through the portal-selected screen on GNOME/KDE; use the native
+  monitor path on compatible compositors or Sunshine.
 
 ## Validation
 
 ```sh
 python3 -m pip install -r Orbit-Linux-Agent/requirements.txt httpx
 python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_linux.py -v
+python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_native.py -v
 QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_tray.py -v
 python3 -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py'
 ```
@@ -159,9 +222,13 @@ On NixOS, the packaged Python with native Qt is available via
 `nix-build Orbit-Linux-Agent/default.nix -A python`; use its `bin/python` for the
 headless tray tests. Tests never inject input, change volume/power, or capture the
 real desktop. Manual validation should cover pairing from iOS, portal approval and
-denial, relative input and drag release, Unicode clipboard, tray restart, and
-shutdown while a phone is connected on Hyprland, Plasma Wayland, GNOME Wayland and X11.
+denial, native monitor approval/denial, mixed-scale/rotated monitor direct touch,
+monitor hot-unplug, relative input and drag release, Unicode clipboard, tray restart,
+webcam frames in a real consumer, and shutdown while a phone is connected on Hyprland,
+Plasma Wayland, GNOME Wayland and X11. The iOS webcam contract test needs the Apple
+SDKs; it cannot be built on Linux.
 
 References: [Qt tray support](https://doc.qt.io/qt-6/qsystemtrayicon.html),
 [Qt ScreenCapture](https://doc.qt.io/qt-6/qscreencapture.html),
+[wlr virtual pointer](https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/blob/master/unstable/wlr-virtual-pointer-unstable-v1.xml),
 [ydotool](https://github.com/ReimuNotMoe/ydotool), [wtype](https://github.com/atx/wtype).

@@ -76,7 +76,7 @@ class Commands:
 
 
 class LinuxDesktop:
-    def __init__(self, commands=None, environment=None):
+    def __init__(self, commands=None, environment=None, pointer_factory=None):
         self.commands = commands or Commands()
         self.environment = os.environ if environment is None else environment
         self.wayland = bool(self.environment.get("WAYLAND_DISPLAY") or self.environment.get("XDG_SESSION_TYPE") == "wayland")
@@ -88,18 +88,39 @@ class LinuxDesktop:
         self.capture = None  # Attached by the Qt tray on its main thread.
         self._dragging = False
         self._stream_gate = threading.BoundedSemaphore(1)
+        from orbit_linux_pointer import WaylandPointer
+        self._pointer_factory = pointer_factory or WaylandPointer
+        self._pointer = None
+        self._pointer_unavailable = False
+        self.pointer_backend = self.environment.get("ORBIT_POINTER_BACKEND", "auto")
+        if self.pointer_backend not in {"auto", "wayland", "ydotool"}:
+            raise ValueError("ORBIT_POINTER_BACKEND must be auto, wayland, or ydotool.")
         from orbit_linux_apps import LinuxApps, LinuxPresentation
         self.apps = LinuxApps(self.environment)
         self.presentation = LinuxPresentation(self)
 
     def diagnostics(self):
         tools = ("pactl", "playerctl", "loginctl", "systemctl", "xdg-open", "gio", "sunshine")
-        desktop_tools = ("wl-copy", "wl-paste", "wtype", "ydotool") if self.wayland else ("xclip", "xdotool")
+        desktop_tools = ("wl-copy", "wl-paste", "wtype", "ydotool", "grim") if self.wayland else ("xclip", "xdotool")
         return {"session": "wayland" if self.wayland else "x11", "desktop": self.environment.get("XDG_CURRENT_DESKTOP", "unknown"),
                 "helpers": {name: self.commands.has(name) for name in tools + desktop_tools},
                 "capture": "XDG ScreenCast portal / PipeWire" if self.wayland else "Qt screen capture",
-                "absolutePointer": not self.wayland,
-                "inputNote": "Wayland pointer control requires a configured ydotoold socket; Unicode typing uses wtype where supported." if self.wayland else "X11 input requires xdotool."}
+                "absolutePointer": not self.wayland or bool(self._pointer and self._pointer.manager_version >= 2 and self.capture and getattr(self.capture, "output_name", None)),
+                "pointerBackend": ("wayland" if self._pointer else "ydotool" if self._pointer_unavailable else self.pointer_backend) if self.wayland else "xdotool",
+                "inputNote": "Native wlr virtual pointer where available; ydotoold fallback on other compositors. Direct touch requires a native screen selected in the tray." if self.wayland else "X11 input requires xdotool."}
+
+    def _native_pointer(self):
+        if self.pointer_backend == "ydotool" or self._pointer_unavailable:
+            return None
+        if self._pointer is None:
+            from orbit_linux_pointer import PointerUnavailable
+            try:
+                self._pointer = self._pointer_factory()
+            except PointerUnavailable as error:
+                if self.pointer_backend == "wayland":
+                    unavailable(str(error))
+                self._pointer_unavailable = True
+        return self._pointer
 
     def clipboard_read(self):
         args = ("wl-paste", "--no-newline", "--type", "text") if self.wayland else ("xclip", "-selection", "clipboard", "-o")
@@ -163,9 +184,23 @@ class LinuxDesktop:
             raise HTTPException(422, "Both normalized coordinates are required.")
         if norm_x is not None and not all(math.isfinite(v) and 0 <= v <= 1 for v in (norm_x, norm_y)):
             raise HTTPException(422, "Normalized coordinates must be between zero and one.")
-        if self.wayland and norm_x is not None:
-            raise HTTPException(501, "Wayland portals do not expose the selected monitor's global coordinates. Use the trackpad or Sunshine for direct-touch input.")
         with self.input_lock:
+            output = getattr(self.capture, "output_name", None) if self.capture else None
+            if self.wayland and norm_x is not None and not output:
+                raise HTTPException(501, "Choose a native screen preview in the Linux tray for direct touch, or use Sunshine. Portal capture supports trackpad input.")
+            pointer = self._native_pointer() if self.wayland else None
+            if pointer is not None:
+                try:
+                    pointer.cursor(dx, dy, click, scroll, hscroll, norm_x, norm_y, drag, output)
+                    self._dragging = (drag == "down") if drag else self._dragging
+                except Exception:
+                    pointer.close()
+                    self._pointer = None
+                    self._dragging = False
+                    unavailable("Native Wayland input stopped. Check that the shared screen is still connected and try again.")
+                return
+            if self.wayland and norm_x is not None:
+                raise HTTPException(501, "Direct touch needs compositor virtual-pointer support; use trackpad input or Sunshine.")
             if norm_x is not None:
                 if self.capture is None or self.capture.geometry is None:
                     raise HTTPException(409, "Start the screen preview before direct-touch input.")
@@ -195,6 +230,13 @@ class LinuxDesktop:
 
     def release_input(self):
         with self.input_lock:
+            if self._pointer is not None:
+                try:
+                    self._pointer.close()
+                finally:
+                    self._pointer = None
+                    self._dragging = False
+                return
             if self._dragging:
                 try:
                     self.cursor(drag="up")

@@ -341,6 +341,10 @@ struct WebcamView: View {
                         .font(.subheadline.weight(.semibold))
                     Text("Apps that use the camera keep it while Orbit reconnects.")
                         .font(.caption).foregroundStyle(.secondary)
+                } else if model.status?.connectionStatusAvailable == false {
+                    Text("Video is streaming to \(pcName)").font(.subheadline.weight(.semibold))
+                    Text("Choose \"\(model.cameraName)\" in your app's camera settings. This PC cannot report which apps are using the camera.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else if model.appConnected {
                     Text("An app on \(pcName) opened the camera").font(.subheadline.weight(.semibold))
                     Text("Your picture is live in apps that use \"\(model.cameraName)\".")
@@ -528,7 +532,9 @@ struct WebcamView: View {
             }
         }
 
-        if !status.isSetUp && !busy && !model.isDemo && !status.isUnsupportedPC {
+        if status.setupManagedExternally == true {
+            pcDetail("Set up or remove this camera on your Linux PC using the Orbit tray's Linux setup guide.", icon: "desktopcomputer", tint: .cyan)
+        } else if !status.isSetUp && !busy && !model.isDemo && !status.isUnsupportedPC {
             VStack(alignment: .leading, spacing: 8) {
                 Button {
                     confirmsSetup = true
@@ -694,7 +700,9 @@ struct WebcamView: View {
                     .accessibilityLabel("Labs feature")
             }
             FlowChips(items: ["Chrome", "Edge", "Teams", "Discord", "Zoom", "OBS"])
-            Text("Apps that use DirectShow cameras see your \(device) as \"\(model.cameraName)\". Choose it in the app's camera settings. The Windows Camera app and Microsoft Store apps can't see it. Video only: keep using the PC's microphone. Apps that were open during setup need a restart to find the camera.")
+            Text(model.status?.backend == "v4l2loopback"
+                 ? "Linux apps with camera access can use \"\(model.cameraName)\". Start streaming, then choose it in your app's camera settings. Sandboxed apps may need camera permission. Video only: keep using the PC's microphone."
+                 : "Apps that use DirectShow cameras see your \(device) as \"\(model.cameraName)\". Choose it in the app's camera settings. The Windows Camera app and Microsoft Store apps can't see it. Video only: keep using the PC's microphone. Apps that were open during setup need a restart to find the camera.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

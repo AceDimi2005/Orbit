@@ -1,10 +1,11 @@
 { pkgs ? import <nixpkgs> {} }:
 let
+  pyvirtualcam = import ./pyvirtualcam.nix { inherit pkgs; };
   python = pkgs.python3.withPackages (ps: with ps; [
     fastapi uvicorn websockets psutil mss pillow cryptography srptools zeroconf
-    pyside6 send2trash
-  ]);
-  helpers = with pkgs; [ pulseaudio playerctl wl-clipboard wtype ydotool xdotool xclip xdg-utils glib systemd ];
+    pyside6 send2trash pywayland
+  ] ++ [ pyvirtualcam ]);
+  helpers = with pkgs; [ pulseaudio playerctl wl-clipboard wtype ydotool grim xdotool xclip xdg-utils glib systemd ];
 in pkgs.stdenvNoCC.mkDerivation {
   pname = "orbit-linux-companion";
   version = "4.5.2";

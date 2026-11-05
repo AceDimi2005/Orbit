@@ -48,6 +48,7 @@ private struct OrbitWebcamTests {
 
         try decodesTheAgentStatus(fixtures)
         olderAndNewerAgentsStillDecode()
+        try decodesLinuxStatus()
         try parsesTheAgentMessages(fixtures)
         try writesTheHello(output)
         try announcesAFormatThePCTakes(fixtures)
@@ -66,6 +67,16 @@ private struct OrbitWebcamTests {
     }
 
     // MARK: PC JSON
+
+    static func decodesLinuxStatus() throws {
+        let data = Data(#"{"installed":true,"registered":true,"runtime":null,"backend":"v4l2loopback","setupManagedExternally":true,"connectionStatusAvailable":false,"cameraName":"Orbit Camera"}"#.utf8)
+        var linux = try JSONDecoder().decode(OrbitWebcamPCStatus.self, from: data)
+        expect(linux.isReady && !linux.isUnsupportedPC, "configured Linux webcam should be ready")
+        expect(linux.setupManagedExternally == true && linux.connectionStatusAvailable == false, "Linux capabilities should decode")
+        linux.installed = false
+        linux.reason = "Configure v4l2loopback on the PC."
+        expect(!linux.isReady && !linux.isUnsupportedPC, "missing Linux setup is not an unsupported PC")
+    }
 
     static func status(_ fixtures: URL, _ name: String) throws -> OrbitWebcamPCStatus {
         try JSONDecoder().decode(OrbitWebcamPCStatus.self, from: Data(contentsOf: fixtures.appendingPathComponent(name)))

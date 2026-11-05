@@ -1873,7 +1873,7 @@ def parse_hello(text):
 
 
 async def handle_camera_socket(websocket, *, authorized, manager, boot_mode=lambda: False, require_windows=None,
-                               readiness=None):
+                               readiness=None, camera_name=CAMERA_NAME):
     """`WS /ws/camera` (see the module docstring)."""
     if any(name.lower() in _TOKEN_QUERY_NAMES for name in websocket.query_params.keys()):
         await websocket.close(code=CLOSE_POLICY)  # Tokens never travel in URLs (logs, proxies).
@@ -2012,7 +2012,7 @@ async def handle_camera_socket(websocket, *, authorized, manager, boot_mode=lamb
     try:
         width, height, fps = camera_format
         if not await send_json({"ready": True, "width": width, "height": height, "fps": fps,
-                                "cameraName": CAMERA_NAME}):
+                                "cameraName": camera_name}):
             return
         status_task = asyncio.create_task(status_loop())
         try:
