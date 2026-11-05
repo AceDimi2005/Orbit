@@ -202,6 +202,11 @@ def _service_account(username):
 
 
 def _can_terminate(pid, name, username, status, protected_pids):
+    if os.getenv("ORBIT_PLATFORM") == "linux":
+        import pwd
+        protected = {"systemd", "hyprland", "sway", "gnome-shell", "kwin_wayland", "kwin_x11", "xorg", "xwayland", "dbus-daemon", "dbus-broker"}
+        if pid <= 1 or username != pwd.getpwuid(os.getuid()).pw_name or str(name).lower() in protected:
+            return False
     return (protected_pids is not None and pid not in protected_pids
             and isinstance(name, str) and bool(name.strip())
             and name.casefold() not in PROTECTED_NAMES

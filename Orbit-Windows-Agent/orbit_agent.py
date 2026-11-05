@@ -74,6 +74,13 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
+# Explicitly selected by the Linux entry point; Windows and existing test clients
+# keep their native backend, including when the Windows tests run on Linux.
+PLATFORM = None
+if os.getenv("ORBIT_PLATFORM") == "linux":
+    from orbit_linux_backend import LinuxDesktop
+    PLATFORM = LinuxDesktop()
+
 AGENT_VERSION = "4.5.2"
 set_agent_version(AGENT_VERSION)
 LOGGER = logging.getLogger("orbit")
@@ -177,6 +184,8 @@ def verify_token(authorization: str = Header(None)):
 
 
 def require_windows():
+    if PLATFORM is not None:
+        return
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="PC controls require Windows")
 
@@ -206,6 +215,8 @@ def endpoint_volume():
 
 
 def audio_metrics():
+    if PLATFORM is not None:
+        return PLATFORM.audio_metrics()
     try:
         with endpoint_volume() as volume:
             return {"volume": round(volume.GetMasterVolumeLevelScalar() * 100, 1),
@@ -231,7 +242,7 @@ def sensor_worker():
     global LAST_SENSOR
     while not STOP_EVENT.is_set():
         try:
-            sensors = sensor_metrics()
+            sensors = PLATFORM.sensor_metrics() if PLATFORM is not None else sensor_metrics()
             with STATE_LOCK:
                 # Sensor polling never overwrites newer NVIDIA readings.
                 STATE.update({key: sensors.get(key) for key in SENSOR_FIELDS + ("sensorSource", "sensorStatus")})
@@ -373,7 +384,7 @@ async def lifespan(application):
 app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(create_files_router(verify_token))
-app.include_router(create_desktop_router(verify_token))
+app.include_router(create_desktop_router(verify_token, backend=PLATFORM))
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER,
                                          detail_extras=orbit_energy.session_energy_extras))
 app.include_router(create_pairing_router(lambda: PAIRING_MANAGER))
@@ -582,6 +593,8 @@ def api_set_volume(level: int, authorization: str = Header(None)):
     require_windows()
     if not 0 <= level <= 100:
         raise HTTPException(status_code=422, detail="Volume must be between 0 and 100")
+    if PLATFORM is not None:
+        return PLATFORM.set_volume(level)
     try:
         with endpoint_volume() as volume:
             volume.SetMasterVolumeLevelScalar(level / 100, None)
@@ -608,6 +621,8 @@ def _apply_cursor_operation(dx: int = 0, dy: int = 0, click: str = "", scroll: i
         raise HTTPException(status_code=422, detail="Invalid mouse button or drag state")
     if max(abs(dx), abs(dy)) > 10000 or abs(scroll) > 100 or abs(hscroll) > 100:
         raise HTTPException(status_code=422, detail="Invalid mouse input range")
+    if PLATFORM is not None:
+        return PLATFORM.cursor(dx, dy, click, scroll, hscroll, norm_x, norm_y, drag)
     u32 = ctypes.windll.user32
     if norm_x is not None and norm_y is not None:
         if not (math.isfinite(norm_x) and math.isfinite(norm_y)):
@@ -668,7 +683,7 @@ async def websocket_input_stream(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    if os.name != "nt":
+    if os.name != "nt" and PLATFORM is None:
         await websocket.close(code=1011, reason="PC controls require Windows")
         return
     try:
@@ -691,18 +706,28 @@ async def websocket_input_stream(websocket: WebSocket):
             norm_x = payload.get("normX")
             norm_y = payload.get("normY")
             try:
-                _apply_cursor_operation(
+                arguments = dict(
                     dx=dx, dy=dy, click=click, scroll=scroll, hscroll=hscroll,
                     norm_x=float(norm_x) if norm_x is not None else None,
                     norm_y=float(norm_y) if norm_y is not None else None,
                     drag=drag,
                 )
+                if PLATFORM is not None:
+                    await asyncio.to_thread(_apply_cursor_operation, **arguments)
+                else:
+                    _apply_cursor_operation(**arguments)
             except HTTPException:
                 continue
     except WebSocketDisconnect:
         pass
     except Exception:
         LOGGER.exception("WebSocket input stream closed")
+    finally:
+        if PLATFORM is not None:
+            try:
+                await asyncio.to_thread(PLATFORM.release_input)
+            except HTTPException:
+                LOGGER.warning("Could not release Linux pointer button")
 
 
 @app.get("/api/watch/summary")
@@ -744,6 +769,11 @@ def keyboard_input(text: str = "", key: str = "", authorization: str = Header(No
     key_name = key.lower() if key else ""
     if (key_name and key_name not in orbit_input.KEY_NAMES) or len(text) > 1000:
         raise HTTPException(status_code=422, detail="Unsupported key or text too long")
+    if PLATFORM is not None:
+        if key_name:
+            PLATFORM.hotkey([key_name])
+        PLATFORM.type_text(text)
+        return {"status": "sent"}
     codes = _layout_key_codes(text)
     with orbit_input.INPUT_LOCK:
         if key_name:
@@ -781,6 +811,8 @@ def _type_key_codes(codes):
 def type_text(text):
     """Types text like /api/input/keyboard does (deck text buttons). Raises HTTPException."""
     require_windows()
+    if PLATFORM is not None:
+        return PLATFORM.type_text(text)
     _type_key_codes(_layout_key_codes(text))
 
 
@@ -797,7 +829,7 @@ def hotkey_input(body: HotkeyBody):
         raise HTTPException(status_code=422, detail=str(error)) from error
     require_windows()
     try:
-        orbit_input.press_chord(keys)
+        PLATFORM.hotkey(keys) if PLATFORM is not None else orbit_input.press_chord(keys)
     except OSError as error:
         raise HTTPException(status_code=503, detail=str(error) or "Windows did not accept the shortcut.") from error
     return {"status": "sent"}
@@ -821,7 +853,7 @@ def open_url_on_pc(body: OpenURLBody):
     if BOOT_MODE:
         raise HTTPException(status_code=409, detail="Sign in to Windows on the PC first. Links open on the signed-in desktop.")
     try:
-        orbit_links.open_url(url)
+        PLATFORM.open_target(url) if PLATFORM is not None else orbit_links.open_url(url)
     except OSError as error:
         raise HTTPException(status_code=503, detail=str(error) or "Windows could not open this link.") from error
     orbit_notify.notify("Opened a link from your iPhone", orbit_links.display_url(url))
@@ -844,6 +876,9 @@ def gamepad_input(button: str, authorization: str = Header(None)):
     keymap = {"A": 0x20, "B": 0x1B, "X": 0x45, "Y": 0x52, "UP": 0x57, "DOWN": 0x53, "LEFT": 0x41, "RIGHT": 0x44}
     if button.upper() not in keymap:
         raise HTTPException(status_code=422, detail="Unsupported gamepad button")
+    if PLATFORM is not None:
+        PLATFORM.hotkey([{"A": "space", "B": "esc", "X": "e", "Y": "r", "UP": "w", "DOWN": "s", "LEFT": "a", "RIGHT": "d"}[button.upper()]])
+        return {"status": "sent", "mode": "keyboard_mapping"}
     with orbit_input.INPUT_LOCK:
         tap_key(keymap[button.upper()])
     return {"status": "sent", "mode": "keyboard_mapping"}
@@ -902,6 +937,10 @@ def perform_action(action_name):
     if action_name not in ACTIONS:
         raise HTTPException(status_code=404, detail="Unknown PC action")
     require_windows()
+    if PLATFORM is not None:
+        if action_name in POWER_ACTIONS:
+            run_before_power_hooks(action_name)
+        return PLATFORM.action(action_name)
     u32 = ctypes.windll.user32
     # Key presses must not interleave with a shortcut being held by /api/input/hotkey.
     typing = action_name in KEYBOARD_ACTIONS
@@ -1031,7 +1070,7 @@ def start_notification_features():
 app.include_router(create_deck_router(
     verify_token, require_https, require_windows=lambda: require_windows(),
     perform_action=lambda name: perform_action(name), type_text=lambda text: type_text(text),
-    boot_mode=lambda: BOOT_MODE))
+    boot_mode=lambda: BOOT_MODE, platform=PLATFORM))
 
 
 def sunshine_entries():
@@ -1299,7 +1338,10 @@ def start_sunshine(authorization: str = Header(None)):
     if executable is None:
         raise HTTPException(status_code=404, detail="Sunshine is not installed in Program Files.")
     try:
-        subprocess.Popen([str(executable)], cwd=str(executable.parent), creationflags=0x08000000 | 0x00000008)
+        if PLATFORM is not None:
+            subprocess.Popen([str(executable)], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen([str(executable)], cwd=str(executable.parent), creationflags=0x08000000 | 0x00000008)
     except OSError as error:
         raise HTTPException(status_code=503, detail="Could not start Sunshine") from error
     return {"status": "starting"}
@@ -1326,7 +1368,7 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
             try:
                 # Only commands from the user's local Sunshine configuration are accepted.
                 subprocess.Popen(command, shell=True, cwd=entry.get("working-dir") or None,
-                                 creationflags=0x08000000)
+                                 creationflags=0x08000000 if os.name == "nt" else 0)
             except OSError as error:
                 raise HTTPException(status_code=503, detail="Could not start the configured application") from error
             return {"status": "launch_requested", "app": app}
@@ -1336,13 +1378,19 @@ def launch_sunshine_app(app: str, authorization: str = Header(None)):
 # Full-screen streaming and the virtual second screen (orbit_stream_display) change Sunshine's
 # display settings through its web API with the login saved above. Lambdas look the helpers up
 # at call time, so tests (and the pretend PC) can replace them.
+def require_native_windows():
+    if os.name != "nt":
+        raise HTTPException(501, "This feature uses a Windows-specific driver or COM API and is unavailable on Linux.")
+
+
 from orbit_stream_display import StreamDisplayService, SunshineWebAPI, create_stream_display_router
 
 STREAM_DISPLAY = StreamDisplayService(SunshineWebAPI(lambda: sunshine_credentials(), lambda: sunshine_base_port()),
                                       sunshine_base_port=lambda: sunshine_base_port(),
                                       desktop_available=lambda: not BOOT_MODE)
 app.include_router(create_stream_display_router(verify_token, require_https, STREAM_DISPLAY,
-                                                require_windows=lambda: require_windows()))
+                                                require_windows=lambda: require_native_windows() if PLATFORM is not None else require_windows()),
+                   dependencies=[Depends(require_native_windows)] if PLATFORM is not None else [])
 register_feature("streamDisplay")
 register_feature("secondScreen")
 
@@ -1353,6 +1401,9 @@ async def websocket_video_stream(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    if PLATFORM is not None:
+        await PLATFORM.stream(websocket)
+        return
     if not HAS_SCREEN_CAPTURE:
         await websocket.close(code=1011, reason="Screen capture dependencies are unavailable")
         return
@@ -1384,13 +1435,22 @@ async def websocket_video_stream(websocket: WebSocket):
 import orbit_presentation  # noqa: E402  (kept next to its wiring)
 
 app.include_router(orbit_presentation.create_presentation_router(
-    verify_token, require_https, require_windows, boot_mode=lambda: BOOT_MODE))
+    verify_token, require_https, require_windows, boot_mode=lambda: BOOT_MODE,
+    controller=PLATFORM.presentation if PLATFORM is not None else None))
 register_feature("presentation")
 
 # iPhone as a webcam: GET /api/webcam, POST /api/webcam/install, WS /ws/camera (orbit_webcam.py).
-app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_windows, authorized,
+app.include_router(orbit_webcam.create_webcam_router(verify_token, require_https, require_native_windows if PLATFORM is not None else require_windows, authorized,
                                                      boot_mode=lambda: BOOT_MODE))
 register_feature("webcam")
+if PLATFORM is not None:
+    from orbit_capabilities import unregister_feature
+    for feature in ("streamDisplay", "secondScreen", "webcam"):
+        unregister_feature(feature)
+
+    @app.get("/api/linux/desktop", dependencies=[Depends(verify_token), Depends(require_https)])
+    def linux_desktop_details():
+        return PLATFORM.diagnostics()
 
 
 @app.post("/api/internal/handover")
@@ -1439,6 +1499,8 @@ def takeover_running_instance(token, port=None, timeout=20.0):
 @app.get("/api/update/check")
 def api_check_for_updates(authorization: str = Header(None)):
     verify_token(authorization)
+    if PLATFORM is not None:
+        raise HTTPException(501, "Update the Linux companion with its installer or package manager; Windows update archives are not compatible.")
     from orbit_updater import check_for_updates
     try:
         return check_for_updates(AGENT_VERSION)
@@ -1449,6 +1511,8 @@ def api_check_for_updates(authorization: str = Header(None)):
 @app.post("/api/update/apply")
 def api_apply_update(authorization: str = Header(None)):
     verify_token(authorization)
+    if PLATFORM is not None:
+        raise HTTPException(501, "Update the Linux companion with its installer or package manager; Windows update archives are not compatible.")
     from orbit_updater import check_for_updates, download_and_apply_update
     try:
         info = check_for_updates(AGENT_VERSION)

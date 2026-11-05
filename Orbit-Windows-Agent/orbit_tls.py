@@ -14,7 +14,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
 def data_directory():
-    base = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share"))
+    base = Path(os.getenv("LOCALAPPDATA") or os.getenv("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
     return base / "Orbit"
 
 

@@ -1,5 +1,7 @@
 # Orbit — PC companion
 
+**Linux companion (Wayland / X11, port in progress):** see [installation, desktop support and remaining parity work](Orbit-Linux-Agent/README.md).
+
 <p align="center">
   <a href="https://apps.apple.com/app/id6823919198"><img src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" alt="Download on the App Store" height="54"></a>
 </p>
