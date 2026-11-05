@@ -51,7 +51,7 @@ struct MacSecondScreenCard: View {
                             MacStatusPill(text: "On", tint: leftOn ? .orange : .mint)
                         }
                     }
-                    Text("Use this Mac as an extra display for \(pcName): Windows gets a new monitor next to its own, shown here in full screen.")
+                    Text("Use this Mac as an extra display for \(pcName): Your PC gets a new monitor next to its own, shown here in full screen.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -248,7 +248,7 @@ struct MacSecondScreenSheet: View {
                     Text("This Mac as a display for \(pcName)").font(.headline).lineLimit(1)
                     MacStatusPill(text: statusText.text, tint: statusText.tint, pulsing: session.isBusy || session.isStreaming)
                 }
-                Text("Windows sees a new monitor next to its own. Orbit streams it here in full screen, with the mouse and keyboard captured as in any stream.")
+                Text("Your PC sees a new monitor next to its own. Orbit streams it here in full screen, with the mouse and keyboard captured as in any stream.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -274,7 +274,7 @@ struct MacSecondScreenSheet: View {
                 MacIconBadge(systemName: "textformat.size", tint: .cyan, size: 30)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Text too small?").font(.subheadline.weight(.semibold))
-                    Text(OrbitSecondScreenScaleTip.message(device: "this Mac"))
+                    Text(OrbitSecondScreenScaleTip.message(device: "this Mac", isLinux: status?.isLinux == true))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -436,7 +436,7 @@ struct MacSecondScreenSheet: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("This Mac sits to the \(position.rawValue) of \(pcName)'s main monitor")
 
-            Text("Windows puts the virtual display to the \(position.rawValue) of its main monitor: move the PC's mouse past that edge to reach it. You can change the side while it's on.")
+            Text("Orbit puts the virtual display to the \(position.rawValue) of its main monitor: move the PC's mouse past that edge to reach it. You can change the side while it's on.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Size: \(target.size.description) at \(refreshRate) Hz, the full-screen area of the display in front.")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -481,7 +481,7 @@ struct MacSecondScreenSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             switch session.phase {
             case .preparing(let text) where sessionIsHere:
-                OrbitDisplayWorkRow(title: text, waitsForPrompt: status?.lists(target.size.displaySize, refreshRate: refreshRate) != true,
+                OrbitDisplayWorkRow(title: text, waitsForPrompt: status?.isLinux != true && status?.lists(target.size.displaySize, refreshRate: refreshRate) != true,
                                     detail: "Then Sunshine restarts on the PC to use it. This can take up to a minute.")
             case .waitingForSunshine where sessionIsHere:
                 OrbitDisplayWorkRow(title: "Waiting for Sunshine to restart…", detail: "The Stream window opens as soon as Sunshine answers again.")
@@ -521,9 +521,9 @@ struct MacSecondScreenSheet: View {
 
     private var howItWorks: some View {
         VStack(alignment: .leading, spacing: 8) {
-            bullet("display.2", "Orbit adds a virtual display (the free Virtual Display Driver) at this display's size and has Sunshine stream it, so it fills the screen.")
+            bullet("display.2", status?.isLinux == true ? "Orbit creates a Hyprland virtual display at this display's size and has Sunshine stream it in SDR." : "Orbit adds a virtual display (the free Virtual Display Driver) at this display's size and has Sunshine stream it, so it fills the screen.")
             bullet("speaker.wave.2", "Sound keeps playing on \(pcName), as with any other monitor; this Mac stays quiet.")
-            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this Mac"))
+            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this Mac", isLinux: status?.isLinux == true))
             bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then \(status?.fill.enabled == true ? "fill the screen again, as Fill Screen is on" : "show the main monitor again").")
             bullet("flask", canUndo
                    ? "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, Undo Orbit's Changes below puts Sunshine's display settings back."

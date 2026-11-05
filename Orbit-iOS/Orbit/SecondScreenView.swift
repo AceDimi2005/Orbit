@@ -136,7 +136,7 @@ struct SecondScreenView: View {
                 }
                 Spacer(minLength: 0)
             }
-            Text("Use this \(deviceName) as an extra monitor for \(pcName). Windows sees a new display next to your main one: drag windows onto it and use them with touch.")
+            Text("Use this \(deviceName) as an extra monitor for \(pcName). Your PC sees a new display next to your main one: drag windows onto it and use them with touch.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -189,7 +189,7 @@ struct SecondScreenView: View {
                 OrbitIconBadge(systemName: "textformat.size", tint: .cyan, size: 34)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Text too small?").font(.subheadline.weight(.semibold))
-                    Text(OrbitSecondScreenScaleTip.message(device: "this \(deviceName)"))
+                    Text(OrbitSecondScreenScaleTip.message(device: "this \(deviceName)", isLinux: status?.isLinux == true))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button("Got It") { scaleTipDismissed = true }
                         .font(.caption.weight(.semibold))
@@ -346,7 +346,7 @@ struct SecondScreenView: View {
             arrangementDiagram
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Windows puts the virtual display to the \(position.rawValue) of your main monitor: move the mouse past that edge to reach it.")
+                Text("Orbit puts the virtual display to the \(position.rawValue) of your monitors: move the mouse past that edge to reach it.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text("Size: \(target.size.description) at \(refreshRate) Hz, every pixel of this \(deviceName).")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -395,7 +395,7 @@ struct SecondScreenView: View {
         VStack(alignment: .leading, spacing: 12) {
             switch session.phase {
             case .preparing(let message) where sessionIsHere:
-                OrbitDisplayWorkRow(title: message, waitsForPrompt: status?.lists(target.size.displaySize, refreshRate: refreshRate) != true,
+                OrbitDisplayWorkRow(title: message, waitsForPrompt: status?.isLinux != true && status?.lists(target.size.displaySize, refreshRate: refreshRate) != true,
                                     detail: "Then Sunshine restarts on the PC to use it. This can take up to a minute.")
             case .waitingForSunshine where sessionIsHere:
                 OrbitDisplayWorkRow(title: "Waiting for Sunshine to restart…", detail: "The stream opens as soon as Sunshine answers again.")
@@ -432,11 +432,11 @@ struct SecondScreenView: View {
 
     private var howItWorksCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            bullet("display.2", "Orbit adds a virtual display (the free Virtual Display Driver) at this \(deviceName)'s exact size and has Sunshine stream it, so it fills the screen.")
+            bullet("display.2", status?.isLinux == true ? "Orbit creates a Hyprland virtual display at this \(deviceName)'s exact size and has Sunshine stream it in SDR." : "Orbit adds a virtual display (the free Virtual Display Driver) at this \(deviceName)'s exact size and has Sunshine stream it, so it fills the screen.")
             bullet("hand.tap", "Touch works directly: tap to click and drag to move windows. A three-finger tap shows the stream controls.")
-            bullet("rectangle.landscape.rotate", "Hold this \(deviceName) in landscape: Windows sees it as a landscape monitor.")
+            bullet("rectangle.landscape.rotate", "Hold this \(deviceName) in landscape: the PC sees it as a landscape monitor.")
             bullet("speaker.wave.2", "Sound keeps playing on \(pcName), as with any other monitor; this \(deviceName) stays quiet.")
-            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this \(deviceName)"))
+            bullet("textformat.size", OrbitSecondScreenScaleTip.message(device: "this \(deviceName)", isLinux: status?.isLinux == true))
             bullet("stop.circle", "Ending the stream turns the virtual display off and puts Sunshine's settings back. Normal streams then \(status?.fill.enabled == true ? "fill the screen again, as Fill Screen is on" : "show the main monitor again").")
             bullet("flask", canUndo
                    ? "Labs: this relies on the driver and on Sunshine switching displays, which can behave differently on some PCs. If something looks wrong, Undo Orbit's Changes below puts Sunshine's display settings back."

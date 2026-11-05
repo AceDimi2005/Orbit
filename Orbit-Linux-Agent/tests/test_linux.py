@@ -159,6 +159,7 @@ class APITests(unittest.TestCase):
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory()
         cls.environment = patch.dict(os.environ, {"ORBIT_PLATFORM": "linux", "LOCALAPPDATA": cls.directory.name,
+                                                  "HYPRLAND_INSTANCE_SIGNATURE": "",
                                                   "ORBIT_TOKEN_FILE": cls.directory.name + "/token", "ORBIT_WIDGET_TOKEN_FILE": cls.directory.name + "/widget"})
         cls.environment.start()
         import orbit_agent
@@ -180,6 +181,9 @@ class APITests(unittest.TestCase):
         self.agent.PLATFORM.use_wtype = True
         self.agent.PLATFORM.wayland = True
         self.agent.PLATFORM.pointer_backend = "ydotool"
+        self.agent.STREAM_DISPLAY.platform.commands = self.helpers
+        from orbit_stream_display import SunshineActivity
+        self.agent.STREAM_DISPLAY.activity = lambda: SunshineActivity()
 
     def test_controls_require_main_token(self):
         for path in ("/api/action/sleep", "/api/input/mouse?dx=2", "/api/input/keyboard?text=test"):
@@ -213,9 +217,11 @@ class APITests(unittest.TestCase):
         self.assertFalse(set(features) & {"streamDisplay", "secondScreen"})
 
     def test_driver_routes_fail_before_platform_operations(self):
-        for path in ("/api/stream/display",):
-            response = self.client.get(path, headers=self.headers)
-            self.assertEqual(response.status_code, 501, response.text)
+        response = self.client.get("/api/stream/display", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["virtualDisplay"]["installed"])
+        response = self.client.post("/api/stream/display/modes", json={"width": 1280, "height": 720}, headers=self.headers)
+        self.assertEqual(response.status_code, 501, response.text)
 
     def test_linux_webcam_status_and_privileged_setup(self):
         response = self.client.get("/api/webcam", headers=self.headers)

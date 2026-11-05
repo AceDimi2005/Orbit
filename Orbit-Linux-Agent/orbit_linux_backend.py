@@ -101,7 +101,7 @@ class LinuxDesktop:
 
     def diagnostics(self):
         tools = ("pactl", "playerctl", "loginctl", "systemctl", "xdg-open", "gio", "sunshine")
-        desktop_tools = ("wl-copy", "wl-paste", "wtype", "ydotool", "grim") if self.wayland else ("xclip", "xdotool")
+        desktop_tools = ("wl-copy", "wl-paste", "wtype", "ydotool", "grim", "hyprctl") if self.wayland else ("xclip", "xdotool")
         return {"session": "wayland" if self.wayland else "x11", "desktop": self.environment.get("XDG_CURRENT_DESKTOP", "unknown"),
                 "helpers": {name: self.commands.has(name) for name in tools + desktop_tools},
                 "capture": "XDG ScreenCast portal / PipeWire" if self.wayland else "Qt screen capture",
@@ -311,6 +311,12 @@ class LinuxDesktop:
             return {"status": "ok", "session": self._audio_session(identity)}
 
     def action(self, name):
+        if name == "restore_display" and getattr(self, "displays", None) is not None:
+            from orbit_stream_display import DisplaySetupError
+            try:
+                return {"status": "ok", **self.displays.revert()}
+            except DisplaySetupError as error:
+                raise HTTPException(error.status, error.detail) from error
         if name in {"sleep", "restart", "shutdown"}:
             self.commands.run("systemctl", "--no-ask-password", {"sleep": "suspend", "restart": "reboot", "shutdown": "poweroff"}[name])
         elif name == "lock":

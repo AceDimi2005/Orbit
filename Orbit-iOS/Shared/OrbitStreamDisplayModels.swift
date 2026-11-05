@@ -181,7 +181,7 @@ final class OrbitFillScreenSetupModel: ObservableObject {
         if status.sunshineStopped { return "Start Sunshine on the PC first." }
         if status.loginRejected { return "Save the Sunshine login again first: Sunshine didn't accept it." }
         if status.sunshineSupported == false { return "Update Sunshine on the PC first." }
-        if !status.driverUsable { return "Install the Virtual Display Driver on the PC first." }
+        if !status.driverUsable { return status.driverBlocker ?? "Set up virtual displays on the PC first." }
         return nil
     }
 

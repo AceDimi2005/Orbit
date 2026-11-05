@@ -1385,12 +1385,18 @@ def require_native_windows():
 
 from orbit_stream_display import StreamDisplayService, SunshineWebAPI, create_stream_display_router
 
-STREAM_DISPLAY = StreamDisplayService(SunshineWebAPI(lambda: sunshine_credentials(), lambda: sunshine_base_port()),
-                                      sunshine_base_port=lambda: sunshine_base_port(),
-                                      desktop_available=lambda: not BOOT_MODE)
-app.include_router(create_stream_display_router(verify_token, require_https, STREAM_DISPLAY,
-                                                require_windows=lambda: require_native_windows() if PLATFORM is not None else require_windows()),
-                   dependencies=[Depends(require_native_windows)] if PLATFORM is not None else [])
+if PLATFORM is not None:
+    from orbit_linux_display import HyprlandDisplays, LinuxStreamDisplayService
+    from orbit_stream_display import sunshine_activity
+    display_sunshine = SunshineWebAPI(lambda: sunshine_credentials(), lambda: sunshine_base_port())
+    STREAM_DISPLAY = LinuxStreamDisplayService(display_sunshine, HyprlandDisplays(PLATFORM.commands, PLATFORM.environment),
+                                              activity=lambda: sunshine_activity(sunshine_base_port(), server_info=display_sunshine.server_info))
+    PLATFORM.displays = STREAM_DISPLAY
+else:
+    STREAM_DISPLAY = StreamDisplayService(SunshineWebAPI(lambda: sunshine_credentials(), lambda: sunshine_base_port()),
+                                          sunshine_base_port=lambda: sunshine_base_port(),
+                                          desktop_available=lambda: not BOOT_MODE)
+app.include_router(create_stream_display_router(verify_token, require_https, STREAM_DISPLAY, require_windows=require_windows))
 register_feature("streamDisplay")
 register_feature("secondScreen")
 
@@ -1450,8 +1456,9 @@ else:
 register_feature("webcam")
 if PLATFORM is not None:
     from orbit_capabilities import unregister_feature
-    for feature in ("streamDisplay", "secondScreen"):
-        unregister_feature(feature)
+    if not STREAM_DISPLAY.platform.supported:
+        for feature in ("streamDisplay", "secondScreen"):
+            unregister_feature(feature)
 
     @app.get("/api/linux/desktop", dependencies=[Depends(verify_token), Depends(require_https)])
     def linux_desktop_details():

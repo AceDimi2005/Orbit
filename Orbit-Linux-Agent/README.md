@@ -6,11 +6,11 @@ primary target; KDE Plasma, GNOME and other desktops use the same standard tray,
 ScreenCast portal and PipeWire interfaces where available.
 
 **This is a Linux port in progress, not full Windows feature parity.** The core API,
-tray, remote preview and input backends are implemented. The compatibility list
-below identifies the remaining platform-specific work. Automated tests use mocked
-system commands and synthetic Qt frames; real compositor/phone validation is still
-required. Do not interpret a helper being installed as proof that the compositor
-has granted permission to use it.
+tray, remote preview/input, webcam and Hyprland virtual displays are implemented.
+Hyprland 0.57 virtual output creation, mode changes, capture and restoration have
+been exercised with disposable headless outputs. Full phone interoperability and
+the other desktops still need validation. The compatibility list below identifies
+the remaining work. Helper availability does not imply compositor permission.
 
 ## Install
 
@@ -28,7 +28,8 @@ launcher pointing at this checkout. Keep the checkout in place. Re-run the insta
 after updating the checkout. It does not alter system services, load kernel modules,
 open firewall ports, or enable startup automatically. Use **Start at login** in the
 tray to write an XDG autostart entry. For compositors that do not process XDG autostart,
-start the launcher in the compositor config (Hyprland: `exec-once = orbit-companion`).
+start the launcher in the compositor config (Hyprland's legacy syntax:
+`exec-once = orbit-companion`; use the equivalent startup action with Lua config).
 Use one startup mechanism, not both.
 
 Install desktop helpers through your distribution:
@@ -165,6 +166,49 @@ the Windows driver installer on Linux. See
 [v4l2loopback setup](https://github.com/v4l2loopback/v4l2loopback) and
 [pyvirtualcam](https://github.com/letmaik/pyvirtualcam) for distro-specific details.
 
+### Hyprland Fill Screen and Second Screen
+
+Start Orbit and Sunshine inside the same graphical login session. Keep the
+session's matching `hyprctl` on Orbit's PATH. In the phone app, save the Sunshine
+login and use **Fill Screen → Set Up This PC**, or start **Second Screen**.
+No virtual-display kernel driver or administrator prompt is needed.
+
+Orbit creates a randomly named `ORBIT-…` headless output, sets its resolution and
+refresh rate, and places it to the left or right of the desktop. Placement accounts
+for existing monitor scale, rotation and negative coordinates. It uses the legacy
+Hyprland monitor API or the active Lua API on newer releases. Runtime changes do
+not edit your compositor config. A compositor config reload can reset the output;
+Orbit reports the actual mode and reapplies the requested mode at stream startup.
+
+Sunshine uses `capture=wlr` and the output's stable name. Orbit preserves the previous
+capture settings and appends its own startup/exit commands to `global_prep_cmd`,
+retaining existing commands. The startup hook sizes the output to the client's
+requested resolution/FPS before Sunshine starts capture. Fill Screen focuses the
+virtual output so new apps open there; existing windows can be moved onto it.
+Second Screen leaves the physical screens available and never puts them to sleep.
+
+**Turn off the PC's monitor** uses DPMS while the Sunshine app runs. It records each
+monitor before putting it to sleep and wakes only those monitors afterward. Sunshine
+runs the exit hook when its app quits, so disconnecting while leaving the app running
+does not immediately restore the screens. **Restore displays and Sunshine settings**
+in the Orbit tray wakes them even during an active session; quit the Sunshine app
+before restoring its capture configuration. Orbit also wakes monitors when it exits.
+
+A private `linux-display.json` journal and cross-process lock cover the companion
+and Sunshine hooks. Interrupted changes can be restored from the tray or recovered
+when Orbit next starts while Sunshine is idle. Restoration removes only Orbit's
+recorded output in the same compositor session and only settings still equal to the
+values Orbit applied. User edits and unrelated preparation commands are retained.
+Do not delete the journal before restoring displays. Keep the launcher/check-out
+available while these hooks are configured.
+
+**Virtual-display streaming is SDR.** Sunshine's wlr capture path does not supply
+HDR video. The phone shows this limitation, and the startup hook rejects an HDR
+request before changing monitor power. Disable HDR in Stream Settings. Orbit does
+not change the HDR/color settings of your physical monitors. Other compositors
+retain remote preview/input and Sunshine streaming but do not advertise automatic
+virtual display management.
+
 ## Compatibility and remaining parity work
 
 Implemented through the shared agent plus Linux adapters:
@@ -191,14 +235,16 @@ Implemented through the shared agent plus Linux adapters:
   Hyprland/Sway-compatible compositors, with bounded JPEG preview.
 - Phone webcam through a locally configured v4l2loopback camera, with Linux-aware
   setup and streaming messages in the phone UI.
+- Hyprland virtual Second Screen, phone-sized Fill Screen, startup mode changes,
+  optional physical-monitor sleep and journaled restoration of displays/Sunshine.
 
 Remaining work before claiming full parity:
 
 - Automatic Linux webcam kernel-module setup/removal. Streaming itself is implemented;
   Windows Softcam binaries are never downloaded or installed by the Linux app.
-- Compositor-specific virtual second screens, display mode changes, fill-screen display
-  management, HDR toggling and display restoration. `streamDisplay` and `secondScreen`
-  are not advertised as capabilities by this version.
+- Virtual second screens and display management outside Hyprland; HDR streaming and
+  physical-monitor HDR controls. `streamDisplay` and `secondScreen` are advertised
+  only in a Hyprland session with `hyprctl` available.
 - PowerPoint COM slide notes/thumbnails/metadata (Linux currently provides keys only).
 - Linux foreground-game identification, per-process GPU counters and FPS sources such
   as MangoHud; Windows WDDM/RTSS/Afterburner cannot supply these on Linux.
@@ -213,22 +259,38 @@ Remaining work before claiming full parity:
 ```sh
 python3 -m pip install -r Orbit-Linux-Agent/requirements.txt httpx
 python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_linux.py -v
+python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_display.py -v
 python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_native.py -v
 QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s Orbit-Linux-Agent/tests -p test_tray.py -v
 python3 -m unittest discover -s Orbit-Windows-Agent -p 'test_*.py'
+# With swiftc installed: Linux service JSON against the production Swift model.
+python3 Orbit-Linux-Agent/tests/check_swift_display.py
+# Optional live compositor check: creates/captures/removes disposable headless outputs.
+python3 Orbit-Linux-Agent/tests/integration_hyprland.py --run
 ```
 
 On NixOS, the packaged Python with native Qt is available via
 `nix-build Orbit-Linux-Agent/default.nix -A python`; use its `bin/python` for the
-headless tray tests. Tests never inject input, change volume/power, or capture the
-real desktop. Manual validation should cover pairing from iOS, portal approval and
+headless tray tests. For the Swift contract check, use
+`nix-shell -p swift --run 'python3 Orbit-Linux-Agent/tests/check_swift_display.py'`.
+Unit tests never inject input, change volume/power, or capture the real desktop.
+The opt-in Hyprland integration test changes only its disposable outputs, uses a
+fake Sunshine service, and verifies existing monitor geometry/power/color settings
+are unchanged. It passed on Hyprland 0.57; legacy and transitional APIs have mocked
+contract coverage. Manual validation should cover pairing from iOS, portal approval and
 denial, native monitor approval/denial, mixed-scale/rotated monitor direct touch,
 monitor hot-unplug, relative input and drag release, Unicode clipboard, tray restart,
 webcam frames in a real consumer, and shutdown while a phone is connected on Hyprland,
-Plasma Wayland, GNOME Wayland and X11. The iOS webcam contract test needs the Apple
-SDKs; it cannot be built on Linux.
+Plasma Wayland, GNOME Wayland and X11. Also verify actual Sunshine startup/exit hooks,
+phone-sized streams, display recovery after a forced exit and the opt-in DPMS option.
+The Swift display model can be tested on Linux; full iOS UI, pinned networking,
+webcam tests and app builds still need the Apple SDKs.
 
 References: [Qt tray support](https://doc.qt.io/qt-6/qsystemtrayicon.html),
 [Qt ScreenCapture](https://doc.qt.io/qt-6/qscreencapture.html),
 [wlr virtual pointer](https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/blob/master/unstable/wlr-virtual-pointer-unstable-v1.xml),
 [ydotool](https://github.com/ReimuNotMoe/ydotool), [wtype](https://github.com/atx/wtype).
+Display references: [Hyprland outputs](https://wiki.hypr.land/Configuring/Advanced-and-Cool/Using-hyprctl/),
+[Hyprland monitor rules](https://wiki.hypr.land/configuring/core/monitors/),
+[Hyprland dispatchers](https://wiki.hypr.land/configuring/core/dispatchers/),
+[Sunshine capture configuration](https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2configuration.html).

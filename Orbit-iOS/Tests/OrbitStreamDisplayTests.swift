@@ -61,6 +61,19 @@ struct OrbitStreamDisplayChecks {
     static func unitChecks() {
         let phone = OrbitDisplaySize(width: 2556, height: 1178)
 
+        var linux = ready(listing: [phone.key])
+        linux.backend = "hyprland"
+        linux.virtualDisplay.driver = "hyprland"
+        linux.virtualDisplay.deviceId = "ORBIT-0123456789abcdef"
+        linux.fill.enabled = true
+        linux.config.outputName = linux.virtualDisplay.deviceId
+        linux.hdrSupported = false
+        expect(linux.driverUsable && linux.fillsScreen(size: phone) && !linux.offersInstallCommand, "Hyprland supports Fill Screen without a Windows driver")
+        expect(linux.fillChecks(size: phone).allSatisfy { $0.state == .done }, "Hyprland passes all Fill Screen checks")
+        linux.virtualDisplay.installed = false
+        linux.reason = "Virtual display management currently requires Hyprland."
+        expect(linux.driverBlocker == linux.reason && !linux.offersInstallCommand, "an unsupported Linux desktop gets compositor guidance")
+
         // Decoding never fails on missing or odd fields (older and newer agents).
         let empty = decode("{}")
         expect(empty != nil, "an empty object decodes")
@@ -295,7 +308,7 @@ struct OrbitStreamDisplayChecks {
         expect(conflict.title == "Not possible right now" && conflict.message == "Someone is streaming from this PC right now.", "409 keeps the PC's sentence")
         expect(OrbitStreamDisplayErrors.describe(OrbitError(message: "x", statusCode: 428)).title == "Sunshine login needed", "428")
         expect(OrbitStreamDisplayErrors.describe(OrbitError(message: "x", statusCode: 502)).title == "Sunshine didn't answer", "502")
-        expect(OrbitStreamDisplayErrors.describe(OrbitError(message: "x", statusCode: 503)).title == "Windows refused a step", "503")
+        expect(OrbitStreamDisplayErrors.describe(OrbitError(message: "x", statusCode: 503)).title == "The PC refused a step", "503")
         let older = OrbitStreamDisplayErrors.describe(OrbitError(message: "Not Found", statusCode: 404))
         expect(older.title == "Update Orbit PC Companion" && older.message.hasSuffix(OrbitStreamDisplayErrors.updateHint), "404")
         #if os(macOS)

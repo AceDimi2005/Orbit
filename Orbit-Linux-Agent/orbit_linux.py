@@ -90,6 +90,7 @@ def main():
     parser.add_argument("--doctor", action="store_true", help="Report desktop helper availability without starting the server")
     parser.add_argument("--enable-startup", action="store_true")
     parser.add_argument("--disable-startup", action="store_true")
+    parser.add_argument("--display-hook", choices=("start", "stop"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if sys.platform != "linux":
         parser.error("Use this entry point on Linux.")
@@ -99,6 +100,15 @@ def main():
         Startup().set_enabled(args.enable_startup)
         return
     directory = prepare_environment()
+    if args.display_hook:
+        from orbit_linux_backend import Commands
+        from orbit_linux_display import HyprlandDisplays, LinuxStreamDisplayService
+        from orbit_stream_display import DisplaySetupError
+        try:
+            LinuxStreamDisplayService(None, HyprlandDisplays(Commands())).stream_hook(args.display_hook == "start")
+        except DisplaySetupError as error:
+            parser.exit(1, error.detail + "\n")
+        return
     import orbit_agent as agent
     configure_sunshine(agent)
     if args.doctor:
@@ -115,6 +125,11 @@ def main():
     log_path = directory / "agent.log"
     handler = RotatingFileHandler(log_path, maxBytes=2 * 1024 * 1024, backupCount=2)
     logging.basicConfig(level=logging.INFO, handlers=[handler], format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if agent.STREAM_DISPLAY.state():
+        try:
+            agent.STREAM_DISPLAY.close()
+        except Exception:
+            logging.getLogger("orbit").exception("An interrupted display session needs Restore displays from the tray")
     # Private credentials are generated before any listener starts, and never logged.
     from orbit_tls import ensure_tls_identity
     certificate, key, fingerprint = ensure_tls_identity(directory / "tls")
@@ -168,6 +183,10 @@ def main():
         tray.close()
         worker.join(15)
         agent.PLATFORM.webcam.manager.close()
+        try:
+            agent.STREAM_DISPLAY.close()
+        except Exception:
+            logging.getLogger("orbit").exception("Display restoration will be retried from the recovery journal")
         agent.PAIRING_MANAGER.close()
         agent.orbit_notify.set_notifier(None)
         try:

@@ -346,12 +346,18 @@ struct MoonlightFillScreenSetupView: View {
                     actionsSection(status)
                     optionsSection(status)
                     advancedSection(status)
-                    Section {
-                        DisclosureGroup("Set it up by hand") {
-                            MoonlightFillScreenManualSteps(size: size, optimizeGameSettings: optimizeGameSettings, accent: accent)
+                    if status.isLinux {
+                        Section {
+                            Text("Orbit creates a virtual monitor in your Hyprland session and streams it through Sunshine. New streamed apps open there; move existing windows onto it as needed. Turn this off or use Restore displays in the PC tray to remove the virtual monitor and restore Sunshine's previous capture settings.")
                         }
-                    } footer: {
-                        Text("Orbit changes only Sunshine's output_name, dd_configuration_option, dd_resolution_option and dd_refresh_rate_option. It saves your previous Sunshine settings on the PC first and puts them back when you turn this off. Sunshine restarts to apply them, never during a stream.")
+                    } else {
+                        Section {
+                            DisclosureGroup("Set it up by hand") {
+                                MoonlightFillScreenManualSteps(size: size, optimizeGameSettings: optimizeGameSettings, accent: accent)
+                            }
+                        } footer: {
+                            Text("Orbit changes only Sunshine's output_name, dd_configuration_option, dd_resolution_option and dd_refresh_rate_option. It saves your previous Sunshine settings on the PC first and puts them back when you turn this off. Sunshine restarts to apply them, never during a stream.")
+                        }
                     }
                 }
             }
@@ -372,7 +378,9 @@ struct MoonlightFillScreenSetupView: View {
             Button("Undo Changes", role: .destructive) { Task { await model.revert() } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Fill Screen and the second screen turn off, and Sunshine's display settings go back to how they were before Orbit changed them. Sunshine restarts once. Screen sizes added to the virtual display stay; they do no harm.")
+            Text(model.status?.isLinux == true
+                 ? "Fill Screen and the second screen turn off. Orbit removes its virtual monitor and restores Sunshine's previous capture settings, keeping any settings you changed yourself. Sunshine restarts once."
+                 : "Fill Screen and the second screen turn off, and Sunshine's display settings go back to how they were before Orbit changed them. Sunshine restarts once. Screen sizes added to the virtual display stay; they do no harm.")
         }
     }
 
@@ -407,6 +415,9 @@ struct MoonlightFillScreenSetupView: View {
             // the virtual display yet).
             if let note = status.pcNote, !checks.contains(where: { $0.detail == note }) {
                 OrbitDisplayOutcomeRow(title: "Note from \(pcName)", message: note, isError: true)
+            }
+            if status.hdrSupported == false, let reason = status.hdrReason {
+                OrbitDisplayOutcomeRow(title: "SDR streaming", message: reason + " Turn HDR off in Stream Settings.", isError: false)
             }
             if !optimizeGameSettings {
                 VStack(alignment: .leading, spacing: 4) {
@@ -443,7 +454,7 @@ struct MoonlightFillScreenSetupView: View {
     private func actionsSection(_ status: OrbitStreamDisplayStatus) -> some View {
         Section {
             if let work = model.work {
-                OrbitDisplayWorkRow(title: workTitle(work), waitsForPrompt: work.waitsForPrompt, detail: workDetail(work))
+                OrbitDisplayWorkRow(title: workTitle(work), waitsForPrompt: !status.isLinux && work.waitsForPrompt, detail: workDetail(work))
             } else if status.fillsScreen(size: displaySize, refreshRate: rate) {
                 Label("\(pcName) is set up to fill this screen", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.mint)
@@ -501,7 +512,9 @@ struct MoonlightFillScreenSetupView: View {
                 }))
                 .disabled(model.work != nil)
             } footer: {
-                Text("Sunshine then shows only the virtual display during a stream, so nothing appears on the PC's own screen. Off: the virtual display becomes the main display and the monitor stays on as a second one.")
+                Text(status.isLinux
+                     ? "Orbit puts the PC's monitors to sleep while the Sunshine app runs, then wakes them when the app exits. Disconnecting without quitting the app keeps them asleep. Restore displays in the PC tray wakes them immediately. Off: the physical monitors stay on."
+                     : "Sunshine then shows only the virtual display during a stream, so nothing appears on the PC's own screen. Off: the virtual display becomes the main display and the monitor stays on as a second one.")
             }
         }
     }
@@ -511,9 +524,11 @@ struct MoonlightFillScreenSetupView: View {
         Section {
             DisclosureGroup("Sunshine's display settings") {
                 settingRow("output_name", status.config.outputName.map { $0 == status.virtualDisplay.deviceId ? "the virtual display" : $0 })
-                settingRow("dd_configuration_option", status.config.configurationOption)
-                settingRow("dd_resolution_option", status.config.resolutionOption)
-                settingRow("dd_refresh_rate_option", status.config.refreshRateOption)
+                if !status.isLinux {
+                    settingRow("dd_configuration_option", status.config.configurationOption)
+                    settingRow("dd_resolution_option", status.config.resolutionOption)
+                    settingRow("dd_refresh_rate_option", status.config.refreshRateOption)
+                }
                 if let version = status.sunshineVersion { settingRow("Sunshine", version) }
                 if !status.virtualDisplay.resolutions.isEmpty {
                     settingRow("Virtual display sizes", status.virtualDisplay.resolutions.map { $0.replacingOccurrences(of: "x", with: " × ") }.joined(separator: ", "))
@@ -580,7 +595,9 @@ struct MoonlightFillScreenSetupView: View {
     private func setUpHint(_ status: OrbitStreamDisplayStatus) -> String {
         var steps: [String] = []
         if !status.lists(displaySize, refreshRate: rate) {
-            steps.append("adds \(displaySize) at \(rate) Hz to the virtual display (Windows may ask for administrator approval on the PC)")
+            steps.append(status.isLinux
+                         ? "sizes the Hyprland virtual display to \(displaySize) at \(rate) Hz"
+                         : "adds \(displaySize) at \(rate) Hz to the virtual display (Windows may ask for administrator approval on the PC)")
         }
         if !status.sunshineStreamsVirtualDisplay { steps.append("points Sunshine at it and restarts Sunshine once") }
         guard !steps.isEmpty else { return "Applies the settings again." }

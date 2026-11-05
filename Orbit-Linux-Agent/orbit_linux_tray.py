@@ -203,6 +203,7 @@ class Tray(QObject):
     pairing = Signal(str, str, object)
     notification = Signal(str, str)
     failure = Signal(str)
+    display_restored = Signal(str)
 
     def __init__(self, agent, on_stop, startup, log_path):
         super().__init__()
@@ -221,6 +222,7 @@ class Tray(QObject):
             sources = self.menu.addMenu("Screen preview source")
             sources.aboutToShow.connect(lambda: self._screen_sources(sources))
         self.menu.addAction("Stop screen sharing", self.capture.stop)
+        self.restore_action = self.menu.addAction("Restore displays and Sunshine settings", self._restore_displays)
         startup_action = self.menu.addAction("Start at login")
         startup_action.setCheckable(True)
         startup_action.setChecked(startup.enabled())
@@ -234,11 +236,29 @@ class Tray(QObject):
         self.pairing.connect(self._pairing)
         self.notification.connect(lambda title, text: self.tray.showMessage(title, text))
         self.failure.connect(lambda text: QMessageBox.critical(None, "Orbit could not start", text))
+        self.display_restored.connect(self._display_restored)
         self.tray.show()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             # GNOME without a tray extension (or a panel still starting) must not
             # leave an invisible process with no way to stop it.
             self.details(no_tray=True)
+
+    def _restore_displays(self):
+        self.restore_action.setEnabled(False)
+        def restore():
+            try:
+                self.agent.STREAM_DISPLAY.revert()
+                result = "Orbit's display changes were restored."
+            except Exception as error:
+                result = getattr(error, "detail", "Could not restore displays. Check the agent log and try again.")
+            self.display_restored.emit(result)
+        threading.Thread(target=restore, name="orbit-display-restore", daemon=True).start()
+
+    @Slot(str)
+    def _display_restored(self, result):
+        self.restore_action.setEnabled(True)
+        dialog, _ = self._dialog("Display restoration", result)
+        dialog.show()
 
     def _screen_sources(self, menu):
         menu.clear()
