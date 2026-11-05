@@ -109,6 +109,7 @@
 		A2000000000000000000000F /* CompanionToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* CompanionToolsView.swift */; };
 		A20000000000000000000010 /* OrbitPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* OrbitPairing.swift */; };
 		A20000000000000000000011 /* PCDiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* PCDiscoveryView.swift */; };
+		AD15C0000000000000000001 /* OrbitDiscoveryRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD15C0000000000000000001 /* OrbitDiscoveryRoute.swift */; };
 		A20000000000000000000012 /* Appearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* Appearance.swift */; };
 		A20000000000000000000013 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
 		A20000000000000000000014 /* OrbitWidgetConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */; };
@@ -359,6 +360,7 @@
 		B2000000000000000000000F /* CompanionToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionToolsView.swift; sourceTree = "<group>"; };
 		B20000000000000000000010 /* OrbitPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPairing.swift; sourceTree = "<group>"; };
 		B20000000000000000000011 /* PCDiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCDiscoveryView.swift; sourceTree = "<group>"; };
+		BD15C0000000000000000001 /* OrbitDiscoveryRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDiscoveryRoute.swift; sourceTree = "<group>"; };
 		B20000000000000000000012 /* Appearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Appearance.swift; sourceTree = "<group>"; };
 		B20000000000000000000013 /* OrbitWidgetConnectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitWidgetConnectionStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000015 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -516,6 +518,7 @@
 			children = (
 				B20000000000000000000010 /* OrbitPairing.swift */,
 				B20000000000000000000011 /* PCDiscoveryView.swift */,
+				BD15C0000000000000000001 /* OrbitDiscoveryRoute.swift */,
 				B20000000000000000000012 /* Appearance.swift */,
 				B20000000000000000000017 /* OrbitWatchBridge.swift */,
 				B10000000000000000000002 /* OrbitApp.swift */,
@@ -1057,6 +1060,7 @@
 				A20000000000000000000084 /* MoonlightStreamSettingsView.swift in Sources */,
 				A20000000000000000000010 /* OrbitPairing.swift in Sources */,
 				A20000000000000000000011 /* PCDiscoveryView.swift in Sources */,
+				AD15C0000000000000000001 /* OrbitDiscoveryRoute.swift in Sources */,
 				A20000000000000000000012 /* Appearance.swift in Sources */,
 				A20000000000000000000017 /* OrbitWatchBridge.swift in Sources */,
 				A20000000000000000000013 /* OrbitWidgetConnectionStore.swift in Sources */,
