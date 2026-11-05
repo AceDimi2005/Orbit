@@ -1378,7 +1378,8 @@ class DeckRunner:
     """Runs validated actions. Windows work goes through the callables the agent passes in."""
 
     def __init__(self, *, perform_action, type_text, apps, obs, open_target=None, sleep=time.sleep,
-                 open_wait=OPEN_WAIT_SECONDS):
+                 open_wait=OPEN_WAIT_SECONDS, press_chord=None):
+        self._press_chord = press_chord
         self._perform_action = perform_action
         self._type_text = type_text
         self._apps = apps
@@ -1461,7 +1462,7 @@ class DeckRunner:
         kind = action["type"]
         if kind == "hotkey":
             try:
-                keys = orbit_input.press_chord(action["keys"])
+                keys = (self._press_chord or orbit_input.press_chord)(action["keys"])
             except ValueError as error:
                 raise HTTPException(422, str(error)) from error
             except OSError as error:
@@ -1527,16 +1528,18 @@ async def read_json_body(request, *, limit=MAX_BODY_BYTES, allow_empty=False):
 
 
 def create_deck_router(verify_control, require_secure, *, require_windows, perform_action, type_text,
-                       boot_mode=None, store=None, apps=None, obs=None, runner=None):
+                       boot_mode=None, store=None, apps=None, obs=None, runner=None, platform=None):
     """The deck routes behind the main token and the encrypted connection.
 
     `perform_action(name)` and `type_text(text)` are the agent's own (they raise HTTPException);
     `boot_mode()` is true for the instance that runs before anyone signs in.
     """
     store = store or DeckStore()
-    apps = apps or StartMenuApps()
+    apps = apps or (platform.apps if platform is not None else StartMenuApps())
     obs = obs or OBSController()
-    runner = runner or DeckRunner(perform_action=perform_action, type_text=type_text, apps=apps, obs=obs)
+    runner = runner or DeckRunner(perform_action=perform_action, type_text=type_text, apps=apps, obs=obs,
+                                  open_target=platform.open_target if platform is not None else None,
+                                  press_chord=platform.hotkey if platform is not None else None)
     is_boot_instance = boot_mode or (lambda: False)
     gate = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
 

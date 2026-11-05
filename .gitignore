@@ -11,3 +11,5 @@ __pycache__/
 .orbit-sunshine-login
 /output/
 .build/
+
+.venv-linux/

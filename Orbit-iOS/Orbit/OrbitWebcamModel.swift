@@ -457,6 +457,7 @@ final class OrbitWebcamModel: ObservableObject {
 
     /// "Remove Webcam from PC…" is offered while anything of the webcam may be on the PC.
     var offersRemoval: Bool {
+        if status?.setupManagedExternally == true { return false }
         guard !isDemo, let status, !status.isUnsupportedPC else { return false }
         return status.isSetUp || status.installed == true || status.registered == true || filesMayBeLeft
     }
@@ -568,13 +569,13 @@ final class OrbitWebcamModel: ObservableObject {
     /// `POST /api/webcam/install`: one Windows administrator prompt on the PC. The PC answers within
     /// 90 s (202 while the prompt is still open), so the request may wait up to 2 minutes.
     func installOnPC() {
-        guard !isDemo, let link = currentLink(), setup.begin(.install, current: status) else { return }
+        guard !isDemo, status?.setupManagedExternally != true, let link = currentLink(), setup.begin(.install, current: status) else { return }
         runSetup(link: link, path: "/api/webcam/install")
     }
 
     /// `POST /api/webcam/uninstall`: same single prompt.
     func removeFromPC() {
-        guard !isDemo, let link = currentLink(), setup.begin(.remove, current: status) else { return }
+        guard !isDemo, status?.setupManagedExternally != true, let link = currentLink(), setup.begin(.remove, current: status) else { return }
         if phase.isActive { stopStreaming(note: nil) }
         runSetup(link: link, path: "/api/webcam/uninstall")
     }

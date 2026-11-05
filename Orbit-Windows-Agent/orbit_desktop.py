@@ -593,7 +593,7 @@ class AudioRouteWrite(BaseModel):
         return value
 
 
-def create_desktop_router(verify_control):
+def create_desktop_router(verify_control, backend=None):
     router = APIRouter(prefix="/api", dependencies=[Depends(verify_control)])
 
     def require_encrypted(request: Request, response: Response):
@@ -613,29 +613,29 @@ def create_desktop_router(verify_control):
 
     @router.get("/clipboard", dependencies=[Depends(require_encrypted)])
     def read_clipboard():
-        text = translate(lambda: WindowsClipboard().read())
+        text = translate(lambda: backend.clipboard_read() if backend is not None else WindowsClipboard().read())
         return {"text": text or "", "format": "text", "available": text is not None}
 
     @router.put("/clipboard", dependencies=[Depends(require_encrypted)])
     def write_clipboard(body: ClipboardWrite):
-        translate(lambda: WindowsClipboard().write(body.text))
+        translate(lambda: backend.clipboard_write(body.text) if backend is not None else WindowsClipboard().write(body.text))
         return {"status": "ok"}
 
     @router.get("/audio/sessions", dependencies=[Depends(require_encrypted)])
     def audio_sessions():
-        return {"sessions": translate(list_audio_sessions), "available": True}
+        return {"sessions": translate(backend.list_audio_sessions if backend is not None else list_audio_sessions), "available": True}
 
     @router.post("/audio/session", dependencies=[Depends(require_encrypted)])
     def audio_session(body: AudioSessionWrite):
-        session = translate(lambda: update_audio_session(body.id, body.volume, body.isMuted))
+        session = translate(lambda: (backend.update_audio_session if backend is not None else update_audio_session)(body.id, body.volume, body.isMuted))
         return {"status": "ok", "session": session}
 
     @router.get("/audio/outputs", dependencies=[Depends(require_encrypted)])
     def audio_outputs():
-        return translate(list_audio_outputs)
+        return translate(backend.list_audio_outputs if backend is not None else list_audio_outputs)
 
     @router.post("/audio/route", dependencies=[Depends(require_encrypted)])
     def audio_route(body: AudioRouteWrite):
-        return translate(lambda: route_audio_session(body.id, body.expectedCreateTime, body.deviceID))
+        return translate(lambda: (backend.route_audio_session if backend is not None else route_audio_session)(body.id, body.expectedCreateTime, body.deviceID))
 
     return router

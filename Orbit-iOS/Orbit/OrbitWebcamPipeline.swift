@@ -56,6 +56,9 @@ struct OrbitWebcamPCStatus: Decodable, Equatable {
     /// Only in install/uninstall replies.
     var status: String?
     var filesLeft: Bool?
+    var backend: String? = nil
+    var setupManagedExternally: Bool? = nil
+    var connectionStatusAvailable: Bool? = nil
 
     var isSetUp: Bool { installed == true && registered == true }
     /// Set up, nothing running, nothing in the way: a phone may stream.
@@ -64,7 +67,7 @@ struct OrbitWebcamPCStatus: Decodable, Equatable {
     var runtimeMissing: Bool { runtime?.ok == false }
     /// The PC can't run the webcam at all (Windows on ARM): the agent then skips the runtime check
     /// (`runtime` is null) and says why in `reason`. Setup would only fail, so it isn't offered.
-    var isUnsupportedPC: Bool { runtime == nil && installed != true && reason?.isEmpty == false }
+    var isUnsupportedPC: Bool { setupManagedExternally != true && runtime == nil && installed != true && reason?.isEmpty == false }
 
     /// Whether the PC accepts this camera format (`limits`; the agent refuses others with badHello).
     func accepts(width: Int, height: Int, fps: Int) -> Bool {

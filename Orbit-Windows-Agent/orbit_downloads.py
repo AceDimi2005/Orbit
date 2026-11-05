@@ -76,7 +76,7 @@ EPIC_STALL_SECONDS = 180.0
 STEAM_STALL_SECONDS = 600.0
 LAUNCHER_CHECK_SECONDS = 15.0
 LAUNCHER_BUSY_BYTES_PER_SECOND = 200_000
-LAUNCHER_PROCESSES = {"steam": ("steam.exe",), "epic": ("epicgameslauncher.exe",)}
+LAUNCHER_PROCESSES = {"steam": ("steam.exe", "steam", "steamwebhelper"), "epic": ("epicgameslauncher.exe",)}
 CONTENT_LOG_MAX_READ = 256 * 1024
 LOG_FAILURE_SECONDS = 15 * 60
 # Steam's EAppUpdateError values (manifest UpdateResult) and result names (content_log) that mean a
@@ -411,6 +411,11 @@ class SteamScanner:
             value = registry_value(path, name)
             if isinstance(value, str) and value.strip():
                 candidate = Path(value.strip())
+                if candidate.is_dir():
+                    return candidate
+        if os.name != "nt":
+            base = Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+            for candidate in (base / "Steam", Path.home() / ".steam/steam", Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam"):
                 if candidate.is_dir():
                     return candidate
         return None

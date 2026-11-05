@@ -102,6 +102,12 @@ def _protected_paths():
 
 
 def _name(name):
+    if os.getenv("ORBIT_PLATFORM") == "linux":
+        if not isinstance(name, str) or not name or name in {".", ".."} or "/" in name or any(ord(c) < 32 for c in name):
+            _fail(422, "Choose a valid file name without slashes or control characters.")
+        if name.casefold() in SECRET_NAMES or name.casefold().startswith(".orbit-upload-"):
+            _fail(403, "Orbit credentials and internal transfer files are protected.")
+        return name
     if (not isinstance(name, str) or not name or name in {".", ".."} or name[-1:] in {".", " "}
             or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
             or RESERVED.match(name.split(".", 1)[0].rstrip(" "))):
@@ -135,7 +141,8 @@ def checked_path(value, *, directory=None, writing=False):
         # WindowsPath comparisons are case insensitive on Windows.
         if _within(path, protected.absolute()):
             _fail(403, "Orbit's private settings and credentials are protected.")
-    if writing and _within(path, AGENT_DIRECTORY):
+    application_directory = Path(os.environ["ORBIT_APP_DIRECTORY"]).absolute() if os.environ.get("ORBIT_APP_DIRECTORY") else AGENT_DIRECTORY
+    if writing and (_within(path, AGENT_DIRECTORY) or _within(path, application_directory)):
         _fail(403, "Changes to the running companion's folder are unavailable.")
     try:
         for ancestor in [*reversed(path.parents), path]:
@@ -928,7 +935,14 @@ def recycle_path(value):
     if target.parent == target:
         _fail(403, "Drive roots cannot be recycled.")
     if os.name != "nt":
-        _fail(503, "Recycle Bin is available only on Windows. No file was deleted.")
+        if os.getenv("ORBIT_PLATFORM") != "linux":
+            _fail(503, "Recycle Bin is available only on Windows. No file was deleted.")
+        try:
+            from send2trash import send2trash
+            send2trash(str(target))
+        except (ImportError, OSError) as error:
+            _fail(503, "The desktop Trash is unavailable. No permanent deletion was attempted.")
+        return {"ok": True, "path": str(target)}
     # IFileOperation, not legacy SHFileOperation: RECYCLEONDELETE requests a
     # recycle operation explicitly. There is no permanent-delete fallback.
     class GUID(ctypes.Structure):

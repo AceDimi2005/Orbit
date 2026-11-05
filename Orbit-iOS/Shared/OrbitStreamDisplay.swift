@@ -33,7 +33,7 @@ struct OrbitDisplaySize: Equatable, Hashable, Sendable, CustomStringConvertible 
 struct OrbitStreamDisplayStatus: Decodable, Equatable, Sendable {
     struct VirtualDisplay: Decodable, Equatable, Sendable {
         var installed = false
-        /// "vdd" (Virtual Display Driver), "sudovda" (not supported) or nil.
+        /// "vdd" (Windows), "hyprland" (Linux), "sudovda" (not supported) or nil.
         var driver: String?
         var modes: [String] = []
         var resolutions: [String] = []
@@ -174,12 +174,16 @@ struct OrbitStreamDisplayStatus: Decodable, Equatable, Sendable {
     var installCommand: String?
     /// The first problem, in plain words; nil when `fillReady`.
     var reason: String?
+    var backend: String?
+    var hdrSupported: Bool?
+    var hdrReason: String?
+    var isLinux: Bool { backend == "hyprland" }
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
         case sunshineVersion, sunshineRunning, loginSaved, sunshineSupported, streamActive, appRunning, virtualDisplay, config, fill,
-             fillReady, secondScreen, savedConfig, installCommand, reason
+             fillReady, secondScreen, savedConfig, installCommand, reason, backend, hdrSupported, hdrReason
     }
 
     init(from decoder: Decoder) throws {
@@ -198,6 +202,9 @@ struct OrbitStreamDisplayStatus: Decodable, Equatable, Sendable {
         savedConfig = (try? values.decodeIfPresent(SavedConfig.self, forKey: .savedConfig)) ?? SavedConfig()
         installCommand = try? values.decodeIfPresent(String.self, forKey: .installCommand)
         reason = try? values.decodeIfPresent(String.self, forKey: .reason)
+        backend = try? values.decodeIfPresent(String.self, forKey: .backend)
+        hdrSupported = try? values.decodeIfPresent(Bool.self, forKey: .hdrSupported)
+        hdrReason = try? values.decodeIfPresent(String.self, forKey: .hdrReason)
     }
 
     /// The winget command for the Virtual Display Driver (the PC sends it; this is the same text).
@@ -519,7 +526,7 @@ struct OrbitDisplayCheck: Identifiable, Equatable, Sendable {
 extension OrbitStreamDisplayStatus {
     /// The Virtual Display Driver is there and usable (not SudoVDA, not turned off, settings readable).
     var driverUsable: Bool {
-        virtualDisplay.installed && virtualDisplay.driver == "vdd" && virtualDisplay.deviceStatus != "disabled" && virtualDisplay.settingsError == nil
+        virtualDisplay.installed && ["vdd", "hyprland"].contains(virtualDisplay.driver ?? "") && virtualDisplay.deviceStatus != "disabled" && virtualDisplay.settingsError == nil
     }
 
     /// The virtual display already offers `size`, at `refreshRate` when one is given. The PC lists every
@@ -569,6 +576,7 @@ extension OrbitStreamDisplayStatus {
     /// Why the driver row is not done, in plain words.
     var driverProblem: String? {
         if driverUsable { return nil }
+        if isLinux { return reason ?? "Start Orbit inside a supported Hyprland session on the Linux PC." }
         if virtualDisplay.driver == "sudovda" {
             return "SudoVDA (from Apollo) is installed, but Orbit works with the free Virtual Display Driver. Install it in Terminal on the PC:"
         }
@@ -583,6 +591,7 @@ extension OrbitStreamDisplayStatus {
     /// install command).
     var driverBlocker: String? {
         if driverUsable { return nil }
+        if isLinux { return driverProblem }
         if virtualDisplay.driver == "sudovda" {
             return "Install the free Virtual Display Driver on the PC first: Orbit doesn't work with SudoVDA. The command is above."
         }
@@ -595,7 +604,7 @@ extension OrbitStreamDisplayStatus {
 
     /// True when the driver row should offer the install command.
     var offersInstallCommand: Bool {
-        !driverUsable && (virtualDisplay.driver == nil || virtualDisplay.driver == "sudovda" || !virtualDisplay.installed)
+        !isLinux && !driverUsable && (virtualDisplay.driver == nil || virtualDisplay.driver == "sudovda" || !virtualDisplay.installed)
     }
 
     private func sunshineCheck() -> OrbitDisplayCheck {
@@ -635,7 +644,7 @@ extension OrbitStreamDisplayStatus {
     }
 
     private var driverCheck: OrbitDisplayCheck {
-        OrbitDisplayCheck(kind: .driver, title: "Virtual Display Driver", detail: driverUsable ? "Installed on the PC" : driverProblem,
+        OrbitDisplayCheck(kind: .driver, title: isLinux ? "Hyprland virtual display" : "Virtual Display Driver", detail: driverUsable ? (isLinux ? "Managed by the compositor" : "Installed on the PC") : driverProblem,
                           state: driverUsable ? .done : .missing)
     }
 
@@ -645,12 +654,12 @@ extension OrbitStreamDisplayStatus {
         let listed = lists(size, refreshRate: refreshRate)
         let mode = refreshRate.map { "\(size) at \($0) Hz" } ?? size.description
         checks.append(OrbitDisplayCheck(kind: .size, title: "Virtual display offers \(mode)",
-                                        detail: listed ? nil : (driverUsable ? "Set Up This PC adds it. Windows may ask for administrator approval on the PC once." : nil),
+                                        detail: listed ? nil : (driverUsable ? (isLinux ? "Set Up This PC creates this mode in Hyprland." : "Set Up This PC adds it. Windows may ask for administrator approval on the PC once.") : nil),
                                         state: listed ? .done : (driverUsable ? .missing : .unknown)))
         let target = sunshineStreamsVirtualDisplay
         var targetDetail: String?
         if target {
-            targetDetail = fill.onlyDisplay ? "The PC's own monitor turns off while you stream." : "It becomes the PC's main display while you stream."
+            targetDetail = fill.onlyDisplay ? (isLinux ? "The PC's monitors sleep until you quit the Sunshine app or restore displays from the tray." : "The PC's own monitor turns off while you stream.") : (isLinux ? "New streamed apps open on this virtual display. Existing windows can be moved there." : "It becomes the PC's main display while you stream.")
         } else if fill.enabled, !driverUsable {
             targetDetail = "Fill Screen is on, but without the virtual display Sunshine can only switch the PC's own monitor, which rarely has this screen's shape."
         } else if fill.enabled, let reason {
@@ -679,6 +688,7 @@ extension OrbitStreamDisplayStatus {
         if loginUnconfirmed { return "Orbit can't reach Sunshine's web UI on \(pcName)." }
         if sunshineSupported == false { return "Sunshine on \(pcName) is too old to switch displays." }
         if !driverUsable {
+            if isLinux { return driverProblem }
             return virtualDisplay.installed && virtualDisplay.deviceStatus == "disabled"
                 ? "The Virtual Display Driver is turned off on \(pcName)."
                 : "\(pcName) needs the free Virtual Display Driver."
@@ -757,8 +767,11 @@ enum OrbitSecondScreenScaleTip {
     static let dismissedKey = "orbit.secondScreen.scaleTipDismissed"
 
     /// `device`: "this iPhone", "this iPad", "this Mac".
-    static func message(device: String) -> String {
-        "Windows may size text on the new display for a desktop monitor, so it looks tiny on \(device). In Windows Settings › System › Display, select the new display and set Scale to 200%, or the largest it offers. Windows remembers it."
+    static func message(device: String, isLinux: Bool = false) -> String {
+        if isLinux {
+            return "The virtual display uses this device's full pixel resolution. If text looks small on \(device), increase the app's zoom or font size on the Linux PC."
+        }
+        return "Windows may size text on the new display for a desktop monitor, so it looks tiny on \(device). In Windows Settings › System › Display, select the new display and set Scale to 200%, or the largest it offers. Windows remembers it."
     }
 }
 
@@ -793,10 +806,10 @@ enum OrbitStreamDisplayErrors {
             case 428?: return OrbitStreamDisplayProblem(title: "Sunshine login needed", message: orbit.message)
             case 409?: return OrbitStreamDisplayProblem(title: "Not possible right now", message: orbit.message)
             case 502?: return OrbitStreamDisplayProblem(title: "Sunshine didn't answer", message: orbit.message)
-            case 503?: return OrbitStreamDisplayProblem(title: "Windows refused a step", message: orbit.message)
+            case 503?: return OrbitStreamDisplayProblem(title: "The PC refused a step", message: orbit.message)
             case 404?:
                 return OrbitStreamDisplayProblem(title: "Update Orbit PC Companion", message: "This needs a newer Orbit PC Companion on the PC. \(updateHint)")
-            case 501?: return OrbitStreamDisplayProblem(title: "Windows only", message: "This works only when Orbit PC Companion runs on Windows.")
+            case 501?: return OrbitStreamDisplayProblem(title: "Unavailable on this desktop", message: orbit.message)
             case 422?: return OrbitStreamDisplayProblem(title: "The PC refused the request", message: orbit.message)
             case 401?: return OrbitStreamDisplayProblem(title: "Pairing token rejected", message: orbit.message)
             default: return OrbitStreamDisplayProblem(title: "Something went wrong", message: orbit.message)
