@@ -82,6 +82,23 @@ struct OrbitMacApp: App {
                 }
                 .onReceive(OrbitProStore.shared.$hasVerifiedEntitlements) { _ in MacProLockdown.enforce() }
                 .onOpenURL { url in handle(url) }
+                // The App Store rating prompt (OrbitReviewPrompt.swift), only over the main window in front, never
+                // in demo mode, during a stream or the desktop preview, or while Windows counts down to Shut Down
+                // or Restart. Alerts, sheets (the paywall too) and Orbit in the background are checked by the prompter.
+                .orbitReviewPromptHost { [viewModel] in
+                    var blockers = Set<OrbitReviewPromptBlocker>()
+                    if viewModel.isDemoMode { blockers.insert(.demoMode) }
+                    let stream = MoonlightStreamController.shared
+                    if stream.isPresented || stream.isLaunching || stream.session?.isActive == true || viewModel.isStreaming {
+                        blockers.insert(.stream)
+                    }
+                    if viewModel.powerCountdown.running() != nil { blockers.insert(.powerCountdown) }
+                    if !MacMainWindow.isKey { blockers.insert(.notInFront) }
+                    return blockers
+                }
+                .onReceive(MoonlightStreamController.shared.$launchError) { error in
+                    if error != nil { OrbitReviewPrompter.shared.noteError() }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified(showsTitle: false))

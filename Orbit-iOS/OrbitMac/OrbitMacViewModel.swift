@@ -585,6 +585,8 @@ final class OrbitMacViewModel: ObservableObject {
             if !wasOnline {
                 wasOnline = true
                 notifyIfNeeded(title: "\(pc.name) is online", body: "Orbit reconnected to your PC.")
+                // The real PC answers after being offline or not yet connected: a good moment for the rating prompt.
+                OrbitReviewPrompter.shared.noteGoodMoment(.connected)
             }
             if !hasSyncedExtras {
                 hasSyncedExtras = true
@@ -596,6 +598,8 @@ final class OrbitMacViewModel: ObservableObject {
             if specs == nil, Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
         } catch {
             guard version == generation, !Task.isCancelled else { return }
+            // A PC that was online stopped answering. (One that is simply off is not an error.)
+            if wasOnline { OrbitReviewPrompter.shared.noteError() }
             metrics.isOnline = false
             metrics.fps = nil
             powerCountdown.pcUnreachable()
@@ -680,10 +684,12 @@ final class OrbitMacViewModel: ObservableObject {
             } else if action == "mute" {
                 metrics.isMuted.toggle()
             }
+            if OrbitReviewPrompter.powerActions.contains(action) { OrbitReviewPrompter.shared.noteGoodMoment(.powerAction) }
             return true
         } catch {
             guard version == generation else { return false }
             statusBanner = "\(label) failed: \(error.localizedDescription)"
+            OrbitReviewPrompter.shared.noteError()
             return false
         }
     }
@@ -754,7 +760,11 @@ final class OrbitMacViewModel: ObservableObject {
                 sent = sent || count == packet.count
             }
         }
-        guard sent else { statusBanner = "Wake packet could not be sent. Check the Mac's network connection."; return }
+        guard sent else {
+            statusBanner = "Wake packet could not be sent. Check the Mac's network connection."
+            OrbitReviewPrompter.shared.noteError()
+            return
+        }
         statusBanner = "Wake-on-LAN sent to \(pc.name) · waiting for the PC…"
         let version = generation
         for _ in 0..<15 {
@@ -764,6 +774,7 @@ final class OrbitMacViewModel: ObservableObject {
             if metrics.isOnline { statusBanner = "\(pc.name) is online"; return }
         }
         statusBanner = "Wake packet sent, but \(pc.name) has not responded yet. Check BIOS and adapter Wake-on-LAN settings."
+        OrbitReviewPrompter.shared.noteError()
     }
 
     static func broadcast(ip: String, mask: String) -> String {

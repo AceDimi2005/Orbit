@@ -79,6 +79,11 @@ enum MacMainWindow {
         NSApp.windows.contains { isMain($0) && $0.isVisible && !$0.isMiniaturized }
     }
 
+    /// The main window is the one in front (not the stream, the desktop preview or Settings).
+    static var isKey: Bool {
+        NSApp.keyWindow.map(isMain) ?? false
+    }
+
     static func show(_ openWindow: OpenWindowAction) {
         if let window = NSApp.windows.first(where: { isMain($0) && ($0.isVisible || $0.isMiniaturized) }) {
             if window.isMiniaturized { window.deminiaturize(nil) }
@@ -238,6 +243,7 @@ extension OrbitMacViewModel {
         let client: OrbitAPIClient
         do { client = try self.client(for: pc) } catch {
             model.lastResult = .init(message: (error as? OrbitError)?.message ?? error.localizedDescription, isError: true)
+            OrbitReviewPrompter.shared.noteError()
             return
         }
         model.runningButtonID = button.id
@@ -255,7 +261,9 @@ extension OrbitMacViewModel {
                 wasOnline = false
                 stopPreview()
             }
+            OrbitReviewPrompter.shared.noteGoodMoment(.deckButton)
         case let .failed(message, missing):
+            OrbitReviewPrompter.shared.noteError()
             model.lastResult = .init(message: message, isError: true)
             statusBanner = "\(title) failed: \(message)"
             if missing { await refreshDeck(silent: true) }

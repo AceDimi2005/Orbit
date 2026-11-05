@@ -446,6 +446,10 @@ final class MoonlightKeepAwake: @unchecked Sendable {
 public enum MoonlightIdleTimer {
     private static var holds = 0
 
+    /// Something keeps the screen on right now: a stream, a Second Screen change, the presentation remote or the
+    /// webcam. Orbit's rating prompt waits while it does.
+    public static var isHeld: Bool { holds > 0 }
+
     public static func hold() {
         holds += 1
         UIApplication.shared.isIdleTimerDisabled = true

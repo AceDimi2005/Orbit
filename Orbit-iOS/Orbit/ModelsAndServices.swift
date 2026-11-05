@@ -819,6 +819,8 @@ final class OrbitViewModel: ObservableObject {
             guard generation == version, appActive else { return }
         }
         await refreshMetrics()
+        // "Test connection", pairing or switching PCs ended offline: the user just saw it fail.
+        if generation == version, !isDemoMode, !metrics.isOnline { OrbitReviewPrompter.shared.noteError() }
     }
     func refreshMetrics() async {
         guard !isRefreshing, appActive else { return }
@@ -837,6 +839,7 @@ final class OrbitViewModel: ObservableObject {
             let decoded = try JSONDecoder().decode(PCMetrics.self, from: data)
             guard generation == version, !Task.isCancelled else { return }
             let sliderVolume = metrics.volume
+            let wasOnline = metrics.isOnline
             metrics = decoded
             powerCountdown.apply(OrbitPowerCountdown(decoded.powerCountdown), requestedAt: start)
             history.append(decoded)
@@ -848,6 +851,8 @@ final class OrbitViewModel: ObservableObject {
             publishWidgetSnapshot(decoded)
             OrbitWatchBridge.shared.pushStateToWatch()
             guard generation == version, !Task.isCancelled else { return }
+            // The real PC answers after being offline or not yet connected: a good moment for the rating prompt.
+            if !wasOnline && decoded.isOnline { OrbitReviewPrompter.shared.noteGoodMoment(.connected) }
             if !hasSynced {
                 await fetchNetworkConfigFromPC()
                 guard generation == version, !Task.isCancelled else { return }
@@ -861,6 +866,8 @@ final class OrbitViewModel: ObservableObject {
             if specs == nil && Date().timeIntervalSince(lastSpecsAttempt) > 30 { await fetchSpecs() }
         } catch {
             guard generation == version, !Task.isCancelled else { return }
+            // A PC that was online stopped answering. (One that is simply off is not an error.)
+            if metrics.isOnline { OrbitReviewPrompter.shared.noteError() }
             metrics.isOnline = false; metrics.fps = nil; pingMs = 0
             powerCountdown.pcUnreachable()
             statusLog = (error as? OrbitError)?.message ?? "PC unreachable • check Wi-Fi and Orbit Agent"
@@ -1204,7 +1211,8 @@ final class OrbitViewModel: ObservableObject {
                 if metrics.isOnline { statusLog = "PC connected"; return }
             }
             statusLog = "Wake packet sent, but PC has not responded. Check BIOS, Ethernet settings, and iOS broadcast restrictions. See the setup guide."
-        } catch { if generation == version { statusLog = error.localizedDescription } }
+            OrbitReviewPrompter.shared.noteError()
+        } catch { if generation == version { statusLog = error.localizedDescription; OrbitReviewPrompter.shared.noteError() } }
     }
     func sendPowerAction(_ action: String) async {
         if isDemoMode {
@@ -1220,7 +1228,8 @@ final class OrbitViewModel: ObservableObject {
             guard generation == version else { return }
             statusLog = "Command sent • \(action.replacingOccurrences(of: "_", with: " "))"
             await noteActionSent(action, response: data)
-        } catch { if generation == version { statusLog = error.localizedDescription } }
+            if OrbitReviewPrompter.powerActions.contains(action) { OrbitReviewPrompter.shared.noteGoodMoment(.powerAction) }
+        } catch { if generation == version { statusLog = error.localizedDescription; OrbitReviewPrompter.shared.noteError() } }
     }
 
     /// After a PC action went through, here or for the Watch. Shut Down and Restart on a PC with

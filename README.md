@@ -243,6 +243,12 @@ Sincronizarea prin iCloud a setărilor și comutatorul „Sync with iCloud”: u
 python Orbit-iOS/Tests/check_settings_sync.py
 ```
 
+Cererea de rating în App Store (iPhone, iPad și Mac): cel puțin 5 zile diferite de folosire, doar după o conexiune reușită sau un buton/acțiune de power reușită, niciodată în demo mode, onboarding, stream, alertă, paywall sau imediat după o eroare, cel mult o dată pe versiune și la cel puțin 120 de zile, cu o întârziere de 2,5 s; cu ceas fals, fără StoreKit:
+
+```sh
+python Orbit-iOS/Tests/check_review_prompt.py
+```
+
 Verificări complete pe macOS, cu Swift și dependențele agentului: transfer HTTPS și asociere prin PIN între clientul Swift real și serverul Python. Folosesc certificate și date temporare; prima verificare SRP descarcă și compilează pachetele Swift fixate în proiect.
 
 ```sh
@@ -507,6 +513,12 @@ iCloud settings sync and the "Sync with iCloud" switch: an iPhone, an iPad and a
 
 ```sh
 python Orbit-iOS/Tests/check_settings_sync.py
+```
+
+The App Store rating prompt (iPhone, iPad and Mac): at least 5 different days of use, only after a successful connection or a deck button/power action that worked, never in demo mode, onboarding, a stream, an alert, the paywall or right after an error, at most once per version and 120 days apart, 2.5 s after the good moment; with a fake clock, no StoreKit:
+
+```sh
+python Orbit-iOS/Tests/check_review_prompt.py
 ```
 
 End-to-end checks on macOS with Swift and the agent dependencies: HTTPS transfers and PIN pairing between the production Swift client and Python server. They use temporary certificates and data; the first SRP check resolves and builds the pinned Swift packages.

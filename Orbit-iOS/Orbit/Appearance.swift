@@ -841,6 +841,7 @@ struct OrbitProPaywallView: View {
             }
         }
         .orbitAppearance()
+        .orbitPausesReviewPrompt(.paywall)
     }
 
     private var purchaseTitle: String {

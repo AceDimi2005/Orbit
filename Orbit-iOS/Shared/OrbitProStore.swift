@@ -223,7 +223,8 @@ struct OrbitProUnlockView: View {
             ScrollView { card }
         }
         #else
-        card
+        // No App Store rating prompt over the paywall (OrbitReviewPrompt.swift).
+        card.orbitPausesReviewPrompt(.paywall)
         #endif
     }
 

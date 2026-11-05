@@ -130,6 +130,21 @@ struct ContentView: View {
         } message: {
             Text("A link asked Orbit to do this on \(vm.selectedPCName).")
         }
+        // The App Store rating prompt (OrbitReviewPrompt.swift): never over demo mode, onboarding, a stream or
+        // live session (presentation remote, webcam, desktop preview) or Windows' countdown with its Cancel.
+        // Alerts, the paywall and Orbit being in the background are checked by the prompter itself.
+        .orbitReviewPromptHost { [vm] in
+            var blockers = Set<OrbitReviewPromptBlocker>()
+            if vm.isDemoMode { blockers.insert(.demoMode) }
+            if !vm.hasCompletedOnboarding || vm.showOnboarding { blockers.insert(.onboarding) }
+            let stream = MoonlightStreamController.shared
+            if stream.isPresented || stream.isLaunching || stream.session?.isActive == true || vm.isShowingStreamView
+                || vm.smartLaunchStep != .idle || MoonlightIdleTimer.isHeld { blockers.insert(.stream) }
+            if vm.powerCountdown.running() != nil { blockers.insert(.powerCountdown) }
+            return blockers
+        }
+        .onChange(of: stream.launchError) { _, error in if error != nil { OrbitReviewPrompter.shared.noteError() } }
+        .onChange(of: vm.streamError) { _, error in if error != nil { OrbitReviewPrompter.shared.noteError() } }
         // Applied last so presented sheets, covers and overlays inherit the theme environment.
         .orbitAppearance()
         .preferredColorScheme(.dark)

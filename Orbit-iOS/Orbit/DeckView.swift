@@ -231,6 +231,7 @@ final class OrbitDeckStore: ObservableObject {
             let detail = reply?.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             OrbitHaptics.success()
             show(detail.isEmpty ? "\(button.displayTitle) · done" : "\(button.displayTitle) · \(detail)", kind: .success)
+            OrbitReviewPrompter.shared.noteGoodMoment(.deckButton)
         } catch {
             guard generation == vm.connectionID else { return }
             OrbitHaptics.error()
@@ -250,6 +251,7 @@ final class OrbitDeckStore: ObservableObject {
     }
 
     func show(_ message: String, kind: OrbitDeckToast.Kind) {
+        if kind == .failure { OrbitReviewPrompter.shared.noteError() }
         let toast = OrbitDeckToast(message: message, kind: kind)
         self.toast = toast
         UIAccessibility.post(notification: .announcement, argument: message)
