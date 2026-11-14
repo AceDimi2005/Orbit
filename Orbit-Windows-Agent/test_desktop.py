@@ -456,6 +456,153 @@ class AudioPolicyAdapterTests(unittest.TestCase):
         api.RoUninitialize.assert_called_once()
 
 
+class FakeEndpoint:
+    def __init__(self, identifier):
+        self.identifier = identifier
+
+    def GetId(self):
+        return self.identifier
+
+
+class FakeAudioUtilities:
+    """pycaw's AudioUtilities with two outputs and two inputs; SetDefaultDevice moves the defaults."""
+    ROLES = ("console", "multimedia", "communications")
+
+    def __init__(self, fail=False):
+        self.devices = {0: [SimpleNamespace(id="{out-speakers}", FriendlyName="Speakers (Realtek Audio)"),
+                            SimpleNamespace(id="{out-headset}", FriendlyName="Headset Earphone"),
+                            SimpleNamespace(id="", FriendlyName="Broken")],
+                        1: [SimpleNamespace(id="{in-mic}", FriendlyName="Microphone (USB)"),
+                            SimpleNamespace(id="{in-headset}", FriendlyName=None)]}
+        self.defaults = {(0, 0): "{out-speakers}", (0, 1): "{out-speakers}", (0, 2): "{out-headset}",
+                         (1, 0): "{in-mic}", (1, 1): "{in-mic}", (1, 2): "{in-mic}"}
+        self.calls = []
+        self.fail = fail
+
+    def GetAllDevices(self, data_flow, device_state):
+        assert device_state == 1  # active devices only
+        return list(self.devices[data_flow])
+
+    def GetDeviceEnumerator(self):
+        utilities = self
+
+        class Enumerator:
+            def GetDefaultAudioEndpoint(self, flow, role):
+                identifier = utilities.defaults.get((flow, role))
+                if identifier is None:
+                    raise OSError("E_NOTFOUND")
+                return FakeEndpoint(identifier)
+        return Enumerator()
+
+    def SetDefaultDevice(self, identifier, roles):
+        self.calls.append((identifier, [role.name for role in roles]))
+        if self.fail:
+            raise OSError("SetDefaultEndpoint failed")
+        flow = 0 if identifier.startswith("{out") else 1
+        for role in roles:
+            self.defaults[(flow, role.value)] = identifier
+
+
+def core_audio_modules(utilities):
+    import enum
+
+    class ERole(enum.Enum):
+        eConsole = 0
+        eMultimedia = 1
+        eCommunications = 2
+    com = MagicMock()
+    return com, {"comtypes": com, "pycaw": SimpleNamespace(), "pycaw.pycaw": SimpleNamespace(AudioUtilities=utilities),
+                 "pycaw.constants": SimpleNamespace(ERole=ERole)}
+
+
+class AudioDefaultDeviceTests(unittest.TestCase):
+    def test_lists_active_outputs_and_inputs_with_their_defaults(self):
+        utilities = FakeAudioUtilities()
+        com, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            payload = desktop.list_audio_devices()
+        self.assertEqual(payload["outputs"], [
+            {"id": "{out-speakers}", "name": "Speakers (Realtek Audio)", "isDefault": True, "isDefaultCommunication": False},
+            {"id": "{out-headset}", "name": "Headset Earphone", "isDefault": False, "isDefaultCommunication": True}])
+        self.assertEqual(payload["inputs"], [
+            {"id": "{in-mic}", "name": "Microphone (USB)", "isDefault": True, "isDefaultCommunication": True},
+            {"id": "{in-headset}", "name": "Microphone", "isDefault": False, "isDefaultCommunication": False}])
+        com.CoInitialize.assert_called_once()
+        com.CoUninitialize.assert_called_once()
+
+    def test_a_direction_without_any_device_has_no_default(self):
+        utilities = FakeAudioUtilities()
+        utilities.devices[1] = []
+        utilities.defaults = {key: value for key, value in utilities.defaults.items() if key[0] == 0}
+        _, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            payload = desktop.list_audio_devices()
+        self.assertEqual(payload["inputs"], [])
+        self.assertEqual(len(payload["outputs"]), 2)
+
+    def test_setting_a_default_changes_every_role_and_returns_the_new_lists(self):
+        utilities = FakeAudioUtilities()
+        com, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            payload = desktop.set_default_audio_device("output", "{out-headset}")
+        self.assertEqual(utilities.calls, [("{out-headset}", ["eConsole", "eMultimedia", "eCommunications"])])
+        self.assertEqual([device["id"] for device in payload["outputs"] if device["isDefault"]], ["{out-headset}"])
+        self.assertTrue(all(device["isDefault"] for device in payload["inputs"] if device["id"] == "{in-mic}"))
+        com.CoUninitialize.assert_called_once()
+
+    def test_input_default_and_wrong_direction(self):
+        utilities = FakeAudioUtilities()
+        _, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            payload = desktop.set_default_audio_device("input", "{in-headset}")
+            self.assertEqual([device["id"] for device in payload["inputs"] if device["isDefault"]], ["{in-headset}"])
+            # An output's ID is not an active input: nothing changes.
+            with self.assertRaises(desktop.AudioSessionGone):
+                desktop.set_default_audio_device("input", "{out-speakers}")
+            with self.assertRaises(ValueError):
+                desktop.set_default_audio_device("speakers", "{out-speakers}")
+            with self.assertRaises(ValueError):
+                desktop.set_default_audio_device("output", "")
+        self.assertEqual(len(utilities.calls), 1)
+
+    def test_disconnected_device_is_not_set(self):
+        utilities = FakeAudioUtilities()
+        _, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            with self.assertRaises(desktop.AudioSessionGone):
+                desktop.set_default_audio_device("output", "{gone}")
+        self.assertEqual(utilities.calls, [])
+
+    def test_windows_refusal_is_reported_and_com_released(self):
+        utilities = FakeAudioUtilities(fail=True)
+        com, modules = core_audio_modules(utilities)
+        with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+            with self.assertRaises(desktop.DesktopUnavailable) as raised:
+                desktop.set_default_audio_device("output", "{out-headset}")
+        self.assertIn("Windows Settings", str(raised.exception))
+        com.CoUninitialize.assert_called_once()
+
+    def test_old_pycaw_without_set_default_device(self):
+        utilities = FakeAudioUtilities()
+        del FakeAudioUtilities.SetDefaultDevice
+        try:
+            _, modules = core_audio_modules(utilities)
+            with patch.object(desktop.os, "name", "nt"), patch.dict(sys.modules, modules):
+                with self.assertRaises(desktop.DesktopUnavailable) as raised:
+                    desktop.set_default_audio_device("output", "{out-headset}")
+        finally:
+            FakeAudioUtilities.SetDefaultDevice = FakeAudioUtilities._set_default
+        self.assertIn("Update", str(raised.exception))
+
+    def test_not_windows(self):
+        with patch.object(desktop.os, "name", "posix"):
+            with self.assertRaises(desktop.DesktopUnavailable):
+                desktop.list_audio_devices()
+
+
+FakeAudioUtilities._set_default = FakeAudioUtilities.SetDefaultDevice
+
+
 class DesktopRouteTests(unittest.TestCase):
     def setUp(self):
         def verify(authorization: str = Header(None)):
@@ -472,7 +619,9 @@ class DesktopRouteTests(unittest.TestCase):
                                    ("GET", "/api/audio/sessions", None),
                                    ("POST", "/api/audio/session", {"id": "a" * 64, "volume": 50}),
                                    ("GET", "/api/audio/outputs", None),
-                                   ("POST", "/api/audio/route", {"id": "a" * 64, "expectedCreateTime": 1700000000, "deviceID": ""})):
+                                   ("POST", "/api/audio/route", {"id": "a" * 64, "expectedCreateTime": 1700000000, "deviceID": ""}),
+                                   ("GET", "/api/audio/devices", None),
+                                   ("POST", "/api/audio/default", {"flow": "output", "deviceID": "{out}"})):
             with self.subTest(path=path):
                 self.assertEqual(self.client.request(method, path, json=body).status_code, 401)
                 self.assertEqual(self.client.request(method, path, json=body,
@@ -522,6 +671,35 @@ class DesktopRouteTests(unittest.TestCase):
         with patch.object(desktop, "route_audio_session") as native:
             response = self.client.post("http://pc.local/api/audio/route", headers=self.headers,
                                         json={"id": "a" * 64, "expectedCreateTime": 1700000000, "deviceID": ""})
+        self.assertEqual(response.status_code, 426)
+        native.assert_not_called()
+
+    def test_default_device_routes(self):
+        listed = {"outputs": [{"id": "{out}", "name": "Speakers", "isDefault": True, "isDefaultCommunication": True}],
+                  "inputs": []}
+        with patch.object(desktop, "list_audio_devices", return_value=listed):
+            response = self.client.get("/api/audio/devices", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), listed)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        with patch.object(desktop, "set_default_audio_device", return_value=listed) as native:
+            response = self.client.post("/api/audio/default", headers=self.headers, json={"flow": "input", "deviceID": "{in}"})
+        self.assertEqual(response.status_code, 200)
+        native.assert_called_once_with("input", "{in}")
+        for body in ({"flow": "speakers", "deviceID": "{out}"}, {"flow": "output", "deviceID": ""}, {"flow": "output"},
+                     {"flow": "output", "deviceID": "{out}", "roles": [0]}, {"flow": "output", "deviceID": 7}):
+            with self.subTest(body=body), patch.object(desktop, "set_default_audio_device") as native:
+                self.assertEqual(self.client.post("/api/audio/default", headers=self.headers, json=body).status_code, 422)
+                native.assert_not_called()
+        with patch.object(desktop, "set_default_audio_device", side_effect=desktop.AudioSessionGone("Gone")):
+            self.assertEqual(self.client.post("/api/audio/default", headers=self.headers,
+                                              json={"flow": "output", "deviceID": "{out}"}).status_code, 409)
+        with patch.object(desktop, "set_default_audio_device", side_effect=desktop.DesktopUnavailable("No")):
+            self.assertEqual(self.client.post("/api/audio/default", headers=self.headers,
+                                              json={"flow": "output", "deviceID": "{out}"}).status_code, 503)
+        with patch.object(desktop, "set_default_audio_device") as native:
+            response = self.client.post("http://pc.local/api/audio/default", headers=self.headers,
+                                        json={"flow": "output", "deviceID": "{out}"})
         self.assertEqual(response.status_code, 426)
         native.assert_not_called()
 

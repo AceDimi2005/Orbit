@@ -1803,6 +1803,9 @@ struct QuickRemoteView: View {
                                 NavigationLink { AudioMixerView(vm: vm) } label: {
                                     Label("Audio Mixer", systemImage: "slider.vertical.3")
                                 }
+                                NavigationLink { DisplayModeView(vm: vm) } label: {
+                                    Label("Display Mode", systemImage: "display.2")
+                                }
                                 NavigationLink { ClipboardView(vm: vm) } label: {
                                     Label("Clipboard Sync", systemImage: "doc.on.clipboard")
                                 }

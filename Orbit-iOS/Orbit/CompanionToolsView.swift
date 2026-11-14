@@ -38,7 +38,10 @@ struct CompanionToolsView: View {
                                 toolTile("Clipboard", subtitle: "Sync text & links", icon: "doc.on.clipboard.fill", tint: .cyan)
                             }
                             NavigationLink { AudioMixerView(vm: vm) } label: {
-                                toolTile("Audio Mixer", subtitle: "Per-app volume & routing", icon: "slider.vertical.3", tint: .purple)
+                                toolTile("Audio Mixer", subtitle: "Per-app volume & devices", icon: "slider.vertical.3", tint: .purple)
+                            }
+                            NavigationLink { DisplayModeView(vm: vm) } label: {
+                                toolTile("Display Mode", subtitle: "Duplicate or extend", icon: "display.2", tint: .teal)
                             }
                             NavigationLink { TaskManagerView(vm: vm) } label: {
                                 toolTile("Task Manager", subtitle: "Processes & end task", icon: "list.bullet.rectangle.portrait.fill", tint: .orange)

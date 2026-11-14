@@ -542,6 +542,8 @@ struct TVDashboardTab: View {
                         }
                     }
                 }
+
+                TVDisplayModeSection()
             }
             .padding(.horizontal, 52)
             .padding(.top, 18)
@@ -1475,6 +1477,8 @@ struct TVAudioAndMediaTab: View {
                     .focusSection()
                 }
 
+                TVDefaultAudioDevicesSection()
+
                 VStack(alignment: .leading, spacing: 16) {
                     TVSectionHeader("Per-Application Audio Mixer", subtitle: "Adjust individual app volume or route audio to any of your PC's output devices", tint: TVPalette.purple) {
                         Button {
@@ -2342,5 +2346,120 @@ struct TVPCsAndPairingTab: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .tvGlass(tint: TVPalette.mint)
         .focusSection()
+    }
+}
+
+
+// MARK: - Display mode and default audio devices (PC Companion 4.6.0b4+, Shared/OrbitPCDisplayAudio.swift)
+
+/// Win+P from the Siri Remote: PC screen only, Duplicate, Extend or Second screen only.
+struct TVDisplayModeSection: View {
+    @EnvironmentObject var vm: OrbitTVViewModel
+    @StateObject private var model = OrbitDisplayModeController()
+
+    private var isLive: Bool { vm.metrics.isOnline && !vm.isDemoMode }
+
+    private var subtitle: String {
+        if let error = model.error { return error }
+        if let message = model.message { return message }
+        if model.olderAgent { return "Update the PC Companion to 4.6.0 beta 4 or later to switch displays from here" }
+        if let status = model.status, !status.available { return status.reason ?? "Windows didn't report its displays" }
+        guard let status = model.status else { return "Like Win+P on the PC" }
+        let names = status.displays.map { "\($0.name) (\($0.active ? "on" : "off"))" }.joined(separator: " • ")
+        return names.isEmpty ? "Like Win+P on the PC" : names
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            TVSectionHeader("PC Display Mode", subtitle: subtitle, tint: TVPalette.mint) {
+                if model.isLoading || model.switching != nil { ProgressView() }
+            }
+            if !model.olderAgent, model.status?.available != false {
+                HStack(spacing: 14) {
+                    ForEach(OrbitDisplayMode.allCases) { mode in
+                        let current = model.status?.currentMode == mode
+                        Button {
+                            if vm.isDemoMode { model.selectDemo(mode); return }
+                            Task { await model.select(mode, { try vm.client() }) }
+                        } label: {
+                            Label(mode.title, systemImage: current ? "checkmark.circle.fill" : mode.symbol)
+                        }
+                        .buttonStyle(TVActionPillStyle(tint: TVPalette.mint, isProminent: current))
+                        .disabled(model.switching != nil || model.status?.refusal(for: mode) != nil || model.status == nil
+                                  || (!isLive && !vm.isDemoMode))
+                    }
+                }
+                .focusSection()
+            }
+        }
+        // Another PC or demo mode turning on or off starts over.
+        .task(id: "\(vm.selectedPCID)|\(vm.isDemoMode)") {
+            model.reset()
+            while !Task.isCancelled {
+                if vm.isDemoMode { model.showDemo() }
+                else if vm.metrics.isOnline { await model.refresh({ try vm.client() }) }
+                do { try await Task.sleep(for: .seconds(10)) } catch { break }
+            }
+        }
+    }
+}
+
+/// Windows' default output and input, one row of devices each.
+struct TVDefaultAudioDevicesSection: View {
+    @EnvironmentObject var vm: OrbitTVViewModel
+    @StateObject private var model = OrbitAudioDefaultsController()
+
+    private var isLive: Bool { vm.metrics.isOnline && !vm.isDemoMode }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            TVSectionHeader("Default Devices", subtitle: subtitle, tint: TVPalette.purple) {
+                if model.isLoading || model.changing != nil { ProgressView() }
+            }
+            if let devices = model.devices {
+                HStack(alignment: .top, spacing: 22) {
+                    ForEach(OrbitAudioFlow.allCases) { flow in
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label(flow.title.uppercased(), systemImage: flow.symbol)
+                                .font(.system(size: 15, weight: .bold))
+                                .tracking(1.3)
+                                .foregroundStyle(TVPalette.purple)
+                            if devices.devices(flow).isEmpty {
+                                Text(flow.emptyText).font(.system(size: 17)).foregroundStyle(.secondary)
+                            }
+                            ForEach(devices.devices(flow)) { device in
+                                Button {
+                                    if vm.isDemoMode { model.chooseDemo(device, flow: flow); return }
+                                    Task { await model.choose(device, flow: flow, { try vm.client() }) }
+                                } label: {
+                                    Label(device.name, systemImage: device.isDefault ? "checkmark.circle.fill" : "circle")
+                                }
+                                .buttonStyle(TVActionPillStyle(tint: TVPalette.purple, isProminent: device.isDefault))
+                                .disabled(model.changing != nil || (!isLive && !vm.isDemoMode))
+                            }
+                        }
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .tvGlass(tint: TVPalette.purple)
+                        .focusSection()
+                    }
+                }
+            }
+        }
+        // Another PC or demo mode turning on or off starts over.
+        .task(id: "\(vm.selectedPCID)|\(vm.isDemoMode)") {
+            model.reset()
+            while !Task.isCancelled {
+                if vm.isDemoMode { model.showDemo() }
+                else if vm.metrics.isOnline { await model.refresh({ try vm.client() }) }
+                do { try await Task.sleep(for: .seconds(10)) } catch { break }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        if let error = model.error { return error }
+        if model.olderAgent { return "Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input" }
+        return "Press Select on a device to make it Windows' default. Calls move too."
     }
 }

@@ -1,4 +1,4 @@
-"""Explicit clipboard transfers and per-session Windows Core Audio controls.
+"""Explicit clipboard transfers, per-session Windows Core Audio controls and the default devices.
 
 No clipboard polling, persistence, key simulation, or master-volume fallback.
 COM and clipboard handles live only on the request's worker thread.
@@ -11,6 +11,8 @@ import math
 import os
 import threading
 import time
+from typing import Literal
+
 import psutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -503,6 +505,94 @@ def list_audio_outputs():
             return {"devices": devices, "routingAvailable": False, "routingUnavailableReason": str(error)}
 
 
+# Default playback and recording devices (feature audioDefaults). EDataFlow values.
+AUDIO_FLOWS = {"output": 0, "input": 1}
+
+
+@contextmanager
+def _core_audio():
+    """pycaw's AudioUtilities on a COM apartment that lives for this request only."""
+    if os.name != "nt":
+        raise DesktopUnavailable("Audio devices require Windows.")
+    try:
+        import comtypes
+        from pycaw.pycaw import AudioUtilities
+    except (ImportError, OSError) as error:
+        raise DesktopUnavailable("Windows Core Audio is unavailable. Update the complete Orbit Agent folder and its dependencies.") from error
+    initialized = False
+    try:
+        comtypes.CoInitialize()
+        initialized = True
+        yield AudioUtilities
+    except (DesktopUnavailable, AudioSessionGone, ValueError):
+        raise
+    except Exception as error:
+        raise DesktopUnavailable("Windows could not read the audio devices. Try again in a moment.") from error
+    finally:
+        if initialized:
+            comtypes.CoUninitialize()
+
+
+def _default_endpoint_id(enumerator, flow, role):
+    try:
+        device = enumerator.GetDefaultAudioEndpoint(flow, role)
+        identifier = device.GetId() if device is not None else None
+    except Exception:  # E_NOTFOUND: no active device for this direction.
+        return None
+    return identifier if isinstance(identifier, str) and identifier else None
+
+
+def _endpoints(utilities, flow):
+    """Active devices of one direction. "Default" is the console role, the one Windows' Sound
+    settings call the default device; the communications default is reported beside it."""
+    enumerator = utilities.GetDeviceEnumerator()
+    default = _default_endpoint_id(enumerator, flow, 0)
+    communications = _default_endpoint_id(enumerator, flow, 2)
+    fallback = "Audio output" if flow == AUDIO_FLOWS["output"] else "Microphone"
+    devices = []
+    for device in utilities.GetAllDevices(data_flow=flow, device_state=1):
+        identifier = getattr(device, "id", None)
+        if not isinstance(identifier, str) or not identifier:
+            continue
+        devices.append({"id": identifier, "name": str(getattr(device, "FriendlyName", None) or fallback)[:260],
+                        "isDefault": identifier == default, "isDefaultCommunication": identifier == communications})
+    return devices
+
+
+def _audio_devices_payload(utilities):
+    return {"outputs": _endpoints(utilities, AUDIO_FLOWS["output"]),
+            "inputs": _endpoints(utilities, AUDIO_FLOWS["input"])}
+
+
+def list_audio_devices():
+    with _AUDIO_LOCK, _core_audio() as utilities:
+        return _audio_devices_payload(utilities)
+
+
+def set_default_audio_device(flow, device_id):
+    """Makes one device Windows' default for its direction, for every role (console, multimedia
+    and communications), like the output and input pickers in Windows' quick settings."""
+    if flow not in AUDIO_FLOWS:
+        raise ValueError("Choose output or input.")
+    if not isinstance(device_id, str) or not device_id:
+        raise ValueError("Select an audio device.")
+    with _AUDIO_LOCK, _core_audio() as utilities:
+        data_flow = AUDIO_FLOWS[flow]
+        active = {getattr(device, "id", None) for device in utilities.GetAllDevices(data_flow=data_flow, device_state=1)}
+        if device_id not in active:
+            raise AudioSessionGone("That audio device disconnected. Refresh and choose an active one.")
+        try:
+            from pycaw.constants import ERole
+            setter = utilities.SetDefaultDevice
+        except (ImportError, AttributeError) as error:
+            raise DesktopUnavailable("This PC Companion's audio library cannot change the default device. Update the complete Orbit Agent folder.") from error
+        try:
+            setter(device_id, roles=[ERole.eConsole, ERole.eMultimedia, ERole.eCommunications])
+        except Exception as error:
+            raise DesktopUnavailable("Windows did not change the default audio device. Use Windows Settings → System → Sound.") from error
+        return _audio_devices_payload(utilities)
+
+
 def route_audio_session(identity, expected_create_time, device_id):
     if not isinstance(identity, str) or len(identity) != 64:
         raise AudioSessionGone("Invalid audio session. Refresh the mixer.")
@@ -593,6 +683,12 @@ class AudioRouteWrite(BaseModel):
         return value
 
 
+class AudioDefaultWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    flow: Literal["output", "input"]
+    deviceID: str = Field(min_length=1, max_length=32768)
+
+
 def create_desktop_router(verify_control):
     router = APIRouter(prefix="/api", dependencies=[Depends(verify_control)])
 
@@ -637,5 +733,13 @@ def create_desktop_router(verify_control):
     @router.post("/audio/route", dependencies=[Depends(require_encrypted)])
     def audio_route(body: AudioRouteWrite):
         return translate(lambda: route_audio_session(body.id, body.expectedCreateTime, body.deviceID))
+
+    @router.get("/audio/devices", dependencies=[Depends(require_encrypted)])
+    def audio_devices():
+        return translate(list_audio_devices)
+
+    @router.post("/audio/default", dependencies=[Depends(require_encrypted)])
+    def audio_default(body: AudioDefaultWrite):
+        return translate(lambda: set_default_audio_device(body.flow, body.deviceID))
 
     return router

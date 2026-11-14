@@ -218,6 +218,10 @@
 		A80000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000004 /* PrivacyInfo.xcprivacy */; };
 		A80000000000000000000003 /* OrbitError.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000008B /* OrbitError.swift */; };
 		A80000000000000000000005 /* OrbitNotificationService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* OrbitNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A9000000000000000000DA51 /* OrbitPCDisplayAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000DA50 /* OrbitPCDisplayAudio.swift */; };
+		A9000000000000000000DA52 /* OrbitPCDisplayAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000DA50 /* OrbitPCDisplayAudio.swift */; };
+		A9000000000000000000DA53 /* OrbitPCDisplayAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000DA50 /* OrbitPCDisplayAudio.swift */; };
+		A9000000000000000000DA55 /* DisplayModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000DA54 /* DisplayModeView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -446,6 +450,8 @@
 		B80000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B80000000000000000000004 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcprivacy; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B80000000000000000000005 /* OrbitNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OrbitNotificationService.entitlements; sourceTree = "<group>"; };
+		B2000000000000000000DA50 /* OrbitPCDisplayAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitPCDisplayAudio.swift; sourceTree = "<group>"; };
+		B2000000000000000000DA54 /* DisplayModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayModeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -544,6 +550,7 @@
 				B2000000000000000000000F /* CompanionToolsView.swift */,
 				B2000000000000000000000E /* SessionHistoryView.swift */,
 				B2000000000000000000000D /* DesktopToolsView.swift */,
+				B2000000000000000000DA54 /* DisplayModeView.swift */,
 				B2000000000000000000000C /* PCFilesView.swift */,
 				B2000000000000000000000B /* PCProfilesView.swift */,
 				B2000000000000000000000A /* OrbitAPIClient.swift */,
@@ -642,6 +649,7 @@
 				B2000000000000000000012D /* OrbitStreamDisplay.swift */,
 				B2000000000000000000012E /* OrbitStreamDisplayModels.swift */,
 				B2000000000000000000C0DE /* OrbitPowerCountdown.swift */,
+				B2000000000000000000DA50 /* OrbitPCDisplayAudio.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -1031,6 +1039,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000DA55 /* DisplayModeView.swift in Sources */,
+				A9000000000000000000DA51 /* OrbitPCDisplayAudio.swift in Sources */,
 				A9000000000000000000C5A2 /* OrbitSettingsSync.swift in Sources */,
 				A9000000000000000000AE72 /* OrbitReviewPrompt.swift in Sources */,
 				A9000000000000000000AE75 /* OrbitReviewPromptHost.swift in Sources */,
@@ -1163,6 +1173,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000DA52 /* OrbitPCDisplayAudio.swift in Sources */,
 				A50000000000000000000102 /* OrbitBrandMark.swift in Sources */,
 				A9000000000000000000C0D5 /* OrbitPowerCountdown.swift in Sources */,
 				A50000000000000000000101 /* OrbitRemoteDeck.swift in Sources */,
@@ -1193,6 +1204,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9000000000000000000DA53 /* OrbitPCDisplayAudio.swift in Sources */,
 				A9000000000000000000C5A3 /* OrbitSettingsSync.swift in Sources */,
 				A9000000000000000000AE73 /* OrbitReviewPrompt.swift in Sources */,
 				A9000000000000000000AE76 /* OrbitReviewPromptHost.swift in Sources */,

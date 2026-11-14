@@ -444,6 +444,7 @@ private final class AudioMixerModel: ObservableObject {
 struct AudioMixerView: View {
     @ObservedObject var vm: OrbitViewModel
     @StateObject private var mixer = AudioMixerModel()
+    @StateObject private var defaults = OrbitAudioDefaultsController()
     @Environment(\.scenePhase) private var scenePhase
 
     @Environment(\.orbitTheme) private var theme
@@ -487,6 +488,7 @@ struct AudioMixerView: View {
                 Section { Label(status, systemImage: "speaker.wave.2").font(.caption).foregroundStyle(.mint) }
                     .orbitRow(tint: .mint)
             }
+            defaultDevicesSection
             if mixer.sessions.isEmpty {
                 Section("Applications") {
                     if mixer.isLoading {
@@ -519,16 +521,88 @@ struct AudioMixerView: View {
                 .accessibilityLabel("Refresh audio sessions")
             }
         }
-        .refreshable { await mixer.refresh(vm) }
+        .refreshable {
+            await mixer.refresh(vm)
+            if !vm.isDemoMode, vm.metrics.isOnline { await defaults.refresh(vm.companionClient) }
+        }
         .task(id: vm.connectionID) {
             vm.prepareAppIcons()
             while !Task.isCancelled {
-                if scenePhase == .active { await mixer.refresh(vm) }
+                if scenePhase == .active {
+                    await mixer.refresh(vm)
+                    if vm.isDemoMode { defaults.showDemo() }
+                    // Default devices change rarely: every few polls is enough.
+                    else if vm.metrics.isOnline { await defaults.refresh(vm.companionClient, maxAge: 9) }
+                    else if defaults.showsDemo { defaults.reset() }
+                }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             }
         }
-        .onChange(of: vm.connectionID) { _, _ in mixer.reset() }
-        .onDisappear { mixer.reset() }
+        .onChange(of: vm.connectionID) { _, _ in mixer.reset(); defaults.reset() }
+        .onDisappear { mixer.reset(); defaults.reset() }
+    }
+
+    // MARK: Default devices (PC Companion 4.6.0b4+: GET /api/audio/devices, POST /api/audio/default)
+
+    @ViewBuilder
+    private var defaultDevicesSection: some View {
+        Section {
+            if defaults.olderAgent {
+                Label("Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input.", systemImage: "arrow.down.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(OrbitAudioFlow.allCases) { flow in defaultDeviceRow(flow) }
+                if let error = defaults.error {
+                    Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                }
+            }
+        } header: {
+            Text("Default Devices")
+        } footer: {
+            if !defaults.olderAgent {
+                Text("Apps that follow Windows' default switch to the new device. Calls move too, like Windows' quick settings.")
+            }
+        }
+        .orbitRow()
+    }
+
+    private func defaultDeviceRow(_ flow: OrbitAudioFlow) -> some View {
+        let list = defaults.devices?.devices(flow) ?? []
+        let current = defaults.devices?.current(flow)
+        let placeholder = defaults.devices == nil ? (defaults.isLoading ? "Reading devices…" : "—") : flow.emptyText
+        return HStack(spacing: 12) {
+            OrbitIconBadge(systemName: flow.symbol, tint: .purple, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(flow.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(current?.name ?? placeholder).font(.subheadline.weight(.semibold)).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if defaults.changing == flow {
+                ProgressView().controlSize(.small)
+            } else {
+                Menu {
+                    ForEach(list) { device in
+                        Button {
+                            OrbitHaptics.tap()
+                            if vm.isDemoMode { defaults.chooseDemo(device, flow: flow); return }
+                            Task { await defaults.choose(device, flow: flow, vm.companionClient) }
+                        } label: {
+                            if device.isDefault { Label(device.name, systemImage: "checkmark") } else { Text(device.name) }
+                        }
+                    }
+                } label: {
+                    Label("Change", systemImage: "arrow.left.arrow.right")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(theme.accent.opacity(0.14), in: Capsule())
+                        .foregroundStyle(theme.accent)
+                }
+                .disabled(list.isEmpty || defaults.changing != nil || (!vm.isDemoMode && !vm.metrics.isOnline))
+                .accessibilityLabel("Choose the default \(flow.title.lowercased()) device")
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     private var masterVolumeRow: some View {

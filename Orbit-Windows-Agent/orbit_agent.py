@@ -75,7 +75,7 @@ try:
 except (ImportError, OSError):
     HAS_PYCAW = False
 
-AGENT_VERSION = "4.6.0b3"
+AGENT_VERSION = "4.6.0b4"
 set_agent_version(AGENT_VERSION)
 LOGGER = logging.getLogger("orbit")
 API_TOKEN = ""
@@ -375,6 +375,7 @@ app = FastAPI(title="Orbit PC Companion Agent", version=AGENT_VERSION, lifespan=
               docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(create_files_router(verify_token))
 app.include_router(create_desktop_router(verify_token))
+register_feature("audioDefaults")
 app.include_router(create_history_router(verify_token, lambda: HISTORY_RECORDER,
                                          detail_extras=orbit_energy.session_energy_extras))
 app.include_router(create_pairing_router(lambda: PAIRING_MANAGER))
@@ -1407,6 +1408,13 @@ app.include_router(create_stream_display_router(verify_token, require_https, STR
                                                 require_windows=lambda: require_windows()))
 register_feature("streamDisplay")
 register_feature("secondScreen")
+
+# Win+P from the apps (orbit_display_mode): PC screen only, Duplicate, Extend, Second screen only.
+from orbit_display_mode import DisplayModeService, create_display_mode_router
+
+DISPLAY_MODE = DisplayModeService(desktop_available=lambda: not BOOT_MODE)
+app.include_router(create_display_mode_router(verify_token, require_https, DISPLAY_MODE))
+register_feature("displayMode")
 
 
 @app.websocket("/ws/stream")

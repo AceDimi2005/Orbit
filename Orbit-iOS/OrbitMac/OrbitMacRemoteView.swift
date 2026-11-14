@@ -201,6 +201,7 @@ struct MacRemoteView: View {
             keyboardCard
             mediaCard
             quickActionsCard
+            MacDisplayModeCard()
             gamepadCard
         }
     }
@@ -1011,5 +1012,98 @@ final class MacRemoteTrackpadView: NSView {
             }
             self?.worker = nil
         }
+    }
+}
+
+
+// MARK: - Display mode
+
+/// Win+P from the Mac: PC screen only, Duplicate, Extend or Second screen only, and the displays Windows
+/// sees (PC Companion 4.6.0b4+, Shared/OrbitPCDisplayAudio.swift).
+struct MacDisplayModeCard: View {
+    @EnvironmentObject var vm: OrbitMacViewModel
+    @Environment(\.macTheme) private var theme
+    @StateObject private var model = OrbitDisplayModeController()
+
+    private var isLive: Bool { vm.metrics.isOnline && !vm.isDemoMode }
+
+    private var subtitle: String {
+        if let error = model.error { return error }
+        if let message = model.message { return message }
+        guard let status = model.status, status.available else { return "Like Win+P on the PC" }
+        let count = status.displays.count
+        return "\(count == 1 ? "1 display" : "\(count) displays") · \(status.currentMode?.title ?? "custom layout")"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MacSectionHeader("Display mode", subtitle: subtitle, icon: "display.2", tint: model.error == nil ? nil : .orange) {
+                if model.isLoading || model.switching != nil { ProgressView().controlSize(.small) }
+            }
+            content
+        }
+        .padding(16)
+        .macGlass(cornerRadius: 18)
+        // Another PC or demo mode turning on or off starts over.
+        .task(id: "\(vm.selectedPCID)|\(vm.isDemoMode)") {
+            model.reset()
+            while !Task.isCancelled {
+                if vm.isDemoMode { model.showDemo() }
+                else if vm.metrics.isOnline { await model.refresh({ try vm.client() }) }
+                do { try await Task.sleep(for: .seconds(8)) } catch { break }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if model.olderAgent {
+            Text("Update the PC Companion to 4.6.0 beta 4 or later to switch the PC's displays from here.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else if let status = model.status, !status.available {
+            Text(status.reason ?? "Windows didn't report its displays.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(OrbitDisplayMode.allCases) { mode in modeButton(mode) }
+            }
+            if let displays = model.status?.displays, !displays.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(displays.enumerated()), id: \.offset) { _, display in
+                        HStack(spacing: 8) {
+                            Image(systemName: display.symbol).frame(width: 18).foregroundStyle(display.active ? .mint : .secondary)
+                            Text(display.name).lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Text(display.detail).foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modeButton(_ mode: OrbitDisplayMode) -> some View {
+        let current = model.status?.currentMode == mode
+        let refusal = model.status?.refusal(for: mode)
+        return Button {
+            if vm.isDemoMode { model.selectDemo(mode); return }
+            Task { await model.select(mode, { try vm.client() }) }
+        } label: {
+            HStack(spacing: 8) {
+                if model.switching == mode {
+                    ProgressView().controlSize(.small).frame(width: 18)
+                } else {
+                    Image(systemName: mode.symbol).frame(width: 18)
+                }
+                Text(mode.title).lineLimit(1).minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+                if current { Image(systemName: "checkmark").font(.caption.weight(.bold)) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(MacHoverButtonStyle(tint: current ? theme.accent : .white, prominent: current))
+        .disabled(model.switching != nil || refusal != nil || model.status == nil || (!isLive && !vm.isDemoMode))
+        .help(refusal ?? mode.subtitle)
     }
 }

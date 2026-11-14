@@ -12,6 +12,9 @@ struct MacAudioView: View {
     @Environment(\.macTheme) private var theme
     /// Sessions whose slider is currently being dragged; auto-refresh pauses while non-empty.
     @State private var draggingIDs: Set<String> = []
+    /// Windows' default output and input (PC Companion 4.6.0b4+).
+    @StateObject private var defaults = OrbitAudioDefaultsController()
+    @State private var choosingID: String?
 
     private var volumeKnown: Bool { vm.metrics.volumeAvailable != false }
 
@@ -35,15 +38,37 @@ struct MacAudioView: View {
         }
         .task {
             await vm.refreshAudio()
+            await refreshDefaults()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(4)) } catch { break }
                 guard draggingIDs.isEmpty, vm.audioRoutingSessionID == nil else { continue }
                 await vm.refreshAudio()
+                await refreshDefaults(maxAge: 10)
             }
         }
         .onChange(of: vm.selectedPCID) { _, _ in
             draggingIDs = []
-            Task { await vm.refreshAudio() }
+            defaults.reset()
+            Task {
+                await vm.refreshAudio()
+                await refreshDefaults()
+            }
+        }
+    }
+
+    private func refreshDefaults(maxAge: TimeInterval = 0) async {
+        if vm.isDemoMode { defaults.showDemo(); return }
+        if defaults.showsDemo { defaults.reset() }  // demo mode just ended
+        guard vm.metrics.isOnline else { return }
+        await defaults.refresh({ try vm.client() }, maxAge: maxAge)
+    }
+
+    private func choose(_ device: OrbitAudioDevice, flow: OrbitAudioFlow) {
+        if vm.isDemoMode { defaults.chooseDemo(device, flow: flow); return }
+        choosingID = device.id
+        Task {
+            await defaults.choose(device, flow: flow, { try vm.client() })
+            choosingID = nil
         }
     }
 
@@ -134,34 +159,100 @@ struct MacAudioView: View {
     // MARK: Outputs
 
     private var outputsSubtitle: String? {
+        if defaults.devices != nil { return "Click a device to make it Windows' default" }
         if vm.audioOutputs.isEmpty { return nil }
         return vm.audioOutputs.count == 1 ? "1 playback device" : "\(vm.audioOutputs.count) playback devices"
     }
 
     private var outputsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MacSectionHeader("Outputs", subtitle: outputsSubtitle, icon: "hifispeaker.fill") {
+            MacSectionHeader(defaults.devices == nil ? "Outputs" : "Devices", subtitle: outputsSubtitle, icon: "hifispeaker.fill") {
                 if vm.audioRoutingAvailable {
                     MacStatusPill(text: "Per-app routing", tint: .mint, icon: "arrow.triangle.branch")
                 } else {
                     MacStatusPill(text: "Mixer only", tint: .secondary, icon: "slider.horizontal.3")
                 }
             }
-            if vm.audioOutputs.isEmpty {
-                Text(vm.audioUpdated == nil && !vm.isDemoMode ? "Reading playback devices…" : "The agent did not report any playback devices.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if let devices = defaults.devices {
+                ForEach(OrbitAudioFlow.allCases) { flow in
+                    defaultDeviceList(flow, devices.devices(flow))
+                }
+                if let error = defaults.error {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
             } else {
-                VStack(spacing: 6) {
-                    ForEach(vm.audioOutputs) { output in
-                        outputRow(output)
+                if vm.audioOutputs.isEmpty {
+                    Text(vm.audioUpdated == nil && !vm.isDemoMode ? "Reading playback devices…" : "The agent did not report any playback devices.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 6) {
+                        ForEach(vm.audioOutputs) { output in
+                            outputRow(output)
+                        }
                     }
+                }
+                if defaults.olderAgent {
+                    Text("Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input from here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .macGlass(cornerRadius: 18)
+    }
+
+    private func defaultDeviceList(_ flow: OrbitAudioFlow, _ list: [OrbitAudioDevice]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(flow.title, systemImage: flow.symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if list.isEmpty {
+                Text(flow.emptyText).font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(list) { device in
+                defaultDeviceRow(device, flow: flow)
+            }
+        }
+    }
+
+    private func defaultDeviceRow(_ device: OrbitAudioDevice, flow: OrbitAudioFlow) -> some View {
+        let routed = flow == .output ? vm.audioSessions.filter { $0.outputDeviceID == device.id }.count : 0
+        return Button {
+            choose(device, flow: flow)
+        } label: {
+            HStack(spacing: 10) {
+                if choosingID == device.id {
+                    ProgressView().controlSize(.small).frame(width: 18)
+                } else {
+                    Image(systemName: device.isDefault ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(device.isDefault ? AnyShapeStyle(theme.accent) : AnyShapeStyle(.secondary))
+                        .frame(width: 18)
+                }
+                Text(device.name)
+                    .font(.system(.subheadline, weight: device.isDefault ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                if device.isDefaultCommunication && !device.isDefault {
+                    MacStatusPill(text: "Calls", tint: .secondary, icon: "phone.fill")
+                }
+                if routed > 0 {
+                    MacStatChip(label: routed == 1 ? "app" : "apps", value: "\(routed)", icon: "app.fill", tint: theme.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.white.opacity(device.isDefault ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(device.isDefault || defaults.changing != nil)
+        .help(device.isDefault ? "Windows' default \(flow.title.lowercased())" : "Make this Windows' default \(flow.title.lowercased()) (calls move too)")
+        .accessibilityLabel("\(device.name)\(device.isDefault ? ", default" : "")")
     }
 
     private func outputRow(_ output: MacAudioOutput) -> some View {
