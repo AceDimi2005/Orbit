@@ -2362,7 +2362,7 @@ struct TVDisplayModeSection: View {
     private var subtitle: String {
         if let error = model.error { return error }
         if let message = model.message { return message }
-        if model.olderAgent { return "Update the PC Companion to 4.6.0 beta 4 or later to switch displays from here" }
+        if model.olderAgent { return "Update the PC Companion to 4.6.0 or later to switch displays from here" }
         if let status = model.status, !status.available { return status.reason ?? "Windows didn't report its displays" }
         guard let status = model.status else { return "Like Win+P on the PC" }
         let names = status.displays.map { "\($0.name) (\($0.active ? "on" : "off"))" }.joined(separator: " • ")
@@ -2459,7 +2459,7 @@ struct TVDefaultAudioDevicesSection: View {
 
     private var subtitle: String {
         if let error = model.error { return error }
-        if model.olderAgent { return "Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input" }
+        if model.olderAgent { return "Update the PC Companion to 4.6.0 or later to choose the default output and input" }
         return "Press Select on a device to make it Windows' default. Calls move too."
     }
 }

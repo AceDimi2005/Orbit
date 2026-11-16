@@ -28,8 +28,25 @@ enum OrbitThirdPartyNotices {
         Component(name: "nanors", author: "Joseph Calderon", license: "MIT", url: "https://github.com/sleepybishop/nanors", role: "Reed–Solomon forward error correction for the video stream.", isBundled: true),
         Component(name: "swift-opus (Copus)", author: "Alta Software", license: "BSD-3-Clause", url: "https://github.com/alta/swift-opus", role: "Swift package wrapping the Opus codec.", isBundled: true),
         Component(name: "Opus", author: "Xiph.Org Foundation", license: "BSD-3-Clause", url: "https://opus-codec.org", role: "Audio decoding for the stream.", isBundled: true),
+        Component(name: "swift-srp", author: "Adam Fowler", license: "Apache-2.0", url: "https://github.com/adam-fowler/swift-srp", role: "SRP-6a password-authenticated key exchange used for 6-digit PIN pairing.", isBundled: true),
+        Component(name: "big-num", author: "Adam Fowler", license: "MIT", url: "https://github.com/adam-fowler/big-num", role: "Arbitrary-precision integer arithmetic used by swift-srp.", isBundled: true),
+        Component(name: "swift-crypto", author: "Apple Inc. and the SwiftCrypto project authors", license: "Apache-2.0", url: "https://github.com/apple/swift-crypto", role: "Cryptographic primitives used by swift-srp (includes derivations from SwiftNIO under Apache-2.0).", isBundled: true),
+        Component(name: "swift-asn1", author: "Apple Inc. and the SwiftASN1 project authors", license: "Apache-2.0", url: "https://github.com/apple/swift-asn1", role: "ASN.1 parser and serializer used by swift-crypto (includes derivations from SwiftNIO under Apache-2.0).", isBundled: true),
         Component(name: "Sunshine", author: "LizardByte", license: "GPLv3", url: "https://app.lizardbyte.dev/Sunshine/", role: "Runs on your Windows PC and provides the game stream. Not part of Orbit; download it from LizardByte.", isBundled: false),
         Component(name: "Moonlight", author: "Moonlight Game Streaming Project", license: "GPLv3", url: "https://moonlight-stream.org", role: "The reference streaming client. Not part of Orbit; on the Mac, Orbit can hand a stream over to it.", isBundled: false),
+        Component(name: "Softcam", author: "tshino", license: "MIT", url: "https://github.com/tshino/softcam", role: "DirectShow virtual camera installed on your Windows PC when you set up the iPhone/iPad webcam. Runs on the PC only.", isBundled: false),
+        Component(name: "DirectShow BaseClasses", author: "Microsoft Corporation", license: "MIT", url: "https://github.com/microsoft/Windows-classic-samples", role: "Windows DirectShow base classes linked inside the Softcam virtual camera DLLs on the PC.", isBundled: false),
+        Component(name: "Virtual Display Driver (VDD)", author: "MikeTheTech and VirtualDrivers", license: "MIT", url: "https://github.com/VirtualDrivers/Virtual-Display-Driver", role: "Virtual monitor driver installed on your Windows PC for Fill Screen and Second Screen streaming. Not part of Orbit.", isBundled: false),
+        Component(name: "OBS Studio (obs-websocket)", author: "OBS Project", license: "GPLv2+", url: "https://obsproject.com", role: "Runs on your Windows PC; Orbit's Buttons deck can switch scenes and control recording or streaming over its local WebSocket API.", isBundled: false),
+        Component(name: "pycaw", author: "Andre Miras and contributors", license: "MIT", url: "https://github.com/AndreMiras/pycaw", role: "Python Core Audio Windows library used by the Windows PC Companion for per-app audio control and default audio devices.", isBundled: false),
+        Component(name: "EarTrumpet (audio policy interface definitions)", author: "File-New-Project", license: "MIT (with excluded entities)", url: "https://github.com/File-New-Project/EarTrumpet", role: "Factual Windows AudioPolicyConfig COM GUIDs and interface layout referenced by the Windows PC Companion.", isBundled: false),
+    ]
+
+    static let dataSources: [Component] = [
+        Component(name: "Eurostat (nrg_pc_204)", author: "European Union / Eurostat", license: "CC BY 4.0", url: "https://ec.europa.eu/eurostat/databrowser/view/nrg_pc_204/default/table", role: "Household electricity prices for European countries (Decision 2011/833/EU and CC BY 4.0). Orbit keeps only the newest all-taxes household price per kWh for each country and maps EL to GR.", isBundled: false),
+        Component(name: "Ofgem Energy Price Cap", author: "Office of Gas and Electricity Markets (Ofgem)", license: "OGL v3.0", url: "https://www.ofgem.gov.uk/energy-price-cap", role: "Great Britain average Direct Debit electricity unit rate. Contains public sector information licensed under the Open Government Licence v3.0.", isBundled: false),
+        Component(name: "U.S. Energy Information Administration (EIA)", author: "U.S. Department of Energy", license: "Public Domain", url: "https://www.eia.gov/electricity/monthly/", role: "U.S. average residential electricity price from Electric Power Monthly.", isBundled: false),
+        Component(name: "ElCom", author: "Swiss Federal Electricity Commission (ElCom)", license: "Public Tariff Data", url: "https://www.strompreis.elcom.admin.ch", role: "Median Swiss household electricity tariff.", isBundled: false),
     ]
 
     static var bundled: [Component] { components.filter(\.isBundled) }
@@ -784,9 +801,19 @@ struct OrbitAcknowledgementsView: View {
                 }
                 linkRow("Download Sunshine for Windows", systemImage: "arrow.down.circle", url: OrbitThirdPartyNotices.sunshineDownloadURL)
             } header: {
-                Text("Works with")
+                Text("Works with & PC companion components")
             } footer: {
-                Text("Orbit is not affiliated with or endorsed by the Moonlight project, LizardByte, NVIDIA or Apple.")
+                Text("Orbit is not affiliated with or endorsed by the Moonlight project, LizardByte, OBS Project, NVIDIA, Microsoft or Apple.")
+            }
+
+            Section {
+                ForEach(OrbitThirdPartyNotices.dataSources) { source in
+                    componentRow(source)
+                }
+            } header: {
+                Text("Electricity price data sources")
+            } footer: {
+                Text("Used to estimate household electricity cost when no custom tariff is set. Nothing about your PC or usage is sent to these providers.")
             }
 
             Section {

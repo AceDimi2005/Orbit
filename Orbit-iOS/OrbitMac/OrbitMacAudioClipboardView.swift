@@ -193,7 +193,7 @@ struct MacAudioView: View {
                     }
                 }
                 if defaults.olderAgent {
-                    Text("Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input from here.")
+                    Text("Update the PC Companion to 4.6.0 or later to choose the default output and input from here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

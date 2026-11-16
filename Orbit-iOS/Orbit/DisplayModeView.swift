@@ -41,7 +41,7 @@ struct DisplayModeView: View {
             if model.olderAgent {
                 Section {
                     OrbitEmptyState(icon: "arrow.down.circle", title: "Update the PC Companion",
-                                    message: "Changing the display mode needs PC Companion 4.6.0 beta 4 or later on the PC.", tint: .teal)
+                                    message: "Changing the display mode needs PC Companion 4.6.0 or later on the PC.", tint: .teal)
                 }
                 .orbitRow()
             } else if let status = model.status, !status.available {

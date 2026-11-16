@@ -130,3 +130,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
+
+## Virtual Display Driver and OBS Studio (external PC software)
+
+- **Virtual Display Driver (VDD)** by MikeTheTech and VirtualDrivers (MIT,
+  https://github.com/VirtualDrivers/Virtual-Display-Driver) can be installed separately on the PC
+  with `winget install -e --id VirtualDrivers.Virtual-Display-Driver` for Fill Screen and Second
+  Screen streaming (`orbit_stream_display.py`). It is not bundled with Orbit.
+- **OBS Studio** by the OBS Project (GPLv2+, https://obsproject.com) runs separately on the PC;
+  `orbit_deck.py` communicates with its built-in `obs-websocket` server over localhost.
+- **pycaw** by Andre Miras and contributors (MIT, https://github.com/AndreMiras/pycaw) is installed
+  via `pip` (`requirements.txt`) and used by `orbit_desktop.py` for per-session audio volume/mute
+  and for switching Windows' default output and input audio devices.

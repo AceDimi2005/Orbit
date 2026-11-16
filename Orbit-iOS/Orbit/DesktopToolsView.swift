@@ -548,7 +548,7 @@ struct AudioMixerView: View {
     private var defaultDevicesSection: some View {
         Section {
             if defaults.olderAgent {
-                Label("Update the PC Companion to 4.6.0 beta 4 or later to choose the default output and input.", systemImage: "arrow.down.circle")
+                Label("Update the PC Companion to 4.6.0 or later to choose the default output and input.", systemImage: "arrow.down.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(OrbitAudioFlow.allCases) { flow in defaultDeviceRow(flow) }

@@ -1058,7 +1058,7 @@ struct MacDisplayModeCard: View {
     @ViewBuilder
     private var content: some View {
         if model.olderAgent {
-            Text("Update the PC Companion to 4.6.0 beta 4 or later to switch the PC's displays from here.")
+            Text("Update the PC Companion to 4.6.0 or later to switch the PC's displays from here.")
                 .font(.caption).foregroundStyle(.secondary)
         } else if let status = model.status, !status.available {
             Text(status.reason ?? "Windows didn't report its displays.")

@@ -1,6 +1,6 @@
 # Orbit Agent pentru Windows
 
-Agentul **4.5.2** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
+Agentul **4.6.0** citește componentele PC-ului și oferă asociere automată prin cod, monitorizare, control, fișiere și transfer, clipboard text, mixer audio și istoric de sesiuni. Nu presupune un anumit procesor, GPU, cooler sau capacitate de memorie. Aplicația are taburile **Overview / Library / Files / Remote / Tools**; setările sunt în **Tools → Settings**.
 
 ## Pornire, instalare și conectare
 
@@ -31,7 +31,7 @@ Pentru regenerarea tokenului, oprește agentul, șterge `.orbit-token` și repor
 
 ## Actualizare și diagnosticare
 
-Această versiune a agentului raportează **4.5.2**. Poți verifica și aplica actualizări direct din:
+Această versiune a agentului raportează **4.6.0**. Poți verifica și aplica actualizări direct din:
 - **System Tray pe PC** → click pe pictograma Orbit → **Check for updates...**
 - **Aplicația iOS** → **Tools → Settings → PC Companion Update → Check for Updates on GitHub**
 - **Linie de comandă:** `OrbitCompanion.exe --check-updates` sau `python orbit_agent.py --check-updates`
@@ -104,7 +104,7 @@ API-urile `GET/PUT /api/clipboard`, `GET /api/audio/sessions`, `POST /api/audio/
 
 Sesiunile audio (agent 4.4+) au și `displayName`, `isActive`, `kind` (`app`, `background` sau `system`) și `iconID`.
 
-**Default Devices** (agent 4.6.0b4+, feature `audioDefaults`) schimbă, numai la cererea explicită a utilizatorului, dispozitivul implicit al Windows pentru ieșire sau intrare, pentru toate cele trei roluri (console, multimedia, communications), ca selectorul din quick settings. Rutarea per aplicație de mai sus rămâne separată și nu schimbă niciodată dispozitivul implicit. `GET /api/audio/devices` întoarce `outputs` și `inputs` (dispozitivele active, cu `id`, `name`, `isDefault` = rolul console, `isDefaultCommunication`); `POST /api/audio/default` cu `{"flow": "output" | "input", "deviceID": "..."}` schimbă implicitul și întoarce listele noi. Un dispozitiv deconectat între timp dă 409. Folosește `AudioUtilities.SetDefaultDevice` din pycaw (interfața internă Windows `IPolicyConfig`, nedocumentată public de Microsoft); dacă Windows refuză, agentul răspunde 503 cu trimitere la Windows Settings → System → Sound. Cere tokenul principal și HTTPS.
+**Default Devices** (agent 4.6.0+, feature `audioDefaults`) schimbă, numai la cererea explicită a utilizatorului, dispozitivul implicit al Windows pentru ieșire sau intrare, pentru toate cele trei roluri (console, multimedia, communications), ca selectorul din quick settings. Rutarea per aplicație de mai sus rămâne separată și nu schimbă niciodată dispozitivul implicit. `GET /api/audio/devices` întoarce `outputs` și `inputs` (dispozitivele active, cu `id`, `name`, `isDefault` = rolul console, `isDefaultCommunication`); `POST /api/audio/default` cu `{"flow": "output" | "input", "deviceID": "..."}` schimbă implicitul și întoarce listele noi. Un dispozitiv deconectat între timp dă 409. Folosește `AudioUtilities.SetDefaultDevice` din pycaw (interfața internă Windows `IPolicyConfig`, nedocumentată public de Microsoft); dacă Windows refuză, agentul răspunde 503 cu trimitere la Windows Settings → System → Sound. Cere tokenul principal și HTTPS.
 
 ## Mod de afișare (Win+P)
 
@@ -135,7 +135,7 @@ Conexiunea este **locală și automată**, prin memoria partajată a programelor
 1. Descarcă [MSI Afterburner de pe pagina oficială MSI](https://www.msi.com/Landing/afterburner/graphics-cards). La instalare, include **RivaTuner Statistics Server (RTSS)**. Pornește ambele programe în aceeași sesiune Windows ca agentul.
 2. În **Afterburner → Settings → Monitoring**, bifează graficele dorite în **Active hardware monitoring graphs**, de exemplu **CPU temperature**, **GPU temperature**, **GPU usage**, **Memory usage**, **Framerate** și **Frametime**, în funcție de ce apare pe PC-ul tău. Apasă **Apply**. Graficul trebuie să aibă o valoare curentă în Afterburner. **Show in On-Screen Display** este opțional pentru afișarea pe PC. Vezi [ghidul MSI pentru monitorizare](https://www.msi.com/blog/msi-afterburner-on-screen-display/).
 3. Deschide RTSS din system tray și setează **Application detection level → Low** pentru joc. Pentru o verificare vizuală, poți activa temporar **Show own statistics**; nu este nevoie să lași overlay-ul vizibil pe ecran pentru Orbit.
-4. Actualizează agentul complet la **4.5.2**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
+4. Actualizează agentul complet la **4.6.0**, pornește `start_agent.bat` și deschide jocul. Nu seta `ORBIT_PRESENTMON_CSV` pentru această metodă. Păstrează Afterburner și RTSS pornite pe durata sesiunii.
 5. În Orbit, verifică **Tools → Monitoring sources**: sursa senzorilor poate indica MSI Afterburner, iar sursa FPS trebuie să indice RTSS când există cadre recente. GPU NVIDIA poate continua să folosească `nvidia-smi`, care are prioritate. Adaugă cardul **Game frame rate** din **Customize dashboard**. **Tools → Settings → Set up FPS** include acești pași.
 
 **Dacă nu apare o valoare:** verifică întâi că ea există în Afterburner sau în statisticile RTSS. Unele jocuri, API-uri grafice ori sisteme anti-cheat blochează detectarea RTSS; integrarea nu garantează compatibilitatea cu fiecare joc. Pentru un executabil nerecunoscut, setează `ORBIT_GAME_PROCESSES` înainte de pornirea agentului. Datele vechi nu sunt afișate ca măsurători noi după oprirea sursei sau a jocului. PresentMon rămâne o alternativă pentru FPS, descrisă mai jos.
