@@ -2,14 +2,13 @@ import SwiftUI
 import Foundation
 import UIKit
 
-struct DiscoveredOrbitPC: Identifiable, Equatable {
+struct DiscoveredOrbitPC: Identifiable, Equatable, Sendable {
     var id: String { fingerprint }
     let name: String
-    /// IPv4 address when Bonjour resolved one, otherwise the `.local` hostname.
-    let host: String
+    /// Only routes that answered a read-only, certificate-pinned discovery probe.
+    var endpoints: [OrbitDiscoveryEndpoint]
     /// Bonjour hostname kept as a fallback for when the PC's address changes.
     let bonjourHost: String
-    let port: Int
     let fingerprint: String
     let version: String
 }
@@ -22,10 +21,13 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
     private var services: [NetService] = []
     private var resolved: [String: DiscoveredOrbitPC] = [:]
     private var running = false
+    private var probes: [String: Task<Void, Never>] = [:]
+    private var generations: [String: UUID] = [:]
+    private var checkedConnections = false
 
     func start() {
         guard !running else { return }
-        running = true; computers = []; resolved = [:]
+        running = true; computers = []; resolved = [:]; checkedConnections = false
         message = "Searching your local network…"
         browser.delegate = self
         browser.searchForServices(ofType: "_orbit._tcp.", inDomain: "local.")
@@ -34,13 +36,18 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
         running = false; browser.stop()
         for service in services { service.stop(); service.delegate = nil }
         services = []
+        for probe in probes.values { probe.cancel() }
+        probes = [:]; generations = [:]
     }
     func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
         guard running else { return }
         services.append(service); service.delegate = self; service.resolve(withTimeout: 8)
     }
     func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        service.stop(); service.delegate = nil
         services.removeAll { $0 == service }
+        probes.removeValue(forKey: service.name)?.cancel()
+        generations.removeValue(forKey: service.name)
         resolved.removeValue(forKey: service.name)
         publish()
     }
@@ -48,41 +55,70 @@ final class OrbitPCDiscovery: NSObject, ObservableObject, @preconcurrency NetSer
         message = "Discovery is unavailable. Allow Local Network access for Orbit in iPhone Settings, then try again. You can also use manual setup."
     }
     func netServiceDidResolveAddress(_ sender: NetService) {
-        guard running, let data = sender.txtRecordData() else { return }
+        guard running, services.contains(sender), let data = sender.txtRecordData() else { return }
         let text = NetService.dictionary(fromTXTRecord: data)
         func value(_ key: String) -> String { text[key].flatMap { String(data: $0, encoding: .utf8) } ?? "" }
         let fingerprint = OrbitAPIClient.normalizedFingerprint(value("fingerprint"))
         guard OrbitAPIClient.validFingerprint(fingerprint), (1...65535).contains(sender.port),
               value("pairing") == "orbit-srp6a-sha256-2048-v1" else { return }
-        // Prefer the resolved IPv4 address over the Bonjour `.local` name: the plain
-        // address is what Wake-on-LAN, Tailscale and other VPN/relay setups need, and
-        // mDNS names are not resolvable outside the local link. The name is kept as a
-        // fallback so a PC whose DHCP lease changes can still be found again.
         let bonjourHost = (sender.hostName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let host = Self.ipv4Address(from: sender.addresses ?? []) ?? bonjourHost
-        guard !host.isEmpty else { return }
-        resolved[sender.name] = DiscoveredOrbitPC(name: String(value("name").prefix(80)), host: host, bonjourHost: bonjourHost,
-                                                port: sender.port, fingerprint: fingerprint, version: value("version"))
+        let addresses = OrbitDiscoveryEndpoint.ipv4Addresses(from: sender.addresses ?? [])
+        // The hostname can recover from stale address records, but is still probed.
+        let hosts = addresses + (bonjourHost.isEmpty ? [] : [bonjourHost])
+        let endpoints = OrbitDiscoveryEndpoint.bounded(hosts.map { OrbitDiscoveryEndpoint(host: $0, port: sender.port) })
+        guard !endpoints.isEmpty else { return }
+        let pc = DiscoveredOrbitPC(name: String(value("name").prefix(80)), endpoints: endpoints, bonjourHost: bonjourHost,
+                                   fingerprint: fingerprint, version: value("version"))
+        let key = sender.name, generation = UUID()
+        probes[key]?.cancel()
+        resolved.removeValue(forKey: key)
+        generations[key] = generation
+        probes[key] = Task {
+            do {
+                let reachable = try await OrbitDiscoveryRouteSelector().reachable(pc.endpoints) { endpoint in
+                    try await Self.probe(endpoint, fingerprint: fingerprint)
+                }
+                guard running, generations[key] == generation, !Task.isCancelled else { return }
+                if !reachable.isEmpty {
+                    var verified = pc
+                    verified.endpoints = reachable
+                    resolved[key] = verified
+                }
+                checkedConnections = true
+                probes.removeValue(forKey: key)
+                publish()
+            } catch {
+                // Cancelled/replaced discoveries must not republish stale routes.
+                guard running, generations[key] == generation, !Task.isCancelled else { return }
+                checkedConnections = true
+                probes.removeValue(forKey: key)
+                publish()
+            }
+        }
         publish()
     }
-    /// First routable IPv4 address in a list of `sockaddr` records from `NetService.addresses`.
-    static func ipv4Address(from addresses: [Data]) -> String? {
-        for address in addresses where address.count >= MemoryLayout<sockaddr_in>.size {
-            var storage = sockaddr_in()
-            _ = withUnsafeMutableBytes(of: &storage) { address.copyBytes(to: $0, count: MemoryLayout<sockaddr_in>.size) }
-            guard storage.sin_family == sa_family_t(AF_INET) else { continue }
-            var raw = storage.sin_addr
-            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            guard inet_ntop(AF_INET, &raw, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
-            let text = String(cString: buffer)
-            if text.hasPrefix("127.") || text.hasPrefix("169.254.") || text == "0.0.0.0" { continue }
-            return text
-        }
-        return nil
+
+    nonisolated static func probe(_ endpoint: OrbitDiscoveryEndpoint, fingerprint: String) async throws {
+        let transport = try OrbitAPIClient(host: endpoint.host, port: endpoint.port, token: "",
+                                           fingerprint: fingerprint, pairingOnly: true, requestTimeout: 2)
+        try await transport.probeDiscovery()
     }
+
     private func publish() {
-        computers = Dictionary(resolved.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        message = computers.isEmpty ? "Keep Orbit Agent open on your PC. Both devices must be on the same local network." : "Choose your PC to show a one-use pairing code on Windows."
+        computers = Dictionary(resolved.values.map { ($0.id, $0) }, uniquingKeysWith: { first, other in
+            var merged = first
+            merged.endpoints = OrbitDiscoveryEndpoint.bounded(first.endpoints + other.endpoints)
+            return merged
+        }).values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if !computers.isEmpty {
+            message = "Choose your PC to show a one-use pairing code on Windows. Only reachable connections are shown."
+        } else if !probes.isEmpty {
+            message = "Checking which PC connections are reachable…"
+        } else if checkedConnections {
+            message = "No advertised address responded with a verified Orbit connection. Check the PC’s network and firewall, then search again or use manual setup."
+        } else {
+            message = "Keep Orbit Agent open on your PC. Both devices must be on the same local network."
+        }
     }
 }
 
@@ -180,6 +216,8 @@ struct PCDiscoveryView: View {
     var onPaired: (() -> Void)? = nil
     @StateObject private var discovery = OrbitPCDiscovery()
     @State private var candidate: DiscoveredOrbitPC?
+    @State private var selectedEndpoint: OrbitDiscoveryEndpoint?
+    @State private var checkingConnection = false
     @State private var handshake: OrbitPairingHandshake?
     @State private var pin = ""
     @State private var expiresAt: Date?
@@ -312,10 +350,13 @@ struct PCDiscoveryView: View {
                             Text(pc.name.isEmpty ? "Orbit PC" : pc.name)
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.white)
-                            Text("Orbit Agent \(pc.version) · \(pc.host)")
+                            Text("Orbit Agent \(pc.version) · Automatic connection")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            Text(pc.endpoints.map { "\($0.host):\($0.port)" }.joined(separator: ", "))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                         }
                         Spacer()
                         Text("Pair")
@@ -380,7 +421,7 @@ struct PCDiscoveryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(candidate.name.isEmpty ? "Your PC" : candidate.name)
                         .font(.headline.weight(.bold))
-                    Text("Orbit Agent \(candidate.version) · \(candidate.host)")
+                    Text("Orbit Agent \(candidate.version) · \(selectedEndpoint?.host ?? "Checking connection")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -448,7 +489,7 @@ struct PCDiscoveryView: View {
                 }
             } else {
                 VStack(spacing: 12) {
-                    Text("A six-digit code appears in the Orbit Agent window and a Windows dialog. Nothing needs copying.")
+                    Text("Orbit checks the PC’s connection before requesting a six-digit code in the Orbit Agent window and a Windows dialog.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -457,7 +498,7 @@ struct PCDiscoveryView: View {
                             OrbitHaptics.tap()
                             begin(candidate)
                         } label: {
-                            Label("Request a new code", systemImage: "arrow.clockwise")
+                            Label("Retry connection", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(OrbitProminentButtonStyle(colors: theme.heroGradientColors))
                     }
@@ -467,7 +508,7 @@ struct PCDiscoveryView: View {
             if busy {
                 HStack(spacing: 10) {
                     ProgressView().tint(theme.accent)
-                    Text(handshake == nil ? (paired ? "Connecting to your PC…" : "Showing a code on your PC…") : "Verifying and saving your PC…")
+                    Text(checkingConnection ? "Checking PC connections…" : handshake == nil ? (paired ? "Connecting to your PC…" : "Showing a code on your PC…") : "Verifying and saving your PC…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -487,12 +528,23 @@ struct PCDiscoveryView: View {
     }
 
     private func begin(_ pc: DiscoveredOrbitPC) {
-        resetAttempt(); candidate = pc; busy = true
+        resetAttempt(); candidate = pc; busy = true; checkingConnection = true
         let identifier = attempt
         task = Task {
             do {
-                let connection = try OrbitPairingHandshake(host: pc.host, port: pc.port, fingerprint: pc.fingerprint)
-                let seconds = try await connection.begin(name: "Orbit on \(UIDevice.current.model)")
+                let endpoint = try await OrbitDiscoveryRouteSelector().select(pc.endpoints) { endpoint in
+                    try await OrbitPCDiscovery.probe(endpoint, fingerprint: pc.fingerprint)
+                }
+                guard identifier == attempt, !Task.isCancelled else { return }
+                selectedEndpoint = endpoint; checkingConnection = false
+                // Never race or automatically retry a POST: the agent permits one
+                // active session and binds it to this peer for the entire handshake.
+                let connection = try OrbitPairingHandshake(host: endpoint.host, port: endpoint.port, fingerprint: pc.fingerprint)
+                let seconds: Int
+                do { seconds = try await connection.begin(name: "Orbit on \(UIDevice.current.model)") }
+                catch let error as URLError where error.code == .timedOut || error.code == .networkConnectionLost {
+                    throw OrbitError(message: "The connection was lost while requesting a code. A code may already be active on your PC. Wait two minutes for it to expire, then retry.")
+                }
                 guard identifier == attempt, !Task.isCancelled else { return }
                 handshake = connection; codeLifetime = Double(seconds); expiresAt = Date().addingTimeInterval(Double(seconds)); pinFocused = true
             } catch {
@@ -501,18 +553,18 @@ struct PCDiscoveryView: View {
                     OrbitHaptics.error()
                 }
             }
-            if identifier == attempt { busy = false }
+            if identifier == attempt { busy = false; checkingConnection = false }
         }
     }
     private func finish() {
-        guard let handshake, let candidate, !busy else { return }
+        guard let handshake, let candidate, let selectedEndpoint, !busy else { return }
         let code = pin, identifier = attempt
         busy = true; error = nil; pinFocused = false
         task = Task {
             do {
                 let credentials = try await handshake.finish(pin: code)
                 guard identifier == attempt, !Task.isCancelled else { return }
-                try vm.acceptPairing(credentials, discoveredHost: candidate.host, bonjourHost: candidate.bonjourHost)
+                try vm.acceptPairing(credentials, discoveredHost: selectedEndpoint.host, bonjourHost: candidate.bonjourHost)
                 self.handshake = nil; pin = ""; paired = true
                 OrbitHaptics.success()
                 await vm.connect()
@@ -524,10 +576,10 @@ struct PCDiscoveryView: View {
                     OrbitHaptics.error()
                 }
             }
-            if identifier == attempt { busy = false }
+            if identifier == attempt { busy = false; checkingConnection = false }
         }
     }
     private func resetAttempt() {
-        task?.cancel(); attempt = UUID(); candidate = nil; handshake = nil; pin = ""; expiresAt = nil; busy = false; error = nil; paired = false
+        task?.cancel(); attempt = UUID(); selectedEndpoint = nil; checkingConnection = false; candidate = nil; handshake = nil; pin = ""; expiresAt = nil; busy = false; error = nil; paired = false
     }
 }

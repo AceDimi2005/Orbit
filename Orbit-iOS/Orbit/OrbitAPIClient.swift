@@ -52,11 +52,11 @@ final class OrbitAPIClient: @unchecked Sendable {
         try OrbitAPIClient(host: host, port: port, token: token, fingerprint: fingerprint, pairingOnly: pairingOnly, requestTimeout: seconds)
     }
 
-    private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) throws -> URLRequest {
+    private func request(_ path: String, method: String = "GET", query: [URLQueryItem] = [], discoveryProbe: Bool = false) throws -> URLRequest {
         // Exact WebSocket paths only: the desktop preview, the cursor and the phone's camera (wss, token in the header).
         let isWebSocket = (path == "/ws/stream" || path == "/ws/input" || path == "/ws/camera")
         guard path.hasPrefix("/api/") || isWebSocket else { throw OrbitError(message: "Invalid PC request.") }
-        guard !pairingOnly || path.hasPrefix("/api/pair/") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
+        guard !pairingOnly || path.hasPrefix("/api/pair/") || (discoveryProbe && path == "/api/discover" && method == "GET") else { throw OrbitError(message: "Complete pairing before accessing this PC.") }
         var components = URLComponents()
         components.scheme = isWebSocket ? "wss" : "https"
         components.host = host; components.port = port; components.path = path
@@ -94,6 +94,30 @@ final class OrbitAPIClient: @unchecked Sendable {
         guard data.count <= 8 * 1024 * 1024 else { throw OrbitError(message: "The PC response is too large.") }
         return data
     }
+    /// The sole public pre-pairing read. Uses the same certificate pin and redirect
+    /// rejection as pairing; never sends a bearer token or creates a PIN session.
+    func probeDiscovery() async throws {
+        guard pairingOnly, token.isEmpty else { throw OrbitError(message: "Invalid discovery probe.") }
+        struct Discovery: Decodable {
+            let service: String
+            let fingerprint: String
+            let pairingAvailable: Bool
+        }
+        var urlRequest = try request("/api/discover", discoveryProbe: true)
+        urlRequest.timeoutInterval = 2
+        let result: (Data, URLResponse)
+        do { result = try await session.data(for: urlRequest) }
+        catch { throw transportError(error) }
+        let (data, response) = result
+        try validate(response, data: data)
+        guard data.count <= 16 * 1024 else { throw OrbitError(message: "Invalid discovery response.") }
+        let discovery = try JSONDecoder().decode(Discovery.self, from: data)
+        guard discovery.service == "orbit-agent", discovery.pairingAvailable,
+              Self.normalizedFingerprint(discovery.fingerprint) == fingerprint else {
+            throw OrbitError(message: "This address did not confirm the advertised Orbit pairing identity.")
+        }
+    }
+
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         try JSONDecoder().decode(T.self, from: await data(path, query: query))
     }

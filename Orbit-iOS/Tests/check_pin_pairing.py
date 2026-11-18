@@ -16,7 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "Orbit-Windows-Agent"))
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from orbit_pairing import PairingManager, create_pairing_router
 from orbit_tls import ensure_tls_identity
 
@@ -25,7 +25,33 @@ import Foundation
 @main struct Probe {
     static func main() async throws {
         let args = CommandLine.arguments
-        let handshake = try OrbitPairingHandshake(host: "127.0.0.1", port: Int(args[1])!, fingerprint: args[2])
+        let port = Int(args[1])!, fingerprint = args[2]
+        let probe = try OrbitAPIClient(host: "127.0.0.1", port: port, token: "", fingerprint: fingerprint, pairingOnly: true)
+        // Discovery is a narrowly scoped method, not broader pre-pairing API access.
+        for (path, method) in [("/api/status", "GET"), ("/api/discover", "POST"), ("/api/discover", "GET")] {
+            do {
+                _ = try await probe.data(path, method: method)
+                fatalError("Pairing-only transport allowed a general API request")
+            } catch let error as OrbitError {
+                precondition(error.message.contains("Complete pairing"))
+            }
+        }
+        let wrongPin = try OrbitAPIClient(host: "127.0.0.1", port: port, token: "", fingerprint: String(repeating: "0", count: 64), pairingOnly: true)
+        do {
+            try await wrongPin.probeDiscovery()
+            fatalError("Probe accepted a mismatched TLS certificate")
+        } catch let error as OrbitError {
+            precondition(error.message.contains("fingerprint does not match"))
+        }
+        let endpoint = try await OrbitDiscoveryRouteSelector().select([
+            OrbitDiscoveryEndpoint(host: "127.0.0.1", port: 1),
+            OrbitDiscoveryEndpoint(host: "127.0.0.1", port: port)
+        ]) { endpoint in
+            let client = try OrbitAPIClient(host: endpoint.host, port: endpoint.port, token: "", fingerprint: fingerprint, pairingOnly: true)
+            try await client.probeDiscovery()
+        }
+        precondition(endpoint.port == port)
+        let handshake = try OrbitPairingHandshake(host: endpoint.host, port: endpoint.port, fingerprint: fingerprint)
         let expiry = try await handshake.begin(name: "Native test iPhone")
         precondition(expiry == 120)
         guard let pin = readLine() else { fatalError("No test code") }
@@ -56,7 +82,7 @@ def main():
         root = Path(temporary).resolve()
         sources = root / "Sources" / "Probe"
         sources.mkdir(parents=True)
-        for name in ("OrbitAPIClient.swift", "OrbitPairing.swift"):
+        for name in ("OrbitAPIClient.swift", "OrbitPairing.swift", "OrbitDiscoveryRoute.swift"):
             shutil.copy2(ROOT / "Orbit-iOS" / "Orbit" / name, sources / name)
         shutil.copy2(ROOT / "Orbit-iOS" / "Shared" / "OrbitError.swift", sources / "OrbitError.swift")
         (sources / "Probe.swift").write_text(SWIFT)
@@ -88,6 +114,18 @@ let package = Package(name: "OrbitPairingProbe", platforms: [.macOS(.v13)],
             "widgetToken": "native-pairing-widget-token-for-test-only",
         }, show_pin=show_code)
         app = FastAPI()
+        requests_seen = []
+
+        @app.middleware("http")
+        async def record_request(request: Request, call_next):
+            requests_seen.append((request.method, request.url.path))
+            assert "authorization" not in request.headers
+            return await call_next(request)
+
+        @app.get("/api/discover")
+        def discover():
+            return {"service": "orbit-agent", "fingerprint": fingerprint, "pairingAvailable": True}
+
         app.include_router(create_pairing_router(lambda: manager))
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, lifespan="off", proxy_headers=False,
                                 ssl_certfile=str(cert), ssl_keyfile=str(key), access_log=False, log_level="error"))
@@ -100,6 +138,7 @@ let package = Package(name: "OrbitPairingProbe", platforms: [.macOS(.v13)],
             assert server.started
             for mode in ("accept", "rejectIdentity"):
                 dismissed.clear()
+                requests_seen.clear()
                 if mode == "rejectIdentity":
                     # Simulate a relay returning an authentic encrypted payload
                     # for a different identity than bootstrap TLS advertised.
@@ -111,6 +150,8 @@ let package = Package(name: "OrbitPairingProbe", platforms: [.macOS(.v13)],
                 assert process.returncode == 0, stderr
                 assert "PASS:" in stdout, stdout
                 assert dismissed.is_set(), "The PC code display was not dismissed after pairing"
+                assert requests_seen == [("GET", "/api/discover"), ("POST", "/api/pair/start"), ("POST", "/api/pair/finish")], requests_seen
+                print("PASS: pinned read-only discovery, API restrictions, one pairing start on the selected route")
                 print(stdout.strip())
         finally:
             if process is not None and process.poll() is None:
